@@ -577,17 +577,27 @@ def test_a_trainer_bundle_refuses_to_resume_through_nnmodel_before_anything_chan
 def test_an_interruption_after_the_manifest_rename_keeps_the_new_generation(bundle, monkeypatch):
     model = _classifier()
     run = _train(model, "late-interrupt")
-    real = bundles._fsync_directory
+    before = validate_bundle(bundle)
+    real_sync, real_publish = bundles._fsync_directory, bundles._publish
+    renamed = []
+
+    def publish(root, manifest):
+        renamed.append(root)  # the rename happens inside; its own root sync comes after
+        real_publish(root, manifest)
 
     def interrupted_after_rename(path):
-        if os.path.abspath(path) == os.path.abspath(bundle):  # the root: bundle.json is already replaced
+        # The root is synced once before publishing too; only a sync after the rename is interrupted.
+        if renamed and os.path.abspath(path) == os.path.abspath(bundle):
             raise KeyboardInterrupt
-        real(path)
+        real_sync(path)
 
     with pytest.MonkeyPatch.context() as patch, pytest.raises(KeyboardInterrupt):
         patch.setattr(bundles, "_fsync_directory", interrupted_after_rename)
+        patch.setattr(bundles, "_publish", publish)
         export_bundle(run.id, bundle)
+    assert renamed  # the interrupt came after the manifest rename, not before it
     published = validate_bundle(bundle)  # the generation bundle.json names was not rolled back
+    assert published.generation != before.generation
     assert os.path.isdir(os.path.join(bundle, f"g-{published.generation}"))
 
 

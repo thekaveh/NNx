@@ -147,7 +147,7 @@ def test_digest_changes_on_option_order_or_description_changes():
     assert Score(SEVERITY.prompt, tuple(reversed(SEVERITY.levels))).digest() != SEVERITY.digest()
     assert Boolean("a?").digest() != Boolean("b?").digest()
     # A result is bound to the digest of the exact question it answers.
-    assert validate_response(reordered, {"red": 0.2, "green": 0.3, "blue": 0.5}).question_digest != COLORS.digest()
+    assert validate_response(reordered, {"red": 0.2, "green": 0.3, "blue": 0.5}).question_digest == reordered.digest()
 
 
 def test_bookkeeping_ids_never_reach_the_model_facing_text():

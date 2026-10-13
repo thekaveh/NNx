@@ -298,8 +298,8 @@ def test_reliability_bins_are_equal_width_half_open_with_the_last_closed():
 def test_metrics_reject_malformed_probabilities(probabilities, match):
     with pytest.raises(CalibrationError, match=match):
         brier_score(probabilities, np.zeros(len(probabilities), dtype=int))
-    with pytest.raises(CalibrationError):
-        reliability_bins(probabilities, np.zeros(len(probabilities), dtype=int), n_bins=0)
+    with pytest.raises(CalibrationError, match=match):
+        reliability_bins(probabilities, np.zeros(len(probabilities), dtype=int), n_bins=5)
 
 
 # ---------------------------------------------------------------- identity binding (AC4 / AC7)
@@ -440,6 +440,14 @@ def test_report_outcome_mixed_and_unchanged():
     assert unchanged.outcome == "unchanged" and not unchanged.improved
     before = unchanged.before
     assert (before.nll, before.brier) == (unchanged.after.nll, unchanged.after.brier)
+    # Sharpening a mostly-right, under-confident model: NLL rises while Brier falls.
+    sharpen = TemperatureCalibrator(temperature=0.5, labels=BINARY, model_id="m", split_id="calib")
+    held_out = np.array([[0.5, 0.0]] * 4 + [[1.0, 0.0]])
+    mixed = sharpen.report(held_out, np.array([0, 0, 0, 0, 1]), labels=BINARY, model_id="m", split_id="test")
+    assert mixed.outcome == "mixed" and not mixed.improved
+    assert mixed.after.nll > mixed.before.nll and mixed.after.brier < mixed.before.brier
+    assert (round(mixed.before.nll, 3), round(mixed.after.nll, 3)) == (0.642, 0.676)
+    assert (round(mixed.before.brier, 3), round(mixed.after.brier, 3)) == (0.442, 0.426)
 
 
 def test_report_refuses_the_calibration_split_as_held_out_data():

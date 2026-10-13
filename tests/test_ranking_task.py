@@ -192,7 +192,9 @@ def test_candidate_identity_survives_sorting_device_moves_and_reload(tmp_path):
     base = task.split((x, q, c, r))
     devices = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
     for device, dtype in itertools.product(devices, (torch.int32, torch.int64)):
-        moved = (x.to(device), q.to(device, dtype), c.flip(0).to(device, dtype).flip(0), r.to(device))
+        strided = torch.stack([c, c], 1).to(device, dtype)[:, 0]  # a real strided view of the ids
+        assert not strided.is_contiguous() and torch.equal(strided.cpu(), c.to(dtype))
+        moved = (x.to(device), q.to(device, dtype), strided, r.to(device))
         _, qs, cs, rs, _ = task.split(moved)
         assert (qs, cs) == (base[1], base[2]) and torch.equal(rs, base[3]) and rs.device.type == "cpu"
     # Reload: a saved scorer reloaded from its checkpoint ranks the same ids.

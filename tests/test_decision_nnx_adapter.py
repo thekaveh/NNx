@@ -114,7 +114,11 @@ def test_task_labels_supply_the_label_space():
     model = _classifier(task=TaskSpec.categorical(3, labels=LABELS))
     provider = FixedHeadProvider(model)
     assert provider.capabilities().labels == LABELS
-    assert provider.decide(_animals("dog", "fox", "cat"), X)[0].top in LABELS
+    order = ("dog", "fox", "cat")  # a permutation of the task's label order
+    with torch.no_grad():
+        probs = torch.softmax(model.net(X), dim=1)[:, [LABELS.index(name) for name in order]]
+    expected = [order[i] for i in probs.argmax(dim=1).tolist()]  # first maximum on ties, as .top
+    assert [result.top for result in provider.decide(_animals(*order), X)] == expected == ["cat", "dog", "cat"]
 
 
 def test_heads_serve_only_the_primitives_they_justify():

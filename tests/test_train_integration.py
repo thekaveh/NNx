@@ -159,6 +159,16 @@ def test_train_end_to_end_produces_run_and_checkpoints(tmp_path, monkeypatch):
     # runs/best symlink points at this run (no prior runs in tmp_path).
     assert os.path.islink(tmp_path / "runs" / "best")
 
+    # Reloading the run reconstructs every idp, val metrics included.
+    reloaded = NNRun.load(id=run.id)
+    assert len(reloaded.idps) == 8
+    for ridp, oidp in zip(reloaded.idps, run.idps, strict=True):
+        assert (ridp.iter_idx, ridp.epoch_idx, ridp.batch_idx) == (oidp.iter_idx, oidp.epoch_idx, oidp.batch_idx)
+        assert ridp.train_edp.loss == pytest.approx(oidp.train_edp.loss, abs=1e-9)
+        assert (ridp.val_edp is None) == (oidp.val_edp is None)
+        if oidp.val_edp is not None:
+            assert ridp.val_edp.loss == pytest.approx(oidp.val_edp.loss, abs=1e-9)
+
 
 def test_run_save_load_round_trip(tmp_path, monkeypatch):
     """NNRun.load(run.id) returns an NNRun whose idps/state match the saved one."""
@@ -991,7 +1001,8 @@ def test_warmup_decay_resume_on_the_epoch_clock_requires_explicit_warmup_steps(t
 
     with pytest.raises(ValueError, match="requires scheduler.warmup_steps"):
         NNModel(net_params=net_params, params=model_params).train(params=params(None))
-    with pytest.raises(Exception) as other:  # past the check: the source run does not exist
+    # Past the warm-up check: the source run does not exist.
+    with pytest.raises(ValueError, match="not found on disk") as other:
         NNModel(net_params=net_params, params=model_params).train(params=params(3))
     assert "warmup_steps" not in str(other.value)
 

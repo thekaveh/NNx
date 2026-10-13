@@ -51,16 +51,49 @@ EXAMPLES = sorted((ROOT / "examples").glob("[0-9][0-9]_*.py")) + [
 ]
 
 
+# Distributions whose import name is not their normalised distribution name.
+_IMPORT_NAMES = {"scikit-learn": "sklearn", "pyyaml": "yaml"}
+
+
+def _core_import_names() -> frozenset[str]:
+    """Top-level import names of pyproject's core ``[project] dependencies``
+    (regex over the raw text: ``tomllib`` is 3.11+ and NNx supports 3.10)."""
+    import re
+
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    block = re.search(r"^dependencies = \[(.*?)^\]", text, re.M | re.S)
+    assert block is not None, "pyproject.toml has no [project] dependencies list"
+    lines = (line.split("#", 1)[0] for line in block.group(1).splitlines())
+    requirements = re.findall(r'"([^"]+)"', "\n".join(lines))
+    distributions = (re.match(r"[A-Za-z0-9._-]+", req).group(0).lower() for req in requirements)
+    return frozenset(_IMPORT_NAMES.get(dist, dist.replace("-", "_").replace(".", "_")) for dist in distributions)
+
+
 def _skip_if_optional_extra_missing(exc: ImportError, what: str) -> None:
     """Skip when ``exc`` is a missing optional extra: a third-party module
-    that is not installed, or NNx's own "pip install thekaveh-nnx[...]"
-    error. Re-raise anything else (a broken ``nnx`` import fails, never
-    skips)."""
+    that is not installed and not a core dependency, or NNx's own
+    "pip install thekaveh-nnx[...]" error. Re-raise anything else (a broken
+    ``nnx`` import or a missing core dependency fails, never skips)."""
     missing = exc.name or getattr(exc.__cause__, "name", None) or ""
-    names_nnx = missing == "nnx" or missing.startswith("nnx.")
-    if names_nnx or (not missing and "thekaveh-nnx[" not in str(exc)):
+    top = missing.split(".", 1)[0]
+    if top == "nnx":
+        raise exc
+    if "thekaveh-nnx[" not in str(exc) and (not top or top in _core_import_names()):
         raise exc
     pytest.skip(f"{what} needs an optional extra: {exc}")
+
+
+def test_core_dependencies_never_count_as_optional_extras():
+    assert {"torch", "numpy", "pandas", "sklearn", "prettytable", "yaml", "tqdm", "filelock"} <= _core_import_names()
+    for name in ("torch", "sklearn", "yaml", "numpy.linalg", "nnx.vision"):
+        with pytest.raises(ImportError):
+            _skip_if_optional_extra_missing(ModuleNotFoundError(f"No module named {name!r}", name=name), "x")
+    with pytest.raises(ImportError):
+        _skip_if_optional_extra_missing(ImportError("cannot import name 'x'"), "x")  # no module named: a real bug
+    with pytest.raises(pytest.skip.Exception):
+        _skip_if_optional_extra_missing(ModuleNotFoundError("No module named 'plotly'", name="plotly"), "x")
+    with pytest.raises(pytest.skip.Exception):
+        _skip_if_optional_extra_missing(ImportError("pip install thekaveh-nnx[viz]"), "x")
 
 
 @pytest.mark.parametrize("example", EXAMPLES, ids=lambda path: path.stem)

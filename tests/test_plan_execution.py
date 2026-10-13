@@ -199,15 +199,15 @@ def test_metrics_name_their_split_and_availability_without_a_second_loader_pass(
 
     plan = _plan().with_data(Counted("train", _train_loader()), val=Counted("val", _val_loader()))
     result = plan.fit()
-    fitted = dict(passes)
     last = result.run.idps[-1]
     train, val = result.metrics["train"], result.metrics["val"]
     assert (train.split, train.available, train.epoch, train.source) == ("train", True, 1, "last_batch")
     assert (val.split, val.available, val.epoch, val.source) == ("val", True, 1, "epoch")
     assert val.values["loss"] == last.val_edp.loss and val.values["extra/acc"] == last.val_edp.extra["acc"]
     assert train.values["loss"] == last.train_edp.loss
-    assert passes == fitted  # reading the metrics iterated no loader
-    assert passes["val"] == TRAIN.n_epochs  # one validation pass per epoch, as the loop does
+    # The training loop's own passes only: one train and one validation pass
+    # per epoch, none added to compute the metrics.
+    assert passes == {"train": TRAIN.n_epochs, "val": TRAIN.n_epochs}
 
 
 def test_factories_run_once_per_fit_and_never_during_validate(tmp_path, monkeypatch):

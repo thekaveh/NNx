@@ -209,6 +209,7 @@ def test_one_class_unavailable():
     task = LinkTask(split)
     _, run = _train(task, x, epochs=2)
     records = [idp for idp in run.idps if idp.val_edp is not None]
+    assert len(records) == 2  # one validation record per epoch: the checks below are not vacuous
     assert all("auroc" not in idp.val_edp.metrics and idp.val_edp.metrics["negatives"] == 0 for idp in records)
     assert all(not idp.selection.improved for idp in records)  # an unavailable AUROC never wins BEST
 

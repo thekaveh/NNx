@@ -167,7 +167,8 @@ def test_confidence_stays_provider_confidence_and_boolean_gets_none():
     assert urgency[0].raw["provider_confidence"] == 0.55
     assert "provider_confidence" not in spam[0].raw
     # Confidence is metadata, never a probability of the answer being right.
-    assert topic[0].probabilities()["t-tech"] == 0.6 and topic[0].raw["provider_confidence"] != 0.6
+    assert topic[0].top == "t-tech" and topic[0].probabilities()["t-tech"] == 0.6
+    assert topic[0].probabilities()[topic[0].top] != topic[0].raw["provider_confidence"]
 
 
 def test_serialised_metadata_holds_only_plain_reported_fields():
@@ -322,8 +323,11 @@ def test_a_sync_only_injection_is_sync_only_and_a_job_runs_it_one_call_at_a_time
     provider = JevProvider(client)
     assert provider.adecide is None and provider.adecide_many is None  # no async path to race on
     asks = {f"q{i}": DecisionJob.ask(Boolean(f"Question {i}?"), id=f"q{i}") for i in range(4)}
-    result = asyncio.run(DecisionJob.collect(asks).arun(provider, state=["y"], limits=Limits(max_concurrency=4)))
+    result = asyncio.run(
+        DecisionJob.collect(asks).arun(provider, state=["y"], limits=Limits(max_concurrency=4, max_questions=1))
+    )
     assert {outcome.kind for outcome in result.outcomes.values()} == {"answered"}
+    assert len(client.calls) == 4  # four separate calls could overlap under max_concurrency=4
     assert peak[0] == 1  # the caller's client is never called from two threads at once
     assert built == [] and client.closed == 0
 
