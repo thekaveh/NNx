@@ -6,6 +6,7 @@ import argparse
 import importlib
 import inspect
 import re
+import sys
 from enum import Enum
 from pathlib import Path
 from typing import Any, get_origin
@@ -14,6 +15,30 @@ ROOT = Path(__file__).resolve().parents[2]
 CATALOG = ROOT / "scripts" / "docs" / "api_reference_catalog.txt"
 OUTPUT = ROOT / "docs" / "api.md"
 ENTRY = re.compile(r"^@api\s+(\S+?)(?:\s+members=([A-Za-z0-9_,]*))?\s*$")
+
+
+def _doc_origin(value: Any) -> str | None:
+    """The module of the class whose docstring ``inspect.getdoc`` would
+    inherit for ``value``; ``None`` when ``value`` has its own."""
+    if inspect.isclass(value):
+        if value.__dict__.get("__doc__"):
+            return None
+        return next((base.__module__ for base in value.__mro__[1:] if base.__dict__.get("__doc__")), None)
+    if getattr(value, "__doc__", None) and not isinstance(value, property):
+        return None
+    if isinstance(value, property):
+        return None
+    *owner_path, name = getattr(value, "__qualname__", "").split(".")
+    owner: Any = sys.modules.get(getattr(value, "__module__", "") or "")
+    for part in owner_path:
+        owner = getattr(owner, part, None)
+    if not inspect.isclass(owner):
+        return None
+    for base in owner.__mro__[1:]:
+        attr = base.__dict__.get(name)
+        if attr is not None and getattr(attr, "__doc__", None):
+            return base.__module__
+    return None
 
 
 def _documentation(value: Any) -> tuple[str, str]:
@@ -33,7 +58,9 @@ def _documentation(value: Any) -> tuple[str, str]:
         return summary, details
     if not callable(value) and not inspect.ismodule(value) and not isinstance(value, property):
         return "Exported value.", ""
-    doc = inspect.getdoc(value) or "No public description is currently available."
+    origin = _doc_origin(value)
+    inherited_elsewhere = origin is not None and origin.split(".")[0] != "nnx"  # torch's nn.Module text, say
+    doc = (None if inherited_elsewhere else inspect.getdoc(value)) or "No public description is currently available."
     paragraphs = re.split(r"\n\s*\n", doc, maxsplit=1)
     summary = " ".join(line.strip() for line in paragraphs[0].splitlines())
     details = paragraphs[1].strip() if len(paragraphs) == 2 else ""

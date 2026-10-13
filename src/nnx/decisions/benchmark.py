@@ -566,7 +566,7 @@ def _answer(sample: Sample, result: Any, provider_id: str) -> dict[str, Any]:
         return {"p_true": float(checked.p_true)}
     pairs = getattr(result, "distribution", None)
     if pairs is None:
-        raise InvalidDecisionResponse(f"sample {sample.id!r}: the result carries no distribution")
+        raise InvalidDecisionResponse("the result carries no distribution")
     pairs = pairs if isinstance(pairs, Mapping) else tuple(pairs)  # pairs keep duplicates for the validator to see
     reordered: Any = validate_response(sample.question, pairs, provider=provider_id)
     return {"distribution": tuple((option_id, float(p)) for option_id, p in reordered.distribution)}

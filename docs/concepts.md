@@ -211,7 +211,7 @@ Schedulers.COSINE_ANNEALING(opt, params, n_epochs)     # → CosineAnnealingLR
 NoiseSchedulers.LINEAR(T=1000, beta_min=1e-4, beta_max=2e-2)  # → NoiseSchedule
 ```
 
-Adding a new option extends the enum and its `match` block. Some enums have companions to update too: an `Optims` member joins its optimizer family (`NNOptimParams`) and a builder method; a `Nets` member with its own params class joins the params map and `NNParams.resolve_from_state`.
+Adding a new option extends the enum and its `match` block. An `Optims` member also joins its optimizer family (`NNOptimParams`) and gains a builder method. A `Nets` member with its own params class also joins the params map and `NNParams.resolve_from_state`.
 
 ### 3.1. Optimizers: AdamW, registered factories and the shared build hook
 
@@ -3158,8 +3158,8 @@ is an **opt-in** alternative for code that would rather branch on a value:
   error.
 
 Nothing is caught on your behalf. A callback's `RuntimeError`,
-`KeyboardInterrupt` or cancellation propagates, and a callback that returns
-a non-`Result` raises `TypeError`. A `Result` has no truth value: `Ok(0)`,
+`KeyboardInterrupt` or cancellation propagates, and a `bind` / `recover`
+callback that returns a non-`Result` raises `TypeError`. A `Result` has no truth value: `Ok(0)`,
 `Ok(None)` and `Ok(False)` are successes.
 
 The types are generic (`Result[T, E] = Ok[T] | Err[E]`). Branch with

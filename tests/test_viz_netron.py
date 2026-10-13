@@ -137,3 +137,11 @@ def test_netron_export_casts_a_numpy_float64_example_to_the_net_dtype(tmp_path):
 
     path = netron_export(nn.Linear(3, 2), str(tmp_path / "linear.onnx"), np.random.default_rng(0).random((4, 3)))
     assert os.path.exists(path)
+
+
+def test_netron_export_keeps_integer_token_inputs(tmp_path):
+    import torch
+
+    net = nn.Sequential(nn.Embedding(10, 4), nn.Linear(4, 2))
+    path = netron_export(net, str(tmp_path / "tokens.onnx"), torch.tensor([[1, 2, 3]]))
+    assert os.path.exists(path)

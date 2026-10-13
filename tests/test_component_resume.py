@@ -245,3 +245,32 @@ def test_weights_only_and_stateful_modes_are_reported_and_enforced(tmp_path, mon
     assert NNRun.load(stateful.id).resume_status == stateful.resume_status
     with pytest.raises(ValueError, match="resume_mode"):
         NNTrainParams(n_epochs=1, resume_mode="sometimes")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("mode", ["auto", "weights_only"])
+def test_a_failure_right_after_the_resume_restore_hands_the_model_back(tmp_path, monkeypatch, mode):
+    import nnx.nn.nn_model as nn_model_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = _tiny_supervised().train(params=_params(1))
+    model = _tiny_supervised()
+    with torch.no_grad():
+        for parameter in model.net.parameters():
+            parameter.add_(1.0)  # differs from the checkpoint
+    before = {name: value.clone() for name, value in model.net.state_dict().items()}
+    torch.manual_seed(5)
+    rng_before = torch.get_rng_state()
+
+    real = nn_model_module.ResumeStatus
+
+    def refuse(**fields):  # stands in for a warnings-as-errors filter after the restore
+        if fields.get("mode") in ("stateful", "weights_only"):
+            raise RuntimeError("after the restore")
+        return real(**fields)
+
+    monkeypatch.setattr(nn_model_module, "ResumeStatus", refuse)
+    with pytest.raises(RuntimeError, match="after the restore"):
+        model.train(params=_params(2, resume_from_run_id=first.id, resume_mode=mode))
+    assert all(torch.equal(before[name], value) for name, value in model.net.state_dict().items())
+    assert torch.equal(torch.get_rng_state(), rng_before)

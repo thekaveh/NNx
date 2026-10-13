@@ -102,8 +102,11 @@ def _feed_digest(digest: Any, value: Any) -> None:
             return
         if type(value) not in (torch.Tensor, torch.nn.Parameter):
             dequantize = getattr(value, "dequantize", None)
-            if callable(dequantize):
-                _feed_digest(digest, dequantize())
+            # Every tensor has a dequantize; a wrapper that does not override
+            # it returns its own type, which would recurse without end.
+            plain = dequantize() if callable(dequantize) else None
+            if plain is not None and type(plain) is not type(value):
+                _feed_digest(digest, plain)
                 return
             flatten = getattr(value, "__tensor_flatten__", None)
             if callable(flatten):

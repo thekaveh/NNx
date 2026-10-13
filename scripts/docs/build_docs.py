@@ -26,10 +26,10 @@ from .build_wiki import (
     _markdown_unescape,
     _parse_target,
     _split_destination,
+    block_reference_definitions,
     html_target_destinations,
     iter_html_targets,
     iter_inline_links,
-    iter_reference_definitions,
     iter_reference_usages,
     markdown_blocks,
     rewrite_markdown,
@@ -381,12 +381,13 @@ def validate_links(root: Path, surface: str) -> None:
         blocks = markdown_blocks(source_text)
         definitions: set[str] = set()
         definitions_by_block: dict[int, list] = {}
+        line_definitions = block_reference_definitions(blocks)
         for block_index, block in enumerate(blocks):
             if block.html_processable:
                 validate_html(source, block.text)
             if block.suppressed:
                 continue
-            block_definitions = list(iter_reference_definitions(block.text))
+            block_definitions = line_definitions.get(block_index, [])
             definitions_by_block[block_index] = block_definitions
             for definition in block_definitions:
                 if not definition.target:
@@ -466,6 +467,7 @@ def validate_repository_sources(root: Path, sources: list[Path], tracked_paths: 
         blocks = markdown_blocks(text)
         definitions: set[str] = set()
         definitions_by_block: dict[int, list] = {}
+        line_definitions = block_reference_definitions(blocks)
         for block_index, block in enumerate(blocks):
             if block.html_processable:
                 for target in iter_html_targets(block.text):
@@ -473,7 +475,7 @@ def validate_repository_sources(root: Path, sources: list[Path], tracked_paths: 
                         validate_destination(source, destination)
             if block.suppressed:
                 continue
-            block_definitions = list(iter_reference_definitions(block.text))
+            block_definitions = line_definitions.get(block_index, [])
             definitions_by_block[block_index] = block_definitions
             for definition in block_definitions:
                 if definition.target:

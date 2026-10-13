@@ -26,6 +26,10 @@ from ..params.nn_conv_params import NNConvParams
 
 
 class ConvNN(nn.Module):
+    """LeNet-style convolutional classifier built from :class:`NNConvParams`:
+    conv and pool blocks, then fully connected layers. ``forward(x)`` takes
+    ``(B, C, H, W)`` images or flattened rows and returns logits."""
+
     _params: NNConvParams
     _side: int
     _in_channels: int

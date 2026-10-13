@@ -766,3 +766,23 @@ def test_a_bracketed_label_after_an_inline_code_span_is_prose_not_a_definition(t
     rendered = rewrite_markdown(source, text, {source.resolve(): "Page.md"})
     assert rendered.startswith("Use `x` [a]: foo for this.\nSet `k` [note]: see below\n")
     assert "[ref]: Page.md" in rendered  # a definition at a line start is still rewritten
+
+
+def test_the_validators_read_prose_after_a_code_span_as_prose(tmp_path: Path):
+    from scripts.docs.build_wiki import block_reference_definitions, markdown_blocks
+
+    text = "Use `x` [a]: foo for this.\n[ref]: page.md\n"
+    found = block_reference_definitions(markdown_blocks(text))
+    labels = [definition.label for definitions in found.values() for definition in definitions]
+    assert labels == ["ref"]
+    blocks = markdown_blocks(text)
+    ((index, (definition,)),) = [(i, ds) for i, ds in found.items() if ds]
+    assert blocks[index].text[definition.start : definition.end].startswith("[ref]: page.md")
+
+
+@pytest.mark.parametrize("text", ["1.  `c`\n\n    [a]: page.md\n", "- `c` x\n\n  [a]: page.md\n"])
+def test_a_definition_in_a_list_item_after_a_code_span_is_still_rewritten(tmp_path: Path, text):
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    rendered = rewrite_markdown(source, text, {source.resolve(): "Page.md"})
+    assert "[a]: Page.md" in rendered

@@ -17,6 +17,8 @@ from nnx.paradigms.jepa import random_block_mask
         ({"block_scale": (0.2, 1.0)}, "block_scale"),
         ({"block_aspect": (0.0, 1.0)}, "block_aspect"),
         ({"block_aspect": (2.0, 1.0)}, "block_aspect"),
+        ({"block_aspect": (0.5, float("inf"))}, "block_aspect"),
+        ({"block_aspect": (float("nan"), 1.0)}, "block_aspect"),
     ],
 )
 def test_out_of_range_block_shapes_are_refused(kwargs, message):

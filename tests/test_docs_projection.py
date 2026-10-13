@@ -1455,3 +1455,9 @@ def test_the_real_hub_stub_is_marked_for_the_api_reference():
         "assert m._HubMixinBase.__dict__.get('_optional_stub') is True\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True, timeout=120)
+
+
+def test_repository_docs_validation_reads_prose_after_a_code_span_as_prose(tmp_path: Path):
+    source = tmp_path / "README.md"
+    source.write_text("Use `x` [a]: foo for this.\n", encoding="utf-8")
+    build_docs.validate_repository_sources(tmp_path, [source], {source.resolve()})  # no "invalid link title"

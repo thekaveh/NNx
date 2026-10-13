@@ -978,3 +978,32 @@ def test_coverage_reasons_count_one_fault_across_samples():
     report = evaluate(samples, wrong, split="test-v1")
     reasons = dict(report.slices["in_family"].coverage.reasons)
     assert len(reasons) == 1 and next(iter(reasons.values())) == len(samples)
+
+
+@pytest.mark.parametrize("fault", ["no_distribution", "wrong_question"])
+def test_a_collected_fault_counts_once_across_samples(fault):
+    from types import SimpleNamespace
+
+    other = Choice("Other?", (("x", "x"), ("y", "y")))
+
+    class Faulty(KeywordProvider):
+        def decide(self, question, texts):
+            if fault == "no_distribution":
+                return [SimpleNamespace(question_digest=question.digest(), distribution=None) for _ in texts]
+            return [validate_response(other, {"x": 0.5, "y": 0.5}) for _ in texts]
+
+    samples = [Sample(f"g{i}", TOPIC, f"goal {i}", "sport") for i in range(4)]
+    collection = collect(Faulty(), samples, provider_id="f", budget=Budget(max_calls=1))
+    assert len({record.reason for record in collection.records}) == 1  # no sample id in the reason
+
+
+def test_a_boolean_record_without_p_true_counts_once_across_samples():
+    question = Boolean("Is it a goal?")
+    samples = [Sample(f"b{i}", question, f"text {i}", True) for i in range(3)]
+    records = [
+        Record(f"b{i}", question.digest(), "stub", "answered", distribution=(("true", 0.5), ("false", 0.5)))
+        for i in range(3)
+    ]
+    report = evaluate(samples, records, split="test-v1")
+    reasons = dict(next(iter(report.slices.values())).coverage.reasons)
+    assert list(reasons.values()) == [3] and "p_true" in next(iter(reasons))

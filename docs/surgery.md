@@ -181,6 +181,8 @@ Each replacement module also takes the train/eval mode of the module it replaces
 
 `widen`, `low_rank_factorize` and `expand_embedding` refuse a module with a `weight_norm` / `spectral_norm` or an unbaked prune mask, which a rebuilt plain module would drop silently. Remove it first: `torch.nn.utils.parametrize.remove_parametrizations` for the parametrization form, `remove_weight_norm` / `remove_spectral_norm` for the legacy hooks, `torch.nn.utils.prune.remove` for a mask.
 
+The same primitives refuse a subclass of `nn.Linear` / `nn.Embedding` with its own `forward`, such as a fake-quantized QAT Linear. The rebuilt plain module would drop that forward. `deepen` refuses a ReLU subclass with its own `forward` for the same reason. `widen` also refuses such a subclass as the consumer or on the path.
+
 Build the optimizer *after* surgery. A frozen layer stays frozen through widening or factorization and never enters `build_param_groups(..., strict=True)`. If you want the new factors to learn, `unfreeze` them explicitly first. Genuinely new layers inserted by `deepen` are ordinary fresh modules: trainable, and in the mode of the container they join. Existing layers keep their own modes. `expand_embedding` gives the new table the source table's `requires_grad` flag and mode.
 
 These flags and modes live on the returned object only. `state_dict()` carries neither, so they are not a cross-process freeze policy.

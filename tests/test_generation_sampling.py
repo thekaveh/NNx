@@ -103,3 +103,12 @@ def test_sample_next_token_handles_finite_zero_sum_underflow():
     # the source.
     out = sample_next_token(logits)
     assert isinstance(out, int)
+
+
+def test_top_p_of_one_keeps_every_token_despite_cumsum_rounding():
+    import torch
+
+    from nnx.generation import TopPFilter
+
+    logits = torch.randn(300, 1000, generator=torch.Generator().manual_seed(0))
+    assert torch.equal(TopPFilter(1.0)(logits, []), logits)

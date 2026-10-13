@@ -103,7 +103,8 @@ def deepen(
         KeyError: if ``after_layer_name`` is not a submodule.
         TypeError: if the layer is neither a ReLU-in-Sequential nor a
             Linear-in-FeedFwdNN-like ModuleList (a non-ReLU activation in a
-            Sequential is this case).
+            Sequential is this case), or is a ReLU subclass with its own
+            ``forward``.
         ValueError: if the activation effective at a FeedFwdNN insertion
             site is anything other than ReLU (sigmoid / tanh / GELU break
             function-preservation); if the ReLU is not fed by an
@@ -119,6 +120,11 @@ def deepen(
     parent_path, _, attr = after_layer_name.rpartition(".")
     parent = new_model if not parent_path else new_model.get_submodule(parent_path)
 
+    if isinstance(target, nn.ReLU) and type(target).forward is not nn.ReLU.forward:
+        raise TypeError(
+            f"deepen: {after_layer_name!r} is a {type(target).__name__} with its own forward; the identity layer "
+            "preserves the function only after a stock nn.ReLU (non-negative output)"
+        )
     if isinstance(target, nn.ReLU) and isinstance(parent, nn.Sequential):
         return _insert_after_relu_in_sequential(new_model, parent_path, attr)
 
@@ -401,7 +407,7 @@ def _check_relu_activation(grandparent: nn.Module, parent_path: str, idx: int) -
     except Exception as e:  # pragma: no cover — defensive
         raise ValueError(f"deepen: could not instantiate activation {act!r} to check it; {e}") from e
 
-    if not isinstance(probe, nn.ReLU):
+    if not isinstance(probe, nn.ReLU) or type(probe).forward is not nn.ReLU.forward:
         raise ValueError(
             f"deepen: activation is {type(probe).__name__ if probe else act!r}, "
             "but identity-init insertion is function-preserving only for ReLU. "

@@ -8755,19 +8755,7 @@ the rows' sample ids.
 nnx.graph_tasks.GraphClassifier.forward(self, x: 'torch.Tensor', edge_index: 'torch.Tensor', batch: 'torch.Tensor', ptr: 'torch.Tensor') -> 'torch.Tensor'
 ```
 
-Define the computation performed at every call.
-
-**Details**
-
-```text
-Should be overridden by all subclasses.
-
-.. note::
-    Although the recipe for forward pass needs to be defined within
-    this function, one should call the :class:`Module` instance afterwards
-    instead of this since the former takes care of running the
-    registered hooks while the latter silently ignores them.
-```
+No public description is currently available.
 
 ##### `nnx.graph_tasks.GraphClassifier.unpack_batch`
 
@@ -8800,19 +8788,7 @@ Pools node rows into one row per graph: ``"mean"`` or ``"sum"`` over each graph'
 nnx.graph_tasks.GraphPool.forward(self, x: 'torch.Tensor', batch: 'torch.Tensor', num_graphs: 'int') -> 'torch.Tensor'
 ```
 
-Define the computation performed at every call.
-
-**Details**
-
-```text
-Should be overridden by all subclasses.
-
-.. note::
-    Although the recipe for forward pass needs to be defined within
-    this function, one should call the :class:`Module` instance afterwards
-    instead of this since the former takes care of running the
-    registered hooks while the latter silently ignores them.
-```
+No public description is currently available.
 
 ##### `nnx.graph_tasks.GraphPool.extra_repr`
 
@@ -8820,15 +8796,7 @@ Should be overridden by all subclasses.
 nnx.graph_tasks.GraphPool.extra_repr(self) -> 'str'
 ```
 
-Return the extra representation of the module.
-
-**Details**
-
-```text
-To print customized extra information, you should re-implement
-this method in your own modules. Both single-line and multi-line
-strings are acceptable.
-```
+No public description is currently available.
 
 
 #### `nnx.graph_tasks.graph_classifier_spec`
@@ -9080,19 +9048,7 @@ class nnx.link_tasks.LinkPredictor(encoder: 'nn.Module', decoder: 'str' = 'dot',
 nnx.link_tasks.LinkPredictor.forward(self, x: 'torch.Tensor', edge_index: 'torch.Tensor', edge_label_index: 'torch.Tensor') -> 'torch.Tensor'
 ```
 
-Define the computation performed at every call.
-
-**Details**
-
-```text
-Should be overridden by all subclasses.
-
-.. note::
-    Although the recipe for forward pass needs to be defined within
-    this function, one should call the :class:`Module` instance afterwards
-    instead of this since the former takes care of running the
-    registered hooks while the latter silently ignores them.
-```
+No public description is currently available.
 
 ##### `nnx.link_tasks.LinkPredictor.unpack_batch`
 
@@ -11031,41 +10987,7 @@ A history journal whose committed files do not match its manifest: a chunk whose
 class nnx.nn.net.feed_fwd_nn.FeedFwdNN(params: 'NNParams')
 ```
 
-Base class for all neural network modules.
-
-**Details**
-
-```text
-Your models should also subclass this class.
-
-Modules can also contain other Modules, allowing them to be nested in
-a tree structure. You can assign the submodules as regular attributes::
-
-    import torch.nn as nn
-    import torch.nn.functional as F
-
-
-    class Model(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.conv1 = nn.Conv2d(1, 20, 5)
-            self.conv2 = nn.Conv2d(20, 20, 5)
-
-        def forward(self, x):
-            x = F.relu(self.conv1(x))
-            return F.relu(self.conv2(x))
-
-Submodules assigned in this way will be registered, and will also have their
-parameters converted when you call :meth:`to`, etc.
-
-.. note::
-    As per the example above, an ``__init__()`` call to the parent class
-    must be made before assignment on the child.
-
-:ivar training: Boolean represents whether this module is in training or
-                evaluation mode.
-:vartype training: bool
-```
+Feed-forward classifier built from `NNParams`: flatten, a stack of hidden ``nn.Linear`` layers (per-layer activation and dropout), then a linear head. ``forward(x)`` returns logits.
 
 ##### `nnx.nn.net.feed_fwd_nn.FeedFwdNN.params`
 
@@ -11081,19 +11003,7 @@ No public description is currently available.
 nnx.nn.net.feed_fwd_nn.FeedFwdNN.forward(self, X: 'torch.Tensor') -> 'torch.Tensor'
 ```
 
-Define the computation performed at every call.
-
-**Details**
-
-```text
-Should be overridden by all subclasses.
-
-.. note::
-    Although the recipe for forward pass needs to be defined within
-    this function, one should call the :class:`Module` instance afterwards
-    instead of this since the former takes care of running the
-    registered hooks while the latter silently ignores them.
-```
+No public description is currently available.
 
 ##### `nnx.nn.net.feed_fwd_nn.FeedFwdNN.seed_count`
 
@@ -11142,41 +11052,7 @@ No public description is currently available.
 class nnx.nn.net.feed_fwd_moe_nn.FeedFwdMoENN(params: 'NNMoEParams')
 ```
 
-Base class for all neural network modules.
-
-**Details**
-
-```text
-Your models should also subclass this class.
-
-Modules can also contain other Modules, allowing them to be nested in
-a tree structure. You can assign the submodules as regular attributes::
-
-    import torch.nn as nn
-    import torch.nn.functional as F
-
-
-    class Model(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.conv1 = nn.Conv2d(1, 20, 5)
-            self.conv2 = nn.Conv2d(20, 20, 5)
-
-        def forward(self, x):
-            x = F.relu(self.conv1(x))
-            return F.relu(self.conv2(x))
-
-Submodules assigned in this way will be registered, and will also have their
-parameters converted when you call :meth:`to`, etc.
-
-.. note::
-    As per the example above, an ``__init__()`` call to the parent class
-    must be made before assignment on the child.
-
-:ivar training: Boolean represents whether this module is in training or
-                evaluation mode.
-:vartype training: bool
-```
+Feed-forward classifier built from `NNMoEParams` whose hidden layers are top-k routed `MoELinear` experts; the head stays a plain ``nn.Linear``. ``forward(x)`` returns logits.
 
 ##### `nnx.nn.net.feed_fwd_moe_nn.FeedFwdMoENN.forward`
 
@@ -11184,19 +11060,7 @@ parameters converted when you call :meth:`to`, etc.
 nnx.nn.net.feed_fwd_moe_nn.FeedFwdMoENN.forward(self, X: 'torch.Tensor') -> 'torch.Tensor'
 ```
 
-Define the computation performed at every call.
-
-**Details**
-
-```text
-Should be overridden by all subclasses.
-
-.. note::
-    Although the recipe for forward pass needs to be defined within
-    this function, one should call the :class:`Module` instance afterwards
-    instead of this since the former takes care of running the
-    registered hooks while the latter silently ignores them.
-```
+No public description is currently available.
 
 ##### `nnx.nn.net.feed_fwd_moe_nn.FeedFwdMoENN.params`
 
@@ -11221,41 +11085,7 @@ No public description is currently available.
 class nnx.nn.net.conv_nn.ConvNN(params: 'NNConvParams')
 ```
 
-Base class for all neural network modules.
-
-**Details**
-
-```text
-Your models should also subclass this class.
-
-Modules can also contain other Modules, allowing them to be nested in
-a tree structure. You can assign the submodules as regular attributes::
-
-    import torch.nn as nn
-    import torch.nn.functional as F
-
-
-    class Model(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.conv1 = nn.Conv2d(1, 20, 5)
-            self.conv2 = nn.Conv2d(20, 20, 5)
-
-        def forward(self, x):
-            x = F.relu(self.conv1(x))
-            return F.relu(self.conv2(x))
-
-Submodules assigned in this way will be registered, and will also have their
-parameters converted when you call :meth:`to`, etc.
-
-.. note::
-    As per the example above, an ``__init__()`` call to the parent class
-    must be made before assignment on the child.
-
-:ivar training: Boolean represents whether this module is in training or
-                evaluation mode.
-:vartype training: bool
-```
+LeNet-style convolutional classifier built from `NNConvParams`: conv and pool blocks, then fully connected layers. ``forward(x)`` takes ``(B, C, H, W)`` images or flattened rows and returns logits.
 
 ##### `nnx.nn.net.conv_nn.ConvNN.params`
 
@@ -11271,19 +11101,7 @@ The net's configuration; setting it (as model surgery does) re-resolves the per-
 nnx.nn.net.conv_nn.ConvNN.forward(self, X: 'torch.Tensor') -> 'torch.Tensor'
 ```
 
-Define the computation performed at every call.
-
-**Details**
-
-```text
-Should be overridden by all subclasses.
-
-.. note::
-    Although the recipe for forward pass needs to be defined within
-    this function, one should call the :class:`Module` instance afterwards
-    instead of this since the former takes care of running the
-    registered hooks while the latter silently ignores them.
-```
+No public description is currently available.
 
 ##### `nnx.nn.net.conv_nn.ConvNN.unpack_batch`
 
@@ -11316,19 +11134,7 @@ layers with the configured activation + dropout, then a bare final layer.
 nnx.nn.net.graph_nn_base.GraphNNBase.forward(self, X: 'torch.Tensor', E: 'torch.Tensor') -> 'torch.Tensor'
 ```
 
-Define the computation performed at every call.
-
-**Details**
-
-```text
-Should be overridden by all subclasses.
-
-.. note::
-    Although the recipe for forward pass needs to be defined within
-    this function, one should call the :class:`Module` instance afterwards
-    instead of this since the former takes care of running the
-    registered hooks while the latter silently ignores them.
-```
+No public description is currently available.
 
 ##### `nnx.nn.net.graph_nn_base.GraphNNBase.unpack_batch`
 
@@ -11398,41 +11204,7 @@ Node-level graph net of PyG ``GATConv`` layers (the ``graph`` extra: ``pip insta
 class nnx.nn.net.transformer_nn.TransformerNN(params: 'NNTransformerParams')
 ```
 
-Base class for all neural network modules.
-
-**Details**
-
-```text
-Your models should also subclass this class.
-
-Modules can also contain other Modules, allowing them to be nested in
-a tree structure. You can assign the submodules as regular attributes::
-
-    import torch.nn as nn
-    import torch.nn.functional as F
-
-
-    class Model(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.conv1 = nn.Conv2d(1, 20, 5)
-            self.conv2 = nn.Conv2d(20, 20, 5)
-
-        def forward(self, x):
-            x = F.relu(self.conv1(x))
-            return F.relu(self.conv2(x))
-
-Submodules assigned in this way will be registered, and will also have their
-parameters converted when you call :meth:`to`, etc.
-
-.. note::
-    As per the example above, an ``__init__()`` call to the parent class
-    must be made before assignment on the child.
-
-:ivar training: Boolean represents whether this module is in training or
-                evaluation mode.
-:vartype training: bool
-```
+Decoder-only language model built from `NNTransformerParams`. ``forward(tokens)`` maps ``(B, T)`` token ids to ``(B, T, vocab)`` logits; ``forward_with_cache`` decodes with a per-layer KV cache.
 
 ##### `nnx.nn.net.transformer_nn.TransformerNN.forward`
 
@@ -11632,19 +11404,7 @@ reused unchanged.
 nnx.nn.net.vit_nn.ViTBlock.forward(self, x: 'torch.Tensor') -> 'torch.Tensor'
 ```
 
-Define the computation performed at every call.
-
-**Details**
-
-```text
-Should be overridden by all subclasses.
-
-.. note::
-    Although the recipe for forward pass needs to be defined within
-    this function, one should call the :class:`Module` instance afterwards
-    instead of this since the former takes care of running the
-    registered hooks while the latter silently ignores them.
-```
+No public description is currently available.
 
 
 #### `nnx.nn.moe.MoELinear`
@@ -11706,19 +11466,7 @@ Raises:
 nnx.nn.moe.MoELinear.forward(self, x: 'torch.Tensor') -> 'torch.Tensor'
 ```
 
-Define the computation performed at every call.
-
-**Details**
-
-```text
-Should be overridden by all subclasses.
-
-.. note::
-    Although the recipe for forward pass needs to be defined within
-    this function, one should call the :class:`Module` instance afterwards
-    instead of this since the former takes care of running the
-    registered hooks while the latter silently ignores them.
-```
+No public description is currently available.
 
 ##### `nnx.nn.moe.MoELinear.extra_repr`
 
@@ -11726,15 +11474,7 @@ Should be overridden by all subclasses.
 nnx.nn.moe.MoELinear.extra_repr(self) -> 'str'
 ```
 
-Return the extra representation of the module.
-
-**Details**
-
-```text
-To print customized extra information, you should re-implement
-this method in your own modules. Both single-line and multi-line
-strings are acceptable.
-```
+No public description is currently available.
 
 
 ## 5. Datasets
@@ -12994,19 +12734,7 @@ No public description is currently available.
 nnx.peft.lora.LoRALinear.forward(self, x: 'torch.Tensor') -> 'torch.Tensor'
 ```
 
-Define the computation performed at every call.
-
-**Details**
-
-```text
-Should be overridden by all subclasses.
-
-.. note::
-    Although the recipe for forward pass needs to be defined within
-    this function, one should call the :class:`Module` instance afterwards
-    instead of this since the former takes care of running the
-    registered hooks while the latter silently ignores them.
-```
+No public description is currently available.
 
 ##### `nnx.peft.lora.LoRALinear.extra_repr`
 
@@ -13014,15 +12742,7 @@ Should be overridden by all subclasses.
 nnx.peft.lora.LoRALinear.extra_repr(self) -> 'str'
 ```
 
-Return the extra representation of the module.
-
-**Details**
-
-```text
-To print customized extra information, you should re-implement
-this method in your own modules. Both single-line and multi-line
-strings are acceptable.
-```
+No public description is currently available.
 
 
 #### `nnx.peft.lora.apply_lora_to`
@@ -13205,19 +12925,7 @@ Args:
 nnx.peft.dora.DoRALinear.forward(self, x: 'torch.Tensor') -> 'torch.Tensor'
 ```
 
-Define the computation performed at every call.
-
-**Details**
-
-```text
-Should be overridden by all subclasses.
-
-.. note::
-    Although the recipe for forward pass needs to be defined within
-    this function, one should call the :class:`Module` instance afterwards
-    instead of this since the former takes care of running the
-    registered hooks while the latter silently ignores them.
-```
+No public description is currently available.
 
 ##### `nnx.peft.dora.DoRALinear.extra_repr`
 
@@ -13225,15 +12933,7 @@ Should be overridden by all subclasses.
 nnx.peft.dora.DoRALinear.extra_repr(self) -> 'str'
 ```
 
-Return the extra representation of the module.
-
-**Details**
-
-```text
-To print customized extra information, you should re-implement
-this method in your own modules. Both single-line and multi-line
-strings are acceptable.
-```
+No public description is currently available.
 
 
 #### `nnx.peft.dora.apply_dora_to`
@@ -13328,19 +13028,7 @@ No public description is currently available.
 nnx.peft.ia3.IA3Linear.forward(self, x: 'torch.Tensor') -> 'torch.Tensor'
 ```
 
-Define the computation performed at every call.
-
-**Details**
-
-```text
-Should be overridden by all subclasses.
-
-.. note::
-    Although the recipe for forward pass needs to be defined within
-    this function, one should call the :class:`Module` instance afterwards
-    instead of this since the former takes care of running the
-    registered hooks while the latter silently ignores them.
-```
+No public description is currently available.
 
 ##### `nnx.peft.ia3.IA3Linear.extra_repr`
 
@@ -13348,15 +13036,7 @@ Should be overridden by all subclasses.
 nnx.peft.ia3.IA3Linear.extra_repr(self) -> 'str'
 ```
 
-Return the extra representation of the module.
-
-**Details**
-
-```text
-To print customized extra information, you should re-implement
-this method in your own modules. Both single-line and multi-line
-strings are acceptable.
-```
+No public description is currently available.
 
 
 #### `nnx.peft.ia3.apply_ia3_to`
@@ -13750,19 +13430,7 @@ Args:
 nnx.peft.adapters.AdapterLayer.forward(self, x: 'torch.Tensor') -> 'torch.Tensor'
 ```
 
-Define the computation performed at every call.
-
-**Details**
-
-```text
-Should be overridden by all subclasses.
-
-.. note::
-    Although the recipe for forward pass needs to be defined within
-    this function, one should call the :class:`Module` instance afterwards
-    instead of this since the former takes care of running the
-    registered hooks while the latter silently ignores them.
-```
+No public description is currently available.
 
 ##### `nnx.peft.adapters.AdapterLayer.extra_repr`
 
@@ -13770,15 +13438,7 @@ Should be overridden by all subclasses.
 nnx.peft.adapters.AdapterLayer.extra_repr(self) -> 'str'
 ```
 
-Return the extra representation of the module.
-
-**Details**
-
-```text
-To print customized extra information, you should re-implement
-this method in your own modules. Both single-line and multi-line
-strings are acceptable.
-```
+No public description is currently available.
 
 
 ## 10. Pruning (`nnx.prune`)
@@ -13943,10 +13603,13 @@ Returns:
 
 Raises:
     KeyError: if ``layer_name`` is not a submodule of ``model``.
-    TypeError: if the named submodule is not :class:`nn.Linear`.
+    TypeError: if the named submodule is not :class:`nn.Linear` (or a
+        subclass with its own ``forward``).
     ValueError: if ``new_width`` is not an integer strictly greater
         than the current ``out_features``; if the target or a module on
-        its path carries a parametrization (``weight_norm``); if no downstream Linear exists; if
+        its path carries a parametrization, a legacy ``weight_norm`` /
+        ``spectral_norm`` hook or an unbaked prune mask; if no plain
+        downstream Linear exists; if
         a width-dependent op (Softmax, LayerNorm, BatchNorm, or any
         module outside the elementwise allowlist) sits between the
         target and its consumer; if the target lives in a container
@@ -14006,7 +13669,8 @@ Raises:
     KeyError: if ``after_layer_name`` is not a submodule.
     TypeError: if the layer is neither a ReLU-in-Sequential nor a
         Linear-in-FeedFwdNN-like ModuleList (a non-ReLU activation in a
-        Sequential is this case).
+        Sequential is this case), or is a ReLU subclass with its own
+        ``forward``.
     ValueError: if the activation effective at a FeedFwdNN insertion
         site is anything other than ReLU (sigmoid / tanh / GELU break
         function-preservation); if the ReLU is not fed by an
@@ -14083,9 +13747,11 @@ Returns:
     Linear carries the original bias verbatim.
 
 Raises:
-    TypeError: if ``linear`` is not :class:`nn.Linear`.
+    TypeError: if ``linear`` is not :class:`nn.Linear` (or a subclass
+        with its own ``forward``).
     ValueError: if ``rank`` is out of range, ``method`` unknown, or
-        ``linear`` carries a parametrization (``weight_norm``).
+        ``linear`` carries a parametrization, a legacy ``weight_norm`` /
+        ``spectral_norm`` hook or an unbaked prune mask.
 ```
 
 
@@ -14118,9 +13784,12 @@ Returns:
     as candidates for freezing during refinement.
 
 Raises:
-    TypeError: if ``emb`` is not :class:`nn.Embedding`.
+    TypeError: if ``emb`` is not :class:`nn.Embedding` (or a subclass
+        with its own ``forward``).
     ValueError: if ``new_num_embeddings`` is not an integer strictly greater,
-        if ``init`` is unknown, or if ``emb`` carries a parametrization.
+        if ``init`` is unknown, or if ``emb`` carries a parametrization, a
+        legacy ``weight_norm`` / ``spectral_norm`` hook or an unbaked prune
+        mask.
 ```
 
 
@@ -15565,7 +15234,7 @@ Returns:
 Raises:
     ValueError: when ``grid_size**2 != n_patches``; when
         ``block_scale`` is not an ordered pair in ``(0, 1)`` or
-        ``block_aspect`` not an ordered pair of positive ratios; or
+        ``block_aspect`` not an ordered pair of finite positive ratios; or
         for a 1x1 grid (no room for a context). A block is never
         empty and never the whole grid: each side is at least one
         patch, a side longer than the grid is clipped to it, and a
@@ -16524,8 +16193,9 @@ Nucleus (top-p) sampling: keep the smallest set of tokens whose cumulative proba
 **Details**
 
 ```text
-Edge case: if a single token already has probability >= top_p, only
-that token is retained.
+Edge case: if a single token's probability exceeds ``top_p``, only
+that token is retained. ``top_p=1.0`` keeps every token (no
+floating-point cumulative sum can exceed it by rounding).
 ```
 
 

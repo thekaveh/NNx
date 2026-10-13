@@ -2044,3 +2044,38 @@ def test_surgery_refuses_an_unbaked_prune_mask_and_spares_lookalike_parameter_na
     lookalike.register_parameter("scale_g", torch.nn.Parameter(torch.ones(1)))
     lookalike.register_parameter("scale_v", torch.nn.Parameter(torch.ones(1)))
     low_rank_factorize(lookalike, rank=2)
+
+
+def test_surgery_refuses_a_subclass_with_its_own_forward_and_keeps_a_plain_subclass():
+    import torch
+
+    from nnx.surgery import deepen, expand_embedding, low_rank_factorize, widen
+
+    class Doubled(torch.nn.Linear):
+        def forward(self, x):
+            return super().forward(x) * 2
+
+    class Tagged(torch.nn.Linear):  # no forward of its own
+        pass
+
+    class Scaled(torch.nn.Embedding):
+        def forward(self, x):
+            return super().forward(x) * 3
+
+    class Shifted(torch.nn.ReLU):
+        def forward(self, x):
+            return super().forward(x) - 0.5
+
+    with pytest.raises(TypeError, match="Doubled"):
+        low_rank_factorize(Doubled(4, 4), rank=2)
+    low_rank_factorize(Tagged(4, 4), rank=2)
+    with pytest.raises(TypeError, match="Scaled"):
+        expand_embedding(Scaled(4, 2), new_num_embeddings=8)
+    with pytest.raises(TypeError, match="own forward"):
+        widen(torch.nn.Sequential(Doubled(3, 4), torch.nn.ReLU(), torch.nn.Linear(4, 2)), layer_name="0", new_width=6)
+    with pytest.raises(ValueError, match="own forward"):
+        widen(torch.nn.Sequential(torch.nn.Linear(3, 4), torch.nn.ReLU(), Doubled(4, 2)), layer_name="0", new_width=6)
+    with pytest.raises(ValueError, match="elementwise"):
+        widen(torch.nn.Sequential(torch.nn.Linear(3, 4), Shifted(), torch.nn.Linear(4, 2)), layer_name="0", new_width=6)
+    with pytest.raises(TypeError, match="Shifted"):
+        deepen(torch.nn.Sequential(torch.nn.Linear(3, 4), Shifted(), torch.nn.Linear(4, 2)), after_layer_name="1")

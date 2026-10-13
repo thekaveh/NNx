@@ -12,6 +12,10 @@ from ..params.nn_params import NNParams
 
 
 class FeedFwdNN(nn.Module):
+    """Feed-forward classifier built from :class:`NNParams`: flatten, a stack
+    of hidden ``nn.Linear`` layers (per-layer activation and dropout), then a
+    linear head. ``forward(x)`` returns logits."""
+
     _params: NNParams
     _hidden: tuple[tuple[Callable[[torch.Tensor], torch.Tensor], float], ...]
 

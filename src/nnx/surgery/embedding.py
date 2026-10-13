@@ -30,7 +30,7 @@ from torch import nn
 from torch.nn.utils import skip_init
 
 from .._validation import require_count
-from ._utils import copy_param_roles, refuse_parametrized
+from ._utils import copy_param_roles, refuse_parametrized, stock_forward
 
 InitStrategy = Literal["zeros", "copy_mean"]
 
@@ -61,11 +61,14 @@ def expand_embedding(
         as candidates for freezing during refinement.
 
     Raises:
-        TypeError: if ``emb`` is not :class:`nn.Embedding`.
+        TypeError: if ``emb`` is not :class:`nn.Embedding` (or a subclass
+            with its own ``forward``).
         ValueError: if ``new_num_embeddings`` is not an integer strictly greater,
-            if ``init`` is unknown, or if ``emb`` carries a parametrization.
+            if ``init`` is unknown, or if ``emb`` carries a parametrization, a
+            legacy ``weight_norm`` / ``spectral_norm`` hook or an unbaked prune
+            mask.
     """
-    if not isinstance(emb, nn.Embedding):
+    if not stock_forward(emb, nn.Embedding):  # a subclass's own forward would be dropped
         raise TypeError(f"expand_embedding requires an nn.Embedding, got {type(emb).__name__}")
     refuse_parametrized(emb, "expand_embedding's Embedding")
     old_num = emb.num_embeddings

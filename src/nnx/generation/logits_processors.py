@@ -95,8 +95,9 @@ class TopPFilter:
     """Nucleus (top-p) sampling: keep the smallest set of tokens whose
     cumulative probability exceeds ``top_p``.
 
-    Edge case: if a single token already has probability >= top_p, only
-    that token is retained.
+    Edge case: if a single token's probability exceeds ``top_p``, only
+    that token is retained. ``top_p=1.0`` keeps every token (no
+    floating-point cumulative sum can exceed it by rounding).
     """
 
     def __init__(self, top_p: float):
@@ -105,6 +106,8 @@ class TopPFilter:
         self.top_p = top_p
 
     def __call__(self, logits: torch.Tensor, token_history: list[int]) -> torch.Tensor:
+        if self.top_p >= 1.0:  # the whole support; a float32 cumsum can round past 1.0
+            return logits
         sorted_logits, sorted_idx = torch.sort(logits, dim=-1, descending=True)
         cum_probs = torch.softmax(sorted_logits, dim=-1).cumsum(dim=-1)
         # Tokens to remove: cum_probs strictly greater than top_p,

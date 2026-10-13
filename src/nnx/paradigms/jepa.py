@@ -148,7 +148,7 @@ def random_block_mask(
     Raises:
         ValueError: when ``grid_size**2 != n_patches``; when
             ``block_scale`` is not an ordered pair in ``(0, 1)`` or
-            ``block_aspect`` not an ordered pair of positive ratios; or
+            ``block_aspect`` not an ordered pair of finite positive ratios; or
             for a 1x1 grid (no room for a context). A block is never
             empty and never the whole grid: each side is at least one
             patch, a side longer than the grid is clipped to it, and a
@@ -158,7 +158,7 @@ def random_block_mask(
         raise ValueError(f"grid_size**2 ({grid_size**2}) != n_patches ({n_patches})")
     if not 0.0 < block_scale[0] <= block_scale[1] < 1.0:
         raise ValueError(f"block_scale must be an ordered (min, max) pair in (0, 1), got {block_scale}")
-    if not 0.0 < block_aspect[0] <= block_aspect[1]:
+    if not (math.isfinite(block_aspect[1]) and 0.0 < block_aspect[0] <= block_aspect[1]):
         raise ValueError(f"block_aspect must be an ordered (min, max) pair of positive ratios, got {block_aspect}")
 
     # Sample block scale and aspect. ``torch.rand`` accepts a

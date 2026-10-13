@@ -474,17 +474,17 @@ def _restore_weights_only(
     rng_snapshot = _capture_rng_state(train_loader)
     try:
         net.load_state_dict(source.net_state)
+        if mode != "weights_only":  # inside the guard: a warnings-as-errors filter raises here
+            from .callbacks import _warn_at_user_frame
+
+            _warn_at_user_frame(
+                f"checkpoint has no training-state sidecar; model weights were restored, but {fresh} restart "
+                "from their configured defaults",
+            )
     except BaseException:
         net.load_state_dict(net_snapshot)
         _restore_rng_state(rng_snapshot, train_loader)
         raise
-    if mode != "weights_only":
-        from .callbacks import _warn_at_user_frame
-
-        _warn_at_user_frame(
-            f"checkpoint has no training-state sidecar; model weights were restored, but {fresh} restart "
-            "from their configured defaults",
-        )
     return net_snapshot, rng_snapshot
 
 
@@ -3975,9 +3975,10 @@ class NNModel(_HubMixinBase):
                             **_manifest_lineage(source.manifest),
                         )
         except BaseException:
-            # Another rank's failure reaches a rank that restored cleanly only
-            # through the agreement: undo its restore too, like the failing one.
-            if ddp is not None and previous_net_state is not None and previous_rng_state is not None:
+            # A failure after the restore (a warning raised as an error, or another
+            # rank's failure reaching a rank that restored cleanly through the
+            # agreement) hands the caller's model and RNG back unchanged.
+            if previous_net_state is not None and previous_rng_state is not None:
                 _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
             raise
 

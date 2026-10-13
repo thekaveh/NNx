@@ -730,7 +730,8 @@ outcome = validate_decision_request_result("choice", prompt, options).bind(
 - **Combinators and unwrapping.**
     - Combinators (`map`, `bind`, `map_error`, `recover`) never catch a
       callback's exception.
-    - A callback that returns a non-`Result` raises `TypeError`.
+    - A `bind` / `recover` callback that returns a non-`Result` raises
+      `TypeError`.
     - `unwrap()` on an `Err` raises `UnwrapError` with the typed error.
     - A `Result` has no truth value (`Ok(0)` is a success). Branch with
       `isinstance(outcome, Ok)` or `match`, which also narrow the type for a

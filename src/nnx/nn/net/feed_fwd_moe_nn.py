@@ -30,6 +30,10 @@ from ..params.nn_moe_params import NNMoEParams
 
 
 class FeedFwdMoENN(nn.Module):
+    """Feed-forward classifier built from :class:`NNMoEParams` whose hidden
+    layers are top-k routed :class:`~nnx.nn.moe.MoELinear` experts; the head
+    stays a plain ``nn.Linear``. ``forward(x)`` returns logits."""
+
     _params: NNMoEParams
     _hidden: tuple[tuple[Callable[[torch.Tensor], torch.Tensor], float], ...]
 

@@ -186,3 +186,18 @@ def test_a_bfloat16_module_benchmarks_and_digests_its_weights():
     assert benchmarking._weights_digest(fp32) == expected.hexdigest()  # fp32 bytes hash as NumPy's
     report = benchmark_forward(net, torch.randn(3, 4, dtype=torch.bfloat16), warmup=1, repeats=2)
     assert isinstance(report, BenchmarkReport)
+
+
+def test_a_wrapper_subclass_without_its_own_dequantize_is_hashed_by_its_parts():
+    import torch
+    from torch.testing._internal.two_tensor import TwoTensor
+
+    from nnx.benchmarking import benchmark_forward
+
+    def digest(fill: float) -> str:
+        torch.manual_seed(0)  # the same Linear both times
+        module = torch.nn.Linear(2, 2)
+        module.register_buffer("pair", TwoTensor(torch.ones(2), torch.full((2,), fill)))
+        return benchmark_forward(module, torch.randn(3, 2), repeats=1).weights_digest
+
+    assert digest(1.0) == digest(1.0) != digest(2.0)  # finishes, and reads the inner tensors

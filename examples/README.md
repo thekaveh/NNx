@@ -428,7 +428,7 @@ Notes for section 2.4:
 | Example | What it demonstrates |
 |---|---|
 | `12_quantize_int8.py` | Post-training quantization (PTQ): train a feed-forward classifier, call `nnx.quantize.quantize_int8(model)` once, print the val-accuracy change and the state-dict sizes, and export the quantized model to ONNX. No calibration data, no retraining. Requires `pip install "thekaveh-nnx[quantize,onnx]"`. |
-| `15_qat_classifier.py` | Quantization-aware training (QAT 8da4w via torchao): combine `qat_train_step_factory` and `QATLifecycleCallback` to fake-quant during training, then real-quant on convert. Verifies the saved LAST checkpoint holds the CONVERTED int4 state (scales/zeros on disk) and reloads it with `NNModel.from_checkpoint`, which replays the recorded prepare→convert. Requires `pip install "thekaveh-nnx[quantize,onnx-dynamo]"`. |
+| `15_qat_classifier.py` | Quantization-aware training (QAT 8da4w via torchao): combine `qat_train_step_factory` and `QATLifecycleCallback` to fake-quant during training, then real-quant on convert. Verifies the saved LAST checkpoint holds the CONVERTED int4 state (scales/zeros on disk) and reloads it with `NNModel.from_checkpoint`, which replays the recorded prepare→convert. Requires `pip install "thekaveh-nnx[quantize]"`; `[onnx-dynamo]` enables the optional Phase-6 ONNX export, which is skipped without it. |
 
 Notes for section 2.5:
 

@@ -31,7 +31,7 @@ from torch.nn.utils import skip_init
 from .._validation import require_count
 from ..nn.enum.activations import Activations
 from ..nn.net.feed_fwd_nn import FeedFwdNN
-from ._utils import copy_param_roles, get_module, refuse_parametrized, set_module
+from ._utils import copy_param_roles, get_module, refuse_parametrized, set_module, stock_forward
 
 
 def widen(
@@ -76,10 +76,13 @@ def widen(
 
     Raises:
         KeyError: if ``layer_name`` is not a submodule of ``model``.
-        TypeError: if the named submodule is not :class:`nn.Linear`.
+        TypeError: if the named submodule is not :class:`nn.Linear` (or a
+            subclass with its own ``forward``).
         ValueError: if ``new_width`` is not an integer strictly greater
             than the current ``out_features``; if the target or a module on
-            its path carries a parametrization (``weight_norm``); if no downstream Linear exists; if
+            its path carries a parametrization, a legacy ``weight_norm`` /
+            ``spectral_norm`` hook or an unbaked prune mask; if no plain
+            downstream Linear exists; if
             a width-dependent op (Softmax, LayerNorm, BatchNorm, or any
             module outside the elementwise allowlist) sits between the
             target and its consumer; if the target lives in a container
@@ -93,8 +96,11 @@ def widen(
             leaves the model, its module identities and the RNG untouched.
     """
     source_layer = get_module(model, layer_name)
-    if not isinstance(source_layer, nn.Linear):
-        raise TypeError(f"widen target {layer_name!r} is {type(source_layer).__name__}, expected nn.Linear")
+    if not isinstance(source_layer, nn.Linear) or not stock_forward(source_layer, nn.Linear):
+        raise TypeError(
+            f"widen target {layer_name!r} is {type(source_layer).__name__}, expected nn.Linear "
+            "(a subclass with its own forward would be rebuilt without it)"
+        )
     refuse_parametrized(source_layer, f"widen target {layer_name!r}")
     cur = source_layer.out_features
     new_width = require_count(new_width, "new_width", owner="widen", minimum=1)
@@ -298,9 +304,14 @@ def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> st
             mod = parent._modules[key]
             name = f"{parent_path}.{key}" if parent_path else key
             if isinstance(mod, nn.Linear):
+                if not stock_forward(mod, nn.Linear):
+                    raise ValueError(
+                        f"widen() needs a plain nn.Linear consumer after {layer_name!r}; {name!r} is a "
+                        f"{type(mod).__name__} with its own forward"
+                    )
                 consumer_name = name
                 break
-            if not isinstance(mod, _ELEMENTWISE_MODULES):
+            if not stock_forward(mod, *_ELEMENTWISE_MODULES):
                 raise ValueError(
                     f"widen() cannot preserve the function through {type(mod).__name__} at {name!r} between "
                     f"{layer_name!r} and its consumer: only elementwise ops ({allowed}) are supported. "
@@ -336,7 +347,7 @@ def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> st
                 f"of FeedFwdNN hidden layer {idx} (between {layer_name!r} and {parent_path}.{idx + 1!r}): "
                 "it is width-dependent, so duplicating units changes its output."
             )
-        if not isinstance(parent[idx + 1], nn.Linear):
+        if not stock_forward(parent[idx + 1], nn.Linear):
             # An adapted or factorized layer (a LoRA wrapper, a low-rank
             # Sequential) cannot be rescaled: refuse before anything is copied.
             raise ValueError(

@@ -104,6 +104,13 @@ def copy_param_roles(src: nn.Module, dst: nn.Module) -> None:
     dst.train(src.training)
 
 
+def stock_forward(module: nn.Module, *bases: type[nn.Module]) -> bool:
+    """Whether ``module`` is one of ``bases`` and runs that base's own
+    ``forward``: a rebuilt plain module would drop a subclass's forward
+    (a fake-quantized Linear, a scaled Embedding) silently."""
+    return any(isinstance(module, base) and type(module).forward is base.forward for base in bases)
+
+
 def refuse_parametrized(module: nn.Module, what: str) -> None:
     """A ``weight_norm`` / ``spectral_norm`` (the ``torch.nn.utils.parametrize``
     forms or the legacy hooks) or an unbaked prune mask would be dropped
