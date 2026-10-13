@@ -506,3 +506,12 @@ def test_tensor_name_map_upcasts_bf16_weights_to_float32():
     tensors = map_tensors(net)
     assert all(arr.dtype == np.float32 for arr in tensors.values())
     assert np.array_equal(tensors["token_embd.weight"], net.tok_embed.weight.detach().float().numpy())
+
+
+def test_a_huge_integer_float_parameter_is_a_type_error():
+    """10**400 cannot become a float: refused as a non-finite number, not
+    an uncaught OverflowError."""
+    from nnx.interop.ollama import _validate_modelfile_inputs
+
+    with pytest.raises(TypeError, match="requires a finite number"):
+        _validate_modelfile_inputs("", None, {"temperature": 10**400})

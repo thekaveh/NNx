@@ -14076,7 +14076,7 @@ Returns:
 nnx.diffusion.objective.diffusion_objective(schedule: 'NoiseSchedule', *, seed: 'Optional[int]' = None, noise_fn: 'Optional[NoiseFn]' = None, nonfinite: 'str' = 'fail') -> 'DiffusionObjective'
 ```
 
-DDPM noise prediction as an objective (see `DiffusionObjective`) — the objective counterpart of `diffusion_train_step_factory`, which stays available (and unchanged) as the imperative step.
+DDPM noise prediction as an objective (see `DiffusionObjective`) — the objective counterpart of `diffusion_train_step_factory`, the imperative step.
 
 
 #### `nnx.diffusion.objective.DiffusionObjective`
@@ -14904,7 +14904,7 @@ No public description is currently available.
 nnx.paradigms.jepa_objective.jepa_objective(target_encoder: 'nn.Module', predictor: 'nn.Module', mask_fn: 'MaskFn', *, ema_momentum: 'float' = 0.996, nonfinite: 'str' = 'fail') -> 'JEPAObjective'
 ```
 
-I-JEPA latent prediction as an objective (see `JEPAObjective`) — the objective counterpart of `jepa_train_step_factory`, which stays available (and unchanged) as the imperative step.
+I-JEPA latent prediction as an objective (see `JEPAObjective`) — the objective counterpart of `jepa_train_step_factory`, the imperative step.
 
 
 #### `nnx.paradigms.jepa_objective.JEPAObjective`

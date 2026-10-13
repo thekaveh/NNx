@@ -75,8 +75,8 @@ def select_linear_slots(
     """Return the ``(parent, attr)`` slots of the ``nn.Linear`` layers to wrap.
 
     A slot is selected when any of its dotted paths matches any fnmatch
-    glob in ``name_patterns`` and its parent is not already a wrapper of
-    type ``skip_inside`` (so re-applying never wraps an existing ``.base``).
+    glob in ``name_patterns`` and no wrapper of a ``skip_inside`` type sits
+    on its ``.base`` chain (so re-applying never wraps an existing ``.base``).
     The root module itself is never a slot. Raises ``ValueError`` — before
     any mutation — when ``name_patterns`` is empty or a selected layer is
     registered in more than one slot.
@@ -101,15 +101,6 @@ def select_linear_slots(
         for slot, (parent, paths) in slots.items()
         if any(fnmatch.fnmatchcase(path, pattern) for path in paths for pattern in name_patterns)
     ]
-    # A wrapper in ``refuse_inside`` reads its .base as an nn.Linear
-    # (weight / bias) in forward: wrapping that base would break it.
-    foreign = [path for slot in matched if isinstance(slots[slot][0], refuse_inside) for path in slots[slot][1]]
-    if foreign:
-        wrapper = type(slots[next(s for s in matched if isinstance(slots[s][0], refuse_inside))][0]).__name__
-        raise ValueError(
-            f"{helper}: {_listed(foreign)} are the base of a {wrapper}, which reads its base's weight "
-            "directly; wrapping it would break that layer. Nothing was modified."
-        )
 
     def inside_skip(path: str) -> bool:
         """Whether a ``skip_inside`` wrapper sits anywhere in the chain of
@@ -122,11 +113,23 @@ def select_linear_slots(
                 return True
         return False
 
-    selected = [
+    # Already-adapted layers are skipped first: a re-application wraps
+    # nothing, so it cannot trip the refusal below.
+    matched = [
         slot
         for slot in matched
         if not isinstance(slots[slot][0], skip_inside) and not any(inside_skip(path) for path in slots[slot][1])
     ]
+    # A wrapper in ``refuse_inside`` reads its .base as an nn.Linear
+    # (weight / bias) in forward: wrapping that base would break it.
+    foreign = [path for slot in matched if isinstance(slots[slot][0], refuse_inside) for path in slots[slot][1]]
+    if foreign:
+        wrapper = type(slots[next(s for s in matched if isinstance(slots[s][0], refuse_inside))][0]).__name__
+        raise ValueError(
+            f"{helper}: {_listed(foreign)} are the base of a {wrapper}, which reads its base's weight "
+            "directly; wrapping it would break that layer. Nothing was modified."
+        )
+    selected = matched
 
     aliased: dict[int, list[str]] = {}
     for slot in selected:

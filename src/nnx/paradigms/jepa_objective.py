@@ -338,6 +338,6 @@ def jepa_objective(
     nonfinite: str = "fail",
 ) -> JEPAObjective:
     """I-JEPA latent prediction as an objective (see :class:`JEPAObjective`)
-    — the objective counterpart of :func:`jepa_train_step_factory`, which
-    stays available (and unchanged) as the imperative step."""
+    — the objective counterpart of :func:`jepa_train_step_factory`, the
+    imperative step."""
     return JEPAObjective(target_encoder, predictor, mask_fn, ema_momentum=ema_momentum, nonfinite=nonfinite)

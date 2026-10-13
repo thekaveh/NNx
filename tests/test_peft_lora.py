@@ -819,3 +819,18 @@ def test_reapplying_an_adapter_in_a_mixed_stack_is_a_no_op():
     before = repr(model)
     apply_lora_to(model, "*")
     assert repr(model) == before
+
+
+def test_reapplying_ia3_over_a_dora_stack_is_a_no_op():
+    """IA3 -> DoRA: re-applying IA3 skips the already-adapted Linears
+    instead of refusing to wrap the DoRA base it would never touch."""
+    from torch import nn
+
+    from nnx import apply_dora_to, apply_ia3_to
+
+    model = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2))
+    apply_ia3_to(model, "*")
+    apply_dora_to(model, "*")
+    before = repr(model)
+    apply_ia3_to(model, "*")
+    assert repr(model) == before

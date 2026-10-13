@@ -227,5 +227,5 @@ def diffusion_objective(
 ) -> DiffusionObjective:
     """DDPM noise prediction as an objective (see :class:`DiffusionObjective`)
     — the objective counterpart of :func:`diffusion_train_step_factory`,
-    which stays available (and unchanged) as the imperative step."""
+    the imperative step."""
     return DiffusionObjective(schedule, seed=seed, noise_fn=noise_fn, nonfinite=nonfinite)
