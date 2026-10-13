@@ -82,7 +82,7 @@ that already holds a profile's files is refused unless `--force` clears it:
 | 14 | `hash-mismatch` | load | an artifact's SHA-256 or size differs from the record, or a file is missing or unlisted; nothing is loaded |
 | 15 | `load-error` | load | ONNX Runtime could not create a session on the declared provider |
 | 16 | `mismatch` | parity | a raw logit is outside `atol + rtol·|native|` or not finite, or the output count, dtype or shape differs |
-| 17 | `input-contract` | parity | a valid batch was refused as an invalid argument (e.g. a static batch dimension), a wrong feature width was accepted, or no valid case was compared |
+| 17 | `input-contract` | parity | a valid batch was refused as an invalid argument (e.g. a static batch dimension), or a wrong feature width was accepted |
 | 18 | `runtime-error` | parity | the runtime failed on a case for any other reason |
 
 ## 4. The record

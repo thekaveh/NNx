@@ -511,3 +511,10 @@ def test_round_two_edges():
     _, half, _, _ = task.token_sums(logits.to(torch.bfloat16), targets, valid)
     reference = float(-F.log_softmax(logits.to(torch.bfloat16).double(), dim=-1).gather(1, targets[:, None]).sum())
     assert half == pytest.approx(reference, rel=1e-4, abs=1e-6) and exact > 0
+
+
+def test_a_task_state_without_its_vocab_size_is_a_task_error():
+    from nnx.lm_tasks import KIND, CausalLMTask, LMTaskError
+
+    with pytest.raises(LMTaskError, match="'vocab_size'"):
+        CausalLMTask.from_state({"kind": KIND})

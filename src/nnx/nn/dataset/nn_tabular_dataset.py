@@ -39,7 +39,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Subset, TensorDataset, random_split
 
-from ..._validation import require_batch_sizes
+from ..._validation import require_batch_sizes, require_count
 from ...data_splits import SplitIndices, SplitManifest
 from ...preprocessing import PreprocessingError, Standardizer, check_frame, dtype_name
 from ...provenance import IdentityRef
@@ -197,6 +197,10 @@ class NNTabularDataset(NNDatasetBase):
     standardizer: Optional[Standardizer] = field(init=False, default=None)
 
     def __post_init__(self):
+        if self.seed is not None:  # the split generator's seed domain
+            object.__setattr__(
+                self, "seed", require_count(self.seed, "seed", owner="NNTabularDataset", minimum=0, maximum=2**32 - 1)
+            )
         if not 0.0 <= self.val_proportion < 1.0:
             raise ValueError(f"val_proportion must be in [0, 1), got {self.val_proportion}")
         if not 0.0 <= self.test_proportion < 1.0:

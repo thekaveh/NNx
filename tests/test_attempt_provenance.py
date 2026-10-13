@@ -244,6 +244,20 @@ def test_provenance_that_is_not_a_json_object_is_unreadable_not_a_crash(tmp_path
         assert NNRun.load(run.id).provenance is None
 
 
+@pytest.mark.parametrize("field", ["data", "splits", "config"])
+def test_a_nested_manifest_field_of_the_wrong_shape_is_unreadable_not_a_crash(tmp_path, field):
+    run = _model().train(params=_params(1, data_id=f"nested-{field}"), provenance=PLAN)
+    path = os.path.join("runs", run.id, "provenance.json")
+    stored = json.load(open(path, encoding="utf-8"))
+    stored["manifest"][field] = ["not", "an", "object"]
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(stored, handle)
+    with pytest.raises(ValueError, match="JSON object"):
+        load_provenance(run.id)
+    with pytest.warns(RuntimeWarning, match="unreadable provenance ignored"):
+        assert NNRun.load(run.id).provenance is None
+
+
 def test_unreadable_provenance_never_breaks_loading_or_resuming(tmp_path):
     run = _model().train(params=_params(1, data_id="corrupt"), provenance=PLAN)
     path = os.path.join("runs", run.id, "provenance.json")

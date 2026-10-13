@@ -463,7 +463,7 @@ def test_a_tiny_scorer_trains_selects_by_named_ndcg_and_checkpoints_the_task():
 def test_ranking_metrics_need_the_ranking_eval_step():
     task = RankingTask(k=(2,), max_relevance=2)
     model = _scorer()
-    loader = [(torch.randn(4, D), torch.randn(4, 1))]
+    loader = [(torch.randn(4, D), torch.randint(0, 3, (4, 1)).float())]  # integer relevance grades
     with pytest.raises(RankingError, match="query-grouped metrics"):
         model.train(
             params=NNTrainParams(

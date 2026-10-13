@@ -471,3 +471,22 @@ def test_a_non_elementwise_loss_cannot_be_masked_but_scores_complete_batches():
     assert float(display) == pytest.approx(float(RowNorm()(output, _fixed([[0, 1], [4, 5]]))))
     with pytest.raises(TaskValidationError, match="cannot be masked"):
         adapter.loss_terms(RowNorm(), *adapter.prepare(output, _fixed([[0, math.nan], [4, 5]])))
+
+
+@pytest.mark.parametrize("target_dtype", [torch.bfloat16, torch.int64])
+def test_a_bfloat16_multilabel_batch_is_recorded(target_dtype):
+    """NumPy has no bfloat16: a bf16 output (and a bf16 or integer target
+    cast to it) is recorded instead of failing after the update."""
+    from nnx.tasks import task_adapter
+
+    output = torch.tensor([[2.0, -2.0, 1.0], [-1.0, 3.0, -3.0]]).bfloat16()
+    target = torch.tensor([[1, 0, 1], [0, 1, 1]]).to(target_dtype)
+    record = task_adapter(TaskSpec.multilabel(3)).record(output, target, loss=0.1)
+    assert record.accuracy == pytest.approx(0.5)  # exact-match rows: the first row only
+
+
+def test_a_task_state_without_its_kind_is_a_task_error():
+    from nnx.tasks import TaskValidationError
+
+    with pytest.raises(TaskValidationError, match="'kind'"):
+        TaskSpec.from_state({"version": 1})

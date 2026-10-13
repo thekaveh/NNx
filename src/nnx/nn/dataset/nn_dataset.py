@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import DataLoader, random_split
 
 from ..._optional import require
-from ..._validation import require_batch_sizes
+from ..._validation import require_batch_sizes, require_count
 from ...preprocessing import SplitView, describe_transform
 from .nn_dataset_base import NNDatasetBase
 
@@ -76,6 +76,10 @@ class NNDataset(NNDatasetBase):
     eval_transform: Optional[Callable] = None
 
     def __post_init__(self):
+        if self.seed is not None:  # the split generator's seed domain
+            object.__setattr__(
+                self, "seed", require_count(self.seed, "seed", owner="NNDataset", minimum=0, maximum=2**32 - 1)
+            )
         if not 0.0 <= self.val_proportion < 1.0:
             raise ValueError(f"val_proportion must be in [0, 1), got {self.val_proportion}")
         # Validate the request before the factories run (FIX-022): `None`

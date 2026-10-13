@@ -422,10 +422,13 @@ def build_model(config: Mapping[str, Any] = MODEL) -> Any:
             ),
             params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
         )
+    # FP32 whatever torch's default dtype: the profiles and records say so.
+    model.net.float()
     generator = torch.Generator().manual_seed(int(weights["seed"]))
     with torch.no_grad():
         for parameter in model.net.parameters():
-            parameter.copy_(torch.randn(parameter.shape, generator=generator) * float(weights["std"]))
+            draw = torch.randn(parameter.shape, generator=generator, dtype=torch.float32)
+            parameter.copy_(draw * float(weights["std"]))
     return model
 
 
@@ -439,7 +442,8 @@ def _weights_digest(module: torch.nn.Module) -> str:
 
 
 def _inputs(case: Mapping[str, Any]) -> torch.Tensor:
-    return torch.randn(*case["shape"], generator=torch.Generator().manual_seed(int(case["seed"])))
+    seed = torch.Generator().manual_seed(int(case["seed"]))
+    return torch.randn(*case["shape"], generator=seed, dtype=torch.float32)  # FP32, like the model
 
 
 # --- provenance ---------------------------------------------------------------------------------------------

@@ -926,3 +926,20 @@ def test_a_model_changed_in_place_or_by_a_failing_exporter_is_recorded_as_it_ran
     assert record["failure"] == "state-changed" and record["model_state"]["parameters"] is False
     assert "exporter gave up" in record["stages"]["export"]["detail"]["export"]["error"]
     assert exit_code({"profiles": [record]}) == EXIT_CODES["state-changed"]
+
+
+def test_the_profile_model_and_inputs_are_fp32_under_any_default_dtype():
+    """The records say FP32: the model and the case inputs are built in
+    float32 even when torch's default dtype is float64."""
+    from nnx.export_conformance import _inputs, build_model
+
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float64)
+    try:
+        model = build_model()
+        assert {p.dtype for p in model.net.parameters()} == {torch.float32}
+        assert _inputs({"shape": [2, 4], "seed": 0}).dtype == torch.float32
+    finally:
+        torch.set_default_dtype(previous)
+    fp32 = build_model()
+    assert all(torch.equal(a, b) for a, b in zip(model.net.parameters(), fp32.net.parameters()))

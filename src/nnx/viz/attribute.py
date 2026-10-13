@@ -99,7 +99,7 @@ def _attribution_to_figure(attr: torch.Tensor, x: torch.Tensor) -> go.Figure:
     before plotting so the result is always a 2-D heatmap.
     """
     go = require("plotly.graph_objects", "nnx.viz.attribute")
-    a = attr.detach().cpu()
+    a = attr.detach().cpu().float()  # NumPy has no bfloat16
     # Image-shaped inputs: (B, C, H, W) or (C, H, W) → mean over channels.
     if a.dim() == 4:
         a = a.mean(dim=1)[0]  # first sample, mean over channels

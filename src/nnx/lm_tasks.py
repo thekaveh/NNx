@@ -170,6 +170,8 @@ class CausalLMTask:
         unknown = sorted(set(state) - known - {"tokenizer"})
         if unknown:
             raise LMTaskError(f"a causal-LM task state has unknown keys {unknown}")
+        if "vocab_size" not in state:
+            raise LMTaskError("a causal-LM task state needs its 'vocab_size'")
         return CausalLMTask(**{k: state[k] for k in known - {"kind"} if k in state}, tokenizer=state.get("tokenizer"))
 
     # ---------- batches ----------

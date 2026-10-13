@@ -221,6 +221,8 @@ class TaskSpec:
         unknown = sorted(set(state) - _STATE_KEYS)
         if unknown:
             raise TaskValidationError(f"unknown TaskSpec key(s) {unknown}")
+        if "kind" not in state:
+            raise TaskValidationError("a TaskSpec state needs its 'kind'")
         return TaskSpec(
             kind=state["kind"],
             num_outputs=state.get("num_outputs"),
@@ -701,7 +703,8 @@ class _MultilabelAccumulator(TaskMetricAccumulator):
 
     def update(self, output, target, valid):
         prediction = self.adapter.decode(output).detach().cpu().numpy()
-        truth = target.detach().cpu().numpy()
+        # float32: NumPy has no bfloat16, and 0 / 1 / NaN are exact in it.
+        truth = target.detach().to(torch.float32).cpu().numpy()
         mask = valid.detach().cpu().numpy()
         n_labels = truth.shape[1]
         if self._tp is None:

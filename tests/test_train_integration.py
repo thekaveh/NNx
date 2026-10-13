@@ -2404,8 +2404,14 @@ def test_default_step_refuses_a_regression_loss_without_a_task(tmp_path, monkeyp
         train_loader=[(X, y)],
         optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
     )
+    refused = NNModel(net_params=net_params, params=mse)
+    before = {k: v.clone() for k, v in refused.net.state_dict().items()}
     with pytest.raises(ValueError, match="TaskSpec.regression"):
-        NNModel(net_params=net_params, params=mse).train(params=params)
+        refused.train(params=params)
+    # checked before the backward: the refused batch updated nothing
+    assert all(torch.equal(before[k], v) for k, v in refused.net.state_dict().items())
+    with pytest.raises(ValueError, match="TaskSpec.regression"):
+        refused.evaluate([(X, y)])
     runs = tmp_path / "runs"
     assert not runs.exists() or not [entry for entry in os.listdir(runs) if not entry.startswith(".")]
     with_task = replace(mse, task=TaskSpec.regression(1))

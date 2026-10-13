@@ -309,6 +309,13 @@ class ExperimentManifest:
 
     @staticmethod
     def from_state(state: Mapping[str, Any]) -> ExperimentManifest:
+        for key in ("data", "splits", "config"):
+            if state.get(key) is not None and not isinstance(state[key], Mapping):
+                raise ValueError(
+                    f"a provenance manifest's {key!r} must be a JSON object, got {type(state[key]).__name__}"
+                )
+        if state.get("labels") is not None and not isinstance(state["labels"], list):
+            raise ValueError(f"a provenance manifest's 'labels' must be a list, got {type(state['labels']).__name__}")
         return ExperimentManifest(
             task=state.get("task"),
             labels=state.get("labels"),
@@ -444,6 +451,9 @@ class Attempt:
 
     @staticmethod
     def from_state(state: Mapping[str, Any]) -> Attempt:
+        for key in ("parent", "last_committed", "error", "compile"):
+            if state.get(key) is not None and not isinstance(state[key], Mapping):
+                raise ValueError(f"an attempt record's {key!r} must be a JSON object, got {type(state[key]).__name__}")
         return Attempt(
             attempt_id=state["attempt_id"],
             fingerprint=state["fingerprint"],

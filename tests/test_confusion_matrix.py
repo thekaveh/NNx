@@ -81,3 +81,13 @@ def test_classification_report_keeps_a_named_class_absent_from_the_data():
     df = VisUtils.classification_report([0, 0, 2], [0, 2, 2], class_names=["a", "b", "c"])
     assert {"a", "b", "c"} <= set(df.index)
     assert df.loc["b", "support"] == 0 and df.loc["c", "support"] == 1
+
+
+def test_classification_report_scores_labels_that_are_not_class_indices():
+    """String or 1-based labels are scored as given (the absent-class
+    guard applies only to 0..n-1 class indices)."""
+    df = VisUtils.classification_report(["cat", "dog", "cat"], ["cat", "dog", "dog"], class_names=["cat", "dog"])
+    assert df.loc["cat", "support"] == 2 and df.loc["dog", "support"] == 1
+    assert df.loc["dog", "recall"] == 1.0
+    one_based = VisUtils.classification_report([1, 2, 2], [1, 2, 2], class_names=["x", "y"])
+    assert one_based.loc["x", "support"] == 1 and one_based.loc["y", "f1-score"] == 1.0

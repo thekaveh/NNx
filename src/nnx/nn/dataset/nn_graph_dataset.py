@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 import torch
 
 from ..._optional import require
-from ..._validation import require_batch_sizes
+from ..._validation import require_batch_sizes, require_count
 from ...seeding import dataloader_worker_init_fn
 from .nn_dataset_base import NNDatasetBase
 
@@ -118,6 +118,10 @@ class NNGraphDataset(NNDatasetBase):
     sampler: Literal["neighbor", "full"] = "neighbor"
 
     def __post_init__(self):
+        if self.seed is not None:  # the split generator's seed domain
+            object.__setattr__(
+                self, "seed", require_count(self.seed, "seed", owner="NNGraphDataset", minimum=0, maximum=2**32 - 1)
+            )
         if self.sampler not in ("neighbor", "full"):
             raise ValueError(f"sampler must be 'neighbor' or 'full', got {self.sampler!r}")
         # Validate the request before the dataset class is instantiated

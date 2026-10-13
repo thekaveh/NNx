@@ -980,6 +980,21 @@ def _classification_metric_tensors(
     return target, prediction
 
 
+def _check_scorable_target(loss_fn: torch.nn.Module, target: torch.Tensor) -> None:
+    """Without a task the default steps score classification (accuracy / F1
+    of the predictions), which continuous targets of a regression loss
+    cannot be: refuse them with the fix. The default training step checks
+    before its backward, so a refused batch updates nothing."""
+    regression_loss = isinstance(
+        loss_fn, (torch.nn.MSELoss, torch.nn.L1Loss, torch.nn.SmoothL1Loss, torch.nn.HuberLoss)
+    )
+    if regression_loss and target.is_floating_point() and not torch.equal(target, target.round()):
+        raise ValueError(
+            f"the default steps score classification and cannot score {type(loss_fn).__name__} targets: declare "
+            "the task, e.g. NNModelParams(task=TaskSpec.regression(...)), or pass train_step_fn / objective"
+        )
+
+
 def _classification_edp_for_loss(
     *,
     loss_fn: torch.nn.Module,
@@ -988,16 +1003,7 @@ def _classification_edp_for_loss(
     loss: float,
     extra_metrics: Optional[Mapping[str, Callable]],
 ) -> NNEvaluationDataPoint:
-    regression_loss = isinstance(
-        loss_fn, (torch.nn.MSELoss, torch.nn.L1Loss, torch.nn.SmoothL1Loss, torch.nn.HuberLoss)
-    )
-    if regression_loss and target.is_floating_point() and not torch.equal(target, target.round()):
-        # Without a task the default steps score classification (accuracy /
-        # F1 of the predictions), which continuous targets cannot be.
-        raise ValueError(
-            f"the default steps score classification and cannot score {type(loss_fn).__name__} targets: declare "
-            "the task, e.g. NNModelParams(task=TaskSpec.regression(...)), or pass train_step_fn / objective"
-        )
+    _check_scorable_target(loss_fn, target)
     metric_target, metric_prediction = _classification_metric_tensors(loss_fn, target, prediction)
     if metric_target.numel() == 0:
         return NNEvaluationDataPoint(
@@ -2107,6 +2113,8 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         else:
             # Every rank decides together — before any gradient collective.
             loss_value = _agreed_step_loss(ddp, terms, accumulation_state, should_step=should_step)
+        if adapter is None:
+            _check_scorable_target(model.loss_fn, terms.target)  # before any backward or update
         # FEAT-029: a compiled fit's backward may compile on first use; its
         # failure is recorded honestly (never retried).
         session = getattr(model, "_compile_session", None)
@@ -2261,6 +2269,7 @@ def _evaluate(
                 batch_n = int(Y.size(0))
                 # Aggregate predictions / labels across the entire loader so
                 # metrics are computed on the full eval set, not per-batch.
+                _check_scorable_target(model.loss_fn, Y)
                 metric_Y, metric_Y_hat = _classification_metric_tensors(model.loss_fn, Y, Y_hat)
                 if metric_Y.numel():
                     if bounded:

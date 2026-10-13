@@ -294,3 +294,16 @@ def test_training_cadence_follows_the_resolved_train_loader(tmp_path, monkeypatc
     assert ds.batch_sizes[0] == 10 and len(ds.train_loader) == 1 and len(run.idps) == 2
     ds, run = _train((3, None, None), "mini")
     assert ds.batch_sizes[0] == 3 and len(ds.train_loader) == 4 and len(run.idps) == 8
+
+
+@pytest.mark.parametrize("bad", [1.9, True, -1, 2**40])
+def test_a_split_seed_outside_the_generator_domain_is_refused(bad):
+    """The split seed is an integer in [0, 2**32), like NNTrainParams.seed:
+    1.9 or True no longer silently alias seed 1."""
+    from nnx.models import ModelSpec
+
+    with pytest.raises(ValueError, match="seed"):
+        NNTabularDataset(**_TABULAR, seed=bad)
+    with pytest.raises(ValueError, match="seed"):
+        ModelSpec("some-factory", seed=bad)
+    assert NNTabularDataset(**_TABULAR, seed=np.int64(3)).seed == 3

@@ -403,9 +403,19 @@ class VisUtils:
         from sklearn.metrics import classification_report as _sk_report
 
         target_names = [str(c) for c in class_names] if class_names is not None else None
-        # labels=...: as in confusion_matrix, a named class absent from the
-        # data keeps its row instead of shifting the names (or raising).
-        report_labels = list(range(len(class_names))) if class_names is not None else None
+        # labels=...: when the data holds class indices 0..n-1 (as in
+        # confusion_matrix), a named class absent from the data keeps its row
+        # instead of shifting the names (or raising). Other labels (strings,
+        # 1-based ids) are left to scikit-learn's own label ordering.
+        report_labels = None
+        if class_names is not None:
+            present = set(np.asarray(Y_true).ravel().tolist()) | set(np.asarray(Y_pred).ravel().tolist())
+            indices = set(range(len(class_names)))
+            if (
+                all(isinstance(v, (int, np.integer)) and not isinstance(v, bool) for v in present)
+                and present <= indices
+            ):
+                report_labels = sorted(indices)
         report = _sk_report(
             Y_true,
             Y_pred,
