@@ -307,3 +307,16 @@ def test_trainer_params_containers_are_checked_at_construction(bad):
     fields = {"optims": _TRAINER_OPTIMS, **bad}
     with pytest.raises(ValueError, match="NNTrainerParams"):
         NNTrainerParams(n_epochs=1, **fields)
+
+
+def test_enum_fields_refuse_plain_strings():
+    """A string entered state() and the run id, then failed far away as
+    "'str' object is not callable"."""
+    from nnx import NNOptimParams, NNParams
+
+    with pytest.raises(TypeError, match="activation"):
+        NNParams(input_dim=2, output_dim=2, hidden_dims=[2], activation="relu")
+    with pytest.raises(TypeError, match="activations"):
+        NNParams(input_dim=2, output_dim=2, hidden_dims=[2], activations=["relu"])
+    with pytest.raises(TypeError, match="NNOptimParams.name"):
+        NNOptimParams(name="adam", max_lr=0.1, momentum=(0.9, 0.999), weight_decay=0.0)

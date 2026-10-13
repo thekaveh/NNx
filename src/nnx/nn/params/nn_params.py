@@ -86,6 +86,12 @@ class NNParams:
         return self._dims
 
     def __post_init__(self):
+        # Enum fields are enum members: a plain string would enter state()
+        # and the run id, then fail as "'str' object is not callable".
+        if self.activation is not None and not isinstance(self.activation, Activations):
+            raise TypeError(f"NNParams.activation must be an Activations member, got {self.activation!r}")
+        if self.activations is not None and not all(isinstance(a, Activations) for a in self.activations):
+            raise TypeError(f"NNParams.activations must hold Activations members, got {list(self.activations)!r}")
         # Fail-fast on out-of-range numeric fields at construction time rather
         # than deep inside layer building. nn.Dropout / nn.Linear would raise
         # eventually for these, but far from the origin — surfacing the error

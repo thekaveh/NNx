@@ -172,6 +172,8 @@ class NNOptimParams:
     eps: float = _ADAM_EPS_DEFAULT
 
     def __post_init__(self):
+        if not isinstance(self.name, Optims):  # a string failed only when the optimizer was built
+            raise TypeError(f"NNOptimParams.name must be an Optims member, got {self.name!r}")
         _validate_optim_scalars(self, "NNOptimParams")
         # Adam betas in [0, 1); SGD momentum >= 0 (FIX-020).
         if isinstance(self.momentum, tuple):
