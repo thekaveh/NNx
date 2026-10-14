@@ -1,4 +1,4 @@
-"""Fitted classifier calibration (FEAT-007).
+"""Fitted classifier calibration.
 
 A classifier's softmax probabilities are often over- or under-confident.
 Temperature scaling fits one scalar ``T > 0`` on a held-out **calibration

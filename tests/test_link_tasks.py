@@ -209,6 +209,7 @@ def test_one_class_unavailable():
     task = LinkTask(split)
     _, run = _train(task, x, epochs=2)
     records = [idp for idp in run.idps if idp.val_edp is not None]
+    assert len(records) == 2  # one validation record per epoch: the checks below are not vacuous
     assert all("auroc" not in idp.val_edp.metrics and idp.val_edp.metrics["negatives"] == 0 for idp in records)
     assert all(not idp.selection.improved for idp in records)  # an unavailable AUROC never wins BEST
 
@@ -795,3 +796,85 @@ def test_saturated_logits_keep_an_exact_categorical_nll():
         assert record.loss == record.metrics["nll"] == pytest.approx(exact, rel=1e-12)
         assert record.metrics["accuracy"] == pytest.approx(1 / 3)
     assert link_metrics(prediction.logits, prediction.targets, from_logits=True)["nll"].value == record.loss
+
+
+def test_split_links_refuses_edge_categories_that_are_not_integers():
+    """split_links checks categories as LinkSplit does, never truncating 1.9 to 1."""
+    edges = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0)]
+    with pytest.raises(LinkTaskError, match="category"):
+        split_links(edges, 6, val=0.0, test=0.0, seed=0, edge_labels=[0, 1.9, 1, 0, 1, 0], categories=["a", "b"])
+
+
+@pytest.mark.parametrize("kwargs", [{"decoder": "mlp"}, {"decoder": "mlp", "width": 4, "outputs": 0}])
+def test_link_predictor_refuses_zero_dimensions(kwargs):
+    with pytest.raises(LinkTaskError, match="width|outputs"):
+        LinkPredictor(torch.nn.Identity(), **kwargs)
+
+
+def test_link_metrics_refuses_targets_outside_the_declared_domain():
+    with pytest.raises(LinkTaskError, match="binary targets"):
+        link_metrics([0.2, 0.9], [0, 2])
+    with pytest.raises(LinkTaskError, match="class indices"):
+        link_metrics([[0.5, 0.5], [0.1, 0.9]], [0, 2])
+    with pytest.raises(LinkTaskError, match="class indices"):
+        link_metrics([[0.5, 0.5], [0.1, 0.9]], [0, 0.5])
+
+
+def test_link_metrics_refuses_logits_passed_as_probabilities():
+    with pytest.raises(LinkTaskError, match="from_logits=True"):
+        link_metrics([5.0, -3.0], [1, 0])
+    with pytest.raises(LinkTaskError, match="from_logits=True"):
+        link_metrics([[2.0, -1.0], [0.1, 0.9]], [0, 1])
+    assert link_metrics([5.0, -3.0], [1, 0], from_logits=True)["accuracy"].value == 1.0
+
+
+def test_link_metrics_refuses_logits_it_cannot_score():
+    with pytest.raises(LinkTaskError, match="NaN"):
+        link_metrics([float("nan"), 1.0], [1, 1], from_logits=True)
+    with pytest.raises(LinkTaskError, match="NaN"):
+        link_metrics([[float("nan"), 1.0], [0.1, 0.9]], [0, 1], from_logits=True)
+    with pytest.raises(LinkTaskError, match="finite"):
+        link_metrics([[float("inf"), 1.0], [0.1, 0.9]], [0, 1], from_logits=True)
+    with pytest.raises(LinkTaskError, match="finite"):
+        link_metrics([[-float("inf"), -float("inf")], [0.1, 0.9]], [0, 1], from_logits=True)
+    # A -inf category mask in a row with a finite maximum scores exactly.
+    masked = link_metrics([[2.0, -float("inf"), 0.5], [0.1, 0.3, -float("inf")]], [0, 1], from_logits=True)
+    assert masked["nll"].value == pytest.approx(0.39978, abs=1e-5)
+    # Binary logits stay exact at any confidence, infinite ones included.
+    assert link_metrics([float("inf"), -float("inf")], [1, 0], from_logits=True)["bce"].value == 0.0
+
+
+def test_a_task_whose_training_negatives_cannot_fit_is_refused_at_construction():
+    edges = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3), (3, 4), (4, 5)]
+    split = split_links(edges, 6, val=1, test=1, seed=0)
+    with pytest.raises(LinkTaskError, match="training negatives requested"):
+        LinkTask(split, train_negatives=50)
+
+
+def test_a_repeated_message_edge_is_not_the_training_topology():
+    """A duplicated edge keeps the set of pairs but changes the aggregation."""
+    edge_index, x = _sbm()
+    task = LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=4))
+    (batch,) = list(task.loader("val", x, batch_size=10_000))
+    bad = batch.clone()
+    bad.edge_index = torch.cat([batch.edge_index, batch.edge_index[:, :1]], dim=1)
+    with pytest.raises(LinkTaskError, match="1 repeated edge"):
+        task.check_batch(bad)
+
+
+def test_a_link_predictor_takes_float64_node_features_like_the_graph_classifier():
+    encoder = torch.nn.Linear(3, 4)  # float32 parameters
+    predictor = LinkPredictor(_LinearEncoder(encoder))
+    logits = predictor(
+        torch.randn(5, 3, dtype=torch.float64), torch.tensor([[0, 1], [1, 2]]), torch.tensor([[0, 3], [1, 4]])
+    )
+    assert logits.dtype == torch.float32 and logits.shape == (2,)
+
+
+class _LinearEncoder(torch.nn.Module):
+    def __init__(self, linear):
+        super().__init__()
+        self.linear = linear
+
+    def forward(self, x, edge_index):
+        return self.linear(x)

@@ -3,20 +3,17 @@ classification val pass for paradigms it can't score.
 
 Without a task, ``NNModel.train`` computes argmax + sklearn
 classification metrics in BOTH its default train step and its built-in val
-pass. Plain regression and multilabel problems no longer need custom
+pass. Plain regression and multilabel problems do not need custom
 steps: declare ``NNModelParams(task=TaskSpec.regression(...))`` (or
 ``.multilabel``) and the default step, ``evaluate()`` and ``predict()``
 score continuous values with MSE / MAE — see
-``examples/regression_task.py``. Paradigms no task adapter covers (LM
-perplexity, DPO margins, a bespoke regression schedule like the one below)
-still use the pair:
+``examples/regression_task.py``. Paradigms no task adapter covers (DPO
+margins, a bespoke regression schedule like the one below) still use the
+pair:
 
   1. A custom ``train_step_fn`` (:class:`TrainStepContext` in, batch EDP
      out) — here the standard MSE forward/backward with MAE riding in
-     ``extra``. Before ``eval_step_fn`` existed this was the END of the
-     story: the built-in val pass still ran classification metrics, so
-     the only workaround was training with ``val_loader=None`` and
-     losing validation entirely.
+     ``extra``.
   2. A custom ``eval_step_fn`` (:class:`EvalStepContext` in — frozen
      bundle of ``model``, ``val_loader``, ``extra_metrics``,
      ``epoch_idx`` — one :class:`NNEvaluationDataPoint` out). It runs
@@ -137,21 +134,18 @@ def regression_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
 def regression_eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
     """Sample-weighted val MSE + MAE over the full val loader.
 
-    Runs under ``torch.no_grad()`` (NNModel.train wraps the call), but we
-    still flip eval mode so dropout/batch-norm behave, and restore train
-    mode after — the next epoch continues training.
+    NNModel.train runs the call under ``torch.no_grad()`` with the net in
+    eval mode (dropout off, batch-norm statistics frozen) and restores every
+    submodule's mode afterwards, so the step only iterates and aggregates.
     """
-    net = ctx.model.net
-    was_training = net.training
-    net.eval()
+    net, device = ctx.model.net, ctx.model.device
     se_sum, ae_sum, n = 0.0, 0.0, 0
     for X, Y in ctx.val_loader:
+        X, Y = X.to(device), Y.to(device)
         pred = net(X)
         se_sum += float(F.mse_loss(pred, Y, reduction="sum"))
         ae_sum += float(F.l1_loss(pred, Y, reduction="sum"))
         n += Y.numel()
-    if was_training:
-        net.train()
     mse, mae = se_sum / n, ae_sum / n
     # The classification fields are meaningless for regression — leave them
     # None and carry the real numbers in loss/error/extra.
@@ -200,7 +194,7 @@ def nonfinite_metric_workflow() -> dict:
 
     def scripted_eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
         error, loss = scripted_val[ctx.epoch_idx]
-        return NNEvaluationDataPoint(f1=0.0, recall=0.0, accuracy=0.0, precision=0.0, loss=loss, error=error)
+        return NNEvaluationDataPoint(loss=loss, error=error)
 
     train_signal: dict[int, float] = {}
 

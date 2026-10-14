@@ -135,3 +135,12 @@ def test_expand_embedding_does_not_advance_global_rng():
     expand_embedding(old, new_num_embeddings=15, init="zeros")
     expand_embedding(old, new_num_embeddings=15, init="copy_mean")
     assert torch.equal(torch.get_rng_state(), state)
+
+
+def test_expand_embedding_keeps_a_frozen_source_frozen():
+    emb = nn.Embedding(4, 3)
+    emb.weight.requires_grad_(False)
+    emb.eval()
+    new_emb, _ = expand_embedding(emb, new_num_embeddings=6)
+    assert not new_emb.weight.requires_grad
+    assert not new_emb.training

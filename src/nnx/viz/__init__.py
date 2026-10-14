@@ -5,9 +5,10 @@ matrices, t-SNE of checkpoint logits). This subpackage handles the
 model itself — parameter tables, weight distributions, activation
 maps, and Netron-friendly ONNX graph export.
 
-Both subpackages return Plotly `Figure` objects (or, in the case of
-`summary`, the printable `torchinfo.ModelStatistics`) so callers can
-compose them into dashboards or notebook layouts.
+The plotting helpers return Plotly `Figure` objects so callers can
+compose them into dashboards or notebook layouts; `summary` returns the
+printable `torchinfo.ModelStatistics`, `attribute` an
+`(attribution, Figure)` pair and `netron_export` the written path.
 """
 
 from .activation import activation_map

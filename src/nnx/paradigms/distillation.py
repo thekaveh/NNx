@@ -26,12 +26,21 @@ stays one.
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn.functional as F
 
-from .._metrics import classification_edp
-from .._step_helpers import finalize_step, softened_kl
-from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
+from .._step_helpers import finalize_step, imperative_step, predicted_labels, require_row_logits, softened_kl
+from ..nn.nn_model import (
+    NNModel,
+    TrainStepContext,
+    TrainStepFn,
+    _check_scorable_target,
+    _classification_edp_for_loss,
+    _loss_input,
+    _single_input_batch,
+)
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
 
@@ -41,8 +50,8 @@ def _check_kd_weights(alpha: float, temperature: float) -> None:
     :func:`kd_train_step_factory` and ``nnx.objectives.KDObjective``."""
     if not (0.0 <= alpha <= 1.0):
         raise ValueError(f"alpha must be in [0, 1], got {alpha}")
-    if temperature <= 0:
-        raise ValueError(f"temperature must be positive, got {temperature}")
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError(f"temperature must be positive and finite, got {temperature}")
 
 
 def _freeze_teacher(teacher: NNModel) -> None:
@@ -93,6 +102,10 @@ def kd_train_step_factory(
 
     Raises:
         ValueError: if ``alpha`` is not in [0, 1], or ``temperature`` ≤ 0.
+            At the first step: a single-logit head with ``alpha > 0`` (no
+            class distribution to distill), or a teacher of another shape.
+        TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
+            records train through ``TeacherDataset.objective()``).
     """
     _check_kd_weights(alpha, temperature)
     _freeze_teacher(teacher)
@@ -106,6 +119,7 @@ def kd_train_step_factory(
         X, Y = _single_input_batch(m, ctx.batch, who="kd_train_step_factory")
 
         student_logits = m._net_forward((X,), {})
+        require_row_logits(student_logits, "distillation")
         with torch.no_grad():
             # Teacher might live on a different device; migrate the
             # input into its frame for the forward pass. Cheap when
@@ -114,19 +128,26 @@ def kd_train_step_factory(
 
         # KL(teacher || student) with both softened by T — the standard
         # Hinton direction (see softened_kl for the F.kl_div contract).
-        soft_loss = softened_kl(student_logits, teacher_logits, temperature)
-        hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y)
+        # alpha=0 is plain supervised training: no soft term (a binary head has none).
+        soft_loss = softened_kl(student_logits, teacher_logits, temperature) if alpha > 0 else 0.0
+        # alpha=1 is pure distillation: no hard term (an all-ignored batch would make it NaN).
+        hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y) if alpha < 1 else 0.0
         loss = alpha * soft_loss + (1.0 - alpha) * hard_loss
+        assert isinstance(loss, torch.Tensor)  # 0 <= alpha <= 1: at least one term is a tensor
+        _check_scorable_target(
+            m.loss_fn, Y, paradigm="distillation"
+        )  # before the update: a refused batch changes nothing
         loss_val = finalize_step(loss, ctx, paradigm="distillation")
 
-        return classification_edp(
-            Y=Y,
-            Y_hat=student_logits.argmax(dim=-1),
+        return _classification_edp_for_loss(
+            loss_fn=m.loss_fn,
+            target=Y,
+            prediction=predicted_labels(m.loss_fn, student_logits),
             loss=loss_val,
             extra_metrics=ctx.extra_metrics,
         )
 
-    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
+    return full_precision_only(imperative_step(step, paradigm="kd"))  # finalize_step: full precision
 
 
 def feature_kd_train_step_factory(
@@ -179,14 +200,17 @@ def feature_kd_train_step_factory(
         ValueError: if ``alpha`` or ``beta`` is not in [0, 1], if
             ``temperature`` ≤ 0, or if ``auxiliary_layers`` is empty.
             On the first batch, if any paired teacher/student
-            activation shapes disagree.
+            activation shapes disagree, or if the head has a single logit
+            and ``alpha > 0`` (no class distribution to distill).
+        TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
+            records train through ``TeacherDataset.objective()``).
     """
     if not (0.0 <= alpha <= 1.0):
         raise ValueError(f"alpha must be in [0, 1], got {alpha}")
     if not (0.0 <= beta <= 1.0):
         raise ValueError(f"beta must be in [0, 1], got {beta}")
-    if temperature <= 0:
-        raise ValueError(f"temperature must be positive, got {temperature}")
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError(f"temperature must be positive and finite, got {temperature}")
     if not auxiliary_layers:
         raise ValueError(
             "auxiliary_layers must be a non-empty mapping of teacher_layer_name -> student_layer_name; got empty dict"
@@ -240,6 +264,7 @@ def feature_kd_train_step_factory(
                 handles.append(s_layer.register_forward_hook(_s_hook))
 
             student_logits = m._net_forward((X,), {})
+            require_row_logits(student_logits, "feature distillation")
             with torch.no_grad():
                 # Teacher might live on a different device; migrate the
                 # input into its frame for the forward pass.
@@ -270,16 +295,20 @@ def feature_kd_train_step_factory(
         # to how many pairs the user provided.
         feature_loss = feature_loss / len(auxiliary_layers)
 
-        soft_loss = softened_kl(student_logits, teacher_logits, temperature)
-        hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y)
+        # alpha=0 is plain supervised training: no soft term (a binary head has none).
+        soft_loss = softened_kl(student_logits, teacher_logits, temperature) if alpha > 0 else 0.0
+        # alpha=1 is pure distillation: no hard term (an all-ignored batch would make it NaN).
+        hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y) if alpha < 1 else 0.0
         loss = alpha * soft_loss + beta * feature_loss + (1.0 - alpha) * hard_loss
+        _check_scorable_target(m.loss_fn, Y, paradigm="feature distillation")
         loss_val = finalize_step(loss, ctx, paradigm="feature_distillation")
 
-        return classification_edp(
-            Y=Y,
-            Y_hat=student_logits.argmax(dim=-1),
+        return _classification_edp_for_loss(
+            loss_fn=m.loss_fn,
+            target=Y,
+            prediction=predicted_labels(m.loss_fn, student_logits),
             loss=loss_val,
             extra_metrics=ctx.extra_metrics,
         )
 
-    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
+    return full_precision_only(imperative_step(step, paradigm="feature_kd"))  # finalize_step: full precision

@@ -11,8 +11,8 @@ Pipeline:
   4. Compare:
      - Total param count before vs after.
      - Validation accuracy before vs after.
-  5. Briefly fine-tune the surgically modified model and verify accuracy
-     recovers.
+  5. Briefly fine-tune the surgically modified model and print its
+     refined accuracy.
 
 Note: `low_rank_factorize` takes a `nn.Linear` directly and returns a
 `nn.Sequential` of two Linears. The caller is responsible for swapping
@@ -30,9 +30,8 @@ creating the optimizer.
 ``widen`` primitive: it shows eval-mode parity through a direct Linear and
 through an elementwise activation, the rejection of a width-dependent
 Softmax boundary (source left untouched), and the honest reconstruction
-path — widen ``model.net``, rebuild the *immutable params* with
-``dataclasses.replace`` so the new width and every per-layer override stay
-aligned, load the widened state into a fresh correctly-described
+path — widen ``model.net``, adopt the ``params`` that ``widen`` returns
+(the new width, every per-layer override kept), load the widened state into a fresh correctly-described
 ``NNModel``, train with a new optimizer, and reload BEST.
 
 ``deepen_override_workflow`` below is the ``deepen`` companion: starting
@@ -50,7 +49,7 @@ right after the site, dotted-path consumers (``get_submodule``,
 a raw ``state_dict`` round-trips into an equivalently deepened fresh model.
 
 ``recipe_reconstruction_workflow`` below records the topology change
-instead (FEAT-016, ``nnx.transforms``): a ``TransformRecipe`` of LoRA on one
+instead (``nnx.transforms``): a ``TransformRecipe`` of LoRA on one
 Linear then a rank-4 SVD factorization of another is validated (an
 optimizer built *before* it is refused with a rebuild instruction),
 materialized, trained a few steps with an optimizer built *after* it, and
@@ -124,13 +123,11 @@ def widen_supported_workflow() -> dict:
     2. ``Linear -> Softmax -> Linear``: rejected with a ``ValueError``
        naming the width-dependent op; the source model is untouched.
     3. A ``FeedFwdNN`` model with per-layer activation overrides: widen
-       ``layers.0``, rebuild the params with ``dataclasses.replace`` (new
-       width, overrides preserved), load the widened state into a fresh
+       ``layers.0``, adopt the params ``widen`` returns (new width,
+       overrides preserved), load the widened state into a fresh
        ``NNModel``, verify parity, train one epoch with a new optimizer
        and reload the BEST checkpoint for a finite evaluation.
     """
-    from dataclasses import replace
-
     from nnx import Checkpoints, NNCheckpoint
 
     set_seed(0)
@@ -165,8 +162,8 @@ def widen_supported_workflow() -> dict:
     model = NNModel(net_params=net_params, params=model_params)
     model.net.eval()
     wider_net = widen(model.net, layer_name="layers.0", new_width=12)
-    rebuilt_params = replace(net_params, hidden_dims=[12, 6])  # width changes; activations stay aligned
-    assert rebuilt_params.activation_for(0) is Activations.TANH
+    rebuilt_params = wider_net.params  # widen records the new width; the overrides stay aligned
+    assert list(rebuilt_params.hidden_dims) == [12, 6] and rebuilt_params.activation_for(0) is Activations.TANH
     refined = NNModel(net_params=rebuilt_params, params=model_params)
     refined.net.load_state_dict(wider_net.state_dict())
     refined.net.eval()
@@ -437,7 +434,7 @@ def recipe_reconstruction_workflow() -> dict:
         optimizer.step()
 
     idp = NNIterationDataPoint(
-        lr=1e-2, iter_idx=4, epoch_idx=0, batch_idx=4, train_edp=NNEvaluationDataPoint(loss=float(loss))
+        lr=1e-2, iter_idx=4, epoch_idx=0, batch_idx=4, train_edp=NNEvaluationDataPoint(loss=float(loss.detach()))
     )
     checkpoint = NNCheckpoint(
         idp=idp,
@@ -519,11 +516,12 @@ def main() -> None:
     model.net.layers[1] = factored
     print(f"Surgically reduced rank: 8 (max was {min(target_linear.in_features, target_linear.out_features)})")
     print(f"Post-surgery params:    {_param_count(model.net):,}")
-    print(f"Post-surgery val acc:    {_val_acc(model.net, val_loader):.3f}  # expect drop before refinement")
+    print(f"Post-surgery val acc:    {_val_acc(model.net, val_loader):.3f}")  # a drop is expected before refinement
 
     print("─── Phase 3: refine to recover accuracy ───")
-    # Topology-changing surgery no longer matches net_params, so use a
-    # manual refinement loop and export_state_dict() for persistence.
+    # Topology-changing surgery no longer matches net_params, so refine with
+    # a manual loop. To persist a reloadable result, apply the surgery through
+    # an nnx.transforms recipe (see recipe_reconstruction_workflow above).
     optimizer = torch.optim.Adam(model.net.parameters(), lr=5e-3)
     loss_fn = torch.nn.CrossEntropyLoss()
     model.net.train()

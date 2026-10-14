@@ -21,15 +21,17 @@ correctness contract every test for this primitive should check first.
 from __future__ import annotations
 
 import copy
-from typing import Optional, cast
+from dataclasses import replace
+from typing import Any, Optional, cast
 
 import torch
 from torch import nn
 from torch.nn.utils import skip_init
 
+from .._validation import require_count
 from ..nn.enum.activations import Activations
 from ..nn.net.feed_fwd_nn import FeedFwdNN
-from ._utils import copy_param_roles, get_module, set_module
+from ._utils import copy_param_roles, get_module, refuse_parametrized, set_module, stock_forward
 
 
 def widen(
@@ -74,23 +76,34 @@ def widen(
 
     Raises:
         KeyError: if ``layer_name`` is not a submodule of ``model``.
-        TypeError: if the named submodule is not :class:`nn.Linear`.
-        ValueError: if ``new_width`` is not strictly greater than the
-            current ``out_features``; if no downstream Linear exists; if
+        TypeError: if the named submodule is not :class:`nn.Linear` (or a
+            subclass with its own ``forward``).
+        ValueError: if ``new_width`` is not an integer strictly greater
+            than the current ``out_features``; if the target or a module on
+            its path carries a parametrization, a legacy ``weight_norm`` /
+            ``spectral_norm`` hook or an unbaked prune mask; if no plain
+            downstream Linear exists; if
             a width-dependent op (Softmax, LayerNorm, BatchNorm, or any
             module outside the elementwise allowlist) sits between the
             target and its consumer; if the target lives in a container
             other than ``nn.Sequential`` / ``FeedFwdNN.layers`` (module
-            registration order is not data flow); or if the target or
-            its consumer is registered under more than one path (an
-            alias used in several places). Validation runs on the source
+            registration order is not data flow), or in a subclass with
+            its own forward or a container with hooks; if a module on the
+            path from the target to its consumer has hooks; or if the
+            target or its consumer is registered under more than one
+            path (an alias used in several places). Validation runs on the source
             before anything is copied or allocated, so a rejected call
             leaves the model, its module identities and the RNG untouched.
     """
     source_layer = get_module(model, layer_name)
-    if not isinstance(source_layer, nn.Linear):
-        raise TypeError(f"widen target {layer_name!r} is {type(source_layer).__name__}, expected nn.Linear")
+    if not isinstance(source_layer, nn.Linear) or not stock_forward(source_layer, nn.Linear):
+        raise TypeError(
+            f"widen target {layer_name!r} is {type(source_layer).__name__}, expected nn.Linear "
+            "(a subclass with its own forward would be rebuilt without it)"
+        )
+    refuse_parametrized(source_layer, f"widen target {layer_name!r}")
     cur = source_layer.out_features
+    new_width = require_count(new_width, "new_width", owner="widen", minimum=1)
     if new_width <= cur:
         raise ValueError(f"new_width must be > current out_features ({cur}); got {new_width}")
     # Prove the target→consumer path on the SOURCE before copying or
@@ -184,6 +197,18 @@ def widen(
     copy_param_roles(down_layer, new_down_layer)
     set_module(new_model, down_name, new_down_layer)
 
+    # Keep a FeedFwdNN owner's configuration aligned with its layers, as
+    # deepen does (FIX-006): params.hidden_dims records the new width, so
+    # FeedFwdNN(owner.params) rebuilds the widened topology.
+    owner_path, _, index = layer_name.rpartition(".")
+    owner_path, _, container = owner_path.rpartition(".")
+    owner = new_model if not owner_path else new_model.get_submodule(owner_path)
+    if container == "layers" and isinstance(owner, FeedFwdNN) and index.isdigit():
+        hidden = list(owner.params.hidden_dims or [])
+        if int(index) < len(hidden):
+            hidden[int(index)] = new_width
+            cast(Any, owner).params = replace(owner.params, hidden_dims=hidden)
+
     return new_model
 
 
@@ -214,6 +239,37 @@ def _registered_paths(model: nn.Module, target: nn.Module) -> list[str]:
     return [name for name, mod in model.named_modules(remove_duplicate=False) if mod is target]
 
 
+def _has_hooks(module: nn.Module) -> bool:
+    return any((module._forward_hooks, module._forward_pre_hooks, module._backward_hooks, module._backward_pre_hooks))
+
+
+def _refuse_unproven_container(parent: nn.Module, where: str) -> None:
+    """A container whose execution order is not its registration order: a
+    subclass with its own forward, or hooks on the container itself."""
+    stock = nn.Sequential.forward if isinstance(parent, nn.Sequential) else None
+    own_forward = stock is not None and type(parent).forward is not stock
+    if own_forward or _has_hooks(parent):
+        raise ValueError(
+            f"widen() cannot prove the data flow of {where!r} ({type(parent).__name__}): a container with its "
+            "own forward or hooks may transform between a layer and its consumer"
+        )
+
+
+def _refuse_hooked_path(parent: nn.Module, keys: list[str], where: str) -> None:
+    """Hooks on the target, the modules between it and its consumer, or the
+    consumer could transform the widened activations: refuse them."""
+    for key in keys:
+        child = parent._modules[key]
+        if child is not None:
+            refuse_parametrized(child, f"widen(): {where!r} path module {key!r}")
+    hooked = [key for key in keys if (child := parent._modules[key]) is not None and _has_hooks(child)]
+    if hooked:
+        raise ValueError(
+            f"widen() cannot prove the data flow of {where!r}: hooked modules on the path from the layer to its "
+            f"consumer ({hooked}) may transform between them"
+        )
+
+
 def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> str:
     """Return the qualified name of the Linear that consumes ``layer``'s
     output, or raise ``ValueError`` when the path cannot be proven to be
@@ -236,6 +292,11 @@ def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> st
     parent = model if not parent_path else get_module(model, parent_path)
     allowed = ", ".join(t.__name__ for t in _ELEMENTWISE_MODULES)
 
+    if isinstance(parent, (nn.Sequential, nn.ModuleList)):
+        # Registration order proves the data flow only for the stock
+        # forward: a subclass's own forward or a hook could transform
+        # between the layer and its consumer (deepen refuses the same).
+        _refuse_unproven_container(parent, parent_path or "<root>")
     if isinstance(parent, nn.Sequential):
         keys = list(parent._modules)
         consumer_name: Optional[str] = None
@@ -243,9 +304,14 @@ def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> st
             mod = parent._modules[key]
             name = f"{parent_path}.{key}" if parent_path else key
             if isinstance(mod, nn.Linear):
+                if not stock_forward(mod, nn.Linear):
+                    raise ValueError(
+                        f"widen() needs a plain nn.Linear consumer after {layer_name!r}; {name!r} is a "
+                        f"{type(mod).__name__} with its own forward"
+                    )
                 consumer_name = name
                 break
-            if not isinstance(mod, _ELEMENTWISE_MODULES):
+            if not stock_forward(mod, *_ELEMENTWISE_MODULES):
                 raise ValueError(
                     f"widen() cannot preserve the function through {type(mod).__name__} at {name!r} between "
                     f"{layer_name!r} and its consumer: only elementwise ops ({allowed}) are supported. "
@@ -257,10 +323,12 @@ def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> st
                 f"no downstream nn.Linear found after {layer_name!r} — widen() needs a directly-connected "
                 "Linear to rescale."
             )
+        consumer_key = consumer_name.rpartition(".")[2]
+        _refuse_hooked_path(parent, keys[keys.index(attr) : keys.index(consumer_key) + 1], parent_path or "<root>")
     elif isinstance(parent, nn.ModuleList) and parent_path:
         owner_path, _, list_attr = parent_path.rpartition(".")
         owner = model if not owner_path else get_module(model, owner_path)
-        if not (isinstance(owner, FeedFwdNN) and list_attr == "layers"):
+        if not (isinstance(owner, FeedFwdNN) and list_attr == "layers") or type(owner).forward is not FeedFwdNN.forward:
             raise ValueError(
                 f"widen() can only infer the consumer of a Linear inside nn.Sequential or FeedFwdNN.layers, "
                 f"where the execution order is proven; {layer_name!r} lives in {type(owner).__name__}.{list_attr} "
@@ -279,6 +347,14 @@ def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> st
                 f"of FeedFwdNN hidden layer {idx} (between {layer_name!r} and {parent_path}.{idx + 1!r}): "
                 "it is width-dependent, so duplicating units changes its output."
             )
+        if not stock_forward(parent[idx + 1], nn.Linear):
+            # An adapted or factorized layer (a LoRA wrapper, a low-rank
+            # Sequential) cannot be rescaled: refuse before anything is copied.
+            raise ValueError(
+                f"widen() needs a plain nn.Linear consumer after {layer_name!r}; {parent_path}.{idx + 1} is a "
+                f"{type(parent[idx + 1]).__name__}"
+            )
+        _refuse_hooked_path(parent, [str(idx), str(idx + 1)], parent_path)
         consumer_name = f"{parent_path}.{idx + 1}"
     else:
         raise ValueError(

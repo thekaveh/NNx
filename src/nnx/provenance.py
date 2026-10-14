@@ -1,4 +1,4 @@
-"""Versioned experiment provenance manifests (FEAT-019).
+"""Versioned experiment provenance manifests.
 
 A run has four distinct identities, and this module adds the two that were
 missing:
@@ -43,11 +43,12 @@ import math
 import numbers
 import os
 import uuid
-import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional, Union
+
+import numpy as np
 
 from ._config import _canonical_json
 
@@ -73,7 +74,7 @@ FORMAT = "nnx.provenance/1"
 """Format version, part of every hashed document."""
 
 # NNTrainParams.state() keys that describe one attempt, not the plan.
-_ATTEMPT_ONLY_TRAIN_KEYS = ("n_epochs", "parent_run_id", "parent_checkpoint")
+_ATTEMPT_ONLY_TRAIN_KEYS = ("n_epochs", "resume_epochs", "parent_run_id", "parent_checkpoint")
 
 MANIFEST_FILE = "provenance.json"
 ATTEMPT_FILE = "attempt.json"
@@ -86,8 +87,12 @@ ATTEMPT_STATUSES = ("running", "completed", "failed", "cancelled")
 def _canonical(value: Any, path: str) -> Any:
     if isinstance(value, IdentityRef):
         return value.state()
-    if value is None or isinstance(value, (bool, str)):
+    if value is None or isinstance(value, bool):
         return value
+    if isinstance(value, str):
+        return str(value)  # a NumPy string is a str subclass, not JSON / YAML-safe as such
+    if isinstance(value, np.bool_):
+        return bool(value)
     if isinstance(value, numbers.Integral):
         return int(value)
     if isinstance(value, numbers.Real):
@@ -100,7 +105,7 @@ def _canonical(value: Any, path: str) -> Any:
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError(f"{path}: mapping keys must be strings, got {key!r}")
-            out[key] = _canonical(item, f"{path}.{key}")
+            out[str(key)] = _canonical(item, f"{path}.{key}")
         return out
     if isinstance(value, (list, tuple)):
         return [_canonical(item, f"{path}[{index}]") for index, item in enumerate(value)]
@@ -280,11 +285,16 @@ class ExperimentManifest:
         object.__setattr__(self, "data", _FrozenConfig(_refs(self.data, owner="data")))
         object.__setattr__(self, "splits", _FrozenConfig(_refs(self.splits, owner="splits")))
         if self.labels is not None:
-            if isinstance(self.labels, str) or not all(isinstance(label, str) for label in self.labels):
+            if isinstance(self.labels, (str, bytes)):
                 raise TypeError(f"labels must be a sequence of strings, got {self.labels!r}")
-            object.__setattr__(self, "labels", tuple(self.labels))
+            labels = tuple(self.labels)  # once: a one-shot iterable would be consumed by the check
+            if not all(isinstance(label, str) for label in labels):
+                raise TypeError(f"labels must be a sequence of strings, got {self.labels!r}")
+            object.__setattr__(self, "labels", tuple(str(label) for label in labels))
         # Validate (rejecting anything not JSON-like, by path) and copy into
         # immutable form: the caller's dicts can no longer change the plan.
+        if self.config is None:  # from_state reads a missing config as {}: one fingerprint for both
+            object.__setattr__(self, "config", {})
         for name in ("task", "model", "objective", "config"):
             object.__setattr__(self, name, _freeze(_canonical(getattr(self, name), f"$.{name}")))
 
@@ -309,6 +319,13 @@ class ExperimentManifest:
 
     @staticmethod
     def from_state(state: Mapping[str, Any]) -> ExperimentManifest:
+        for key in ("data", "splits", "config"):
+            if state.get(key) is not None and not isinstance(state[key], Mapping):
+                raise ValueError(
+                    f"a provenance manifest's {key!r} must be a JSON object, got {type(state[key]).__name__}"
+                )
+        if state.get("labels") is not None and not isinstance(state["labels"], list):
+            raise ValueError(f"a provenance manifest's 'labels' must be a list, got {type(state['labels']).__name__}")
         return ExperimentManifest(
             task=state.get("task"),
             labels=state.get("labels"),
@@ -343,12 +360,11 @@ class ExperimentManifest:
         preprocessing: Any = None,
     ) -> ExperimentManifest:
         """A manifest from an existing model's declarations: its task and
-        label order (FEAT-002), its model descriptor and built-in net params
-        (FEAT-006), its recorded transformation recipe when it has one
-        (FEAT-016), and — when given — the training configuration
-        (``NNTrainParams.state()`` without ``n_epochs`` and the resume
-        lineage, which describe an attempt; loaders are never read) and a
-        fitted ``nnx.preprocessing.Standardizer`` (FEAT-018), recorded as
+        label order, its model descriptor and built-in net params, its
+        recorded transformation recipe when it has one, and — when given — the training configuration
+        (``NNTrainParams.state()`` without ``n_epochs``, ``resume_epochs``
+        and the resume lineage, which describe an attempt; loaders are never read) and a
+        fitted ``nnx.preprocessing.Standardizer``, recorded as
         ``config["preprocessing"]``: its schema, frozen statistics and
         fit-membership identity, never recomputed. Builds no model and
         iterates no loader."""
@@ -372,7 +388,9 @@ class ExperimentManifest:
             # plan: a resume of the same plan keeps its fingerprint.
             for key in _ATTEMPT_ONLY_TRAIN_KEYS:
                 train_state.pop(key, None)
-            merged.setdefault("train", train_state)
+            if "train" in merged:  # as for preprocessing: never drop one of the two silently
+                raise ValueError("config already has a 'train' entry; pass the training configuration once")
+            merged["train"] = train_state
         if preprocessing is not None:
             from .preprocessing import Standardizer
 
@@ -407,7 +425,7 @@ class Attempt:
     ``parent`` it resumed from (run, attempt, checkpoint tag and
     generation), the ``last_committed`` checkpoint (tag, epoch, generation)
     and, when it did not complete, the ``error`` (type and message).
-    ``compile`` is the fit's compile record (FEAT-029) — requested and
+    ``compile`` is the fit's compile record — requested and
     effective — when ``train(compile=...)`` was used; it is absent from
     ``state()`` otherwise."""
 
@@ -445,6 +463,9 @@ class Attempt:
 
     @staticmethod
     def from_state(state: Mapping[str, Any]) -> Attempt:
+        for key in ("parent", "last_committed", "error", "compile"):
+            if state.get(key) is not None and not isinstance(state[key], Mapping):
+                raise ValueError(f"an attempt record's {key!r} must be a JSON object, got {type(state[key]).__name__}")
         return Attempt(
             attempt_id=state["attempt_id"],
             fingerprint=state["fingerprint"],
@@ -484,14 +505,43 @@ def _write_json(path: str, value: Mapping[str, Any]) -> None:
 
 def load_provenance(run_id: str, root: Optional[str] = None) -> Optional[ProvenanceRecord]:
     """Read a run's provenance files; ``None`` when it has none (absent).
-    Raises ``ValueError`` for an unsupported format or a fingerprint that
-    does not match its manifest."""
+    Raises ``ValueError`` for an unsupported format, a fingerprint that
+    does not match its manifest, or JSON nested too deeply to read; a
+    malformed entry (a missing key, a non-object entry) raises ``KeyError``
+    or ``TypeError``."""
+    try:
+        return _load_provenance(run_id, root)
+    except RecursionError as error:  # a corrupt, deeply nested file is malformed input
+        raise ValueError(f"run {run_id}: provenance JSON nested too deeply to read") from error
+
+
+_MAX_JSON_DEPTH = 512  # far deeper than any real config; the parser's own limit varies by Python version
+
+
+def _load_json(handle: Any) -> Any:
+    """Parse a provenance file, refusing nesting past ``_MAX_JSON_DEPTH``
+    on every Python version (3.14 parses 100,000 levels; older versions hit
+    the recursion limit). Measured without recursion."""
+    value = json.load(handle)
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, (dict, list)):
+            if depth > _MAX_JSON_DEPTH:
+                raise RecursionError("provenance JSON is nested too deeply")
+            stack.extend((child, depth + 1) for child in (item.values() if isinstance(item, dict) else item))
+    return value
+
+
+def _load_provenance(run_id: str, root: Optional[str]) -> Optional[ProvenanceRecord]:
     run_path = _run_dir(run_id, root)
     manifest_path = os.path.join(run_path, MANIFEST_FILE)
     if not os.path.isfile(manifest_path):
         return None
     with open(manifest_path, encoding="utf-8") as handle:
-        stored = json.load(handle)
+        stored = _load_json(handle)
+    if not isinstance(stored, Mapping) or not isinstance(stored.get("manifest"), Mapping):
+        raise ValueError(f"{manifest_path}: a provenance manifest must be a JSON object holding a manifest object")
     if stored.get("format") != FORMAT:
         raise ValueError(f"unsupported provenance format {stored.get('format')!r} in {manifest_path}")
     manifest = ExperimentManifest.from_state(stored["manifest"])
@@ -501,7 +551,10 @@ def load_provenance(run_id: str, root: Optional[str] = None) -> Optional[Provena
     attempt_path = os.path.join(run_path, ATTEMPT_FILE)
     if os.path.isfile(attempt_path):
         with open(attempt_path, encoding="utf-8") as handle:
-            attempt = Attempt.from_state(json.load(handle))
+            attempt_state = _load_json(handle)
+        if not isinstance(attempt_state, Mapping):
+            raise ValueError(f"{attempt_path}: an attempt record must be a JSON object")
+        attempt = Attempt.from_state(attempt_state)
     return ProvenanceRecord(manifest=manifest, fingerprint=stored["fingerprint"], attempt=attempt)
 
 
@@ -571,10 +624,10 @@ class _AttemptRecorder:
                 # its (content-derived) id is not its attempt.
                 prior = None if bundled else load_provenance(parent_run_id, root)
             except (OSError, ValueError, KeyError, TypeError) as error:  # linkage is optional; the fit is not
-                warnings.warn(
-                    f"parent run {parent_run_id}'s provenance is unreadable ({error}); its attempt is not linked",
-                    RuntimeWarning,
-                    stacklevel=4,
+                from .nn.callbacks import _warn_at_user_frame
+
+                _warn_at_user_frame(
+                    f"parent run {parent_run_id}'s provenance is unreadable ({error}); its attempt is not linked"
                 )
                 prior = None
             parent = {
@@ -627,11 +680,12 @@ class _AttemptRecorder:
         try:
             self._finish(status, error)
         except BaseException as record_error:  # never mask the training error
-            warnings.warn(
-                f"could not record the {status} attempt {self.attempt.attempt_id}: {record_error}",
-                RuntimeWarning,
-                stacklevel=3,
-            )
+            from .nn.callbacks import _warn_at_user_frame
+
+            try:  # an error filter (-W error) must not replace the training error either
+                _warn_at_user_frame(f"could not record the {status} attempt {self.attempt.attempt_id}: {record_error}")
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # --- comparison ------------------------------------------------------------------------------
@@ -688,6 +742,16 @@ def _same(left: Any, right: Any) -> bool:
     return canonical_bytes(left) == canonical_bytes(right)
 
 
+def _key_path(path: str, key: Any) -> str:
+    """The field path of mapping ``key`` under ``path``. A key that could be
+    read as path syntax (``.``, ``[``, ``]``, or empty) is quoted, so
+    ``{"a.b": 1}`` and ``{"a": {"b": 1}}`` never share a path."""
+    text = str(key)
+    if text and not any(mark in text for mark in '.[]"'):
+        return f"{path}.{text}" if path else text
+    return f"{path}[{json.dumps(text)}]"
+
+
 def _flatten(value: Any, path: str, out: dict[str, Any]) -> None:
     if not isinstance(value, (Mapping, list)):
         out[path] = value
@@ -696,7 +760,7 @@ def _flatten(value: Any, path: str, out: dict[str, Any]) -> None:
         if not value:
             out[path] = value
         for key in sorted(value):
-            _flatten(value[key], f"{path}.{key}" if path else key, out)
+            _flatten(value[key], _key_path(path, key), out)
         return
     if not value:
         out[path] = value
@@ -730,7 +794,7 @@ def _fields(state: Mapping[str, Any]) -> dict[str, tuple[Any, bool]]:
             if not value:
                 out[section] = (value, False)
             for name in sorted(value):
-                out[f"{section}.{name}"] = (value[name], True)
+                out[_key_path(section, name)] = (value[name], True)
             continue
         plain: dict[str, Any] = {}
         _flatten(value, section, plain)
@@ -754,7 +818,7 @@ def _manifest_of(value: Any, root: Optional[str]) -> Optional[ExperimentManifest
 
 def compare(left: Any, right: Any, *, root: Optional[str] = None) -> ProvenanceComparison:
     """Compare two plans field by field — manifests, provenance records,
-    ``NNRun``\\ s or run ids (their provenance files are read; no model is
+    ``NNRun``s or run ids (their provenance files are read; no model is
     loaded, no loader iterated, no file hashed)."""
     left_manifest, right_manifest = _manifest_of(left, root), _manifest_of(right, root)
     if left_manifest is None or right_manifest is None:

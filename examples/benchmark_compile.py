@@ -1,4 +1,4 @@
-"""Opt-in torch.compile, measured: compile cost, warmed speed, a profile (FEAT-029).
+"""Opt-in torch.compile, measured: compile cost, warmed speed, a profile.
 
 Compilation is opt-in and **no speedup is guaranteed** — on a tiny model the
 compiled forward is often slower than eager. This example measures instead
@@ -16,8 +16,8 @@ of assuming:
      from the **warmed** latency and throughput over ``--repeats`` calls
      after ``--warmup`` untimed ones, with mean / median / stdev.
   4. **Profile.** ``profile_forward`` runs ``torch.profiler`` with a finite
-     wait / warmup / active schedule into ``--output-dir`` — outside any
-     timed region.
+     wait / warmup / active schedule into ``--output-dir`` (by default a
+     temporary directory, removed on exit) — outside any timed region.
 
 Run:
     python examples/benchmark_compile.py --device cpu --warmup 3 --repeats 10
@@ -25,7 +25,8 @@ Run:
 It prints one JSON document with separate ``compile``, ``warmed`` and
 ``profile`` sections. The inductor backend needs a working C++ toolchain
 (on macOS, the system ``libc++`` must be loadable). Registered in
-``tests/test_examples_smoke.py``, which runs exactly that command.
+``tests/test_examples_smoke.py``, which runs that command with
+``--output-dir`` set to a temporary directory.
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ from nnx import (
     NNOptimParams,
     NNParams,
     NNTrainParams,
+    set_seed,
 )
 from nnx.benchmarking import compare_compile, profile_forward
 from nnx.nn.params.nn_checkpoint import NNCheckpoint
@@ -57,7 +59,7 @@ DEVICES = {"cpu": Devices.CPU, "cuda": Devices.CUDA, "mps": Devices.MPS}
 
 
 def _model(device: Devices) -> NNModel:
-    torch.manual_seed(0)
+    # No seeding here: run() seeds once before it builds the model.
     return NNModel(
         net_params=NNParams(
             input_dim=32, output_dim=4, hidden_dims=[128, 128], dropout_prob=0.0, activation=Activations.RELU
@@ -73,6 +75,7 @@ def _data() -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def run(device: str = "cpu", warmup: int = 3, repeats: int = 10, output_dir: str = "profile") -> dict:
+    set_seed(0)
     X, y = _data()
     model = _model(DEVICES[device])
     batches = [(X[i : i + 64], y[i : i + 64]) for i in range(0, len(X), 64)]

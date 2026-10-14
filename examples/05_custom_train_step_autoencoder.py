@@ -1,4 +1,4 @@
-"""Custom train_step_fn — a tiny linear autoencoder.
+"""Custom train_step_fn — a tiny autoencoder (16 → 4 → 16).
 
 Demonstrates the train_step_fn hook on NNModel.train(). The supervised
 forward → loss_fn(net(X), Y) → backward path doesn't fit autoencoders
@@ -86,10 +86,6 @@ def main():
 
         loss_val = float(loss.detach())
         return NNEvaluationDataPoint(
-            f1=0.0,
-            recall=0.0,
-            accuracy=0.0,
-            precision=0.0,
             loss=loss_val,
             error=loss_val,  # use loss as the "error" so BEST tracking is meaningful
         )

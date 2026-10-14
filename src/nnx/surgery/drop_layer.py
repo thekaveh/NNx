@@ -21,6 +21,7 @@ Two call styles:
 from __future__ import annotations
 
 import copy
+import math
 from collections.abc import Callable
 from typing import Union
 
@@ -61,7 +62,7 @@ def drop_layer(
         KeyError: if any candidate name is missing.
         ValueError: if ``layer_name`` is an empty list, or a list
             without ``importance``, or a single string with
-            ``importance``.
+            ``importance``, or a candidate scores NaN or infinite.
     """
     chosen = _resolve_target(model, layer_name, importance)
 
@@ -99,5 +100,9 @@ def _resolve_target(
     for name in layer_name:
         mod = get_module(model, name)
         scores.append((float(importance(mod)), name))
+    # A NaN breaks the sort order, so another layer would be dropped silently.
+    unscored = [name for score, name in scores if not math.isfinite(score)]
+    if unscored:
+        raise ValueError(f"drop_layer: importance scores must be finite; {unscored} scored NaN or infinite")
     scores.sort(key=lambda t: t[0])
     return scores[0][1]

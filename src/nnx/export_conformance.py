@@ -1,4 +1,4 @@
-"""Executable ONNX export conformance profiles (FEAT-038).
+"""Executable ONNX export conformance profiles.
 
 ``onnx.checker`` proves an exported file is *well formed*; it says nothing
 about what a runtime computes from it. A **profile** fixes everything a
@@ -422,10 +422,13 @@ def build_model(config: Mapping[str, Any] = MODEL) -> Any:
             ),
             params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
         )
+    # FP32 whatever torch's default dtype: the profiles and records say so.
+    model.net.float()
     generator = torch.Generator().manual_seed(int(weights["seed"]))
     with torch.no_grad():
         for parameter in model.net.parameters():
-            parameter.copy_(torch.randn(parameter.shape, generator=generator) * float(weights["std"]))
+            draw = torch.randn(parameter.shape, generator=generator, dtype=torch.float32)
+            parameter.copy_(draw * float(weights["std"]))
     return model
 
 
@@ -439,7 +442,8 @@ def _weights_digest(module: torch.nn.Module) -> str:
 
 
 def _inputs(case: Mapping[str, Any]) -> torch.Tensor:
-    return torch.randn(*case["shape"], generator=torch.Generator().manual_seed(int(case["seed"])))
+    seed = torch.Generator().manual_seed(int(case["seed"]))
+    return torch.randn(*case["shape"], generator=seed, dtype=torch.float32)  # FP32, like the model
 
 
 # --- provenance ---------------------------------------------------------------------------------------------
@@ -1249,8 +1253,13 @@ def validate_record(record: Any) -> None:
         problems.append("tolerances must hold rtol and atol")
     elif not all(_finite(v) and v >= 0 for v in tolerances.values()):
         problems.append(f"tolerances must be finite and non-negative, got {dict(tolerances)}")
+    weights_sha = record["config"].get("weights_sha256") if isinstance(record["config"], Mapping) else None
     if not isinstance(record["config"], Mapping) or "weights_sha256" not in record["config"]:
         problems.append("config must carry weights_sha256")
+    elif not (
+        isinstance(weights_sha, str) and len(weights_sha) == 64 and all(c in "0123456789abcdef" for c in weights_sha)
+    ):
+        problems.append("config's weights_sha256 is malformed")
     for key in ("source", "exporter", "opset", "versions", "runtime"):
         if not isinstance(record[key], Mapping):
             problems.append(f"{key} must be a mapping")

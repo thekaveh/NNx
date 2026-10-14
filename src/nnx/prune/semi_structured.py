@@ -63,18 +63,25 @@ def semi_structured_24(net: nn.Module, *, layer_pattern: str = "*") -> int:
     wildcard pattern).
 
     **Note on weights:** ``torchao.sparsity.sparsify_`` does NOT enforce
-    the 2:4 mask before the swap. Callers are expected to either
-    (a) magnitude-prune the weight to a valid 2:4 pattern beforehand
-    (via :func:`magnitude_prune` or a custom mask), or
-    (b) accept whatever 2:4 approximation
-    :func:`torch.sparse.to_sparse_semi_structured` picks (which keeps
-    the top-2-by-absolute-value entries per 4-group). For training
-    workflows, the standard recipe is to pre-mask, then train the
-    surviving entries.
+    the 2:4 mask before the swap, and the conversion encodes each group
+    of 4 by the *positions* of its nonzeros, not by magnitude: extra
+    nonzeros are dropped by position. Prune the weight to a valid 2:4
+    pattern first (a custom 2:4 mask; :func:`magnitude_prune` alone gives
+    no per-group structure).
+
+    **Inference only:** torchao replaces each matched weight with a
+    ``requires_grad=False`` parameter, so the matched Linears stop
+    training after this call.
     """
     # Defer the torchao import so consumers of `nnx.prune.magnitude_prune`
     # don't pay the torchao dep cost just by importing the package.
-    import torchao.sparsity as ao_sparsity
+    try:
+        import torchao.sparsity as ao_sparsity
+    except ImportError as error:
+        raise ImportError(
+            "semi_structured_24 requires torchao. Install with `pip install thekaveh-nnx[quantize]` "
+            "(or `pip install 'torchao>=0.17'` directly)."
+        ) from error
 
     # Two-phase: enumerate the matched-Linear set FIRST so we can
     # return the count and short-circuit when there's nothing to do.

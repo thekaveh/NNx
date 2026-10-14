@@ -511,3 +511,24 @@ def test_round_two_edges():
     _, half, _, _ = task.token_sums(logits.to(torch.bfloat16), targets, valid)
     reference = float(-F.log_softmax(logits.to(torch.bfloat16).double(), dim=-1).gather(1, targets[:, None]).sum())
     assert half == pytest.approx(reference, rel=1e-4, abs=1e-6) and exact > 0
+
+
+def test_a_task_state_without_its_vocab_size_is_a_task_error():
+    from nnx.lm_tasks import KIND, CausalLMTask, LMTaskError
+
+    with pytest.raises(LMTaskError, match="'vocab_size'"):
+        CausalLMTask.from_state({"kind": KIND})
+
+
+def test_a_one_dimensional_attention_mask_is_a_task_error():
+    task = CausalLMTask(vocab_size=V, pad_id=0)
+    with pytest.raises(LMTaskError, match="attention_mask"):
+        task.split({"input_ids": torch.tensor([[1, 2, 3, 0]]), "attention_mask": torch.tensor([1, 1, 1, 0])})
+
+
+@pytest.mark.parametrize("mask", [[[0, 0, 1, 1, 1]], [[1, 0, 1, 1, 1]]], ids=["left", "interior"])
+def test_padding_before_a_real_token_is_refused(mask):
+    # The model never receives the mask: real tokens would attend to the padding.
+    task = CausalLMTask(vocab_size=V, pad_id=0)
+    with pytest.raises(LMTaskError, match="right-pad the batch"):
+        task.split({"input_ids": torch.tensor([[0, 0, 1, 2, 3]]), "attention_mask": torch.tensor(mask)})

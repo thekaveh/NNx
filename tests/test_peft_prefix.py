@@ -450,3 +450,21 @@ def test_prefix_tuner_float64_matches_float32_past_sdpa_vector_width():
     assert logits.dtype == torch.float64
     torch.testing.assert_close(logits.float(), expected, rtol=1e-4, atol=1e-4)
     torch.testing.assert_close(torch.stack(steps, dim=1), logits[:, 4:], rtol=1e-10, atol=1e-10)
+
+
+@pytest.mark.parametrize("field", ["n_prefix", "n_layers"])
+@pytest.mark.parametrize("bad", [2.0, True])
+def test_prefix_sizes_must_be_integers_checked_before_freezing(field, bad):
+    model = _tiny_transformer()
+    with pytest.raises(ValueError, match=f"requires {field} to be an integer"):
+        PrefixTuner(model, **{"n_prefix": 4, field: bad})
+    assert all(p.requires_grad for p in model.parameters())
+
+
+def test_a_refused_prefix_load_leaves_the_tuner_untouched():
+    tuner = PrefixTuner(_tiny_transformer(), n_prefix=4)
+    before = {k: v.clone() for k, v in tuner.state_dict().items()}
+    source = {"prefix_keys.0": torch.full((4, 4, 8), 7.0), "prefix_keys.1": torch.zeros(3, 4, 8)}
+    with pytest.raises(RuntimeError, match="nothing was loaded"):
+        load_prefix_weights(tuner, source)
+    assert all(torch.equal(v, before[k]) for k, v in tuner.state_dict().items())

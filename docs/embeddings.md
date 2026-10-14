@@ -1,6 +1,6 @@
 # 6. Embeddings — Contrastive Trainer + FAISS Export
 
-`nnx.embeddings` is NNx's one RAG-adjacent surface: train a domain-specific text embedder via the existing SimCLR / NT-Xent contrastive machinery, then export the trained model to a FAISS index for downstream retrieval.
+`nnx.embeddings` is NNx's one RAG-adjacent surface. It trains a domain-specific text embedder via the existing SimCLR / NT-Xent contrastive machinery. It then exports the trained model to a FAISS index for downstream retrieval.
 
 NNx does NOT host the RAG stack. Chunking, reranking, prompt orchestration, vector-DB clients — those are inference-time concerns and live in your retriever-framework of choice (LangChain, LlamaIndex, Haystack, raw FAISS). NNx's responsibility ends at the FAISS index on disk.
 
@@ -8,7 +8,7 @@ NNx does NOT host the RAG stack. Chunking, reranking, prompt orchestration, vect
 
 Use `nnx.embeddings` when:
 
-- You have domain-specific text and the off-the-shelf SBERT / OpenAI embedding API is mediocre at retrieving in-domain results — e.g., legal contracts, medical notes, code search, narrow product catalogs.
+- You have domain-specific text, and the off-the-shelf SBERT / OpenAI embedding API is mediocre at retrieving in-domain results. Examples are legal contracts, medical notes, code search and narrow product catalogs.
 - You can produce `(anchor, positive)` pairs cheaply — query/document mining, in-batch positives, paraphrase generation, click logs.
 - You want a portable artifact (a FAISS index file) that any RAG framework can load. NNx doesn't lock you into LangChain / LlamaIndex / Haystack.
 
@@ -21,6 +21,8 @@ pip install "thekaveh-nnx[embeddings]"
 ```
 
 Pulls in `faiss-cpu` and `sentence-transformers`. Both are optional at import time: `import nnx.embeddings` works even without them — the `ImportError` is deferred to the call site that actually needs each one.
+
+On macOS, the `faiss-cpu` and `torch` wheels each bundle their own OpenMP runtime. A process that loads both can abort ("OMP: Error #15") or crash inside a FAISS search. Set `KMP_DUPLICATE_LIB_OK=TRUE` and `OMP_NUM_THREADS=1` before you import either library. [`examples/ranking_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/ranking_offline.py) shows how.
 
 ## 3. Quickstart
 
@@ -71,9 +73,12 @@ export_to_faiss(backbone, corpus, "domain.faiss")
 import faiss
 from langchain_community.docstore.in_memory import InMemoryDocstore
 from langchain_community.vectorstores import FAISS as LCFAISS
+from langchain_core.documents import Document
 idx = faiss.read_index("domain.faiss")
+# Row i of the index is corpus[i]: give LangChain the documents and the map.
+docstore = InMemoryDocstore({str(i): Document(page_content=text) for i, text in enumerate(corpus)})
 vs = LCFAISS(embedding_function=..., index=idx,
-             docstore=InMemoryDocstore({}), index_to_docstore_id={})
+             docstore=docstore, index_to_docstore_id={i: str(i) for i in range(len(corpus))})
 
 # LlamaIndex
 from llama_index.vector_stores.faiss import FaissVectorStore
@@ -96,7 +101,7 @@ ContrastiveTextDataset(pairs: list[tuple[str, str]])
 
 Wraps `(anchor, positive)` string pairs as a `torch.utils.data.Dataset`. Each `__getitem__` returns a 2-tuple of strings; pair with `pair_collate` (see §4.2) if you build your own `DataLoader` instead of going through `train_contrastive`.
 
-Raises `ValueError` on empty input or non-string entries — NT-Xent needs at least one pair to form a batch.
+Raises `ValueError` on empty input or non-string entries. One pair is enough for inference; `train_contrastive` needs at least two, because NT-Xent needs a negative in each batch.
 
 ### 4.2. `pair_collate`
 
@@ -182,7 +187,7 @@ export_to_faiss(
 
 Embeds `corpus` and writes a FAISS index file. The corpus order becomes the index's id space — search results return positions into `corpus`.
 
-Default `IndexFlatIP` + auto-normalize = cosine similarity. FAISS doesn't ship a native cosine index; the standard pattern is to normalize embeddings to unit norm and use inner product as the score, which equals cosine on the unit sphere.
+Default `IndexFlatIP` + auto-normalize = cosine similarity. FAISS doesn't ship a native cosine index. The standard pattern is to normalize embeddings to unit norm and use inner product as the score. That score equals cosine on the unit sphere.
 
 For approximate search at scale, switch `index_type="IndexHNSWFlat"`. The wrapper builds with FAISS's standard `M=32` recall/memory trade-off; for finer-grained tuning, build the index manually with `faiss.IndexHNSWFlat(dim, M)` and `index.hnsw.efConstruction = ...`.
 
@@ -200,15 +205,16 @@ Persists the backbone's `state_dict()` to disk for HuggingFace Hub / sentence-tr
 
 - **NT-Xent loss** — `nnx.nt_xent_loss` (the SimCLR objective). The trainer reuses this for in-batch contrastive learning.
 - **`finalize_step` helper** — the `text_contrastive_train_step_factory` path routes through `nnx._step_helpers.finalize_step` for NaN-guard, grad-clip, and the standard paradigm-factory contract (no AMP, no gradient accumulation).
-- **Freezing / LoRA** — both compose cleanly. `nnx.freeze(backbone, "encoder.layer.0.*")` excludes those parameters from the optimizer; `nnx.apply_lora_to(backbone, "*.dense")` then adds trainable LoRA residuals on the still-trainable subset. The optimizer in `train_contrastive` collects only `requires_grad=True` parameters, so both layered composition works.
+- **Freezing / LoRA** — both compose with the trainer. A `SentenceTransformer` prefixes its parameter names with the module index (for example `0.model.embeddings...`), so start patterns with `*`. `nnx.freeze(backbone, "*encoder.layer.0.*")` excludes those parameters from the optimizer. The optimizer in `train_contrastive` collects only `requires_grad=True` parameters.
+
+    `nnx.apply_lora_to(backbone, "*.dense")` wraps every matched `Linear`, including frozen ones. Each wrapper freezes its base layer and adds trainable LoRA parameters. To keep a frozen block free of adapters, use patterns that do not match it.
 
 ## 6. What this is NOT
 
 - Not a LangChain / LlamaIndex / Haystack wrapper. Those are downstream retrieval frameworks; pick the one your stack uses.
-- Not a chunker. Document chunking is a preprocessing concern — solve it in the retrieval framework (every major one ships their own).
 - Not a reranker. Cross-encoder rerankers are a separate training problem with their own loss (pointwise / pairwise). The contrastive trainer here is biencoder-only.
-- Not a zero-shot classifier. Scoring a text against candidate labels supplied at inference is `nnx.decisions.NLIProvider` ([Typed decisions §5](decisions.md#5-the-nli-baseline-adapter)), which uses a caller-supplied NLI cross-encoder; it does not extend `embed_texts` or `export_to_faiss`, whose signatures are unchanged, and how well its scores transfer to a task stays empirical.
-- Not a vector-database client. The FAISS index is a file on disk; if you need Pinecone / Weaviate / Milvus / pgvector, embed via `embed_texts` and `INSERT` the vectors yourself.
-- Not a chunker, query expander, prompt orchestrator, or evaluation harness. NNx's responsibility ends at the FAISS index file.
+- Not a zero-shot classifier. Scoring a text against candidate labels supplied at inference is `nnx.decisions.NLIProvider` ([Typed decisions §5](decisions.md#5-the-nli-baseline-adapter)). It uses a caller-supplied NLI cross-encoder. It does not extend `embed_texts` or `export_to_faiss`. How well its scores transfer to a task stays empirical.
+- Not a vector-database client. The FAISS index is a file on disk. If you need Pinecone / Weaviate / Milvus / pgvector, embed via `embed_texts` and `INSERT` the vectors yourself.
+- Not a chunker, query expander, prompt orchestrator, or evaluation harness. Document chunking is a preprocessing concern for the retrieval framework (every major one ships its own). NNx's responsibility ends at the FAISS index file.
 
 That deliberate scope-cut is the point. NNx ships the one training-time piece (a domain embedder you fully control) and stays out of the inference-orchestration arms race.

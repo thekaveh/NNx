@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import os
 from typing import Any
 
 import numpy as np
@@ -286,8 +287,12 @@ def test_round_two_read_only_mappings_copy_and_pickle():
 
 
 def test_round_three_the_effective_seed_and_orphan_identity_are_checked():
-    inherited = _plan().with_train(NNTrainParams(n_epochs=1, seed=-5))
-    assert inherited.validate().paths == ("train.seed",)  # the seed set_seed would receive
+    # The training parameters refuse a seed set_seed would not accept at
+    # construction; the plan still checks its own seed, which overrides it.
+    with pytest.raises(ValueError, match="seed"):
+        NNTrainParams(n_epochs=1, seed=-5)
+    assert _plan().with_seed(-5).validate().paths == ("seed",)
+    assert _plan().with_seed(2**32).validate().paths == ("seed",)
     identity_only = ExperimentPlan().with_net(NET).with_model(MODEL).with_train(TRAIN).with_data(None, identity="x")
     assert {"data.train"} <= set(identity_only.validate().paths)
 
@@ -730,3 +735,132 @@ def test_a_planned_horizon_without_a_run_to_resume_is_refused_at_validation():
     np = pytest.importorskip("numpy")
     odd = _plan().resuming("abc", mode=np.array([1, 2]), epochs=np.array([1, 2]))  # type: ignore[arg-type]
     assert odd.validate().paths == ("resume.mode", "resume.epochs")  # diagnostics, not a crash
+
+
+def test_validate_reports_an_unregistered_optimizer_factory():
+    from nnx.optimizers import NNOptimFactoryParams, OptimizerFactorySpec
+
+    train = NNTrainParams(
+        n_epochs=2, optim=NNOptimFactoryParams(factory=OptimizerFactorySpec(id="acme.lion", version=1), max_lr=0.1)
+    )
+    report = _plan().with_train(train).validate()
+    assert (
+        "train.optim" in report.paths and "acme.lion" in report.diagnostics[report.paths.index("train.optim")].message
+    )
+
+
+def test_validate_reports_an_update_clock_budget_a_custom_step_cannot_plan():
+    from nnx import NNSchedulerParams, Schedulers
+
+    scheduler = NNSchedulerParams(
+        kind=Schedulers.ONE_CYCLE,
+        min_lr=1e-5,
+        factor=0.5,
+        patience=1,
+        cooldown=0,
+        threshold=1e-4,
+        clock="optimizer_update",
+    )
+    train = NNTrainParams(n_epochs=2, scheduler=scheduler)
+    report = _plan().with_train(train).with_step_fns(train_step_fn=lambda ctx: None).validate()
+    assert "train.scheduler" in report.paths
+
+
+def test_validate_reports_an_update_clock_budget_over_a_loader_without_a_length():
+    from torch.utils.data import IterableDataset
+
+    from nnx import NNSchedulerParams, Schedulers
+
+    class _Stream(IterableDataset):
+        def __iter__(self):
+            yield torch.randn(4), torch.tensor(0)
+
+    scheduler = NNSchedulerParams(
+        kind=Schedulers.ONE_CYCLE,
+        min_lr=1e-5,
+        factor=0.5,
+        patience=1,
+        cooldown=0,
+        threshold=1e-4,
+        clock="optimizer_update",
+    )
+    plan = (
+        _plan()
+        .with_train(NNTrainParams(n_epochs=2, scheduler=scheduler))
+        .with_data(DataLoader(_Stream(), batch_size=2))
+    )
+    report = plan.validate()
+    assert "train.scheduler" in report.paths
+    assert "with a length" in report.diagnostics[report.paths.index("train.scheduler")].message
+
+
+@pytest.mark.parametrize("owner", ["default_step", "objective"])
+def test_validate_accepts_an_update_clock_budget_nnx_plans_itself(owner):
+    from nnx import NNSchedulerParams, Schedulers
+    from nnx.objectives import supervised_objective
+
+    scheduler = NNSchedulerParams(
+        kind=Schedulers.ONE_CYCLE,
+        min_lr=1e-5,
+        factor=0.5,
+        patience=1,
+        cooldown=0,
+        threshold=1e-4,
+        clock="optimizer_update",
+    )
+    plan = _plan().with_train(NNTrainParams(n_epochs=2, scheduler=scheduler))
+    if owner == "objective":
+        plan = plan.with_objective(supervised_objective())
+    assert "train.scheduler" not in plan.validate().paths
+
+
+def _one_cycle_on_updates():
+    from nnx import NNSchedulerParams, Schedulers
+
+    return NNSchedulerParams(
+        kind=Schedulers.ONE_CYCLE,
+        min_lr=1e-5,
+        factor=0.5,
+        patience=1,
+        cooldown=0,
+        threshold=1e-4,
+        clock="optimizer_update",
+    )
+
+
+def test_a_data_factory_defers_the_update_budget_check_to_fit(tmp_path, monkeypatch):
+    from torch.utils.data import IterableDataset
+
+    from nnx.plans import PlanError
+
+    monkeypatch.chdir(tmp_path)
+
+    class _Stream(IterableDataset):
+        def __iter__(self):
+            yield torch.randn(4), torch.tensor(0)
+
+    plan = (
+        ExperimentPlan()
+        .with_net(NET)
+        .with_model(MODEL)
+        .with_train(NNTrainParams(n_epochs=2, scheduler=_one_cycle_on_updates()))
+        .with_data(lambda: DataLoader(_Stream(), batch_size=2))
+    )
+    assert "train.scheduler" not in plan.validate().paths  # the factory's loader is unknown until fit()
+    with pytest.raises(PlanError, match="with a length"):
+        plan.fit()
+    assert not os.path.isdir("runs") or not any(entry for entry in os.listdir("runs") if not entry.startswith("."))
+
+
+def test_an_explicit_default_step_plan_validates_like_the_default_step():
+    from nnx import MetricSpec, MonitorSpec
+    from nnx.nn.nn_model import default_train_step
+
+    train = NNTrainParams(
+        n_epochs=2,
+        scheduler=_one_cycle_on_updates(),
+        metrics=[MetricSpec("accuracy")],
+        monitor=MonitorSpec(metric="accuracy", split="train"),
+    )
+    report = _plan().with_train(train).with_step_fns(train_step_fn=default_train_step).validate()
+    assert "train.scheduler" not in report.paths and "train.monitor" not in report.paths

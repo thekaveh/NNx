@@ -6,9 +6,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-import scripts.docs.build_docs as build_docs
-from scripts.docs.build_api_reference import render as render_api_reference
-from scripts.docs.build_docs import load_sections, render_mkdocs, render_site, render_wiki, validate_links
+from tests._repo_files import repo_file
+
+# Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
+# so a packager running its suite skips this module instead of failing collection.
+repo_file("scripts", "docs", "build_docs.py")
+
+import scripts.docs.build_docs as build_docs  # noqa: E402
+from scripts.docs.build_api_reference import render as render_api_reference  # noqa: E402
+from scripts.docs.build_docs import load_sections, render_mkdocs, render_site, render_wiki, validate_links  # noqa: E402
 
 TAGLINE = "Lightweight PyTorch training, evaluation, and visualization with first-class graph neural network support."
 SUPPORT_LINE = "Transparent orchestration for durable experiments, with your models and step logic left in your hands."
@@ -275,6 +281,37 @@ def test_repository_docs_have_no_placeholder_markers_or_tracked_ignored_files():
     build_docs.validate_repository_docs()
 
 
+@pytest.mark.parametrize(
+    ("text", "problem"),
+    [
+        ("A paragraph line.\n- an item that joins it\n", "blank line"),
+        ("- **Parent.**\n  - a child the site flattens\n", "four spaces"),
+        ("- an item\n\n  a paragraph that ends the list\n", "indent a paragraph"),
+        ("1. a step\n\n   a paragraph that ends the list\n", "indent a paragraph"),
+        (
+            "- **Parent.**\n\n  A paragraph that ends the list.\n\n    - an item the site renders as code\n",
+            "indent a paragraph",
+        ),
+        ("- an item\n\n  ```bash\n  make docs\n  ```\n", "indent fenced code"),
+    ],
+)
+def test_list_markup_the_site_renders_differently_is_refused(tmp_path: Path, text: str, problem: str):
+    with pytest.raises(ValueError, match=problem):
+        build_docs.validate_list_markup(tmp_path / "page.md", text)
+
+
+def test_list_markup_the_site_renders_like_github_is_accepted(tmp_path: Path):
+    build_docs.validate_list_markup(
+        tmp_path / "page.md",
+        "A paragraph.\n\n- an item\n  continued\n- **Parent.**\n    - a child\n\n```\nnot\n- a list\n```\n",
+    )
+    build_docs.validate_list_markup(
+        tmp_path / "page.md",
+        "- **Parent.**\n\n    A paragraph inside the item.\n\n    - a child\n\n    ```bash\n    make docs\n"
+        "      indented\n    ```\n\n    More text.\n\nA paragraph after the list.\n\n  ```\n  code\n  ```\n",
+    )
+
+
 def test_external_contract_tool_versions_match_automation_sources():
     contracts = (build_docs.ROOT / "docs" / "external-contracts.md").read_text(encoding="utf-8")
     requirements = (build_docs.ROOT / "requirements-tools.txt").read_text(encoding="utf-8")
@@ -293,6 +330,10 @@ def test_external_contract_tool_versions_match_automation_sources():
 
     for tool in ("uv", "pip-audit", "twine"):
         assert f"`{tool}=={requirement_versions[tool]}`" in contracts
+    # The release runs twine and pip-audit from the lock: the ledger and the
+    # contributor tool file name the locked versions.
+    for tool in ("pip-audit", "twine"):
+        assert requirement_versions[tool] == locked_version(tool), tool
     assert f"Pyright `{locked_version('pyright')}`" in contracts
     assert f"Ruff `{locked_version('ruff')}`" in contracts
     assert f"`setuptools=={locked_version('setuptools')}`" in contracts
@@ -312,7 +353,7 @@ def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
     assert "repo_name" not in config
     labels = str(config["nav"])
     assert "1. Home" in labels
-    assert "23. License" in labels
+    assert "24. License" in labels
     assert {key: config[key] for key in ("site_name", "site_description", "site_url", "docs_dir", "site_dir")} == {
         "site_name": "NNx",
         "site_description": "Lightweight PyTorch training, evaluation, and visualization toolkit",
@@ -363,20 +404,20 @@ def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
                 {"14. Export conformance": "Export-conformance.md"},
                 {"15. Framework comparison": "Framework-comparison.md"},
                 {"16. Architecture": "Architecture.md"},
+                {"17. Capability reference": "Capability-reference.md"},
             ]
         },
         {
             "Project": [
-                {"17. Repository overview": "Repository-Overview.md"},
-                {"18. Examples": "Examples.md"},
-                {"19. Contributing": "Contributing.md"},
-                {"20. Security policy": "Security-Policy.md"},
-                {"21. Test import boundaries": "Test-Import-Boundaries.md"},
-                {"22. Changelog": "Changelog.md"},
-                {"23. License": "License.md"},
-                {"24. Decision-model pilot": "Decision-model-pilot.md"},
-                {"25. Feature composition": "Feature-composition.md"},
-                {"26. Capability reference": "Capability-reference.md"},
+                {"18. Repository overview": "Repository-Overview.md"},
+                {"19. Examples": "Examples.md"},
+                {"20. Contributing": "Contributing.md"},
+                {"21. Security policy": "Security-Policy.md"},
+                {"22. Test import boundaries": "Test-Import-Boundaries.md"},
+                {"23. Changelog": "Changelog.md"},
+                {"24. License": "License.md"},
+                {"25. Decision-model pilot": "Decision-model-pilot.md"},
+                {"26. Feature composition": "Feature-composition.md"},
             ]
         },
     ]
@@ -573,8 +614,8 @@ def test_site_and_wiki_are_self_contained(tmp_path: Path):
     assert "images/nnx-poster.png" in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "assets/architecture.svg" in (site / "Architecture.md").read_text(encoding="utf-8")
     assert "images/architecture.png" in (wiki / "Architecture.md").read_text(encoding="utf-8")
-    assert (site / "License.md").read_text(encoding="utf-8").startswith("# 23. License\n")
-    assert (wiki / "License.md").read_text(encoding="utf-8").startswith("# 23. License\n")
+    assert (site / "License.md").read_text(encoding="utf-8").startswith("# 24. License\n")
+    assert (wiki / "License.md").read_text(encoding="utf-8").startswith("# 24. License\n")
     assert "(Concepts)" in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "(Concepts.md)" not in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "security/advisories/new" in (wiki / "Security-Policy.md").read_text(encoding="utf-8")
@@ -675,8 +716,18 @@ def test_automatic_heading_ids_match_python_markdown(tmp_path: Path, heading: st
 
 
 def test_wiki_automatic_heading_ids_decode_entities(tmp_path: Path):
-    (tmp_path / "Page.md").write_text("# A &amp; B\n\n[heading](#a-b)\n", encoding="utf-8")
+    # GitHub keeps one hyphen per space: "A & B" -> "a--b" (the live wiki
+    # renders "Changed — PyPI distribution name" as #changed--pypi-...).
+    (tmp_path / "Page.md").write_text("# A &amp; B\n\n[heading](#a--b)\n", encoding="utf-8")
 
+    validate_links(tmp_path, "wiki")
+    (tmp_path / "Page.md").write_text("# A &amp; B\n\n[heading](#a-b)\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="broken wiki anchor"):
+        validate_links(tmp_path, "wiki")
+
+
+def test_repeated_headings_number_like_github(tmp_path: Path):
+    (tmp_path / "Page.md").write_text("## Changed\n\n## Changed\n\n[second](#changed-1)\n", encoding="utf-8")
     validate_links(tmp_path, "wiki")
 
 
@@ -1341,3 +1392,98 @@ def test_raw_html_images_resolve_from_each_site_page(tmp_path: Path):
     assert '<img src="assets/nnx-poster.png"' in home
     assert '<img src="../assets/nnx-poster.png"' in overview
     assert (site / "assets" / "nnx-poster.png").is_file()
+
+
+def test_api_reference_summaries_render_sphinx_roles_as_code():
+    from scripts.docs.build_api_reference import _plain_roles
+
+    assert _plain_roles("Result of an :func:`lr_finder` sweep.") == "Result of an `lr_finder` sweep."
+    assert _plain_roles("A :class:`~nnx.models.ModelSpec` spec.") == "A `ModelSpec` spec."
+    assert _plain_roles("Of :meth:`NNModel.iter_predict <nnx.NNModel.iter_predict>`.") == "Of `NNModel.iter_predict`."
+    assert _plain_roles("See :meth:`nnx.NNModel.train`.") == "See `nnx.NNModel.train`."
+
+
+def test_api_reference_renders_members_from_undocumented_nnx_bases():
+    from scripts.docs.build_api_reference import render
+
+    text = render()
+    for path in (
+        "nnx.abstention.CoverageReport.save",
+        "nnx.abstention.CurvePoint.risk",
+        "nnx.decisions.Question.digest",
+    ):
+        assert f"##### `{path}`" in text
+    assert "##### `nnx.nn.generative_nn_model.GenerativeNNModel.train`" not in text  # NNModel documents it
+    assert "##### `nnx.nn.generative_nn_model.GenerativeNNModel.save_pretrained`" not in text  # nor the Hub mixin's
+
+
+def test_api_reference_ignores_the_hub_stub_without_huggingface_hub():
+    from scripts.docs.build_api_reference import _class_members
+
+    class _HubMixinBase:  # the stub installed without the hub extra
+        _optional_stub = True
+
+        def push_to_hub(self, *args, **kwargs): ...
+
+    _HubMixinBase.__module__ = "nnx.nn.nn_model"
+    Model = type("Model", (_HubMixinBase,), {"__module__": "nnx.nn.nn_model", "train": lambda self: None})
+    assert [name for name, _ in _class_members(Model)] == ["train"]
+
+
+def test_api_reference_keeps_an_undocumented_mixin_beside_a_documented_base():
+    from scripts.docs.build_api_reference import _class_members
+
+    class Documented:
+        def fit(self): ...
+
+    class Mixin:
+        def save(self): ...
+
+    for cls in (Documented, Mixin):
+        cls.__module__ = "nnx.example"
+    Model = type("Model", (Documented, Mixin), {"__module__": "nnx.example"})
+    assert [name for name, _ in _class_members(Model, frozenset({Documented}))] == ["save"]
+
+
+def test_the_real_hub_stub_is_marked_for_the_api_reference():
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; sys.modules['huggingface_hub'] = None\n"
+        "import nnx.nn.nn_model as m\n"
+        "assert m._HubMixinBase.__dict__.get('_optional_stub') is True\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True, timeout=120)
+
+
+def test_repository_docs_validation_reads_prose_after_a_code_span_as_prose(tmp_path: Path):
+    source = tmp_path / "README.md"
+    source.write_text("Use `x` [a]: foo for this.\n", encoding="utf-8")
+    build_docs.validate_repository_sources(tmp_path, [source], {source.resolve()})  # no "invalid link title"
+
+
+@pytest.mark.parametrize("surface", ["site", "wiki"])
+def test_built_link_validation_reads_prose_after_a_code_span_as_prose(tmp_path: Path, surface: str):
+    (tmp_path / "Page.md").write_text("Use `x` [a]: foo for this.\n", encoding="utf-8")
+    validate_links(tmp_path, surface)  # no "invalid documentation link title"
+
+
+def test_api_docs_never_inherit_text_from_outside_nnx():
+    import torch
+
+    from scripts.docs.build_api_reference import _doc_origin, _documentation
+
+    class Plain(torch.nn.Module):  # no docstring of its own
+        def forward(self, x):
+            return x
+
+    assert _doc_origin(Plain) == "torch.nn.modules.module"
+    assert _documentation(Plain)[0] == "No public description is currently available."
+    from nnx.nn.net.feed_fwd_nn import FeedFwdNN
+
+    assert _doc_origin(FeedFwdNN.forward) == "torch.nn.modules.module"  # torch's "Define the computation..."
+    assert _documentation(FeedFwdNN.forward)[0] == "No public description is currently available."
+    from nnx.paradigms.jepa_objective import JEPAObjective
+
+    assert _doc_origin(JEPAObjective.check_run) is None or _doc_origin(JEPAObjective.check_run).startswith("nnx")

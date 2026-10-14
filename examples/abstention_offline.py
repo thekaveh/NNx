@@ -1,4 +1,4 @@
-"""Abstention policies and risk-coverage evaluation, offline (FEAT-008).
+"""Abstention policies and risk-coverage evaluation, offline.
 
 A classifier that must answer every row cannot say "I'm not sure". An
 ``AbstentionPolicy`` accepts a row only when its top probability (or the

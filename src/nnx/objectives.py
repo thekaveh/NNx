@@ -1,11 +1,11 @@
-"""Objective-based training over one shared update engine (FEAT-004).
+"""Objective-based training over one shared update engine.
 
 An imperative ``train_step_fn`` owns everything — forward, backward,
 accumulation, mixed precision, clipping and ``optimizer.step`` — so each
 paradigm re-implements (or, through ``finalize_step``, refuses) the update
 mechanics. An **objective** only describes the loss; NNx's shared update
 engine does the rest, for ``NNModel.train`` and ``Trainer.train`` alike
-(both apply an explicit ``NNModelParams.precision``, FEAT-028; ``Trainer``
+(both apply an explicit ``NNModelParams.precision``; ``Trainer``
 never applies the legacy ``mixed_precision`` flag, so without a policy it
 runs objectives in full precision)::
 
@@ -13,7 +13,7 @@ runs objectives in full precision)::
 
     model.train(params=NNTrainParams(...), objective=kd_objective(teacher, alpha=0.5, temperature=4.0))
 
-For each microbatch an objective returns :class:`LossTerm`\\ s: a
+For each microbatch an objective returns :class:`LossTerm`s: a
 differentiable **numerator** (a sum over the term's samples) and either an
 explicit **denominator** (``reduction="mean"``: the number — or total
 weight — of samples the numerator sums over) or none (``reduction="sum"``).
@@ -25,7 +25,8 @@ window and masked (ignored) targets give exactly the full-batch update. The
 engine then runs autocast (around the objective's forward) → unscale →
 clip → step, applies the objective's non-finite policy (``"fail"`` raises
 before anything is stepped; ``"skip"`` drops the window) and fires one
-committed-update event per successful optimizer update, delivered to
+committed-update event per named optimizer per committed window (an
+optimizer without gradients is not stepped but still counts), delivered to
 ``Callback.on_optimizer_update``.
 
 Imperative step functions and ``finalize_step`` are unchanged; a run uses
@@ -34,13 +35,14 @@ step passed as ``objective=`` (it would step the optimizer itself, then the
 engine again) and an objective passed as ``train_step_fn=`` are refused
 before any run is reserved.
 
-**Paradigm objectives (FEAT-040).** ``nnx.diffusion.diffusion_objective``
+**Paradigm objectives.** ``nnx.diffusion.diffusion_objective``
 (DDPM noise prediction) and ``nnx.paradigms.jepa_objective`` (I-JEPA latent
 prediction) are the objective counterparts of the diffusion and JEPA step
 factories. An objective may also define ``check_run(model, *, optimizers,
 callbacks)`` — run before any run is reserved, to refuse a combination it
 cannot train — and ``after_update(events)``, run once per committed update
-after every optimizer stepped (the JEPA EMA target advances there).
+after the window's step (an optimizer without gradients is not stepped; the
+JEPA EMA target advances there).
 """
 
 from __future__ import annotations
@@ -149,7 +151,7 @@ class LossTerm:
 class ObjectiveContext:
     """What an objective sees for one microbatch.
 
-    ``precision`` is the run's resolved precision (FEAT-028; ``None`` when
+    ``precision`` is the run's resolved precision (``None`` when
     called outside a run). The objective runs under its autocast, so a
     reduced run's forward outputs are float16 / bfloat16:
     :meth:`full_precision` returns them as float32 for the loss's
@@ -217,8 +219,9 @@ class Objective:
         Raise to refuse; the default accepts every run."""
 
     def after_update(self, events: tuple[UpdateEvent, ...]) -> None:
-        """Called once per committed update — after every named optimizer
-        stepped, never for a microbatch or a skipped window — with its
+        """Called once per committed update — after the window's step (an
+        optimizer without gradients is not stepped), never for a microbatch
+        or a skipped window — with its
         events (one per optimizer), before callbacks see them. The default
         does nothing."""
 
@@ -243,7 +246,8 @@ def _check_update_owner(train_step_fn: Any, objective: Any, *, step_name: str = 
     if paradigm is not None:
         raise ValueError(
             f"objective= got the imperative {paradigm} step, which steps the optimizer itself — the engine would "
-            f"step it again. Pass it as the step function, or use the {paradigm} objective"
+            f"step it again. Pass it as the step function"
+            + (f", or use the {paradigm} objective" if paradigm in ("diffusion", "jepa", "kd") else "")
         )
     if isinstance(train_step_fn, Objective):
         raise ValueError(
@@ -328,7 +332,8 @@ class KDObjective(Objective):
     ``alpha · KL_batchmean + (1 − alpha) · loss`` of the full batch, however
     the rows are split into microbatches or targets are ignored. The teacher
     is frozen and put in eval mode once, as ``kd_train_step_factory`` does,
-    and never updated.
+    and never updated. At ``alpha=0`` only the ``"supervised"`` term is
+    returned.
     """
 
     def __init__(self, teacher: NNModel, *, alpha: float = 0.5, temperature: float = 4.0, nonfinite: str = "fail"):
@@ -342,36 +347,40 @@ class KDObjective(Objective):
         _freeze_teacher(teacher)
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
-        from ._step_helpers import softened_kl
+        from ._step_helpers import predicted_labels, require_row_logits, softened_kl
         from .nn.nn_model import _classification_edp_for_loss, _single_input_batch
 
         model = ctx.model
         model.net.train()
         X, Y = _single_input_batch(model, ctx.batch, who="kd_objective")
         student = ctx.full_precision(model._net_forward((X,), {}))
+        require_row_logits(student, "kd_objective")
         with torch.no_grad(), _own_precision(ctx, self.teacher) as teacher_precision:
             teacher_logits = ctx.full_precision(
                 teacher_precision.output(self.teacher._net_forward((X.to(self.teacher.device),), {})).to(model.device)
             )
         rows = int(student.shape[0])
-        soft = LossTerm(
-            "distillation",
-            softened_kl(student, teacher_logits, self.temperature) * rows,  # batchmean × rows = row sum
-            rows,
-            "mean",
-            self.alpha,
-        )
         hard = _supervised_terms(model, student, Y, "supervised", 1.0 - self.alpha)
-        result = ObjectiveResult((soft, hard))
+        terms: tuple[LossTerm, ...] = (hard,)
+        if self.alpha > 0:  # alpha=0 is plain supervised training: no soft term (a binary head has none)
+            soft = LossTerm(
+                "distillation",
+                softened_kl(student, teacher_logits, self.temperature) * rows,  # batchmean × rows = row sum
+                rows,
+                "mean",
+                self.alpha,
+            )
+            terms = (soft, hard)
+        result = ObjectiveResult(terms)
         loss = result.loss()
         record = _classification_edp_for_loss(
             loss_fn=model.loss_fn,
             target=Y,
-            prediction=student.detach().argmax(dim=-1),
+            prediction=predicted_labels(model.loss_fn, student.detach()),
             loss=loss if loss is not None else math.nan,
             extra_metrics=ctx.extra_metrics,
         )
-        return ObjectiveResult((soft, hard), record)
+        return ObjectiveResult(terms, record)
 
 
 @contextlib.contextmanager

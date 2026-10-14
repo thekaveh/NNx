@@ -1,4 +1,4 @@
-"""I-JEPA latent prediction as an objective (FEAT-040).
+"""I-JEPA latent prediction as an objective.
 
 :func:`~nnx.paradigms.jepa_train_step_factory` is an imperative step: it
 takes a masked mean squared error, hands it to ``finalize_step`` (which
@@ -81,7 +81,7 @@ def _check_masks(context: torch.Tensor, target: torch.Tensor, n_patches: int) ->
 class JEPAObjective(Objective):
     """I-JEPA latent prediction as an objective — see the module docstring.
 
-    Callable as an objective and a checkpointable component (FEAT-005)
+    Callable as an objective and a checkpointable component
     named ``"jepa.objective"``: its state is the objective spec (loss term,
     EMA momentum), the predictor's **reference** (its name inside
     ``model.net`` — its weights are saved once, with the net), the EMA
@@ -251,6 +251,11 @@ class JEPAObjective(Objective):
         with torch.no_grad():
             target_embeds = self.target_encoder(x)[:, target_positions, :]
         predicted = self.predictor(context_embeds, context_positions, target_positions)
+        if predicted.shape != target_embeds.shape:  # a broadcast would train on a wrong loss silently
+            raise ValueError(
+                f"the predictor must return the target embeddings' shape {tuple(target_embeds.shape)}, "
+                f"got {tuple(predicted.shape)}"
+            )
         error = full_precision(predicted) - full_precision(target_embeds)
         term = LossTerm(_TERM, error.pow(2).sum(), error.numel(), "mean")
         value = term.value
@@ -338,6 +343,6 @@ def jepa_objective(
     nonfinite: str = "fail",
 ) -> JEPAObjective:
     """I-JEPA latent prediction as an objective (see :class:`JEPAObjective`)
-    — the objective counterpart of :func:`jepa_train_step_factory`, which
-    stays available (and unchanged) as the imperative step."""
+    — the objective counterpart of :func:`jepa_train_step_factory`, the
+    imperative step."""
     return JEPAObjective(target_encoder, predictor, mask_fn, ema_momentum=ema_momentum, nonfinite=nonfinite)

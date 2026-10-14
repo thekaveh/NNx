@@ -13,7 +13,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts import check_feature_composition as fc
+from tests._repo_files import repo_file
+
+# Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
+# so a packager running its suite skips this module instead of failing collection.
+repo_file("scripts", "check_feature_composition.py")
+
+from scripts import check_feature_composition as fc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -422,7 +428,19 @@ def test_the_gpu_job_feeds_the_published_page_without_blocking_it():
     docs = (ROOT / ".github" / "workflows" / "docs.yml").read_text(encoding="utf-8")
     jobs = yaml.safe_load(docs)["jobs"]
     gpu = jobs["gpu-evidence"]
-    assert gpu["if"] == "vars.NNX_GPU_RUNNER == 'true'"
+    assert gpu["if"].startswith("vars.NNX_GPU_RUNNER == 'true' && ")
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in gpu["if"]  # never a fork
     assert gpu["runs-on"] == ["self-hosted", "linux", "x64", "gpu"]
     assert "gpu-evidence" in jobs["build"]["needs"] and "!cancelled()" in jobs["build"]["if"]
     assert "--report feature-composition-cuda-report.json" in docs
+
+
+def test_a_hung_scenario_run_fails_with_its_own_error(registry, tmp_path, monkeypatch):
+    import subprocess
+
+    def hung(*args, **kwargs):
+        raise subprocess.TimeoutExpired("pytest", fc.RUN_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(fc.subprocess, "run", hung)
+    with pytest.raises(RuntimeError, match="did not finish"):
+        fc.run(registry, root=tmp_path)

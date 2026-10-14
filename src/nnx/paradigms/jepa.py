@@ -37,7 +37,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .._step_helpers import finalize_step, imperative_step
+from .._step_helpers import finalize_step, first_input, imperative_step
 from ..components import ComponentSpec
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -146,11 +146,20 @@ def random_block_mask(
         A pair of ``BoolTensor``s, both 1-D length ``n_patches``.
 
     Raises:
-        ValueError: when ``grid_size**2 != n_patches``, or when the
-            sampled block would be empty / larger than the grid.
+        ValueError: when ``grid_size**2 != n_patches``; when
+            ``block_scale`` is not an ordered pair in ``(0, 1)`` or
+            ``block_aspect`` not an ordered pair of finite positive ratios; or
+            for a 1x1 grid (no room for a context). A block is never
+            empty and never the whole grid: each side is at least one
+            patch, a side longer than the grid is clipped to it, and a
+            block that would cover the grid loses one column.
     """
     if grid_size * grid_size != n_patches:
         raise ValueError(f"grid_size**2 ({grid_size**2}) != n_patches ({n_patches})")
+    if not 0.0 < block_scale[0] <= block_scale[1] < 1.0:
+        raise ValueError(f"block_scale must be an ordered (min, max) pair in (0, 1), got {block_scale}")
+    if not (math.isfinite(block_aspect[1]) and 0.0 < block_aspect[0] <= block_aspect[1]):
+        raise ValueError(f"block_aspect must be an ordered (min, max) pair of positive ratios, got {block_aspect}")
 
     # Sample block scale and aspect. ``torch.rand`` accepts a
     # generator directly; ``Tensor.uniform_`` does not, which is why
@@ -168,6 +177,12 @@ def random_block_mask(
     top = int(torch.randint(0, grid_size - h + 1, (1,), generator=generator).item())
     left = int(torch.randint(0, grid_size - w + 1, (1,), generator=generator).item())
 
+    if h * w == n_patches:
+        # Rounding and clipping can reach the whole grid even for
+        # block_scale < 1: keep one column of context.
+        if grid_size == 1:
+            raise ValueError("a 1x1 patch grid has no room for both a target block and a context")
+        w -= 1
     grid = torch.zeros(grid_size, grid_size, dtype=torch.bool, device=device)
     grid[top : top + h, left : left + w] = True
     target_mask = grid.flatten()  # (n_patches,)
@@ -335,11 +350,10 @@ def jepa_train_step_factory(
             again on call and pins to ``eval()`` mode.
         predictor: a :class:`JEPAPredictor` (or any module with the
             same ``forward(context_embeds, context_positions,
-            target_positions)`` contract). The predictor's parameters
-            are *not* frozen — the optimizer's ``param_groups`` need
-            to include them; the simplest path is to register the
-            predictor as a submodule of ``model.net`` (the ViTNN)
-            before constructing the optimizer.
+            target_positions)`` contract). It must be a submodule of
+            ``model.net`` (the ViTNN), registered before training:
+            ``NNModel.train`` builds the optimizer from ``model.net``, and
+            checkpoints and gradient clipping cover only ``model.net``.
         mask_fn: callable ``(n_patches, device) -> (context_mask,
             target_mask)`` where both are 1-D ``BoolTensor[n_patches]``.
             Sampled freshly **once per step** and shared across the
@@ -352,7 +366,9 @@ def jepa_train_step_factory(
         A ``TrainStepFn`` for ``NNModel.train(..., train_step_fn=...)``.
 
     Raises:
-        ValueError: when ``ema_momentum`` is outside ``[0, 1)``.
+        ValueError: when ``ema_momentum`` is outside ``[0, 1)``; at the
+            first step, when the predictor is not a submodule of
+            ``model.net`` (it would never be updated).
     """
     if not (0.0 <= ema_momentum < 1.0):
         raise ValueError(f"ema_momentum must be in [0, 1), got {ema_momentum}")
@@ -367,37 +383,29 @@ def jepa_train_step_factory(
         m = ctx.model
         m.net.train()
         predictor.train()
+        # The optimizer, checkpoints and clipping cover model.net only: a
+        # predictor outside it would get gradients and never be updated.
+        if not any(module is predictor for module in m.net.modules()):
+            raise ValueError(
+                "jepa_train_step_factory: the predictor is not a submodule of model.net, so the optimizer never "
+                "updates it; register it on the net (e.g. model.net.predictor = predictor) before training"
+            )
         m.net.zero_grad()
-        # The predictor may live outside `model.net` (its params added to the
-        # optimizer directly, per the docstring's alternate path) — then
-        # `m.net.zero_grad()` above does not reach it. Zero it explicitly so
-        # its gradients don't accumulate across steps. No-op when it is a
-        # submodule of `model.net` (the recommended path).
-        predictor.zero_grad()
 
-        # Standard dataloader contract: (X, Y) or single tensor. Y is
-        # ignored — JEPA is self-supervised.
+        # The one input, as the JEPA objective reads it (the model's batch
+        # adapter, else unpack_batch, else (X, Y) / a tensor). Y is ignored.
         dynamic_net = cast(Any, m.net)
-        if hasattr(dynamic_net, "unpack_batch"):
-            (x,), _ = dynamic_net.unpack_batch(ctx.batch)
-        elif isinstance(ctx.batch, (list, tuple)):
-            x = ctx.batch[0]
-        else:
-            x = ctx.batch
-        x = x.to(m.device)
+        x = first_input(m, ctx.batch, who="jepa_train_step_factory")
 
         # Sample the per-step mask. Both masks are 1-D length n_patches.
         n_patches = int(dynamic_net.n_patches)
         context_mask_1d, target_mask_1d = mask_fn(n_patches, m.device)
-        if context_mask_1d.shape != (n_patches,) or target_mask_1d.shape != (n_patches,):
-            raise ValueError(
-                f"mask_fn must return two BoolTensors of shape ({n_patches},); "
-                f"got {tuple(context_mask_1d.shape)} and {tuple(target_mask_1d.shape)}"
-            )
-        if not torch.equal(context_mask_1d, ~target_mask_1d):
-            raise ValueError(
-                "context_mask and target_mask must be complementary (every patch is either context or target)."
-            )
+        # The objective's mask contract: shape, dtype, complementary, and at
+        # least one context and one target patch (an empty target would give
+        # a NaN loss reported as divergence).
+        from .jepa_objective import _check_masks
+
+        _check_masks(context_mask_1d, target_mask_1d, n_patches)
         B = x.shape[0]
         context_mask = _broadcast_mask(context_mask_1d, B)
 
@@ -421,6 +429,11 @@ def jepa_train_step_factory(
 
         # Predict target embeddings from context.
         predicted_embeds = predictor(context_embeds, context_positions, target_positions)
+        if predicted_embeds.shape != target_embeds.shape:  # mse_loss would broadcast and train on a wrong loss
+            raise ValueError(
+                f"the predictor must return the target embeddings' shape {tuple(target_embeds.shape)}, "
+                f"got {tuple(predicted_embeds.shape)}"
+            )
 
         loss = F.mse_loss(predicted_embeds, target_embeds)
         loss_val = finalize_step(loss, ctx, paradigm="jepa")
@@ -449,14 +462,14 @@ class JEPATrainStep:
     """The I-JEPA step returned by :func:`jepa_train_step_factory`.
 
     Callable as a ``TrainStepFn`` and a checkpointable component
-    (FEAT-005) named ``"jepa.target_encoder"``: every checkpoint's
+    named ``"jepa.target_encoder"``: every checkpoint's
     training state carries the EMA target encoder's weights, and a stateful
     warm resume restores them, so a run split at an epoch boundary
     continues with the same target encoder an uninterrupted run would
-    have. The component is required — resuming from a current stateful
-    checkpoint written without it fails before anything is restored, while a
-    checkpoint written before component state existed resumes with a fresh
-    target copy and a warning.
+    have. The component is required — resuming from a stateful checkpoint
+    that records component state but not this component fails before
+    anything is restored, while a checkpoint with no component state at all
+    resumes with a fresh target copy and a warning.
     """
 
     def __init__(self, step: TrainStepFn, target_encoder: nn.Module, ema_momentum: float) -> None:

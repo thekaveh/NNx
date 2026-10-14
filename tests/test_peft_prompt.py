@@ -197,3 +197,27 @@ def test_prompt_state_dict_excludes_nested_name_collisions(tmp_path):
     assert load_prompt_weights(tuner, source) == 1
     for k, v in tuner.state_dict().items():
         assert torch.equal(v, before[k]), k
+
+
+def test_prompt_tuner_refuses_a_prompt_that_fills_the_context():
+    model = _tiny_transformer()
+    with pytest.raises(ValueError, match="max_seq_len"):
+        PromptTuner(model, n_prompt_tokens=model.params.max_seq_len)
+
+
+@pytest.mark.parametrize("bad", [2.0, True])
+def test_peft_sizes_must_be_integers_checked_before_freezing(bad):
+    """A fractional size failed inside torch.empty after the base was
+    frozen; a bool read as 1. Both are refused before anything changes."""
+    from torch import nn
+
+    from nnx import apply_lora_to
+
+    model = nn.Sequential(nn.Linear(4, 4))
+    with pytest.raises(ValueError, match="requires r to be an integer"):
+        apply_lora_to(model, "*", r=bad)
+    assert all(p.requires_grad for p in model.parameters())
+    base = _tiny_transformer()
+    with pytest.raises(ValueError, match="requires n_prompt_tokens to be an integer"):
+        PromptTuner(base, n_prompt_tokens=bad)
+    assert all(p.requires_grad for p in base.parameters())

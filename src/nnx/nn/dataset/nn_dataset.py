@@ -9,8 +9,9 @@ import torch
 from torch.utils.data import DataLoader, random_split
 
 from ..._optional import require
-from ..._validation import require_batch_sizes
+from ..._validation import require_batch_sizes, require_count
 from ...preprocessing import SplitView, describe_transform
+from ...seeding import _global_rng_kept
 from .nn_dataset_base import NNDatasetBase
 
 # The vision extra (FEAT-031): importing this module needs torchvision.
@@ -39,11 +40,11 @@ class NNDataset(NNDatasetBase):
     negatives, floats, strings and anything but a 3-tuple are rejected with
     the ``batch_sizes[i] (split)`` slot named before ``ds_class`` is
     instantiated — zero never disables a split; ``val_proportion=0.0`` does
-    (``val_loader`` is then ``None`` and the resolved val size is a
-    placeholder ``1``).
+    (``val_loader`` is then ``None``; the resolved val size is a placeholder
+    ``1`` when requested as ``None``, and an explicit size is kept).
 
     ``transform`` is handed to both torchvision factories and applies to
-    every split. Split transforms (FEAT-018): ``train_transform`` and
+    every split. Split transforms: ``train_transform`` and
     ``eval_transform`` add a per-split input transform on top of it — e.g. a
     random augmentation for training and a fixed resize for validation and
     test. Each split then becomes a ``nnx.preprocessing.SplitView`` over
@@ -76,6 +77,10 @@ class NNDataset(NNDatasetBase):
     eval_transform: Optional[Callable] = None
 
     def __post_init__(self):
+        if self.seed is not None:  # the split generator's seed domain
+            object.__setattr__(
+                self, "seed", require_count(self.seed, "seed", owner="NNDataset", minimum=0, maximum=2**32 - 1)
+            )
         if not 0.0 <= self.val_proportion < 1.0:
             raise ValueError(f"val_proportion must be in [0, 1), got {self.val_proportion}")
         # Validate the request before the factories run (FIX-022): `None`
@@ -113,14 +118,22 @@ class NNDataset(NNDatasetBase):
         # Fail fast on the no-transform PIL case: torchvision datasets
         # yield PIL Images without `transform`, and everything downstream
         # (input_dim inference, batching) needs tensors.
-        sample = full_train_dataset[0][0]
-        if self.eval_transform is not None:
-            sample = self.eval_transform(sample)  # what the model sees at evaluation
-        if not hasattr(sample, "shape"):
-            raise ValueError(
-                f"{self.ds_class.__name__} samples have no .shape (got {type(sample).__name__}) — "
-                "pass transform=torchvision.transforms.ToTensor() (or a pipeline ending in it)."
-            )
+        # What the model sees at evaluation and in training: both must be
+        # tensors. A random augmentation's draw here (the base transform runs
+        # on indexing) must not move the caller's random streams.
+        with _global_rng_kept():
+            raw = full_train_dataset[0][0]
+            probes = [
+                raw if transform is None else transform(raw)
+                for transform in (self.eval_transform, self.train_transform)
+            ]
+        for probe in probes:
+            if not hasattr(probe, "shape"):
+                raise ValueError(
+                    f"{self.ds_class.__name__} samples have no .shape (got {type(probe).__name__}) — "
+                    "pass transform=torchvision.transforms.ToTensor() (or a pipeline ending in it)."
+                )
+        sample = probes[0]
 
         # `None` → one batch holding the complete split; an explicit
         # positive size is kept verbatim (an `is None` test, not

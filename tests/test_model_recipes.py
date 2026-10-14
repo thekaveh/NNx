@@ -31,6 +31,18 @@ def _quiet(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
 
 
+@pytest.fixture(autouse=True)
+def _restore_model_registry():
+    """The model-factory registry is process-global: drop what a test
+    registered, so a rerun (or another test on the worker) starts clean."""
+    from nnx.models import registered_model_factories, unregister_model_factory
+
+    before = set(registered_model_factories())
+    yield
+    for key in set(registered_model_factories()) - before:
+        unregister_model_factory(*key)
+
+
 def _model(seed: int = 0) -> NNModel:
     torch.manual_seed(seed)
     return NNModel(
@@ -1218,3 +1230,53 @@ def test_a_recipe_travels_in_a_run_bundle_and_a_callback_operation_does_not(tmp_
         with pytest.raises(BundleError, match=r"topology transform 0 \('lora' version 7\) has a version"):
             export_bundle(run.id, tmp_path / "future")
     assert not (tmp_path / "future").exists()
+
+
+def test_numpy_integer_counts_are_plain_ints_in_a_recipe():
+    """A grid over np.arange gives NumPy integers: they are the same recipe
+    (and run id) as the Python ints."""
+    import numpy as np
+
+    from nnx.transforms import TransformRecipe, lora, low_rank
+
+    numpy = [lora("layers.0", r=np.int64(4)), low_rank("layers.1", rank=np.int64(2))]
+    plain = [lora("layers.0", r=4), low_rank("layers.1", rank=2)]
+    TransformRecipe(numpy)  # validates (it refused np.int64 before)
+    assert [op.state() for op in numpy] == [op.state() for op in plain]
+    assert type(numpy[0].config["r"]) is int
+
+
+def test_numpy_lora_hyperparameters_are_plain_floats():
+    import numpy as np
+
+    from nnx.transforms import TransformRecipe, lora
+
+    numpy = [lora("layers.0", r=4, alpha=np.int64(8), dropout=np.float32(0.25))]
+    TransformRecipe(numpy)
+    assert numpy[0].state() == lora("layers.0", r=4, alpha=8.0, dropout=0.25).state()
+
+
+def test_training_refuses_a_top_level_parametrization_of_a_registered_module(tmp_path, monkeypatch):
+    from nnx.models import ModelSpec, register_model_factory
+
+    monkeypatch.chdir(tmp_path)
+
+    class Scaled(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.ones(6, 6))
+            self.inner = nn.Linear(6, 3)
+
+        def forward(self, x):
+            return self.inner(x @ self.weight)
+
+    register_model_factory("tests.top_level_param", 1, lambda config: Scaled())
+    model = NNModel(
+        params=NNModelParams(net=ModelSpec("tests.top_level_param", 1), device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    )
+    torch.nn.utils.parametrizations.spectral_norm(model.net, name="weight")
+    loader = [(torch.randn(4, 6), torch.tensor([0, 1, 2, 0]))]
+    with pytest.raises(ValueError, match="weight are reparameterized"):
+        model.train(
+            params=NNTrainParams(n_epochs=1, train_loader=loader, optim=NNOptimParams.builder().sgd(max_lr=0.1).build())
+        )

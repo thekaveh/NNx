@@ -19,7 +19,7 @@ machine.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Union
+from typing import Any, Union
 
 import torch
 
@@ -59,3 +59,18 @@ def _resolve_source_to_state_dict(source: PeftStateDictSource, fn_name: str) -> 
     if isinstance(source, dict):
         return source
     raise TypeError(f"{fn_name} source must be a path or dict, got {type(source).__name__}")
+
+
+def _refuse_shape_mismatch(module: Any, sd: dict, fn_name: str) -> None:
+    """Raise before anything is copied when an owned key's shape differs
+    from the destination's: ``load_state_dict(strict=False)`` copies every
+    matching tensor first and raises at the end, leaving a half-loaded
+    module."""
+    current = module.state_dict()
+    mismatched = [
+        f"{key}: {tuple(value.shape)} vs {tuple(current[key].shape)}"
+        for key, value in sd.items()
+        if key in current and hasattr(value, "shape") and tuple(value.shape) != tuple(current[key].shape)
+    ]
+    if mismatched:
+        raise RuntimeError(f"{fn_name}: size mismatch, nothing was loaded: {'; '.join(mismatched[:5])}")

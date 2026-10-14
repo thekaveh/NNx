@@ -22,8 +22,8 @@ accuracy comparison.
 
 Compared to FP32, int8 weight-only typically achieves ~4x smaller weights
 at production scale (dim >= 64 — see ``examples/12_quantize_int8.py``).
-Activations are computed in FP32 then cast to int8 only inside the
-weight matmul, so accuracy loss is small for most networks.
+Activations stay in FP32; only the weights are stored as int8 and
+dequantized for the matmul, so accuracy loss is small for most networks.
 
 This module is PTQ INT8 weight-only only. QAT (the standard 8da4w
 recipe — int8 dynamic per-token activations, int4 grouped per-channel

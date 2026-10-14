@@ -202,3 +202,105 @@ def test_builder_rejects_invalid_one_cycle_max_lr():
             )
             .build()
         )
+
+
+def test_one_cycle_keeps_each_param_groups_own_peak():
+    """OneCycle with several param groups peaks each group at its own LR
+    (or the explicit max_lr scaled by the group's ratio to the base LR),
+    never one shared value taken from the first group."""
+    import torch
+
+    from nnx import NNSchedulerParams, Schedulers
+
+    def groups():
+        # The specific group first and the default (base-LR) group last, as
+        # build_param_groups orders them.
+        backbone, head = torch.nn.Linear(2, 2), torch.nn.Linear(2, 2)
+        return torch.optim.SGD(
+            [{"params": backbone.parameters(), "lr": 1e-5}, {"params": head.parameters(), "lr": 1e-3}], lr=1e-3
+        )
+
+    base = dict(min_lr=0.0, factor=0.5, patience=0, cooldown=0, threshold=0.0, total_steps=10)
+    own = groups()
+    Schedulers.ONE_CYCLE(own, NNSchedulerParams(kind=Schedulers.ONE_CYCLE, **base), n_epochs=10)
+    assert [group["max_lr"] for group in own.param_groups] == [1e-5, 1e-3]
+    scaled = groups()
+    Schedulers.ONE_CYCLE(scaled, NNSchedulerParams(kind=Schedulers.ONE_CYCLE, max_lr=1e-2, **base), n_epochs=10)
+    # The default group peaks at exactly max_lr; the backbone keeps its 1/100.
+    assert [group["max_lr"] for group in scaled.param_groups] == pytest.approx([1e-4, 1e-2])
+
+
+def test_one_cycle_peaks_against_a_factory_optimizers_configured_base_lr():
+    """A registered factory builds its optimizer without an lr, so its
+    defaults["lr"] is the class default: the peaks follow the config's
+    max_lr (the default group's rate), as for a built-in optimizer."""
+    import torch
+
+    from nnx import NNParamGroupSpec, NNSchedulerParams, Schedulers
+    from nnx.optimizers import (
+        NNOptimFactoryParams,
+        OptimizerFactorySpec,
+        build_optimizer,
+        register_optimizer_factory,
+        unregister_optimizer_factory,
+    )
+
+    register_optimizer_factory("test.adam_default_lr", 1, lambda groups, config: torch.optim.Adam(groups))
+    try:
+        net = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Linear(2, 2))
+        optimizer = build_optimizer(
+            net,
+            NNOptimFactoryParams(
+                factory=OptimizerFactorySpec(id="test.adam_default_lr", version=1),
+                max_lr=0.1,
+                param_groups=[NNParamGroupSpec(name_pattern="0.*", lr_multiplier=0.5)],
+            ),
+        )
+        params = NNSchedulerParams(
+            kind=Schedulers.ONE_CYCLE,
+            max_lr=1.0,
+            min_lr=0.0,
+            factor=0.5,
+            patience=0,
+            cooldown=0,
+            threshold=0.0,
+            total_steps=10,
+        )
+        Schedulers.ONE_CYCLE(optimizer, params, n_epochs=10)
+        assert sorted(group["max_lr"] for group in optimizer.param_groups) == pytest.approx([0.5, 1.0])
+    finally:
+        unregister_optimizer_factory("test.adam_default_lr", 1)
+
+
+def test_one_cycle_keeps_a_single_scoped_groups_multiplier():
+    """A Trainer's strict optimizer may hold one group at lr_multiplier=0.1:
+    its peak is 0.1 * max_lr, as it is beside a sibling group."""
+    import torch
+
+    from nnx import NNOptimParams, NNParamGroupSpec, NNSchedulerParams, Optims, Schedulers
+    from nnx.optimizers import build_optimizer
+
+    net = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Linear(2, 2))
+    optimizer = build_optimizer(
+        net,
+        NNOptimParams(
+            name=Optims.SGD,
+            max_lr=1e-2,
+            momentum=0.9,
+            weight_decay=0.0,
+            param_groups=[NNParamGroupSpec(name_pattern="0.*", lr_multiplier=0.1)],
+        ),
+        strict_param_groups=True,
+    )
+    params = NNSchedulerParams(
+        kind=Schedulers.ONE_CYCLE,
+        max_lr=1.0,
+        min_lr=0.0,
+        factor=0.5,
+        patience=0,
+        cooldown=0,
+        threshold=0.0,
+        total_steps=10,
+    )
+    Schedulers.ONE_CYCLE(optimizer, params, n_epochs=10)
+    assert [group["max_lr"] for group in optimizer.param_groups] == pytest.approx([0.1])

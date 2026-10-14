@@ -107,3 +107,14 @@ def test_of_creates_parent_directories(tmp_path):
     params = NNTokenizerParams.of(tokenizer=tk, path=str(nested))
     assert nested.exists()
     assert params.path == str(nested)
+
+
+def test_train_bpe_keeps_an_unknown_token_for_unseen_characters():
+    """special_tokens without "<unk>" used to build a tokenizer that raised
+    on any unseen character; the unk token is appended after them."""
+    pytest.importorskip("tokenizers")
+    from nnx.nn.params.nn_tokenizer_params import train_bpe
+
+    tk = train_bpe(texts=["hello world"] * 20, vocab_size=60, special_tokens=["<pad>", "<eos>"])
+    assert tk.token_to_id("<pad>") == 0 and tk.token_to_id("<unk>") is not None
+    assert tk.token_to_id("<unk>") in tk.encode("hello zzq!").ids  # an unseen character encodes as <unk>

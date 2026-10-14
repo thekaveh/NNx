@@ -566,8 +566,10 @@ def test_trainer_with_val_loader_evaluates(tmp_path, monkeypatch):
         trainer_step_fn=_supervised_step,
     )
     # Last idp of each epoch carries val_edp; earlier idps don't.
+    assert len(run.idps) == 4  # 32 samples / batch_size 8, one epoch
     assert run.idps[-1].val_edp is not None
     assert run.idps[-1].val_edp.loss is not None
+    assert all(i.val_edp is None for i in run.idps[:-1])
 
 
 def test_trainer_dispatches_non_plateau_scheduler(tmp_path, monkeypatch):
@@ -1175,8 +1177,8 @@ def test_trainer_task_preflight_fails_before_consuming_the_loader(tmp_path, monk
 
 
 def _assert_same_records(loaded, expected):
-    """Reloaded idps.csv records equal the originals up to pandas' float
-    parsing (the CSV reader is not bit-exact for every double)."""
+    """Reloaded idps.csv records equal the originals bit for bit: the
+    loader parses floats round-trip, so no tolerance is needed."""
     assert len(loaded) == len(expected)
     for got, want in zip(loaded, expected, strict=True):
         for edp_got, edp_want in ((got.train_edp, want.train_edp), (got.val_edp, want.val_edp)):
@@ -1186,12 +1188,7 @@ def _assert_same_records(loaded, expected):
             state_got, state_want = edp_got.state(), edp_want.state()
             assert state_got.keys() == state_want.keys()
             for key, value in state_want.items():
-                if isinstance(value, float):
-                    assert state_got[key] == pytest.approx(value, rel=1e-12), key
-                elif isinstance(value, dict):
-                    assert state_got[key] == pytest.approx(value, rel=1e-12), key
-                else:
-                    assert state_got[key] == value, key
+                assert state_got[key] == value, key
 
 
 # --- FEAT-005: two-optimizer Trainer warm resume ---------------------------
@@ -1507,3 +1504,303 @@ def test_lr_monitor_keeps_one_history_entry_per_epoch_on_the_update_clock(tmp_pa
     assert len(monitor.history) == 3
     assert [k for k, _ in monitor.update_history] == list(range(1, 13))
     assert monitor.history[-1] == pytest.approx(monitor.update_history[-1][1])
+
+
+def test_trainer_refuses_update_listeners_it_would_never_call(tmp_path, monkeypatch):
+    """Update-boundary listeners (and ctx.stop_at_update) are an
+    NNModel.train feature; under Trainer they would silently never fire."""
+    from nnx import Callback
+
+    class Listening(Callback):
+        def on_train_begin(self, ctx) -> None:
+            ctx.update_listeners.append(lambda ctx: None)
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match="update_listeners"):
+        Trainer(_gan_like_model()).train(_two_optimizer_params(1), trainer_step_fn=_two_step, callbacks=[Listening()])
+
+
+@pytest.mark.parametrize("hook", ["on_epoch_begin", "on_epoch_end"])
+def test_trainer_refuses_a_late_update_listener_or_stop(hook, tmp_path, monkeypatch):
+    """A listener appended (or stop_at_update set) after training began is
+    refused at the next dispatch, never silently ignored."""
+    from nnx import Callback
+
+    class Late(Callback):
+        pass
+
+    def register(self, ctx) -> None:
+        if hook == "on_epoch_begin":
+            ctx.update_listeners.append(lambda ctx: None)
+        else:
+            ctx.stop_at_update = True
+
+    setattr(Late, hook, register)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match="update_listeners|stop_at_update"):
+        Trainer(_gan_like_model()).train(_two_optimizer_params(2), trainer_step_fn=_two_step, callbacks=[Late()])
+
+
+def test_an_objective_run_refuses_optimizers_sharing_a_parameter(tmp_path, monkeypatch):
+    """Every committed window steps every optimizer, so in FP32 too a
+    parameter two scopes share would take two updates per window."""
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(1)
+        .train_loader(_supervised_loader(16))
+        .optimizer(
+            "all", NNOptimParams.builder().sgd(max_lr=0.1).param_groups([NNParamGroupSpec(name_pattern="*")]).build()
+        )
+        .optimizer(
+            "bias",
+            NNOptimParams.builder()
+            .sgd(max_lr=0.1)
+            .param_groups([NNParamGroupSpec(name_pattern="layers.0.bias")])
+            .build(),
+        )
+        .build()
+    )
+    with pytest.raises(ValueError, match="share a parameter.*step twice"):
+        Trainer(_gan_like_model()).train(params, objective=supervised_objective())
+    assert not (tmp_path / "runs").exists() or not [
+        p for p in (tmp_path / "runs").iterdir() if not p.name.startswith(".")
+    ]
+
+
+@pytest.mark.parametrize("knob", [{"grad_clip_norm": 1.0}, {"accumulate_grad_batches": 2}])
+def test_a_trainer_step_fn_refuses_optimizer_knobs_it_never_applies(knob, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    params = NNTrainerParams(
+        n_epochs=1,
+        train_loader=_supervised_loader(n=8),
+        optims={"main": NNOptimParams(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0, **knob)},
+    )
+    with pytest.raises(ValueError, match="never applies"):
+        Trainer(model=_supervised_model()).train(params=params, trainer_step_fn=_supervised_step)
+
+
+def test_a_schedule_whose_optimizer_waits_an_epoch_steps_without_a_torch_warning(tmp_path, monkeypatch):
+    """The "head" optimizer is not stepped in epoch 0 (a warm-up freeze);
+    its epoch-clock schedule still advances, without torch's misleading
+    "lr_scheduler.step() before optimizer.step()" warning."""
+    import warnings
+
+    head_lrs: dict[int, float] = {}
+
+    def head_waits(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+        head_lrs.setdefault(ctx.epoch_idx, ctx.optimizers["head"].param_groups[0]["lr"])
+        model = ctx.model
+        model.net.train()
+        for optimizer in ctx.optimizers.values():
+            optimizer.zero_grad()
+        (x,), y = model.net.unpack_batch(ctx.batch)
+        loss = model.loss_fn(model.net(x), y)
+        loss.backward()
+        ctx.optimizers["body"].step()
+        if ctx.epoch_idx > 0:
+            ctx.optimizers["head"].step()
+        return NNEvaluationDataPoint(loss=float(loss.detach()), error=float(loss.detach()))
+
+    monkeypatch.chdir(tmp_path)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message=r"Detected call of `lr_scheduler\.step\(\)`")
+        Trainer(_gan_like_model()).train(_two_optimizer_params(2), trainer_step_fn=head_waits)
+    # The head's StepLR (factor 0.5 per epoch) advanced after epoch 0.
+    assert head_lrs == pytest.approx({0: 0.05, 1: 0.025})
+
+
+def test_a_refused_owner_pair_never_runs_a_writer_only_factory(tmp_path, monkeypatch):
+    """Both trainer_step_fn and objective is refused before any callback
+    factory runs (a TensorBoard factory writes when it is built)."""
+    from nnx.distributed import writer_only
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    built = []
+    factory = writer_only(lambda: built.append(1))
+    with pytest.raises(ValueError):
+        Trainer(_gan_like_model()).train(
+            _two_optimizer_params(1), trainer_step_fn=_two_step, objective=supervised_objective(), callbacks=[factory]
+        )
+    assert built == []
+
+
+def test_an_objective_run_refuses_schedulers_nothing_would_step(tmp_path, monkeypatch):
+    """auto_step_schedulers=False hands timing to a step function; an
+    objective run has none, so its schedules would silently never step."""
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    from dataclasses import replace
+
+    params = _two_optimizer_params(1)
+
+    with pytest.raises(ValueError, match="would never step"):
+        Trainer(_gan_like_model()).train(replace(params, auto_step_schedulers=False), objective=supervised_objective())
+
+
+def test_an_objective_run_refuses_unstepped_default_schedulers(tmp_path, monkeypatch):
+    """Without explicit schedulers each optimizer still gets the default
+    plateau scheduler: auto_step_schedulers=False would leave it unstepped."""
+    from dataclasses import replace
+
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    params = replace(_two_optimizer_params(1), schedulers={}, auto_step_schedulers=False)
+    with pytest.raises(ValueError, match="would never step"):
+        Trainer(_gan_like_model()).train(params, objective=supervised_objective())
+
+
+@pytest.mark.parametrize("hook", ["on_train_begin", "on_epoch_begin"])
+@pytest.mark.parametrize("mode", ["stateful", "weights_only"])
+def test_a_refused_train_or_epoch_begin_after_a_resume_leaves_the_model_unchanged(hook, mode, tmp_path, monkeypatch):
+    """The resume loaded the checkpoint into the caller's model before the
+    callback refusal (at train or first-epoch begin, either resume mode): it
+    is handed back as it was."""
+    from nnx import Callback
+
+    class Listening(Callback):
+        pass
+
+    def register(self, ctx) -> None:
+        ctx.update_listeners.append(lambda ctx: None)
+
+    setattr(Listening, hook, register)
+
+    monkeypatch.chdir(tmp_path)
+    first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
+    model = _gan_like_model()
+    before = {key: value.clone() for key, value in model.net.state_dict().items()}
+    resumed = _two_optimizer_params(2, run_id=first.id, mode=mode)  # its loader seeds: build it first
+    torch.manual_seed(123)
+    rng = torch.get_rng_state()
+    with pytest.raises(ValueError, match="update_listeners"):
+        Trainer(model).train(params=resumed, trainer_step_fn=_two_step, callbacks=[Listening()])
+    assert all(torch.equal(value, before[key]) for key, value in model.net.state_dict().items())
+    assert torch.equal(torch.get_rng_state(), rng)
+
+
+@pytest.mark.parametrize("hook", ["on_train_begin", "on_epoch_begin"])
+@pytest.mark.parametrize("mode", ["stateful", "weights_only"])
+def test_nnmodel_hands_a_resumed_model_back_when_a_begin_hook_raises(hook, mode, tmp_path, monkeypatch):
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx import (
+        Activations,
+        Callback,
+        Devices,
+        Losses,
+        Nets,
+        NNModel,
+        NNModelParams,
+        NNOptimParams,
+        NNParams,
+        NNTrainParams,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    loader = DataLoader(TensorDataset(torch.randn(8, 4), torch.randint(0, 2, (8,))), batch_size=4)
+
+    def model() -> NNModel:
+        return NNModel(
+            net_params=NNParams(
+                input_dim=4, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU
+            ),
+            params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        )
+
+    def params(**resume) -> NNTrainParams:
+        return NNTrainParams(
+            n_epochs=1, train_loader=loader, optim=NNOptimParams.builder().sgd(max_lr=0.1).build(), **resume
+        )
+
+    class Boom(Callback):
+        pass
+
+    def boom(self, ctx) -> None:
+        raise RuntimeError("boom")
+
+    setattr(Boom, hook, boom)
+
+    first = model().train(params=params())
+    target = model()
+    before = {key: value.clone() for key, value in target.net.state_dict().items()}
+    torch.manual_seed(123)
+    rng = torch.get_rng_state()
+    with pytest.raises(RuntimeError, match="boom"):
+        target.train(params=params(resume_from_run_id=first.id, resume_mode=mode), callbacks=[Boom()])
+    assert all(torch.equal(value, before[key]) for key, value in target.net.state_dict().items())
+    assert torch.equal(torch.get_rng_state(), rng)
+
+
+def test_nnmodel_rolls_a_resume_back_when_the_first_set_epoch_raises(tmp_path, monkeypatch):
+    """The first epoch's loader set_epoch (and the DDP step check) run inside
+    the rollback guard: nothing has trained yet."""
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNOptimParams, NNParams, NNTrainParams
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def model() -> NNModel:
+        return NNModel(
+            net_params=NNParams(
+                input_dim=4, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU
+            ),
+            params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        )
+
+    data = TensorDataset(torch.randn(8, 4), torch.randint(0, 2, (8,)))
+
+    class Breaking(DataLoader):
+        def set_epoch(self, epoch: int) -> None:
+            raise RuntimeError("set_epoch failed")
+
+    def params(loader, **resume) -> NNTrainParams:
+        return NNTrainParams(
+            n_epochs=1, train_loader=loader, optim=NNOptimParams.builder().sgd(max_lr=0.1).build(), **resume
+        )
+
+    first = model().train(params=params(DataLoader(data, batch_size=4)))
+    target = model()
+    before = {key: value.clone() for key, value in target.net.state_dict().items()}
+    with pytest.raises(RuntimeError, match="set_epoch failed"):
+        target.train(params=params(Breaking(data, batch_size=4), resume_from_run_id=first.id, resume_mode="stateful"))
+    assert all(torch.equal(value, before[key]) for key, value in target.net.state_dict().items())
+
+
+def test_a_trainer_run_converted_at_train_end_resumes_statefully(tmp_path, monkeypatch):
+    # The final LAST records the optimizer topology before the conversion renames the parameters.
+    from nnx import Callback
+    from nnx.nn.params.nn_checkpoint import NNCheckpointTransform
+
+    class Convert(Callback):
+        def checkpoint_transforms(self):
+            return (NNCheckpointTransform(name="custom-convert"),)
+
+        def on_train_end(self, ctx) -> None:
+            first = ctx.model.net.layers[0]
+            ctx.model.net.layers[0] = torch.nn.Linear(first.in_features, first.out_features)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def params(**extra):
+        return NNTrainerParams(
+            n_epochs=1,
+            train_loader=_supervised_loader(8),
+            optims={"main": NNOptimParams(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0)},
+            **extra,
+        )
+
+    first = Trainer(_supervised_model()).train(params=params(), trainer_step_fn=_supervised_step, callbacks=[Convert()])
+    resumed = Trainer(_supervised_model()).train(
+        params=params(resume_from_run_id=first.id, resume_mode="stateful"), trainer_step_fn=_supervised_step
+    )
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"

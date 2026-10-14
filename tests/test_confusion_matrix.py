@@ -9,6 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import pytest
 
 from nnx.vis_utils import VisUtils
 
@@ -75,3 +76,27 @@ def test_confusion_matrix_aligns_labels_when_class_absent():
     assert z[:, 1].sum() == 0
     # The real counts sit where the names say they do.
     assert z[0][0] == 1 and z[0][2] == 1 and z[2][2] == 1 and z[2][0] == 1
+
+
+def test_classification_report_keeps_a_named_class_absent_from_the_data():
+    df = VisUtils.classification_report([0, 0, 2], [0, 2, 2], class_names=["a", "b", "c"])
+    assert {"a", "b", "c"} <= set(df.index)
+    assert df.loc["b", "support"] == 0 and df.loc["c", "support"] == 1
+
+
+def test_classification_report_scores_labels_that_are_not_class_indices():
+    """String or 1-based labels are scored as given (the absent-class
+    guard applies only to 0..n-1 class indices)."""
+    df = VisUtils.classification_report(["cat", "dog", "cat"], ["cat", "dog", "dog"], class_names=["cat", "dog"])
+    assert df.loc["cat", "support"] == 2 and df.loc["dog", "support"] == 1
+    assert df.loc["dog", "recall"] == 1.0
+    one_based = VisUtils.classification_report([1, 2, 2], [1, 2, 2], class_names=["x", "y"])
+    assert one_based.loc["x", "support"] == 1 and one_based.loc["y", "f1-score"] == 1.0
+
+
+@pytest.mark.parametrize("labels", [[1, 2, 3, 3], ["a", "b", "c", "c"]], ids=["one-based", "strings"])
+def test_confusion_matrix_refuses_labels_that_are_not_class_indices(labels):
+    """class_names[i] names class index i: a 1-based id or a string label
+    would be dropped (or shift every name), so it is refused."""
+    with pytest.raises(ValueError, match="class indices"):
+        VisUtils.confusion_matrix(np.array(labels), np.array(labels), class_names=["a", "b", "c"])

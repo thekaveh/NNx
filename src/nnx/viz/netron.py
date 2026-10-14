@@ -26,7 +26,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from ..utils import _capture_training_modes, _restore_training_modes
+from ..utils import _capture_training_modes, _restore_training_modes, _writable
 
 if TYPE_CHECKING:
     from ..nn.nn_model import NNModel
@@ -62,8 +62,12 @@ def netron_export(
 
     Raises:
         ImportError: When `launch=True` and the `netron` package isn't
-            installed. The ONNX export itself uses `torch.onnx`, which
-            is part of core PyTorch.
+            installed (checked before anything is written). The export
+            itself needs the `onnx` package (the `onnx` extra); without it
+            `torch.onnx` raises its own exporter error.
+        NotImplementedError: When the module declares
+            `onnx_export_unsupported` (graph classifiers, link
+            predictors); nothing is written.
     """
     # Local import to avoid a circular import at package init time.
     from ..nn.nn_model import NNModel
@@ -86,17 +90,36 @@ def netron_export(
     if isinstance(example_input, torch.Tensor):
         example_input = (example_input.to(device),)
     elif isinstance(example_input, np.ndarray):
-        example_input = (torch.from_numpy(example_input).to(device),)
+        example_input = (torch.from_numpy(_writable(example_input)).to(device),)
     else:
         example_input = tuple(
-            (e.to(device) if isinstance(e, torch.Tensor) else torch.from_numpy(np.asarray(e)).to(device))
+            (e.to(device) if isinstance(e, torch.Tensor) else torch.from_numpy(_writable(np.asarray(e))).to(device))
             for e in example_input
+        )
+
+    # As to_onnx / predict: floating inputs take the net's floating dtype
+    # (a NumPy float64 example would otherwise fail against float32 weights).
+    net_dtype = next((p.dtype for p in net.parameters() if p.is_floating_point()), None)
+    if net_dtype is not None:
+        example_input = tuple(
+            e.to(net_dtype) if e.is_floating_point() and e.dtype != net_dtype else e for e in example_input
         )
 
     in_names = [f"input_{i}" for i in range(len(example_input))]
     out_names = ["output"]
     dynamic_axes = {n: {0: "batch"} for n in in_names + out_names} if dynamic_batch else None
 
+    netron = None
+    if launch:
+        # Lazy import — keeps `netron` out of required deps. Checked before
+        # the export, so a missing viewer writes no file.
+        try:
+            import netron  # type: ignore[import-not-found]
+        except ImportError as e:
+            raise ImportError(
+                "netron_export(launch=True) requires the `netron` package. "
+                "Install via `pip install thekaveh-nnx[viz-interactive]` (or `pip install netron`)."
+            ) from e
     training_modes = _capture_training_modes(net)
     net.eval()
     try:
@@ -128,16 +151,7 @@ def netron_export(
     finally:
         _restore_training_modes(training_modes)
 
-    if launch:
-        # Lazy import — keeps `netron` out of required deps. Only users
-        # who actually want the interactive viewer pay the install cost.
-        try:
-            import netron  # type: ignore[import-not-found]
-        except ImportError as e:
-            raise ImportError(
-                "netron_export(launch=True) requires the `netron` package. "
-                "Install via `pip install thekaveh-nnx[viz-interactive]` (or `pip install netron`)."
-            ) from e
+    if netron is not None:
         netron.start(path)
 
     return path

@@ -1,8 +1,7 @@
-"""Tabular data admission — non-finite features and narrowing overflow
-(FIX-023).
+"""Tabular data admission — non-finite features and narrowing overflow.
 
 Demonstrates what ``NNTabularDataset`` refuses to admit, and that a valid
-frame still trains:
+frame is accepted:
 
   1. **Source infinity before an integer / bool cast.** ``±inf`` in a
      selected feature column is rejected in source precision, before the
@@ -17,9 +16,10 @@ frame still trains:
      a floating ``target_dtype`` target.
   3. **Only modelled columns are inspected.** An unrelated column full of
      ``inf`` / ``NaN`` does not block construction.
-  4. **A valid frame still trains.** One classification step yields a
-     finite loss equal to a hand-computed cross-entropy reference, and a
-     regression dataset keeps ``(N, 1)`` targets for a one-output model.
+  4. **A valid frame is accepted.** One forward pass gives a
+     classification loss that matches cross-entropy computed by hand from
+     the logits. No optimizer step is taken. A regression dataset keeps
+     ``(N, 1)`` targets for a one-output model.
 
 A rejected construction leaves the caller's DataFrame and the global split
 RNG untouched. Fully offline, CPU only.
@@ -74,7 +74,7 @@ def tabular_validation_workflow() -> dict:
         for value in (inf, -inf):
             msg = _rejected(pd.DataFrame({"x": [1.0, value], "y": [0, 1]}), feature_cols=["x"], feature_dtype=dtype)
             assert "['x']" in msg and str(dtype) in msg, msg
-        messages[str(dtype)] = msg
+            messages[f"{dtype}:{value}"] = msg  # one entry per rejection
 
     # ...and finite values an integer dtype cannot hold would wrap (300 → 44 in int8).
     msg = _rejected(pd.DataFrame({"x": [1.0, 300.0], "y": [0, 1]}), feature_cols=["x"], feature_dtype=torch.int8)
@@ -102,7 +102,8 @@ def tabular_validation_workflow() -> dict:
     )
     ds = NNTabularDataset(df=frame, feature_cols=["a", "b"], target_col="y", val_proportion=0.0, test_proportion=0.0)
 
-    # 4. A valid dataset drives a finite classification step matching a reference.
+    # 4. A valid dataset gives a classification loss that matches cross-entropy
+    # computed by hand (one forward pass; no optimizer step).
     model = NNModel(
         net_params=NNParams(
             input_dim=ds.input_dim,
@@ -116,7 +117,8 @@ def tabular_validation_workflow() -> dict:
     X, y = next(iter(ds.train_loader))
     logits = model.net(X)
     loss = model.loss_fn(logits, y)
-    reference = F.cross_entropy(logits, y)
+    # By hand: the mean negative log-probability of each row's true class.
+    reference = -F.log_softmax(logits, dim=-1)[torch.arange(len(y)), y].mean()
     assert torch.isfinite(loss) and torch.allclose(loss, reference), (loss, reference)
     loss.backward()
     assert all(p.grad is None or torch.isfinite(p.grad).all() for p in model.net.parameters())

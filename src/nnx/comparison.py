@@ -1,4 +1,4 @@
-"""Multi-seed experiment summaries and paired comparisons (FEAT-032).
+"""Multi-seed experiment summaries and paired comparisons.
 
 Repeated runs of one configuration (seeds, replicates) and two
 configurations compared over the same replicates — reported **read-only**:
@@ -32,8 +32,8 @@ nothing here builds or loads a model, reads a checkpoint, elects a
   saved as strict JSON (``nnx.comparison/1``) and reloaded with its results
   re-derived and checked. Input order never changes a report.
 - :func:`observations_from_runs` — reads observations from saved runs
-  (``run.yaml``, ``idps.csv`` — or a FEAT-036 history journal's committed
-  records — and the FEAT-019 provenance files, each read once; for a run with a parent, ``metadata.yaml`` and every ancestor's
+  (``run.yaml``, ``idps.csv`` — or a history journal's committed
+  records — and the provenance files, each read once; for a run with a parent, ``metadata.yaml`` and every ancestor's
   ``run.yaml`` and provenance files) without loading a model or a
   checkpoint: the committed epoch is the LAST epoch the attempt record
   names, and a journal is read only up to it.
@@ -51,7 +51,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, cast
 
 from ._artifacts import atomic_write, check_keys, parse_json, read_text
 
@@ -167,7 +167,7 @@ class Observation:
 
     Attributes:
         run_id: the run that produced it.
-        attempt_id: the attempt within that run (FEAT-019), when known.
+        attempt_id: the attempt within that run, when known.
         metric: what ``value`` measures.
         value: the value (``None`` when the attempt has none; NaN and
             infinities are kept and counted as non-finite).
@@ -474,7 +474,9 @@ class Summary:
 def summarize(observations: Iterable[Observation]) -> Summary:
     """Group ``observations`` into poolable groups (same metric, split,
     selection rule, configuration, data and split identity) and summarize
-    each; see :class:`GroupSummary`. Duplicate attempts are refused. A
+    each; see :class:`GroupSummary`. Duplicate attempts are refused: an
+    attempt gives one observation per metric, so the same attempt observed
+    on two splits or under two selection rules belongs in two summaries. A
     known identity never pools with an unknown one."""
     items = _checked(observations)
     if not items:
@@ -505,18 +507,22 @@ class Bootstrap:
     level: float = 0.95
 
     def __post_init__(self) -> None:
-        if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
+        # NumPy scalars are accepted and stored as plain numbers (state() stays JSON).
+        if isinstance(self.seed, bool) or not isinstance(self.seed, numbers.Integral) or self.seed < 0:
             raise ComparisonError(f"Bootstrap.seed must be a non-negative integer, got {self.seed!r}")
         if (
             isinstance(self.resamples, bool)
-            or not isinstance(self.resamples, int)
+            or not isinstance(self.resamples, numbers.Integral)
             or not 1 <= self.resamples <= MAX_RESAMPLES
         ):
             raise ComparisonError(
                 f"Bootstrap.resamples must be an integer in [1, {MAX_RESAMPLES}], got {self.resamples!r}"
             )
-        if isinstance(self.level, bool) or not isinstance(self.level, (int, float)) or not 0 < self.level < 1:
+        if isinstance(self.level, bool) or not isinstance(self.level, numbers.Real) or not 0 < self.level < 1:
             raise ComparisonError(f"Bootstrap.level must be in (0, 1), got {self.level!r}")
+        object.__setattr__(self, "seed", int(self.seed))
+        object.__setattr__(self, "resamples", int(self.resamples))
+        object.__setattr__(self, "level", float(self.level))
 
     def state(self) -> dict[str, Any]:
         return {
@@ -780,8 +786,10 @@ class ComparisonReport:
     # ---------- views ----------
 
     def table(self) -> list[dict[str, Any]]:
-        """One row per observation, group, pair and unmatched replicate,
-        each with a ``row`` kind; values are plain JSON types."""
+        """One row per observation, group, pair and unmatched replicate, plus
+        one ``comparison`` summary row per comparison (``n``, ``mean``,
+        ``std``, ``bootstrap``, ``interval``), each with a ``row`` kind;
+        values are plain JSON types."""
         rows: list[dict[str, Any]] = []
         for index, group in enumerate(self.summary.groups):
             stats = {key: value for key, value in group.state().items() if key != "attempts"}
@@ -1050,6 +1058,7 @@ def _run_identity(
     root: Optional[str],
     cache: dict[str, tuple[str, int]],
     known: Optional[tuple[Mapping[str, Any], str]] = None,
+    provenances: Optional[dict[str, Any]] = None,
 ) -> str:
     """:func:`_config_identity` of a saved run, with the identity of every
     run it descends from: a continuation, a fine-tune or a born-again
@@ -1070,8 +1079,11 @@ def _run_identity(
     checkpoint generation (else attempt and start epoch), so only siblings
     of that checkpoint pool; without a record, the lineage is unknown and
     names nothing shared — an unknown lineage never pools. Errors in an
-    ancestor's files are raised, as for the run's own."""
-    return _resolve(run_id, root, cache, (), known)[0]
+    ancestor's files are raised, as for the run's own. ``provenances`` is
+    the call's file cache (run states and provenance records by run id):
+    each run's files are read once per call, listed or an ancestor, so one
+    observation never mixes two attempts."""
+    return _resolve(run_id, root, cache, (), known, {} if provenances is None else provenances)[0]
 
 
 def _resolve(
@@ -1080,6 +1092,7 @@ def _resolve(
     cache: dict[str, tuple[str, int]],
     path: tuple[str, ...],
     known: Optional[tuple[Mapping[str, Any], str]] = None,
+    provenances: Optional[dict[str, Any]] = None,
 ) -> tuple[str, int]:
     """``(identity, ancestors)``, cached per call: the same answer whatever
     order runs are listed in."""
@@ -1089,17 +1102,22 @@ def _resolve(
         raise ComparisonError(f"run {path[0]}: its lineage is a cycle ({' -> '.join((*path, run_id))})")
     if len(path) > MAX_LINEAGE:
         raise ComparisonError(f"run {path[0]}: a lineage of more than {MAX_LINEAGE} ancestors")
-    run_state, run_path = known if known is not None else _read_run_state(run_id, root)
+    files = {} if provenances is None else provenances
+    run_state, run_path = known if known is not None else _cached_state(files, run_id, root)
+
+    def read_provenance(rid: str) -> Any:
+        return _cached_provenance(files, rid, root)
+
     parent = _parent(run_state)
     lineage, ancestors = None, 0
     if parent is not None:
         parent_id = str(parent["parent_run_id"])
         lineage = {"checkpoint": parent.get("parent_checkpoint"), "mode": _resume_mode(run_path, run_id)}
-        own = _provenance(run_id, root)
+        own = read_provenance(run_id)
         record = _recorded_parent(own)
         recorded, generation = _nonempty(record.get("attempt_id")), _nonempty(record.get("generation"))
         resolvable = _resolvable(parent_id, root)
-        current = _provenance(parent_id, root) if resolvable else None
+        current = read_provenance(parent_id) if resolvable else None
         done = _completed_before(own, current)
         epoch = record.get("epoch")
         epoch = epoch if isinstance(epoch, int) and not isinstance(epoch, bool) else None
@@ -1124,7 +1142,7 @@ def _resolve(
         ):
             # The parent attempt the run started from (a parent without
             # provenance has only its run.yaml to declare).
-            identity, above = _resolve(parent_id, root, cache, (*path, run_id))
+            identity, above = _resolve(parent_id, root, cache, (*path, run_id), None, provenances)
             lineage.update(parent=identity, **_parent_facts(current))
             if needs_epoch:
                 lineage["start_epoch"] = epoch
@@ -1226,6 +1244,22 @@ def _raw_metric_value(edp: Any, name: str) -> Optional[float]:
     return None
 
 
+def _cached_state(files: dict[Any, Any], run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], str]:
+    """``_read_run_state``, read once per comparison call."""
+    key = ("state", run_id)
+    if key not in files:
+        files[key] = _read_run_state(run_id, root)
+    return files[key]
+
+
+def _cached_provenance(files: dict[Any, Any], run_id: str, root: Optional[str]) -> Any:
+    """``_provenance``, read once per comparison call."""
+    key = ("provenance", run_id)
+    if key not in files:
+        files[key] = _provenance(run_id, root)
+    return files[key]
+
+
 def _read_run_state(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], str]:
     """A run's ``run.yaml`` and its directory."""
     import yaml
@@ -1249,7 +1283,9 @@ def _read_run_state(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any]
     return run_state, run_path
 
 
-def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list[Any], Any, Optional[int], bool, str]:
+def _read_run(
+    run_id: str, root: Optional[str], files: Optional[dict[Any, Any]] = None
+) -> tuple[Mapping[str, Any], list[Any], Any, Optional[int], bool, str]:
     """A run's ``run.yaml``, records, provenance, committed epoch (``None``:
     not filtered), whether that epoch is known, and its directory. Under the
     history protocol LAST commits the history, and the attempt record names
@@ -1260,8 +1296,9 @@ def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list
     from .nn.params.nn_iteration_data_point import NNIterationDataPoint
     from .nn.params.nn_run import _HISTORY_PROTOCOL_FILE
 
-    run_state, run_path = _read_run_state(run_id, root)
-    provenance = _provenance(run_id, root)
+    files = {} if files is None else files
+    run_state, run_path = _cached_state(files, run_id, root)
+    provenance = _cached_provenance(files, run_id, root)
     attempt = None if provenance is None else provenance.attempt
     last = None if attempt is None else attempt.last_committed
     if last is not None and not isinstance(last, Mapping):
@@ -1288,7 +1325,9 @@ def _read_run(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], list
     else:
         csv_path = os.path.join(run_path, "idps.csv")
         try:
-            rows = pd.read_csv(csv_path).to_dict(orient="records") if os.path.isfile(csv_path) else []
+            # round_trip: the default parser misreads about one float in five by one ULP.
+            frame = pd.read_csv(csv_path, float_precision=cast(Any, "round_trip")) if os.path.isfile(csv_path) else None
+            rows = [] if frame is None else frame.to_dict(orient="records")
             last_rows: dict[Any, Any] = {}
             for row in rows:  # only each epoch's last record is ever read
                 last_rows[row.get("epoch_idx")] = row
@@ -1343,7 +1382,7 @@ def observations_from_runs(
             with runs descended the same way from the same configuration
             (an unknown lineage pools with nothing).
 
-    Runs should be trained with ``provenance=`` (FEAT-019): the status and
+    Runs should be trained with ``provenance=``: the status and
     attempt id come from the run's attempt record (``"unknown"`` without
     one) and the data and split identities from its manifest. A run's
     history is committed by its LAST checkpoint, so without an attempt
@@ -1375,8 +1414,9 @@ def observations_from_runs(
 
     observations = []
     identities: dict[str, tuple[str, int]] = {}  # run id -> (identity with its parents', ancestor count)
+    files: dict[Any, Any] = {}  # every run.yaml / provenance read in this call, read once
     for run_id in run_ids:
-        run_state, idps, provenance, committed, known, run_path = _read_run(run_id, root)
+        run_state, idps, provenance, committed, known, run_path = _read_run(run_id, root, files)
         source = "history journal" if has_journal(run_path) else "idps.csv"
         attempt = None if provenance is None else provenance.attempt
         status = "unknown" if attempt is None else attempt.status
@@ -1433,7 +1473,9 @@ def observations_from_runs(
                 )
             if committed is not None and last is not None and last.get("checkpoint") is not None:
                 evaluation += f"; committed with {last['checkpoint']} generation {last.get('generation')}"
-        train = run_state.get("train") or {}
+        # Every run records "train" (a Trainer run copies its data_id there
+        # too); "trainer" is a fallback for a run.yaml without it.
+        train = run_state.get("train") or run_state.get("trainer") or {}
         manifest = None if provenance is None else provenance.manifest
         data = None if manifest is None else _identities(manifest.data)
         if data is None and train.get("data_id") is not None:
@@ -1450,7 +1492,7 @@ def observations_from_runs(
                 config=(
                     config[run_id]
                     if config is not None
-                    else _run_identity(run_id, root, identities, known=(run_state, run_path))
+                    else _run_identity(run_id, root, identities, known=(run_state, run_path), provenances=files)
                 ),
                 data=data,
                 split_id=None if manifest is None else _identities(manifest.splits),

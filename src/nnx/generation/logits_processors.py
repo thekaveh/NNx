@@ -10,6 +10,8 @@ canonical composition order).
 
 from __future__ import annotations
 
+import math
+import numbers
 from typing import Protocol
 
 import torch
@@ -37,8 +39,8 @@ class TemperatureScaling:
     """
 
     def __init__(self, temperature: float):
-        if temperature < 0:
-            raise ValueError(f"temperature must be >= 0, got {temperature}")
+        if not math.isfinite(temperature) or temperature < 0:
+            raise ValueError(f"temperature must be a finite number >= 0, got {temperature}")
         self.temperature = temperature
 
     def __call__(self, logits: torch.Tensor, token_history: list[int]) -> torch.Tensor:
@@ -47,7 +49,24 @@ class TemperatureScaling:
             argmax = logits.argmax(dim=-1, keepdim=True)
             out.scatter_(dim=-1, index=argmax, value=float("inf"))
             return out
-        return logits / self.temperature
+        if logits.dtype in (torch.float16, torch.bfloat16):
+            # A small T overflows half-precision logits to +inf, which the
+            # sampler reads as the greedy marker (the first +inf, not the argmax).
+            logits = logits.float()
+        scaled = logits / self.temperature
+        finite = torch.isfinite(logits)
+        overflowed = (torch.isposinf(scaled) & finite).any()
+        emptied = (finite.any(dim=-1) & ~torch.isfinite(scaled).any(dim=-1)).any()
+        if overflowed or emptied:
+            # Even fp32 overflows for a tiny T: several +inf would read as
+            # the greedy marker and resolve to the first, and a row left
+            # all -inf samples token 0, not the argmax. (A very negative
+            # logit that underflows to -inf had no probability anyway.)
+            # Such a T is greedy in effect, so mark the argmax as T=0 does.
+            out = torch.full_like(logits, float("-inf"))
+            out.scatter_(dim=-1, index=logits.argmax(dim=-1, keepdim=True), value=float("inf"))
+            return out
+        return scaled
 
 
 class TopKFilter:
@@ -59,9 +78,10 @@ class TopKFilter:
     """
 
     def __init__(self, top_k: int):
-        if top_k <= 0:
-            raise ValueError(f"top_k must be > 0, got {top_k}")
-        self.top_k = top_k
+        # As LogitsStage.top_k: a float, bool or NaN failed mid-decode in torch.topk.
+        if isinstance(top_k, bool) or not isinstance(top_k, numbers.Integral) or top_k < 1:
+            raise ValueError(f"top_k must be an integer > 0, got {top_k!r}")
+        self.top_k = int(top_k)
 
     def __call__(self, logits: torch.Tensor, token_history: list[int]) -> torch.Tensor:
         k = min(self.top_k, logits.size(-1))
@@ -75,8 +95,9 @@ class TopPFilter:
     """Nucleus (top-p) sampling: keep the smallest set of tokens whose
     cumulative probability exceeds ``top_p``.
 
-    Edge case: if a single token already has probability >= top_p, only
-    that token is retained.
+    Edge case: if a single token's probability exceeds ``top_p``, only
+    that token is retained. ``top_p=1.0`` keeps every token (no
+    floating-point cumulative sum can exceed it by rounding).
     """
 
     def __init__(self, top_p: float):
@@ -85,6 +106,8 @@ class TopPFilter:
         self.top_p = top_p
 
     def __call__(self, logits: torch.Tensor, token_history: list[int]) -> torch.Tensor:
+        if self.top_p >= 1.0:  # the whole support; a float32 cumsum can round past 1.0
+            return logits
         sorted_logits, sorted_idx = torch.sort(logits, dim=-1, descending=True)
         cum_probs = torch.softmax(sorted_logits, dim=-1).cumsum(dim=-1)
         # Tokens to remove: cum_probs strictly greater than top_p,
@@ -111,8 +134,8 @@ class RepetitionPenalty:
     """
 
     def __init__(self, penalty: float):
-        if penalty < 1.0:
-            raise ValueError(f"repetition_penalty must be >= 1.0, got {penalty}")
+        if not math.isfinite(penalty) or penalty < 1.0:
+            raise ValueError(f"repetition_penalty must be a finite number >= 1.0, got {penalty}")
         self.penalty = penalty
 
     def __call__(self, logits: torch.Tensor, token_history: list[int]) -> torch.Tensor:

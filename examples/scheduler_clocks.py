@@ -1,4 +1,4 @@
-"""Scheduler clocks: per-epoch vs per-optimizer-update scheduling (FEAT-014).
+"""Scheduler clocks: per-epoch vs per-optimizer-update scheduling.
 
 By default every scheduler steps once per completed epoch, so its horizons
 (``step_size``, ``T_max``, ``total_steps``, ``warmup_steps``) count epochs.
@@ -10,7 +10,8 @@ unit warm-up and one-cycle schedules are usually written in.
 This script trains a tiny classifier offline and checks three things:
 
 1. **Accumulation.** Two epochs of five microbatches with
-   ``accumulate_grad_batches=2`` commit 2 + 2 + 1 updates per epoch: the
+   ``accumulate_grad_batches=2`` commit 3 updates per epoch (windows of
+   2, 2 and 1 microbatches): the
    update-clock schedule steps 6 times, the epoch-clock one twice, and
    ``LRMonitor.history`` still holds one LR per epoch (per-update LRs go to
    ``LRMonitor.update_history``).

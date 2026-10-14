@@ -1,4 +1,4 @@
-"""Mixture-of-Experts feed-forward classifier (#88).
+"""Mixture-of-Experts feed-forward classifier.
 
 Same shape contract as :class:`FeedFwdNN` (flatten → hidden stack → linear
 head, ``unpack_batch``), but every HIDDEN layer is a
@@ -19,6 +19,8 @@ for large expert counts.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -28,6 +30,13 @@ from ..params.nn_moe_params import NNMoEParams
 
 
 class FeedFwdMoENN(nn.Module):
+    """Feed-forward classifier built from :class:`NNMoEParams` whose hidden
+    layers are top-k routed :class:`~nnx.nn.moe.MoELinear` experts; the head
+    stays a plain ``nn.Linear``. ``forward(x)`` returns logits."""
+
+    _params: NNMoEParams
+    _hidden: tuple[tuple[Callable[[torch.Tensor], torch.Tensor], float], ...]
+
     def __init__(self, params: NNMoEParams):
         super().__init__()
 
@@ -51,14 +60,28 @@ class FeedFwdMoENN(nn.Module):
         )
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        X = X.view(X.size(0), -1)
+        X = X.reshape(X.size(0), -1)  # a non-contiguous input (a transposed array) too
 
-        for i, layer in enumerate(self.layers[:-1]):
+        for layer, (activation, dropout) in zip(self.layers[:-1], self._hidden, strict=True):
             X = layer(X)
-            X = self.params.activation_for(i)()(X)
-            X = F.dropout(X, p=self.params.dropout_for(i), training=self.training)
+            X = activation(X)
+            X = F.dropout(X, p=dropout, training=self.training)
 
         return self.layers[-1](X)
+
+    @property
+    def params(self) -> NNMoEParams:
+        return self._params
+
+    @params.setter
+    def params(self, params: NNMoEParams) -> None:
+        # As FeedFwdNN: activations and dropouts resolved when the params are
+        # set, so the forward never touches the params object or the
+        # Activations enum (torch.compile cannot trace them on older torch).
+        self.__dict__["_params"] = params
+        self.__dict__["_hidden"] = tuple(
+            (params.activation_for(i)(), params.dropout_for(i)) for i in range(len(params.dims) - 2)
+        )
 
     def unpack_batch(self, batch):
         if isinstance(batch, (list, tuple)):

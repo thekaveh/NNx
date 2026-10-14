@@ -1,4 +1,4 @@
-"""Branching mutable params builders with copy() and from_params() (FEAT-041).
+"""Branching mutable params builders with copy() and from_params().
 
 The four params builders are mutable and reusable. Two methods let a run
 share its setup instead of retyping it per variant:
@@ -29,6 +29,8 @@ The bounded ``builder_branching_workflow()`` helper is executed by
 """
 
 from __future__ import annotations
+
+import warnings
 
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -68,14 +70,18 @@ def _step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
     loss.backward()
     for optimizer in ctx.optimizers.values():
         optimizer.step()
-    return NNEvaluationDataPoint(f1=0.0, recall=0.0, accuracy=0.0, precision=0.0, loss=float(loss.detach()), error=0.0)
+    return NNEvaluationDataPoint(loss=float(loss.detach()))
 
 
 def _model() -> NNModel:
-    return NNModel(
+    model = NNModel(
         net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
         params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
     )
+    # Head-only fine-tuning: the "head" optimizer's group is layers.1.*, so
+    # the body is frozen (a Trainer's groups must partition the trainables).
+    model.freeze("layers.0.*")
+    return model
 
 
 def builder_branching_workflow() -> None:
@@ -91,7 +97,12 @@ def builder_branching_workflow() -> None:
     assert NNOptimParamsBuilder.from_params(adamw).build() == adamw
     assert NNOptimParamsBuilder.from_params(adamw).accumulate_grad(2).build().accumulate_grad_batches == 2
 
-    # 2. Named Trainer branches: one shared base, two sibling runs.
+    # 2. Named Trainer branches: one shared base, two sibling runs. A
+    #    trainer_step_fn owns its updates and applies no clipping, so these
+    #    branches drop the base's grad_clip (Trainer refuses a knob it
+    #    would silently ignore).
+    adamw = NNOptimParamsBuilder.from_params(adamw).grad_clip(None).build()
+    sgd = NNOptimParamsBuilder.from_params(sgd).grad_clip(None).build()
     set_seed(0)
     loader = DataLoader(TensorDataset(torch.randn(8, 4), torch.randint(0, 2, (8,))), batch_size=8)
     base = NNTrainerParams.builder().n_epochs(1).train_loader(loader).optimizer("head", adamw)
@@ -104,7 +115,10 @@ def builder_branching_workflow() -> None:
     scheduled = base.copy().data_id("branch-scheduled").optimizer("head", sgd).scheduler("head", step_decay).build()
     assert plain.train_loader is loader and scheduled.train_loader is loader  # shared, never copied
 
-    runs = [Trainer(_model()).train(params=config, trainer_step_fn=_step) for config in (plain, scheduled)]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        runs = [Trainer(_model()).train(params=config, trainer_step_fn=_step) for config in (plain, scheduled)]
+    assert not [w for w in caught if "no optimizer owns them" in str(w.message)]  # every trainable is owned
     assert runs[0].id != runs[1].id
     for run, config in zip(runs, (plain, scheduled), strict=True):
         loaded = NNRun.load(run.id)

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import ast
+import math
+import numbers
 from dataclasses import dataclass, field
 from typing import Optional
 
-from ..._validation import require_count
+from ..._validation import plain_real, require_count
 from ..enum.activations import Activations
 
 
@@ -34,6 +36,17 @@ class _ImmutableList(list):
         return (_ImmutableList, (list(self),))
 
 
+def _is_probability(value: object) -> bool:
+    """A real number in [0, 1] — not a bool (``True`` would otherwise pass
+    as 1.0 and hash as a different run), a string or NaN."""
+    return (
+        isinstance(value, numbers.Real)
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and 0.0 <= float(value) <= 1.0
+    )
+
+
 def _per_layer_from_state(state: dict) -> tuple[Optional[list[Activations]], Optional[list[float]]]:
     """Parse the per-layer ``activations`` / ``dropout_probs`` overrides (#85)
     from a params ``state()``. ``NNParams.state()`` writes each only when it
@@ -48,6 +61,11 @@ def _per_layer_from_state(state: dict) -> tuple[Optional[list[Activations]], Opt
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNParams:
+    """Architecture of a built-in feed-forward or graph network: input and
+    output sizes, hidden layer widths, activation and dropout (net-wide or
+    per layer), and attention heads (``n_heads``, GRAPH_ATT only).
+    Subclasses add the convolutional, MoE, ViT and transformer fields."""
+
     dropout_prob: float
     n_heads: Optional[int] = field(default=None)
     activation: Optional[Activations] = field(default=Activations.LEAKY_RELU)
@@ -73,6 +91,12 @@ class NNParams:
         return self._dims
 
     def __post_init__(self):
+        # Enum fields are enum members: a plain string would enter state()
+        # and the run id, then fail as "'str' object is not callable".
+        if self.activation is not None and not isinstance(self.activation, Activations):
+            raise TypeError(f"NNParams.activation must be an Activations member, got {self.activation!r}")
+        if self.activations is not None and not all(isinstance(a, Activations) for a in self.activations):
+            raise TypeError(f"NNParams.activations must hold Activations members, got {list(self.activations)!r}")
         # Fail-fast on out-of-range numeric fields at construction time rather
         # than deep inside layer building. nn.Dropout / nn.Linear would raise
         # eventually for these, but far from the origin — surfacing the error
@@ -108,8 +132,9 @@ class NNParams:
             object.__setattr__(
                 self, "n_heads", require_count(self.n_heads, "n_heads", owner=owner, minimum=0, exclusive_min=True)
             )
-        if not 0.0 <= self.dropout_prob <= 1.0:
-            raise ValueError(f"NNParams requires 0.0 <= dropout_prob <= 1.0, got {self.dropout_prob}")
+        if not _is_probability(self.dropout_prob):
+            raise ValueError(f"NNParams requires 0.0 <= dropout_prob <= 1.0, got {self.dropout_prob!r}")
+        object.__setattr__(self, "dropout_prob", plain_real(self.dropout_prob))
 
         # Per-layer overrides (#85): length must equal the number of hidden
         # layers; dropout entries must be valid probabilities.
@@ -124,8 +149,9 @@ class NNParams:
                     f"NNParams.dropout_probs must have one entry per hidden layer "
                     f"({n_hidden}), got {len(self.dropout_probs)}"
                 )
-            if not all(0.0 <= q <= 1.0 for q in self.dropout_probs):
+            if not all(_is_probability(q) for q in self.dropout_probs):
                 raise ValueError(f"NNParams requires 0.0 <= dropout_probs[i] <= 1.0, got {self.dropout_probs}")
+            object.__setattr__(self, "dropout_probs", [plain_real(q) for q in self.dropout_probs])
 
         if self.activations is not None:
             object.__setattr__(self, "activations", _ImmutableList(self.activations))
@@ -140,7 +166,7 @@ class NNParams:
 
     def activation_for(self, layer_idx: int) -> Activations:
         """The activation for hidden layer ``layer_idx`` — the per-layer entry
-        when `activations` is set, else the net-wide scalar (#85)."""
+        when `activations` is set, else the net-wide scalar."""
         if self.activations is not None:
             return self.activations[layer_idx]
         if self.activation is None:
@@ -149,7 +175,7 @@ class NNParams:
 
     def dropout_for(self, layer_idx: int) -> float:
         """The dropout prob for hidden layer ``layer_idx`` — per-layer entry
-        when `dropout_probs` is set, else the net-wide scalar (#85)."""
+        when `dropout_probs` is set, else the net-wide scalar."""
         if self.dropout_probs is not None:
             return self.dropout_probs[layer_idx]
         return self.dropout_prob

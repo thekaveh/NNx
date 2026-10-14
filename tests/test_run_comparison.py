@@ -530,6 +530,31 @@ def _model():
 MANIFEST = ExperimentManifest(data={"train": hash_bytes(b"toy-32")})
 
 
+def test_a_trainer_run_without_provenance_keeps_its_data_id(tmp_path, monkeypatch):
+    """A Trainer run's data_id is its data identity, as an NNModel run's is
+    (a contract test: the Trainer records data_id in its "train" section)."""
+    from nnx.objectives import supervised_objective
+    from nnx.trainer import NNTrainerParams, Trainer
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X = torch.randn(16, 4, generator=torch.Generator().manual_seed(0))
+    loader = DataLoader(TensorDataset(X, (X[:, 0] > 0).long()), batch_size=8)
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(1)
+        .seed(0)
+        .data_id("toy")
+        .train_loader(loader)
+        .optimizer("default", NNOptimParams.builder().sgd(max_lr=0.1).build())
+        .save_phase_checkpoints(False)
+        .build()
+    )
+    run = Trainer(_model()).train(params=params, objective=supervised_objective())
+    (item,) = observations_from_runs([run.id], metric=Metric("loss", "minimize"), split="train")
+    assert item.data == "data_id:toy"
+
+
 def test_trainer_and_resumed_runs_pool_across_seeds(tmp_path, monkeypatch):
     from nnx.objectives import supervised_objective
     from nnx.trainer import NNTrainerParams, Trainer
@@ -875,6 +900,7 @@ def test_a_completed_parents_stopping_epoch_is_an_outcome_and_an_unknown_lineage
         for seed in (0, 1, 2)
     ]
     epochs = {len({idp.epoch_idx for idp in parent.idps}) for parent in parents}
+    assert len(epochs) > 1, f"fixture degenerate: every parent stopped after the same number of epochs {epochs}"
     children = [
         _model().train(
             params=_fit_params(10 + i, resume_from_run_id=p.id, resume_mode="weights_only"), provenance=MANIFEST
@@ -1240,7 +1266,9 @@ def test_round_four_reader_edges(tmp_path, monkeypatch):
         yaml.safe_dump({**state, "train": [1]}, handle)
     with pytest.raises(ComparisonError, match="'train' is not a mapping"):
         observations_from_runs(ids[:1], metric=LOSS)
-    for bad, match in (([1], "not a mapping"), ({"epoch": "x"}, "not an epoch")):
+    # A list is refused while the attempt record is read; a mapping with a
+    # bad epoch when comparison reads it.
+    for bad, match in (([1], "must be a JSON object"), ({"epoch": "x"}, "not an epoch")):
         attempt = os.path.join("runs", ids[1], "attempt.json")
         record = json.loads(open(attempt).read())
         record["last_committed"] = bad
@@ -1289,3 +1317,51 @@ def test_round_five_edges(monkeypatch):
     with pytest.raises(ComparisonError, match="malformed|'b'") as caught:
         ComparisonReport.from_state(state)
     assert "does not hold" not in str(caught.value)
+
+
+def test_one_comparison_reads_each_runs_files_once(tmp_path, monkeypatch):
+    """A child listed before its parent: each run's run.yaml and provenance
+    are read once in the call, listed or an ancestor, so one observation
+    never mixes two reads of an attempt."""
+    from collections import Counter
+
+    from nnx import comparison
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    parent = _model().train(params=_fit_params(3, n_epochs=1), provenance=MANIFEST)
+    child = _model().train(params=_fit_params(3, n_epochs=1, resume_from_run_id=parent.id), provenance=MANIFEST)
+    provenance_reads, state_reads = Counter(), Counter()
+    real_provenance, real_state = comparison._provenance, comparison._read_run_state
+
+    def provenance(run_id, root):
+        provenance_reads[run_id] += 1
+        return real_provenance(run_id, root)
+
+    def state(run_id, root):
+        state_reads[run_id] += 1
+        return real_state(run_id, root)
+
+    monkeypatch.setattr(comparison, "_provenance", provenance)
+    monkeypatch.setattr(comparison, "_read_run_state", state)
+    observations_from_runs([child.id, parent.id], metric=Metric("loss", "minimize"))
+    assert provenance_reads == Counter({child.id: 1, parent.id: 1})
+    assert state_reads == Counter({child.id: 1, parent.id: 1})
+
+
+def test_a_csv_run_is_read_with_round_trip_floats(tmp_path, monkeypatch):
+    """pandas' default parser misreads about one float in five by one ULP:
+    an observation must equal the run's own recorded value exactly."""
+    import pandas as pd
+
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.chdir(tmp_path)
+    run = _fit(0.1, 5)
+    csv_path = os.path.join("runs", run.id, "idps.csv")
+    frame = pd.read_csv(csv_path)
+    exact = "0.43929912390488113"  # the default parser returns 0.4392991239048811
+    frame["val_edp.loss"] = frame["val_edp.loss"].astype(object)
+    frame.loc[:, "val_edp.loss"] = exact
+    frame.to_csv(csv_path, index=False)
+    (found,) = observations_from_runs([run.id], metric=LOSS)
+    assert found.value == float(exact)

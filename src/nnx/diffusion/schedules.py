@@ -137,8 +137,9 @@ class NoiseSchedulers(Enum):
             implicitly when indexing the schedule tensors with batch
             timesteps on the target device.
         """
-        if T <= 0:
-            raise ValueError(f"T must be positive, got {T}")
+        from .._validation import require_count, require_finite_real
+
+        T = require_count(T, "T", owner=f"NoiseSchedulers.{self.name}", minimum=1)
         match self:
             case NoiseSchedulers.LINEAR:
                 if not (0 < beta_min < beta_max < 1):
@@ -146,8 +147,7 @@ class NoiseSchedulers(Enum):
                 betas = torch.linspace(beta_min, beta_max, T, dtype=torch.float32)
                 return _from_betas(self, betas)
             case NoiseSchedulers.COSINE:
-                if s <= 0:
-                    raise ValueError(f"COSINE schedule needs s > 0, got {s}")
+                require_finite_real(s, "s", owner="NoiseSchedulers.COSINE", minimum=0.0, exclusive_min=True)
                 # Improved DDPM eq. 17. Build ᾱ_t first, then back out the
                 # betas. Clamp betas to [1e-8, 0.999] so the sqrt() and
                 # posterior_variance ops can't blow up near t=T-1.

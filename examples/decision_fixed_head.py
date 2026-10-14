@@ -1,4 +1,4 @@
-"""Typed decisions from a local NNx model (FEAT-009).
+"""Typed decisions from a local NNx model.
 
 ``nnx.decisions`` asks provider-neutral questions — ``Choice``, ``Boolean``
 and ``Score`` — and returns validated, labelled probabilities. This example

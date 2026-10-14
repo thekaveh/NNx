@@ -1,4 +1,4 @@
-"""A local label-conditioned baseline: decisions from an NLI model (FEAT-011).
+"""A local label-conditioned baseline: decisions from an NLI model.
 
 ``nnx.decisions.NLIProvider`` scores a text (the premise) against candidate
 descriptions supplied at inference time (each rendered into a hypothesis),

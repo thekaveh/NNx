@@ -29,6 +29,9 @@ import torch
 from torch import nn
 from torch.nn.utils import skip_init
 
+from .._validation import require_count
+from ._utils import copy_param_roles, refuse_parametrized, stock_forward
+
 InitStrategy = Literal["zeros", "copy_mean"]
 
 
@@ -58,13 +61,18 @@ def expand_embedding(
         as candidates for freezing during refinement.
 
     Raises:
-        TypeError: if ``emb`` is not :class:`nn.Embedding`.
-        ValueError: if ``new_num_embeddings`` is not strictly greater,
-            or if ``init`` is unknown.
+        TypeError: if ``emb`` is not :class:`nn.Embedding` (or a subclass
+            with its own ``forward``).
+        ValueError: if ``new_num_embeddings`` is not an integer strictly greater,
+            if ``init`` is unknown, or if ``emb`` carries a parametrization, a
+            legacy ``weight_norm`` / ``spectral_norm`` hook or an unbaked prune
+            mask.
     """
-    if not isinstance(emb, nn.Embedding):
+    if not stock_forward(emb, nn.Embedding):  # a subclass's own forward would be dropped
         raise TypeError(f"expand_embedding requires an nn.Embedding, got {type(emb).__name__}")
+    refuse_parametrized(emb, "expand_embedding's Embedding")
     old_num = emb.num_embeddings
+    new_num_embeddings = require_count(new_num_embeddings, "new_num_embeddings", owner="expand_embedding", minimum=1)
     if new_num_embeddings <= old_num:
         raise ValueError(f"new_num_embeddings must be > current ({old_num}); got {new_num_embeddings}")
     if init not in ("zeros", "copy_mean"):
@@ -101,6 +109,8 @@ def expand_embedding(
             # vector — broadcast into every new row.
             row_mean = emb.weight.data.mean(dim=0, keepdim=True)  # (1, dim)
             new_emb.weight[old_num:].copy_(row_mean.expand(new_num_embeddings - old_num, dim))
+    # A frozen source stays frozen; the mode carries over too.
+    copy_param_roles(emb, new_emb)
 
     # Frozen mask: True for rows that came from the original embedding.
     frozen_mask = torch.zeros(new_num_embeddings, dtype=torch.bool, device=emb.weight.device)

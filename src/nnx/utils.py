@@ -12,8 +12,19 @@ import sys
 from types import MethodType
 from typing import Optional
 
+import numpy as np
 import torch
 from prettytable import PrettyTable
+
+
+def _writable(array: np.ndarray) -> np.ndarray:
+    """A writable array for ``torch.from_numpy``: pandas' read-only
+    ``.to_numpy()`` would otherwise raise torch's undefined-behaviour
+    warning, though NNx never writes to the tensor. Negative strides (a
+    reversed view), which torch cannot view, are copied too."""
+    if array.flags.writeable and all(stride >= 0 for stride in array.strides):
+        return array
+    return array.copy()
 
 
 def _capture_training_modes(module: torch.nn.Module) -> list[tuple[torch.nn.Module, bool]]:

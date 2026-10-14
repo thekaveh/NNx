@@ -35,7 +35,7 @@ class Callback:
     """Base class for training callbacks. Override any subset of the hooks.
 
     ``distributed`` declares the callback's rank behaviour under
-    ``train(distributed=DDP())`` (FEAT-030): ``"all"`` — run on every rank
+    ``train(distributed=DDP())``: ``"all"`` — run on every rank
     (it must not write files: records and decisions are identical on every
     rank); ``"writer"`` — run on the writer rank only (it may write; it must
     not change control flow such as ``ctx.should_stop``); ``"unsupported"``
@@ -59,7 +59,7 @@ class Callback:
 
     def on_optimizer_update(self, ctx: _CallbackContext, event: Any) -> None:
         """Called once per committed optimizer update of an objective run
-        (FEAT-004) — never per microbatch, for an all-masked window or a
+        — never per microbatch, for an all-masked window or a
         skipped step. ``event`` is a detached ``nnx.objectives.UpdateEvent``
         (optimizer name, its update index, epoch / batch, microbatches,
         loss values); ``ctx.update_count`` is the run's committed-update
@@ -120,15 +120,21 @@ def _warn_at_user_frame(
     frame = sys._getframe(1)
     while frame.f_back is not None and str(frame.f_globals.get("__name__", "")).split(".")[0] == "nnx":
         frame = frame.f_back
-    warnings.warn_explicit(
-        message,
-        category,
-        frame.f_code.co_filename,
-        frame.f_lineno,
-        module=frame.f_globals.get("__name__"),
-        registry=frame.f_globals.setdefault("__warningregistry__", {}) if once_per_location else None,
-        module_globals=frame.f_globals,
-    )
+    filename, lineno = frame.f_code.co_filename, frame.f_lineno
+    module = frame.f_globals.get("__name__")
+    registry = frame.f_globals.setdefault("__warningregistry__", {}) if once_per_location else None
+    # A script's __main__ has no __spec__: passing its globals would make
+    # linecache warn (DeprecationWarning, an error under -W error) before ours.
+    module_globals = frame.f_globals if frame.f_globals.get("__spec__") is not None else None
+    try:
+        warnings.warn_explicit(
+            message, category, filename, lineno, module=module, registry=registry, module_globals=module_globals
+        )
+    except (ImportError, ValueError):
+        # A REPL / ``-c`` / notebook ``__main__`` has no loader to read its
+        # source from, and CPython raises while looking it up (before any
+        # filter runs): warn without the source line rather than crash.
+        warnings.warn_explicit(message, category, filename, lineno, module=module, registry=registry)
 
 
 class EarlyStopping(Callback):
@@ -168,7 +174,7 @@ class EarlyStopping(Callback):
               rest of NNx ranks ``error`` / ``loss``. ``"max"`` requires an
               explicit ``monitor``.
 
-              **Named monitors (FEAT-003).** ``monitor`` may instead be a
+              **Named monitors.** ``monitor`` may instead be a
               :class:`~nnx.MonitorSpec` — a split and metric (``loss``,
               ``error`` or a metric declared in ``NNTrainParams.metrics``)
               with its own direction, ``min_delta`` and missing / non-finite
@@ -179,8 +185,8 @@ class EarlyStopping(Callback):
               so all three agree. ``mode`` and ``min_delta`` must then stay
               at their defaults (set them on the spec).
 
-        name: component name under which the patience state is checkpointed
-              (FEAT-005). By default ``"early_stopping"``, numbered
+        name: component name under which the patience state is checkpointed.
+              By default ``"early_stopping"``, numbered
               (``early_stopping.2`` …) in callback order when a run has
               several; an explicit name must be unique within the run.
 
@@ -494,7 +500,13 @@ class ModelCheckpoint(Callback):
                 f"ModelCheckpoint tag must be a non-empty filename-safe slug "
                 f"containing only letters, digits, '.', '_', or '-'; got {tag!r}"
             )
-        self.epochs = set(epochs or [])
+        if epochs is not None and (isinstance(epochs, (str, bytes)) or not hasattr(epochs, "__iter__")):
+            raise ValueError(f"ModelCheckpoint epochs must be a list of epoch numbers, got {epochs!r}")
+        # Entries that never match an epoch (strings, negatives) would save nothing silently.
+        self.epochs = {
+            require_count(epoch, f"epochs[{i}]", owner="ModelCheckpoint", minimum=0)
+            for i, epoch in enumerate(epochs or [])
+        }
         self.tag = tag
 
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
@@ -535,13 +547,13 @@ class LRMonitor(Callback):
 
     `.history` keeps one entry per epoch (the primary optimizer's LR at the
     epoch's end) whatever the scheduler's clock. An ``optimizer_update``-clock
-    scheduler (FEAT-014) also records `.update_history`: ``(update index, LR
+    scheduler also records `.update_history`: ``(update index, LR
     after that update's scheduler step)`` for the primary optimizer, a
     separate trace of the steps NNx takes — empty on the epoch clock and
     under ``Trainer``'s ``auto_step_schedulers=False``, where the step
     function steps the schedule itself.
 
-    In a run with a history journal (FEAT-036, ``nnx.history``) the log is
+    In a run with a history journal (``nnx.history``) the log is
     bounded too: it keeps the LRs of the last ``retention`` epochs (the
     journal's bound, applied per epoch), and `.update_history` the updates
     of those epochs. ``bounded=False`` keeps every epoch's LR (one float
@@ -578,12 +590,15 @@ def _edp_metric_iter(edp):
     an all-masked record emits nothing rather than zeros."""
     if edp is None:
         return
-    for name in ("loss", "error", "accuracy", "f1", "precision", "recall"):
+    fields = ("loss", "error", "accuracy", "f1", "precision", "recall")
+    for name in fields:
         v = getattr(edp, name, None)
         if v is not None:
             yield name, v
     for name, v in (getattr(edp, "metrics", None) or {}).items():
-        yield name, v
+        # A declared metric named like a record field (MetricSpec("accuracy")
+        # on a multilabel task) is another value: never a second same-named tag.
+        yield (f"metrics/{name}" if name in fields else name), v
     for name, v in (getattr(edp, "extra", None) or {}).items():
         yield f"extra/{name}", v
 

@@ -1,4 +1,4 @@
-"""Bounded training history with an append journal (FEAT-036).
+"""Bounded training history with an append journal.
 
 By default ``NNModel.train`` and ``Trainer.train`` keep every per-batch
 ``NNIterationDataPoint`` in memory and rewrite ``runs/<id>/idps.csv`` each
@@ -47,7 +47,8 @@ is refused before training, as is an unknown ``history_access``.
 **Lineage.** A resumed run owns its own run directory and chunk files; its
 parent is never written. ``iter_history(run_id, lineage=True)`` yields the
 parent's committed records up to the checkpoint the child resumed from
-(following ``resume_from_run_id`` / ``parent_run_id``, recursively), then
+(following the recorded resume, recursively; runs recorded before resume
+status fall back to ``parent_run_id``), then
 the child's — never the parent's later epochs, never an epoch twice.
 """
 
@@ -60,7 +61,6 @@ import json
 import math
 import os
 import tempfile
-import warnings
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Union
@@ -336,6 +336,10 @@ class _JournalWriter:
         self._stats = _EpochStats()
         self._published: Optional[str] = None
         self._previous: Optional[str] = None
+        self._committed = self._counters()  # as of the last published manifest
+
+    def _counters(self) -> tuple[int, int, int, str, int, int]:
+        return (self.chunks, self.records, self.index_bytes, self.index_chain, self.epochs, self.epochs_bytes)
 
     def _ensure(self) -> None:
         if not os.path.isdir(self.directory):
@@ -357,13 +361,24 @@ class _JournalWriter:
         self._lines[-1] = _record_line(record)
         self._pending[-1] = record
 
-    def discard_pending(self, count: int) -> None:
-        """Forget up to ``count`` newest unwritten records (FEAT-033). Any
-        already flushed to a chunk stay beyond the published manifest — an
-        uncommitted tail every reader ignores."""
-        keep = max(len(self._pending) - count, 0)
-        del self._pending[keep:]
-        del self._lines[keep:]
+    def discard_epoch(self) -> None:
+        """Forget the epoch in progress (FEAT-033): its unwritten records,
+        and the chunks it already wrote. Those stay on disk beyond the
+        published manifest — an uncommitted tail every reader ignores — and
+        the counters return to the published manifest's, so
+        :meth:`materialize` and the next chunk agree with it. The index's
+        uncommitted lines are cut, so a later append extends the committed
+        chain."""
+        self._pending.clear()
+        self._lines.clear()
+        self._stats = _EpochStats()
+        if self.index_bytes != self._committed[2]:
+            with open(os.path.join(self.directory, _INDEX), "r+b") as handle:
+                handle.truncate(self._committed[2])
+        (self.chunks, self.records, self.index_bytes, self.index_chain, self.epochs, self.epochs_bytes) = (
+            self._committed
+        )
+        self._synced = min(self._synced, self.chunks)
 
     def _flush(self, count: int) -> None:
         self._write_chunk(self._pending[:count], self._lines[:count])
@@ -441,6 +456,7 @@ class _JournalWriter:
         _atomic_write_text(os.path.join(self.directory, _MANIFEST), text)
         _fsync_path(self.directory)  # the rename is durable before LAST, the commit marker
         self._previous, self._published = self._published, text
+        self._committed = self._counters()
 
     def rollback(self) -> None:
         """Republish the manifest of the previous epoch (the current epoch
@@ -729,7 +745,7 @@ class _JournalHistory:
         the writer forgets its unwritten records, and the window is read back
         from the committed journal — the epoch's records may have evicted
         part of it, and keeping a copy would double the memory bound."""
-        self._writer.discard_pending(self._epoch_records)
+        self._writer.discard_epoch()
         self._epoch_records = 0
         self._window.clear()
         if os.path.exists(os.path.join(self.directory, _MANIFEST)):  # nothing committed yet otherwise
@@ -770,12 +786,12 @@ class _JournalHistory:
                 except Exception as exc:  # noqa: BLE001 — re-raised unless tolerant
                     if not tolerant:
                         raise
-                    warnings.warn(
+                    from .nn.callbacks import _warn_at_user_frame
+
+                    _warn_at_user_frame(
                         f"the history journal could not be read back for on_train_end ({type(exc).__name__}: "
                         f"{exc}); callbacks declaring history_access='full' get the last {self.spec.retention} "
                         "records",
-                        RuntimeWarning,
-                        stacklevel=4,
                     )
                     held.append(self._view)
             return held[0]
@@ -794,6 +810,11 @@ class _JournalHistory:
         self._writer.rollback()
 
     def finish(self, run: NNRun) -> NNRun:
+        if not os.path.exists(os.path.join(self.directory, _MANIFEST)):
+            # Stopped before its first committed epoch: publish the empty
+            # journal, so the run loads with no records (as an eager run's
+            # empty idps.csv does) instead of pointing at nothing.
+            self._writer.publish()
         return self._run(run).save()
 
 
@@ -1085,19 +1106,19 @@ def _parent_prefix(
     from .nn.params.nn_run import _committed_epoch
 
     if parent == "best":
-        warnings.warn(
+        from .nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"run {run_id} resumed from the runs/best pointer, which may name another run by now: its lineage "
             f"starts at {run_id}",
-            RuntimeWarning,
-            stacklevel=4,
         )
         return
     parent_path = _run_path(parent, root)
     if not os.path.isfile(os.path.join(parent_path, "run.yaml")):
-        warnings.warn(
+        from .nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"run {run_id} resumed from run {parent}, which is no longer saved: its lineage starts at {run_id}",
-            RuntimeWarning,
-            stacklevel=4,
         )
         return
     try:
@@ -1116,20 +1137,20 @@ def _parent_prefix(
     )
     first = _first_epoch(run_id, root, committed, readers)
     if resumed is None and first is None:
-        warnings.warn(
+        from .nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"cannot tell where run {run_id} branched from run {parent} (the checkpoint it resumed from is "
             f"unreadable and {run_id} has no committed record): its lineage starts at {run_id}",
-            RuntimeWarning,
-            stacklevel=4,
         )
         return
     if resumed is None:
-        warnings.warn(
+        from .nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"the checkpoint run {run_id} resumed from (or run {parent}'s LAST) is unreadable: its lineage uses "
             f"run {parent}'s records "
             f"before {run_id}'s first record (epoch {first})",
-            RuntimeWarning,
-            stacklevel=4,
         )
     # Each epoch comes from one run: the parent's own records stop where this
     # run — or a descendant below it — takes over.

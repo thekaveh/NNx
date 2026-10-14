@@ -72,6 +72,7 @@ def test_a_valid_request_builds_the_typed_question():
         ("choice", "Topic?", 5),  # options that are not a sequence
         ("score", "Level?", 3),
         ("choice", "Topic?", None),
+        ("boolean", "Is it?", [("a", "x"), ("b", "y")]),  # a Boolean takes no options
     ],
 )
 def test_a_malformed_request_is_an_err_and_nothing_reaches_a_provider(kind, prompt, options):
@@ -161,6 +162,33 @@ def test_abstention_is_a_success_with_probabilities_and_reasons():
     for model_id in (None, 7):
         with pytest.raises(TypeError, match="model_id"):
             decide_result(Spy(), TOPIC, ["x"], policy=policy, model_id=model_id)  # type: ignore[arg-type]
+
+
+def test_a_policy_that_does_not_fit_is_refused_before_the_provider_is_called():
+    """Each input may be a billed request: a policy for other labels or
+    another model, or one applied to a Boolean, is refused first."""
+    from nnx.abstention import AbstentionSchemaError
+
+    policy = AbstentionPolicy(
+        "max_probability",
+        0.8,
+        labels=("t-sport", "t-econ"),
+        model_id="m",
+        tuning_split_id="v",
+        input_field="probabilities",
+    )
+    other_labels = Choice("Topic?", (("t-art", "art"), ("t-econ", "the economy")))
+    for question, model_id, error in (
+        (other_labels, "m", AbstentionSchemaError),
+        (TOPIC, "another-model", AbstentionSchemaError),
+        (Boolean("Spam?"), "m", TypeError),
+        (TOPIC, "m", TypeError),  # with a non-AbstentionPolicy `policy` below
+    ):
+        provider = Spy()
+        given = policy if (question, error) != (TOPIC, TypeError) else object()  # not an AbstentionPolicy
+        with pytest.raises(error):
+            decide_result(provider, question, ["x"], policy=given, model_id=model_id)
+        assert provider.calls == 0
 
 
 # ---------------- inspect_bundle_result ----------------
@@ -285,3 +313,35 @@ def test_the_exception_apis_are_unchanged(tmp_path):
         bundles.inspect_bundle(tmp_path / "nowhere")
     with pytest.raises(InvalidDecisionRequest):
         Choice("Topic?", (("a", "x"), ("a", "y")))
+
+
+def test_an_answer_of_the_wrong_count_or_question_is_an_invalid_response_err():
+    """decide_result checks answers as DecisionJob does: one result of this
+    question per input row."""
+    short = decide_result(Spy(), TOPIC, ["a", "b", "c"])
+    assert short.is_err and short.error.code == "invalid_decision_response"
+    assert "1 results for 3 input rows" in str(short.error.cause)
+
+    other = Choice("Other?", (("x", "x"), ("y", "y")))
+
+    class Elsewhere(Spy):
+        def decide(self, question, inputs):
+            return super().decide(other, inputs)
+
+    wrong = decide_result(Elsewhere(), TOPIC, ["a"])
+    assert wrong.is_err and wrong.error.code == "invalid_decision_response"
+    assert decide_result(Spy(), TOPIC, ["a"]).is_ok
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"kind": "boolean", "prompt": "p", "options": [["a", "a"], ["b", "b"]]},
+        {"kind": "choice", "prompt": "p", "options": [["a", "a"], ["b", "b"]], "levels": ["x"]},
+    ],
+)
+def test_question_state_with_keys_of_another_kind_is_refused(state):
+    from nnx.decisions.schema import question_from_state
+
+    with pytest.raises(InvalidDecisionRequest, match="does not take"):
+        question_from_state(state)

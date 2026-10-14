@@ -224,3 +224,12 @@ def test_trainer_mapping_copy_and_roundtrip():
     assert "extra_metrics" not in params.state()
     with pytest.raises(TypeError):
         restored.optims["q"] = _g_optim()  # type: ignore[index]
+
+
+@pytest.mark.parametrize("names", [{1: None, "a": None}, {"": None}])
+def test_optimizer_and_scheduler_names_must_be_non_empty_strings(names):
+    """A non-string name passed construction and broke state() / str()
+    (both sort the names) far from its origin."""
+    optims = {key: _g_optim() for key in names}
+    with pytest.raises(ValueError, match="names must be non-empty strings"):
+        NNTrainerParams(n_epochs=1, optims=optims)

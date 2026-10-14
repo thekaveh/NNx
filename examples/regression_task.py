@@ -1,4 +1,4 @@
-"""Regression and multilabel through task adapters (FEAT-002).
+"""Regression and multilabel through task adapters.
 
 ``NNModel`` assumes categorical classification unless told otherwise. A
 ``TaskSpec`` on ``NNModelParams(task=...)`` declares the task instead, and

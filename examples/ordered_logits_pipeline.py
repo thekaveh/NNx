@@ -1,4 +1,4 @@
-"""Ordered logits pipelines: decoding stages run exactly as declared (FEAT-037).
+"""Ordered logits pipelines: decoding stages run exactly as declared.
 
 ``nnx.generation.OrderedLogitsPipeline`` is the order-preserving companion to
 ``LogitsChain`` (whose builder sorts processors into NNx's canonical order):

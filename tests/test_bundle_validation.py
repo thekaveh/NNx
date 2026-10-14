@@ -577,17 +577,27 @@ def test_a_trainer_bundle_refuses_to_resume_through_nnmodel_before_anything_chan
 def test_an_interruption_after_the_manifest_rename_keeps_the_new_generation(bundle, monkeypatch):
     model = _classifier()
     run = _train(model, "late-interrupt")
-    real = bundles._fsync_directory
+    before = validate_bundle(bundle)
+    real_sync, real_publish = bundles._fsync_directory, bundles._publish
+    renamed = []
+
+    def publish(root, manifest):
+        renamed.append(root)  # the rename happens inside; its own root sync comes after
+        real_publish(root, manifest)
 
     def interrupted_after_rename(path):
-        if os.path.abspath(path) == os.path.abspath(bundle):  # the root: bundle.json is already replaced
+        # The root is synced once before publishing too; only a sync after the rename is interrupted.
+        if renamed and os.path.abspath(path) == os.path.abspath(bundle):
             raise KeyboardInterrupt
-        real(path)
+        real_sync(path)
 
     with pytest.MonkeyPatch.context() as patch, pytest.raises(KeyboardInterrupt):
         patch.setattr(bundles, "_fsync_directory", interrupted_after_rename)
+        patch.setattr(bundles, "_publish", publish)
         export_bundle(run.id, bundle)
+    assert renamed  # the interrupt came after the manifest rename, not before it
     published = validate_bundle(bundle)  # the generation bundle.json names was not rolled back
+    assert published.generation != before.generation
     assert os.path.isdir(os.path.join(bundle, f"g-{published.generation}"))
 
 
@@ -1023,3 +1033,25 @@ def test_round_eight_unknown_training_state_versions_and_numpy_strings(bundle):
     assert _decode(json.loads(json.dumps(encoded)), {}) == {"label": "cat"}
     with pytest.raises(BundleError, match="bytes_"):
         _encode({"raw": np.bytes_(b"x")}, {}, "state")
+
+
+def test_a_recipe_bundle_resumes():
+    """A LoRA recipe is replayed on the rebuilt model, so the run's training
+    state fits: a "resume" bundle of a recipe run resumes (only a train-end
+    conversion such as QAT is refused)."""
+    from nnx.transforms import TransformRecipe, lora
+
+    model = TransformRecipe([lora("layers.0", r=2, alpha=4.0)]).materialize(_classifier())
+    run = _train(model, "lora-bundle")
+    export_bundle(run.id, "recipe-bundle")
+    rebuilt = reconstruct_bundle("recipe-bundle")
+    assert rebuilt.info.capability == "resume"
+    resumed = rebuilt.resume(
+        NNTrainParams(
+            n_epochs=1,
+            data_id="lora-bundle",
+            train_loader=_batches(),
+            optim=NNOptimParams.builder().adam(max_lr=0.01).build(),
+        )
+    )
+    assert resumed.resume_status.mode == "stateful"

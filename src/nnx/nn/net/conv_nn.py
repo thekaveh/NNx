@@ -1,4 +1,4 @@
-"""LeNet-style convolutional classifier (#89).
+"""LeNet-style convolutional classifier.
 
 Conv→Pool→…→Flatten→FC for small square images (MNIST/FashionMNIST scale).
 Same interface contract as :class:`FeedFwdNN` (``forward(x)→logits``,
@@ -15,6 +15,9 @@ v1 scope: LeNet-style only; no ResNet/skip connections.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -23,6 +26,17 @@ from ..params.nn_conv_params import NNConvParams
 
 
 class ConvNN(nn.Module):
+    """LeNet-style convolutional classifier built from :class:`NNConvParams`:
+    conv and pool blocks, then fully connected layers. ``forward(x)`` takes
+    ``(B, C, H, W)`` images or flattened rows and returns logits."""
+
+    _params: NNConvParams
+    _side: int
+    _in_channels: int
+    _pool_size: int
+    _conv_activation: Optional[Callable[[torch.Tensor], torch.Tensor]]
+    _hidden: tuple[tuple[Callable[[torch.Tensor], torch.Tensor], float], ...]
+
     def __init__(self, params: NNConvParams):
         super().__init__()
 
@@ -51,17 +65,30 @@ class ConvNN(nn.Module):
                 for in_dim, out_dim in zip(fc_dims, fc_dims[1:], strict=False)
             ]
         )
-        # Everything the forward reads from the params, resolved once: the
+
+    @property
+    def params(self) -> NNConvParams:
+        """The net's configuration; setting it (as model surgery does)
+        re-resolves the per-layer state the forward reads."""
+        return self._params
+
+    @params.setter
+    def params(self, params: NNConvParams) -> None:
+        # Everything the forward reads from the params, resolved whenever
+        # they are set (model surgery replaces them, as for FeedFwdNN): the
         # forward touches neither the params object nor the Activations enum,
-        # which torch.compile cannot trace on older torch (FEAT-029).
-        self._side = params.image_side()
-        self._in_channels = params.in_channels
-        self._pool_size = params.pool_size
-        self._conv_activation = params.activation() if params.activation is not None else None
-        self._hidden = tuple((params.activation_for(i)(), params.dropout_for(i)) for i in range(len(self.fcs) - 1))
+        # which torch.compile cannot trace on older torch. Plain attributes:
+        # nothing is registered as a module or saved.
+        self.__dict__["_params"] = params
+        self.__dict__["_side"] = params.image_side()
+        self.__dict__["_in_channels"] = params.in_channels
+        self.__dict__["_pool_size"] = params.pool_size
+        self.__dict__["_conv_activation"] = params.activation() if params.activation is not None else None
+        n_hidden = len(params.hidden_dims) if params.hidden_dims is not None else 0
+        self.__dict__["_hidden"] = tuple((params.activation_for(i)(), params.dropout_for(i)) for i in range(n_hidden))
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        X = X.view(X.size(0), self._in_channels, self._side, self._side)
+        X = X.reshape(X.size(0), self._in_channels, self._side, self._side)  # channels_last too
 
         activation = self._conv_activation
         if activation is None:
@@ -71,7 +98,7 @@ class ConvNN(nn.Module):
             X = activation(X)
             X = F.max_pool2d(X, kernel_size=self._pool_size)
 
-        X = X.view(X.size(0), -1)
+        X = X.reshape(X.size(0), -1)
 
         for fc, (hidden_activation, dropout) in zip(self.fcs[:-1], self._hidden, strict=True):
             X = fc(X)

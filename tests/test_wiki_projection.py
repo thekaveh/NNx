@@ -2,8 +2,14 @@ from pathlib import Path
 
 import pytest
 
-import scripts.docs.build_wiki as build_wiki
-from scripts.docs.build_wiki import rewrite_markdown
+from tests._repo_files import repo_file
+
+# Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
+# so a packager running its suite skips this module instead of failing collection.
+repo_file("scripts", "docs", "build_wiki.py")
+
+import scripts.docs.build_wiki as build_wiki  # noqa: E402
+from scripts.docs.build_wiki import rewrite_markdown  # noqa: E402
 
 
 def test_rewrite_markdown_maps_known_pages_and_local_images(tmp_path: Path):
@@ -751,3 +757,42 @@ def test_rewrite_markdown_rejects_existing_unmapped_non_markdown_file(tmp_path: 
 
     with pytest.raises(ValueError, match="unmapped local documentation link"):
         rewrite_markdown(source, "[Configuration](pyproject.toml)\n", {})
+
+
+def test_a_bracketed_label_after_an_inline_code_span_is_prose_not_a_definition(tmp_path: Path):
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    text = "Use `x` [a]: foo for this.\nSet `k` [note]: see below\n[ref]: page.md\n"
+    rendered = rewrite_markdown(source, text, {source.resolve(): "Page.md"})
+    assert rendered.startswith("Use `x` [a]: foo for this.\nSet `k` [note]: see below\n")
+    assert "[ref]: Page.md" in rendered  # a definition at a line start is still rewritten
+
+
+def test_the_validators_read_prose_after_a_code_span_as_prose(tmp_path: Path):
+    from scripts.docs.build_wiki import block_reference_definitions, markdown_blocks
+
+    text = "Use `x` [a]: foo for this.\n[ref]: page.md\n"
+    found = block_reference_definitions(markdown_blocks(text))
+    labels = [definition.label for definitions in found.values() for definition in definitions]
+    assert labels == ["ref"]
+    blocks = markdown_blocks(text)
+    ((index, (definition,)),) = [(i, ds) for i, ds in found.items() if ds]
+    assert blocks[index].text[definition.start : definition.end].startswith("[ref]: page.md")
+
+
+@pytest.mark.parametrize("text", ["1.  `c`\n\n    [a]: page.md\n", "- `c` x\n\n  [a]: page.md\n"])
+def test_a_definition_in_a_list_item_after_a_code_span_is_still_rewritten(tmp_path: Path, text):
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    rendered = rewrite_markdown(source, text, {source.resolve(): "Page.md"})
+    assert "[a]: Page.md" in rendered
+
+
+def test_a_definition_after_an_html_rewrite_in_its_block_keeps_its_offsets(tmp_path: Path):
+    source = tmp_path / "page.md"
+    target = tmp_path / "page-two.md"
+    source.write_text("", encoding="utf-8")
+    target.write_text("", encoding="utf-8")
+    text = 'See <a href="page-two.md">P</a> here.\n[ref]: page-two.md\n'
+    rendered = rewrite_markdown(source, text, {target.resolve(): "Some-Long-Page-Name"})
+    assert rendered == 'See <a href="Some-Long-Page-Name">P</a> here.\n[ref]: Some-Long-Page-Name\n'

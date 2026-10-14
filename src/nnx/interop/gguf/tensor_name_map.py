@@ -35,10 +35,11 @@ if TYPE_CHECKING:
 
 
 def _to_numpy(t: torch.Tensor) -> np.ndarray:
-    """Detach + cpu + contiguous + numpy. GGUFWriter accepts numpy
+    """Detach + cpu + contiguous + float32 numpy. GGUFWriter accepts numpy
     arrays; tensors with grad / non-CPU storage / non-contiguous strides
-    silently break that path."""
-    return t.detach().cpu().contiguous().numpy()
+    silently break that path, and numpy has no bfloat16. Upcasting to
+    float32 is exact for fp16 / bf16 weights."""
+    return t.detach().cpu().float().contiguous().numpy()
 
 
 def _weight(module) -> torch.Tensor:
@@ -50,13 +51,45 @@ def _weight(module) -> torch.Tensor:
     return w
 
 
+def _refuse_adapters(net: torch.nn.Module) -> None:
+    """GGUF stores plain weights: a PEFT-wrapped projection has no weight of
+    its own, and a prefix tuner's learned prefix has no GGUF slot, so
+    exporting either would fail or silently drop the tuned part."""
+    from nnx.peft import IA3Linear, LoRALinear  # DoRALinear is a LoRALinear
+
+    adapted = [
+        name
+        for name, module in net.named_modules()
+        if isinstance(module, (LoRALinear, IA3Linear)) or hasattr(module, "_nnx_prefix_tuner")
+    ]
+    if adapted:
+        raise TypeError(
+            f"GGUF export needs plain weights, but {', '.join(adapted[:5])}"
+            f"{' …' if len(adapted) > 5 else ''} carry a PEFT adapter (LoRA / DoRA / IA3 / prefix tuning). "
+            "Export the base model, or fold the adapter into plain nn.Linear weights first."
+        )
+    # A factorized projection (low_rank: a Sequential of two Linears) has no
+    # single weight for its GGUF slot either.
+    projections = ("w_qkv", "w_o", "w1", "w2", "w3", "lm_head")
+    factorized = [
+        name
+        for name, module in net.named_modules()
+        if name.rpartition(".")[2] in projections and not isinstance(module, torch.nn.Linear)
+    ]
+    if factorized:
+        raise TypeError(
+            f"GGUF export needs plain nn.Linear projections, but {', '.join(factorized[:5])} "
+            "are factorized or wrapped. Export a model with plain projections."
+        )
+
+
 def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:
     """Walk a ``TransformerNN`` and return ``{gguf_name: numpy_array}``.
 
     The caller (``write_gguf``) then iterates this dict and calls
     ``GGUFWriter.add_tensor`` for each entry. Splitting the iteration
     here (rather than inlining it into the writer) keeps the naming
-    convention testable in isolation — see ``test_gguf_writer.py``.
+    convention testable in isolation.
 
     Args:
         net: A ``TransformerNN`` instance.
@@ -68,6 +101,7 @@ def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:
         is omitted (llama.cpp re-uses ``token_embd.weight`` for tied
         models).
     """
+    _refuse_adapters(net)
     out: dict[str, np.ndarray] = {}
 
     # Token embedding — always present, always named ``token_embd.weight``.

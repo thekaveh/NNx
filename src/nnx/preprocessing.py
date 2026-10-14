@@ -1,4 +1,4 @@
-"""Train-fitted preprocessing and split transforms (FEAT-018).
+"""Train-fitted preprocessing and split transforms.
 
 Two pieces keep held-out data out of what a model learns from:
 
@@ -134,7 +134,7 @@ def _matrix(data: Any, what: str) -> np.ndarray:
     if isinstance(data, torch.Tensor):
         if data.is_complex():
             raise PreprocessingError(f"{what} must be numeric (bool, int or float), got {data.dtype}")
-        array = data.detach().to("cpu", torch.float64, copy=True).numpy()
+        array = data.detach().cpu().to(torch.float64, copy=True).numpy()  # to the CPU first: MPS has no float64
     else:
         array = np.asarray(data)
         if array.dtype.kind not in "biuf":
@@ -363,12 +363,15 @@ class Standardizer:
 
     def __call__(self, sample: Any) -> torch.Tensor:
         """Standardize one sample (a 1-D row) or a batch (2-D) exactly like
-        :meth:`transform`. A pandas ``Series`` row is checked against the
-        fitted column names and order; any other 1-D row is positional."""
+        :meth:`transform`. A pandas ``Series`` row or ``DataFrame`` batch is
+        checked against the fitted column names and order; any other input
+        is positional."""
         import pandas as pd
 
         if isinstance(sample, pd.Series):
             return self.transform(sample.to_frame().T.infer_objects())[0]
+        if isinstance(sample, pd.DataFrame):  # checked against the fitted column names and order
+            return self.transform(sample)
         if isinstance(sample, torch.Tensor):
             return self.transform(sample.reshape(1, -1))[0] if sample.dim() == 1 else self.transform(sample)
         array = np.asarray(sample)

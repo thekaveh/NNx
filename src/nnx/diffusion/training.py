@@ -22,24 +22,29 @@ migrates the schedule once up-front.
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Optional
 
 import torch
 import torch.nn.functional as F
 
-from .._step_helpers import finalize_step, imperative_step
+from .._step_helpers import finalize_step, first_input, full_precision, imperative_step
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
 from .schedules import NoiseSchedule
 
 
-def _extract(values: torch.Tensor, t: torch.Tensor, target_shape: torch.Size) -> torch.Tensor:
+def _extract(
+    values: torch.Tensor, t: torch.Tensor, target_shape: torch.Size, dtype: Optional[torch.dtype] = None
+) -> torch.Tensor:
     """Pull ``values[t]`` and reshape so it broadcasts against a sample
     tensor of shape ``target_shape``. ``values`` is 1D of length T,
     ``t`` is ``(B,)``, output is ``(B, 1, 1, ...)`` matching the rank of
-    target_shape."""
+    target_shape, in ``dtype`` when given (the sample's, so a bf16 / fp16
+    net is not promoted to float32)."""
     out = values.to(t.device)[t]
+    if dtype is not None:
+        out = out.to(dtype)
     while out.dim() < len(target_shape):
         out = out.unsqueeze(-1)
     return out
@@ -69,34 +74,41 @@ def diffusion_train_step_factory(schedule: NoiseSchedule) -> TrainStepFn:
 
     Returns:
         A function suitable for ``NNModel.train(..., train_step_fn=...)``.
+
+    Raises:
+        TypeError: if ``schedule`` is not a :class:`NoiseSchedule` (the
+            enum member itself, say, instead of ``NoiseSchedulers.COSINE()``).
     """
+    if not isinstance(schedule, NoiseSchedule):  # before a run is reserved, as diffusion_objective does
+        raise TypeError(
+            f"diffusion_train_step_factory needs a NoiseSchedule (call the NoiseSchedulers member), "
+            f"got {type(schedule).__name__}"
+        )
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
         m.net.train()
         m.net.zero_grad()
 
-        # Standard NNx dataloader contract: batch is (X, Y) or a single
-        # tensor; Y is unused by diffusion. Use unpack_batch when the net
-        # supplies one, fall back to direct unpacking otherwise.
-        if hasattr(m.net, "unpack_batch"):
-            (x_0,), _ = cast(Any, m.net).unpack_batch(ctx.batch)
-        elif isinstance(ctx.batch, (list, tuple)):
-            x_0 = ctx.batch[0]
-        else:
-            x_0 = ctx.batch
-        x_0 = x_0.to(m.device)
+        # The one input, as diffusion_objective reads it: the model's batch
+        # adapter, else the net's unpack_batch, else (X, Y) / a tensor.
+        x_0 = first_input(m, ctx.batch, who="diffusion_train_step_factory")
 
         B = x_0.shape[0]
         t = torch.randint(0, schedule.T, (B,), device=m.device)
         eps = torch.randn_like(x_0)
 
-        sqrt_a = _extract(schedule.sqrt_alphas_cumprod, t, x_0.shape)
-        sqrt_1ma = _extract(schedule.sqrt_one_minus_alphas_cumprod, t, x_0.shape)
+        sqrt_a = _extract(schedule.sqrt_alphas_cumprod, t, x_0.shape, x_0.dtype)
+        sqrt_1ma = _extract(schedule.sqrt_one_minus_alphas_cumprod, t, x_0.shape, x_0.dtype)
         x_t = sqrt_a * x_0 + sqrt_1ma * eps
 
         eps_pred = m.net(x_t, t)
-        loss = F.mse_loss(eps_pred, eps)
+        if eps_pred.shape != eps.shape:  # mse_loss would broadcast (a warning) and train on a wrong loss
+            raise ValueError(
+                f"the denoiser must predict noise of the input's shape {tuple(eps.shape)}, got {tuple(eps_pred.shape)}"
+            )
+        # Widened like the objective's error: reduced-precision MSE is not on every CPU torch (2.4 has no bf16).
+        loss = F.mse_loss(full_precision(eps_pred), full_precision(eps))
         loss_val = finalize_step(loss, ctx, paradigm="diffusion")
 
         return NNEvaluationDataPoint(

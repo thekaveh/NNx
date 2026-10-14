@@ -1,4 +1,4 @@
-"""Checkpointable component state (FEAT-005).
+"""Checkpointable component state.
 
 A warm resume already restores the model, optimizer, scheduler, GradScaler
 and RNG state from the training-state sidecar of a checkpoint. Anything
@@ -43,7 +43,6 @@ right away, and a restore snapshots it with a deep copy.
 from __future__ import annotations
 
 import re
-import warnings
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -145,16 +144,16 @@ class ResumeStatus:
             training state, or ``resume_mode="weights_only"`` was asked).
         source_run_id / source_checkpoint: where the resume came from.
         source_epoch: the epoch of that checkpoint when the session resumed
-            from it (FEAT-036's lineage reads it); ``None`` for a fresh run
-            and for status recorded before it existed.
+            from it (the history journal's lineage reads it); ``None`` for a
+            fresh run and for status recorded without it.
         restored_components: names of the components whose state was
             restored, in registration order.
         fresh_components: registered components that kept their fresh
             state (optional components absent from the checkpoint, or every
             component on a weights-only resume).
         source_generation / source_checkpoint_id: the resume point's
-            generation ordinal and checkpoint id from its manifest (#394);
-            ``None`` for a checkpoint written before manifests existed.
+            generation ordinal and checkpoint id from its manifest;
+            ``None`` for a checkpoint without a manifest.
     """
 
     mode: str = "fresh"
@@ -294,7 +293,7 @@ class ComponentRegistry:
 
     def fresh_plan(self) -> _Plan:
         """A plan that restores nothing: every component keeps its fresh
-        state (weights-only resumes, checkpoints written before FEAT-005)."""
+        state (weights-only resumes, checkpoints without component state)."""
         return _Plan(fresh=list(self._components))
 
     def plan(self, saved: Optional[Mapping[str, Any]]) -> _Plan:
@@ -371,10 +370,10 @@ class ComponentRegistry:
                 except Exception as rollback_error:  # keep rolling the others back
                     failed.append(f"{name!r} ({type(rollback_error).__name__}: {rollback_error})")
             if failed:
-                warnings.warn(
+                from .nn.callbacks import _warn_at_user_frame
+
+                _warn_at_user_frame(
                     f"component restore failed and could not roll back {', '.join(failed)}; their state is undefined",
-                    RuntimeWarning,
-                    stacklevel=2,
                 )
             raise
         return tuple(name for name, _, _, _ in plan.to_restore)

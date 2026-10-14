@@ -1,4 +1,4 @@
-"""Streaming prediction and mergeable metrics (FEAT-020).
+"""Streaming prediction and mergeable metrics.
 
 ``NNModel.predict()`` and ``NNModel.evaluate()`` are eager: they return only
 after the whole loader has run, holding every batch's outputs until then.
@@ -96,7 +96,7 @@ class StreamClosedError(RuntimeError):
 class MetricMergeError(ValueError):
     """Two :class:`StreamingMetrics` with different declarations were merged:
     other metrics (id, version or config), other probability semantics, other
-    task labels, another decision threshold or another ignore index."""
+    task labels, another ignore index or (bernoulli) another decision threshold."""
 
 
 # --- prediction streams ---------------------------------------------------------------------------
@@ -353,8 +353,8 @@ class StreamingMetrics:
             batches of another width are refused.
 
     Two accumulators merge only when their metrics (id, version, config and
-    name), semantics, labels, output count, threshold and ignore index are
-    equal. If a
+    name), semantics, labels, output count and ignore index are equal, and,
+    for bernoulli semantics, the decision threshold. If a
     metric's update raises part-way through a batch, the accumulation no
     longer describes one set of samples and refuses further use.
     """
@@ -810,7 +810,7 @@ def _same_rows(array: np.ndarray, target: np.ndarray, name: str) -> np.ndarray:
 
 def streaming_eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
     """An ``eval_step_fn`` for ``NNModel.train`` that builds the default
-    validation record from counts and sums (FEAT-020).
+    validation record from counts and sums.
 
     The record is the one NNx's own ``evaluate()`` returns — the same task
     counts and status, loss (each batch's numerator over the summed loss

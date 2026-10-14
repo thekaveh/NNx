@@ -103,3 +103,29 @@ def test_sample_next_token_handles_finite_zero_sum_underflow():
     # the source.
     out = sample_next_token(logits)
     assert isinstance(out, int)
+
+
+def test_top_p_of_one_keeps_every_token_despite_cumsum_rounding(monkeypatch):
+    import torch
+
+    from nnx.generation import TopPFilter
+
+    real_softmax = torch.softmax
+
+    def overshooting(*args, **kwargs):  # the float32 rounding some platforms show, on every platform
+        return real_softmax(*args, **kwargs) * (1.0 + 1e-3)
+
+    monkeypatch.setattr(torch, "softmax", overshooting)
+    logits = torch.randn(8, 1000, generator=torch.Generator().manual_seed(0))
+    cumulative = torch.softmax(logits.sort(dim=-1, descending=True).values, dim=-1).cumsum(dim=-1)
+    assert bool((cumulative[:, :-2] > 1.0).any(dim=-1).all())  # every row passes 1 before its last token
+    assert torch.equal(TopPFilter(1.0)(logits, []), logits)
+
+
+def test_top_p_below_one_still_filters_a_peaked_distribution():
+    import torch
+
+    from nnx.generation import TopPFilter
+
+    logits = torch.tensor([[5.0, 1.0, 0.0, -1.0]])
+    assert torch.isinf(TopPFilter(0.95)(logits, [])).any()

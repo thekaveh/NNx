@@ -1,4 +1,4 @@
-"""Portable, data-only run bundles (FEAT-015).
+"""Portable, data-only run bundles.
 
 A run's checkpoints are pickles, safe to read only when you produced them.
 ``nnx.bundles`` publishes one run checkpoint — weights, training state and
@@ -65,9 +65,16 @@ from nnx.calibration import fit_temperature, model_fingerprint
 
 LABELS = ("cat", "dog", "fox")
 DATA = torch.Generator().manual_seed(0)
+# Labels follow a fixed projection of the inputs, so the task is learnable
+# and a held-out split says something about the model.
+PROJECTION = torch.randn(4, 3, generator=DATA)
 X = torch.randn(48, 4, generator=DATA)
-Y = torch.randint(0, 3, (48,), generator=DATA)
+Y = (X @ PROJECTION).argmax(dim=1)
 BATCHES = [(X[i : i + 16], Y[i : i + 16]) for i in range(0, 48, 16)]
+# Held-out rows for the temperature fit: calibrating on training rows would
+# understate the model's real overconfidence.
+X_CAL = torch.randn(24, 4, generator=DATA)
+Y_CAL = (X_CAL @ PROJECTION).argmax(dim=1)
 
 
 class TinyEncoder(torch.nn.Module):
@@ -119,7 +126,11 @@ def built_in_classifier() -> dict:
     first = _classifier()
     run = first.train(params=_params(2, "bundled"))
     fit = fit_temperature(
-        first.predict(X).logits, Y.numpy(), labels=LABELS, model_id=model_fingerprint(first), split_id="calibration"
+        first.predict(X_CAL).logits,
+        Y_CAL.numpy(),
+        labels=LABELS,
+        model_id=model_fingerprint(first),
+        split_id="calibration",
     )
     calibrator = fit.calibrator
     assert calibrator is not None, fit.reason

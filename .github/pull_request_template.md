@@ -7,10 +7,11 @@
 <!-- A bulleted checklist of how you exercised the change. Include any new tests
      and the command used to run them. -->
 
-- [ ] `pytest` (full suite passes locally)
-- [ ] `ruff check src/ tests/` (lint clean)
+- [ ] `uv run pytest -n logical --dist loadgroup` (full suite passes locally)
+- [ ] `uv run ruff check src/ tests/ examples/ scripts/` and `uv run ruff format --check src/ tests/ examples/ scripts/`
+- [ ] `uv run pyright --warnings`
 - [ ] Added / updated tests covering the change
-- [ ] Updated `CHANGELOG.md` under `[Unreleased]`
+- [ ] For a user-visible change: an entry in `CHANGELOG.md` under `[Unreleased]`
 
 ## Notes for reviewers
 

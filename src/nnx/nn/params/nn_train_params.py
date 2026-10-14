@@ -23,6 +23,36 @@ def _validate_resume_mode(mode: object, owner: str) -> None:
         raise ValueError(f"{owner}.resume_mode must be one of {', '.join(repr(m) for m in RESUME_MODES)}, got {mode!r}")
 
 
+def _checkpoint_tag(value: object, owner: str, *, resuming: bool) -> Any:
+    """``resume_from_checkpoint`` as the plain tag string it serializes as:
+    a :class:`Checkpoints` member becomes its value (so the enum and the
+    string name one run identity and dump as YAML). When a resume will read
+    it (``resuming``), anything that is not a ``Checkpoints`` tag or a
+    ``ModelCheckpoint`` stem ``"<tag>_e<epoch>"`` fails here instead of after
+    training starts. Otherwise it is lineage metadata: a tag string or None
+    (``run.yaml`` stores one or null), and any string is kept as given, so
+    runs saved with any tag still load."""
+    import re
+
+    from ..enum.checkpoints import Checkpoints
+    from .nn_checkpoint import _MODEL_CHECKPOINT_TAG
+
+    if isinstance(value, Checkpoints):
+        return value.value
+    if not resuming:
+        if value is not None and not isinstance(value, str):  # run.yaml stores a tag string or null
+            raise ValueError(f"{owner}.resume_from_checkpoint must be a tag string, got {value!r}")
+        return value
+    if isinstance(value, str) and (
+        value in {c.value for c in Checkpoints} or re.fullmatch(rf"{_MODEL_CHECKPOINT_TAG}_e[0-9]+", value)
+    ):
+        return value
+    raise ValueError(
+        f"{owner}.resume_from_checkpoint must be a Checkpoints tag "
+        f"({', '.join(c.value for c in Checkpoints)}) or a ModelCheckpoint file stem '<tag>_e<epoch>', got {value!r}"
+    )
+
+
 def _validate_resume_epochs(epochs: object, owner: str) -> None:
     if epochs not in RESUME_EPOCHS:
         raise ValueError(
@@ -48,9 +78,11 @@ def _validate_monitoring(params: Any, owner: str) -> None:
 class NNTrainParams:
     """Training configuration.
 
-    `seed` pins every RNG that affects training (Python random, NumPy,
-    torch CPU+CUDA, cuDNN) when NNModel.train() runs. None disables
-    seeding (default).
+    `seed` reseeds the global RNG streams (Python random, NumPy, torch
+    CPU+CUDA, cuDNN) when NNModel.train() runs. None disables seeding
+    (default). A loader or sampler with its own `torch.Generator` is not
+    reseeded: rebuild it (or reseed its generator) before each fit for
+    the same shuffle order.
 
     To preserve back-compat with previously-saved runs, `seed` is included
     in state() ONLY when set — so existing runs with no seed continue to
@@ -69,7 +101,7 @@ class NNTrainParams:
     reported in the records' `metrics` under each spec's name. `monitor`
     (:class:`~nnx.MonitorSpec`) names the split and metric that BEST
     selection and a `ReduceLROnPlateau` scheduler track, with one shared
-    improvement rule (FEAT-003). Both are serialized only when set, so a
+    improvement rule. Both are serialized only when set, so a
     configuration without them keeps its `state()` and run id.
     """
 
@@ -153,8 +185,25 @@ class NNTrainParams:
                 domain_message=f"NNTrainParams requires n_epochs >= 1, got {self.n_epochs}",
             ),
         )
-        if self.data_id is not None and not self.data_id.strip():
-            raise ValueError("NNTrainParams.data_id must be non-empty when provided")
+        if self.seed is not None:
+            # set_seed feeds Python, NumPy and torch, whose common domain
+            # is [0, 2**32 - 1]; a bool or fraction would otherwise fail
+            # only when train() starts (or hash as a different run).
+            object.__setattr__(
+                self, "seed", require_count(self.seed, "seed", owner="NNTrainParams", minimum=0, maximum=2**32 - 1)
+            )
+        if self.data_id is not None and (not isinstance(self.data_id, str) or not self.data_id.strip()):
+            raise ValueError(f"NNTrainParams.data_id must be a non-empty string when provided, got {self.data_id!r}")
+        # Flags are real bools: a truthy string would act as True while
+        # run.yaml recorded the string (and shifted the run id).
+        for flag in ("save_phase_checkpoints", "overwrite_existing"):
+            if not isinstance(getattr(self, flag), bool):
+                raise ValueError(f"NNTrainParams.{flag} must be a bool, got {getattr(self, flag)!r}")
+        object.__setattr__(
+            self,
+            "resume_from_checkpoint",
+            _checkpoint_tag(self.resume_from_checkpoint, "NNTrainParams", resuming=self.resume_from_run_id is not None),
+        )
         if self.parent_run_id is not None and self.resume_from_run_id is not None:
             raise ValueError("set resume_from_run_id or parent_run_id, not both")
         _validate_resume_mode(self.resume_mode, "NNTrainParams")

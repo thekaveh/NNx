@@ -1,4 +1,4 @@
-"""Graph-level classification with explicit pooling and graph identity (FEAT-026).
+"""Graph-level classification with explicit pooling and graph identity.
 
 NNx's graph nets (``Nets.GRAPH_CONV`` / ``GRAPH_SAGE`` / ``GRAPH_ATT``) and
 ``NNGraphDataset`` classify the **nodes** of one graph. This module

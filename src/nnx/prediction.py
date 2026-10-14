@@ -40,6 +40,7 @@ from ._probability import softmax_, to_numpy
 __all__ = [
     "PredictionResult",
     "PredictionValidationError",
+    "NonFiniteLogitsError",
     "ProbabilitySpec",
     "prediction_from_logits",
 ]
@@ -51,6 +52,11 @@ class PredictionValidationError(ValueError):
     """An invalid :class:`ProbabilitySpec`, or logits / sample ids that do
     not satisfy one (wrong label count, invalid class axis, non-finite
     logits, misaligned sample ids)."""
+
+
+class NonFiniteLogitsError(PredictionValidationError):
+    """The logits hold NaN or +-inf: the model's output, not the request,
+    is at fault (a decision provider reports it as a provider failure)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +113,8 @@ class ProbabilitySpec:
             raise PredictionValidationError(
                 f"a {self.kind} ProbabilitySpec needs at least {minimum} label(s), got {len(labels)}"
             )
-        object.__setattr__(self, "labels", labels)
+        # NumPy strings pass isinstance(str) but are not YAML-safe: store plain str.
+        object.__setattr__(self, "labels", tuple(str(label) for label in labels))
 
     def resolve_class_axis(self, ndim: int) -> int:
         """Return ``class_axis`` as a non-negative axis of an ``ndim``-D
@@ -158,7 +165,7 @@ class PredictionResult:
             index (``input_id``) for seed rows of a graph loader.
         spec: the :class:`ProbabilitySpec` that produced the result, or
             ``None`` for a continuous result (``NNModel.predict_proba``
-            on a regression task, FEAT-002).
+            on a regression task).
     """
 
     logits: np.ndarray
@@ -258,7 +265,7 @@ def prediction_from_logits(
     axis = _check_spec_fits(array, spec)
     finite = np.isfinite(array)
     if not finite.all():
-        raise PredictionValidationError(
+        raise NonFiniteLogitsError(
             f"logits contain {int(finite.size - np.count_nonzero(finite))} non-finite value(s) (NaN or ±inf); "
             "probabilities would be undefined — replace masked logits with a large finite negative value"
         )
@@ -290,6 +297,8 @@ def prediction_from_logits(
         ids = np.arange(n_samples, dtype=np.int64)
     else:
         ids = to_numpy(sample_ids, copy=False)
+        if ids.ndim == 1 and ids.size == 0:
+            ids = ids.astype(np.int64)  # an empty list is float64 in NumPy
         if ids.ndim != 1 or ids.shape[0] != n_samples or ids.dtype.kind not in "iu":
             raise PredictionValidationError(
                 f"sample_ids must be one integer id per sample ({n_samples}), got shape {ids.shape} "

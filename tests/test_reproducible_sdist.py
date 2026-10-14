@@ -4,7 +4,13 @@ import hashlib
 import io
 import tarfile
 
-from scripts.normalize_sdist import normalize_sdist
+from tests._repo_files import repo_file
+
+# Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
+# so a packager running its suite skips this module instead of failing collection.
+repo_file("scripts", "normalize_sdist.py")
+
+from scripts.normalize_sdist import normalize_sdist  # noqa: E402
 
 
 def _write_sdist(path, *, mtime: int, uid: int, reverse: bool = False) -> None:

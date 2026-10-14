@@ -25,7 +25,7 @@ PINNED_MODEL = "jev-1.13.0"
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])
     parser.add_argument("--model", default=PINNED_MODEL, help=f"a pinned model version (default {PINNED_MODEL})")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"jev-\d+\.\d+\.\d+", args.model):
@@ -37,17 +37,21 @@ def main(argv: list[str] | None = None) -> int:
 
     import typesafe_sdk
 
-    from nnx.decisions import Boolean, Choice, JevProvider, Score
+    from nnx.decisions import Boolean, BooleanResult, Choice, ChoiceResult, JevProvider, Option, Score, ScoreResult
 
     questions = [
-        Choice("What is this message about?", (("t-bill", "billing"), ("t-ship", "shipping"), ("t-other", "other"))),
+        Choice(
+            "What is this message about?",
+            (Option("t-bill", "billing"), Option("t-ship", "shipping"), Option("t-other", "other")),
+        ),
         Boolean("Does the customer need an answer today?"),
-        Score("How severe is the problem?", (("s0", "minor"), ("s1", "serious"), ("s2", "critical"))),
+        Score("How severe is the problem?", (Option("s0", "minor"), Option("s1", "serious"), Option("s2", "critical"))),
     ]
     started = time.perf_counter()
     with JevProvider(model=args.model) as provider:
         (topic,), (urgent,), (severity,) = provider.decide_many(questions, ["I was charged twice for my order."])
     seconds = time.perf_counter() - started
+    assert isinstance(topic, ChoiceResult) and isinstance(urgent, BooleanResult) and isinstance(severity, ScoreResult)
     raw = topic.raw
     report = {
         "requested_model": args.model,

@@ -7,8 +7,8 @@ pre-Ampere hardware the swap raises ``RuntimeError`` at construction
 time.
 
 These tests verify the swap mechanics (pattern filter, return count,
-state-dict-keys behavior) on every platform AND verify the
-``RuntimeError`` is the surfaced contract on CPU. The actual
+state-dict-keys behavior) on every platform, the ``RuntimeError`` on a
+CPU-resident weight, and the real swap on CUDA (Ampere+) hardware. The actual
 forward-pass speedup is the property of the torchao kernel; we don't
 re-test torchao's wheel here.
 """
@@ -20,7 +20,8 @@ import torch
 from torch import nn
 
 # importorskip the parent torchao package first (the top-level handle
-# is what ``test_semi_structured_24_skip_on_no_torchao`` reaches for).
+# is what ``test_semi_structured_24_without_torchao_names_the_extra``
+# reaches for).
 # Then importorskip the submodule we monkey-patch — pytest returns the
 # loaded module object directly, which lets us bind a local name without
 # tripping the ruff F811 redefinition check.
@@ -53,15 +54,9 @@ def _has_cuda() -> bool:
 
 def test_semi_structured_24_swaps_linear_with_semisparse():
     """Every matched nn.Linear's ``weight`` should end up as a
-    ``SparseSemiStructuredTensor`` subclass after the swap. On
-    CPU-only test runners the underlying kernel raises ``RuntimeError``
-    at the swap site — we surface that as a clear, actionable error,
-    not a silent pass.
-
-    Skipped under CPU because the swap requires CUDA-resident weights;
-    the swap-mechanics contract (pattern filter + return count) is
-    covered by sibling tests that don't depend on the actual sparse
-    tensor construction succeeding.
+    ``SparseSemiStructuredTensor`` subclass after the swap. Skipped
+    without CUDA: the swap needs CUDA-resident weights (the CPU refusal
+    is its own test below).
     """
     if not _has_cuda():
         pytest.skip("2:4 semi-structured sparsity requires CUDA (Ampere+)")
@@ -167,19 +162,16 @@ def test_semi_structured_24_no_match_returns_zero(monkeypatch):
     assert sparsify_calls == []
 
 
-def test_semi_structured_24_skip_on_no_torchao():
-    """Sanity check that ``pytest.importorskip('torchao')`` at the top
-    of this module fired iff torchao is unavailable. By the time this
-    test runs, torchao IS available (otherwise the module would have
-    skipped at import time), so we just assert that — proving the guard
-    rides the standard pytest skip path."""
-    # If we got here, torchao imported successfully. The importorskip at
-    # the top of the file is the actual mechanism — this test documents
-    # the contract and would itself be skipped (along with every other
-    # test in the file) on a torchao-less environment.
-    import torchao as _torchao
+def test_semi_structured_24_without_torchao_names_the_extra(monkeypatch):
+    """A missing torchao is an ImportError that leads with the extra to
+    install, not a bare ModuleNotFoundError."""
+    import sys
 
-    assert _torchao is not None
+    from nnx.prune import semi_structured_24
+
+    monkeypatch.setitem(sys.modules, "torchao.sparsity", None)  # import torchao.sparsity raises
+    with pytest.raises(ImportError, match=r"thekaveh-nnx\[quantize\]"):
+        semi_structured_24(nn.Sequential(nn.Linear(8, 8)))
 
 
 def test_semi_structured_24_filter_excludes_non_linear(monkeypatch):
@@ -209,3 +201,11 @@ def test_semi_structured_24_filter_excludes_non_linear(monkeypatch):
     n = nnx_prune.semi_structured_24(Mixed())
     assert n == 1
     assert seen == [("fc", "Linear")]
+
+
+def test_semi_structured_24_refuses_a_cpu_weight_with_runtime_error():
+    """On a CPU-resident weight the swap raises RuntimeError at the swap
+    site (the documented contract): never a silent pass."""
+    torch.manual_seed(0)
+    with pytest.raises(RuntimeError, match="CUDA"):
+        nnx_prune.semi_structured_24(_LinearOnly())

@@ -1,4 +1,4 @@
-"""Typed decisions on Jev models through the TypeSafe Python SDK (FEAT-010).
+"""Typed decisions on Jev models through the TypeSafe Python SDK.
 
 :class:`JevProvider` answers :class:`Choice`, :class:`Boolean` and
 :class:`Score` questions about text with one ``system_one`` call per input,
@@ -73,7 +73,7 @@ import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any, Optional
 
-from .providers import Capabilities, Question
+from .providers import Capabilities, Question, _synchronous_caller
 from .schema import (
     Boolean,
     Choice,
@@ -278,6 +278,14 @@ def _result(question: Question, answer: Any, meta: dict[str, Any], provider: str
 # --- the provider -----------------------------------------------------------------------------
 
 
+def _in_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 class JevProvider:
     """A :class:`~nnx.decisions.DecisionProvider` for Jev models through the
     TypeSafe SDK. See the module docstring for translation, confidence,
@@ -371,6 +379,12 @@ class JevProvider:
         the provider's capabilities — no network I/O."""
         if not isinstance(question, (Choice, Boolean, Score)):
             raise InvalidDecisionRequest(f"not a decision question: {type(question).__name__}")
+        if self._client is None and not self._builds and (_synchronous_caller() or not _in_event_loop()):
+            # A synchronous caller (collect, DecisionJob.run) with only an async
+            # client: refuse before a call is counted, not inside decide_many.
+            raise InvalidDecisionRequest(
+                "only an async client was injected: use adecide / adecide_many, or inject a sync client too"
+            )
         texts = _texts(inputs)
         self._capabilities.check(question, modality="text", batch_size=len(texts))
         if isinstance(question, Choice):

@@ -1,4 +1,4 @@
-"""Explicit FP32 / FP16 / BF16 execution policy (FEAT-028).
+"""Explicit FP32 / FP16 / BF16 execution policy.
 
 ``NNModelParams.precision`` takes a :class:`PrecisionPolicy`: the precision
 training, evaluation and prediction run in. A policy is *resolved* against
@@ -48,6 +48,7 @@ __all__ = [
     "PrecisionUnsupportedError",
     "ReferenceTolerance",
     "ResolvedPrecision",
+    "full_precision_only",
     "precision_support",
     "resolve_precision",
 ]
@@ -79,7 +80,12 @@ FULL_PRECISION_ONLY = "__nnx_full_precision_only__"
 
 
 def full_precision_only(step: Any) -> Any:
-    """Mark ``step`` as running in full precision only and return it."""
+    """Mark ``step`` as running in full precision only and return it.
+
+    ``NNModel.train`` refuses a reduced precision policy for a marked step
+    before anything is reserved. A wrapper around a built-in paradigm step
+    keeps that refusal when it is marked too (or built with
+    ``functools.wraps``, which copies the marker)."""
     setattr(step, FULL_PRECISION_ONLY, True)
     return step
 

@@ -26,6 +26,10 @@ LayerKV = Optional[tuple[torch.Tensor, torch.Tensor]]
 
 
 class TransformerNN(nn.Module):
+    """Decoder-only language model built from :class:`NNTransformerParams`.
+    ``forward(tokens)`` maps ``(B, T)`` token ids to ``(B, T, vocab)``
+    logits; ``forward_with_cache`` decodes with a per-layer KV cache."""
+
     tok_embed: nn.Embedding
     blocks: nn.ModuleList
     norm_out: RMSNorm

@@ -8,9 +8,11 @@ for each microbatch. This engine owns everything after that:
    gradient buffer (numerators are sums, so buffers add across
    microbatches). A window of one microbatch — the default — needs no
    buffers: its weighted, normalized loss is back-propagated once. Terms
-   with weight ``0`` are never back-propagated, and only parameters that
-   require gradients *now* are differentiated, so freezing or unfreezing
-   parameters between microbatches (gradual unfreezing) just works;
+   with weight ``0`` are never back-propagated, and only optimizer-owned
+   parameters that require gradients *now* are differentiated, so freezing
+   or unfreezing parameters the optimizers hold (gradual unfreezing) just
+   works; an optimizer built with ``param_groups`` leaves out parameters
+   frozen at build time, and unfreezing those later trains nothing;
 2. at the end of an update window (``accumulate_grad_batches`` microbatches,
    or fewer at the epoch's end) each normalized term is divided by its
    window-total denominator, summed terms are left as totals, and the
@@ -20,10 +22,14 @@ for each microbatch. This engine owns everything after that:
 3. mixed precision: ``unscale`` → gradient clipping → ``step`` →
    ``update``, in that order (the objective's forward already ran under
    autocast);
-4. a *committed-update* event fires once per successful optimizer update —
-   never for a microbatch, an all-masked window or a skipped step. Before
+4. a *committed-update* event fires for every named optimizer once per
+   committed window — never for a microbatch, an all-masked window or a
+   skipped step. An optimizer whose parameters got no gradient in the
+   window (frozen during a warm-up, say) is not stepped or unscaled, but it
+   still counts the committed window, so every optimizer's update clock
+   advances together. Before
    the events are delivered, the objective's own ``after_update`` hook runs
-   once per committed update (all named optimizers stepped) — a JEPA
+   once per committed update, after the window's step — a JEPA
    objective advances its EMA target there (FEAT-040).
 
 Non-finite losses or gradients follow a declared policy: ``"fail"`` raises
@@ -48,6 +54,24 @@ import torch
 
 NONFINITE_POLICIES = ("fail", "skip")
 REDUCTIONS = ("mean", "sum")
+
+
+def warn_unowned_trainables(net: torch.nn.Module, optimizers: Iterable[torch.optim.Optimizer], warned: set) -> None:
+    """Warn once per run about parameters that require gradients but that no
+    optimizer owns (unfrozen after an optimizer built with ``param_groups``
+    left them out): they would silently never train."""
+    owned = {id(p) for optimizer in optimizers for group in optimizer.param_groups for p in group["params"]}
+    unowned = [name for name, p in net.named_parameters() if p.requires_grad and id(p) not in owned]
+    fresh = sorted(set(unowned) - warned)
+    if fresh:
+        warned.update(fresh)
+        from .nn.callbacks import _warn_at_user_frame  # attributed to the caller's train(), not NNx
+
+        _warn_at_user_frame(
+            f"parameters {fresh[:5]} require gradients but no optimizer owns them, so they never train: "
+            "param_groups left them out (frozen at build time, or unmatched by a strict Trainer's specs)",
+            RuntimeWarning,
+        )
 
 
 def check_nonfinite_policy(nonfinite: str) -> str:
@@ -118,7 +142,7 @@ class UpdateEngine:
         self.precision = precision
         self.listeners: list[Callable[[UpdateEvent], None]] = list(listeners)
         # Called once per committed update with its events (one per named
-        # optimizer), after every optimizer stepped and before the listeners.
+        # optimizer), after the window's step and before the listeners.
         self.commit_hooks: list[Callable[[tuple[UpdateEvent, ...]], None]] = list(commit_hooks)
         # Every optimizer's parameters, each once, in a stable order; which of
         # them require gradients is decided per microbatch (freezing).
@@ -154,6 +178,16 @@ class UpdateEngine:
     def pending_microbatches(self) -> int:
         return self._microbatches
 
+    @property
+    def window_nonfinite(self) -> bool:
+        """Whether the open window saw a non-finite term (``"skip"``: the
+        window is dropped at commit)."""
+        return self._nonfinite_window
+
+    #: Whether the last :meth:`commit` dropped its window under the
+    #: non-finite policy (a non-finite term or non-finite gradients).
+    dropped_nonfinite: bool = False
+
     def autocast(self) -> AbstractContextManager[Any]:
         """The context the objective's forward runs in (mixed precision
         when enabled, a no-op otherwise)."""
@@ -172,6 +206,7 @@ class UpdateEngine:
         single = closes_window and not self._microbatches
         self._microbatches += 1
         live: list[Any] = []
+        detached: list[str] = []  # weighted, unmasked terms no gradient can flow through
         for term in terms:
             value = term._numerator_value  # one host sync per term, cached on the term
             if not math.isfinite(value):
@@ -185,11 +220,21 @@ class UpdateEngine:
             window.numerator += value
             if term.reduction == "mean":
                 window.denominator += float(term.denominator)
-            if term.weight and term.numerator.requires_grad and (term.reduction == "sum" or term.denominator):
-                live.append(term)
+            if term.weight and (term.reduction == "sum" or term.denominator):
+                if term.numerator.requires_grad:
+                    live.append(term)
+                else:
+                    detached.append(term.name)
         if self._nonfinite_window:
             return  # the window is dropped at commit; no gradient work
         active = [j for j, param in enumerate(self._params) if param.requires_grad]
+        if not live and detached and active and torch.is_grad_enabled():
+            # Nothing would train, yet the window would count as a committed
+            # update (clocks, schedulers, listeners): refuse instead.
+            raise ValueError(
+                f"loss term(s) {detached} carry no gradient (numerator.requires_grad is False): a LossTerm's "
+                "numerator must be a differentiable tensor (not detached, not computed under no_grad)"
+            )
         if not live or not active:
             return
         if single:
@@ -239,13 +284,16 @@ class UpdateEngine:
 
     def commit(self, *, epoch_idx: int, batch_idx: int) -> tuple[UpdateEvent, ...]:
         """Close the window: combine, (unscale), clip, step. Returns one
-        event per optimizer that committed an update (none when the window
-        was empty, all-masked, non-finite or skipped by the scaler)."""
+        event per named optimizer for a committed window (none when the
+        window was empty, all-masked, non-finite or skipped by the scaler);
+        an optimizer without gradients is not stepped but still counts."""
+        self.dropped_nonfinite = False
         try:
             if not self._microbatches:
                 return ()
             if self._nonfinite_window:
                 self.skipped += 1
+                self.dropped_nonfinite = True
                 return ()
             values, total = self.window_values()
             if not values:
@@ -274,6 +322,7 @@ class UpdateEngine:
                         "to drop such windows"
                     )
                 self.skipped += 1
+                self.dropped_nonfinite = True  # finite terms, non-finite gradients
                 return ()
             for name in self.optimizers:
                 norm = self.clip_norms.get(name)
@@ -285,8 +334,11 @@ class UpdateEngine:
                     self.skipped += 1  # the scaler found inf/NaN gradients and skipped the step
                     return ()
             elif self.scaler is None:
+                # As on the scaler path: an optimizer without gradients this
+                # window is not stepped (its hooks and per-call state stay put).
                 for optimizer in self.optimizers.values():
-                    optimizer.step()
+                    if _holds_gradient(optimizer):
+                        optimizer.step()
             self.commits += 1
             events = []
             for name in self.optimizers:
@@ -380,10 +432,14 @@ def _holds_gradient(optimizer: torch.optim.Optimizer) -> bool:
     return any(param.grad is not None for group in optimizer.param_groups for param in group["params"])
 
 
-def check_scaler_ownership(optimizers: Mapping[str, torch.optim.Optimizer]) -> None:
-    """Refuse optimizers sharing a parameter under a loss scaler: it
-    unscales per optimizer, so a shared parameter's gradient would be
-    unscaled twice (FEAT-028)."""
+def check_scaler_ownership(
+    optimizers: Mapping[str, torch.optim.Optimizer],
+    *,
+    consequence: str = "which an fp16 loss scaler would unscale twice",
+) -> None:
+    """Refuse optimizers sharing a parameter: a loss scaler unscales per
+    optimizer (FEAT-028), and an objective's committed window steps every
+    optimizer, so a shared parameter would be unscaled / stepped twice."""
     owners: dict[int, str] = {}
     for name, optimizer in optimizers.items():
         for group in optimizer.param_groups:
@@ -391,8 +447,8 @@ def check_scaler_ownership(optimizers: Mapping[str, torch.optim.Optimizer]) -> N
                 first = owners.setdefault(id(param), name)
                 if first != name:
                     raise ValueError(
-                        f"optimizers {first!r} and {name!r} share a parameter, which an fp16 loss scaler would "
-                        "unscale twice; give each parameter to one optimizer (non-overlapping param_groups)"
+                        f"optimizers {first!r} and {name!r} share a parameter, {consequence}; "
+                        "give each parameter to one optimizer (non-overlapping param_groups)"
                     )
 
 

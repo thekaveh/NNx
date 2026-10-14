@@ -28,7 +28,7 @@ Two insertion modes are supported:
     container the new modules are registered as
     ``_nnx_deepen_linear_N`` / ``_nnx_deepen_relu_N`` (``N`` increments
     until both keys are unused), and a module registered in several
-    slots keeps every slot (FIX-018).
+    slots keeps every slot.
   - **FeedFwdNN / ModuleList mode**: ``after_layer_name`` points at a
     Linear inside a :class:`nn.ModuleList` whose parent applies an
     activation between consecutive layers (the FeedFwdNN forward
@@ -38,7 +38,7 @@ Two insertion modes are supported:
     *effective at the insertion site* — ``params.activation_for(idx)``,
     so a per-layer override wins over the scalar default — must be
     ReLU. The parent's immutable ``params`` are rebuilt to describe the
-    deeper topology (FIX-006): one more ``hidden_dims`` entry at the
+    deeper topology: one more ``hidden_dims`` entry at the
     site, a ReLU inserted into an explicit ``activations`` list, and
     dropout ``0.0`` at the new identity site with every existing site
     keeping its own probability (a nonzero scalar dropout is
@@ -102,10 +102,16 @@ def deepen(
     Raises:
         KeyError: if ``after_layer_name`` is not a submodule.
         TypeError: if the layer is neither a ReLU-in-Sequential nor a
-            Linear-in-FeedFwdNN-like ModuleList.
-        ValueError: if the activation effective at the insertion site is
-            anything other than ReLU. Sigmoid / tanh / GELU break
-            function-preservation.
+            Linear-in-FeedFwdNN-like ModuleList (a non-ReLU activation in a
+            Sequential is this case), or is a ReLU subclass with its own
+            ``forward``.
+        ValueError: if the activation effective at a FeedFwdNN insertion
+            site is anything other than ReLU (sigmoid / tanh / GELU break
+            function-preservation); if the ReLU is not fed by an
+            ``nn.Linear`` through elementwise / norm modules only; if the
+            Sequential is a subclass or carries its own parameters, buffers
+            or hooks, or the target ReLU has hooks; or if a ModuleList is not
+            the ``layers`` / ``fcs`` of a stock FeedFwdNN / ConvNN.
     """
     new_model = copy.deepcopy(model)
     target = get_module(new_model, after_layer_name)
@@ -114,6 +120,11 @@ def deepen(
     parent_path, _, attr = after_layer_name.rpartition(".")
     parent = new_model if not parent_path else new_model.get_submodule(parent_path)
 
+    if isinstance(target, nn.ReLU) and type(target).forward is not nn.ReLU.forward:
+        raise TypeError(
+            f"deepen: {after_layer_name!r} is a {type(target).__name__} with its own forward; the identity layer "
+            "preserves the function only after a stock nn.ReLU (non-negative output)"
+        )
     if isinstance(target, nn.ReLU) and isinstance(parent, nn.Sequential):
         return _insert_after_relu_in_sequential(new_model, parent_path, attr)
 
@@ -135,7 +146,8 @@ def _insert_after_relu_in_sequential(
 ) -> nn.Module:
     """Splice [Linear(I), ReLU] into a Sequential right after the
     ReLU registered under key ``attr``. The Linear's dim comes from the
-    nearest earlier Linear (walked back through the registered entries).
+    Linear feeding the ReLU, walked back through elementwise and norm
+    modules only.
 
     The container is rebuilt from its ordered ``_modules`` mapping, not
     ``children()`` (which deduplicates a module registered in several
@@ -148,19 +160,50 @@ def _insert_after_relu_in_sequential(
     keeps the original's training mode (FIX-018).
     """
     parent = cast(nn.Sequential, new_model if not parent_path else new_model.get_submodule(parent_path))
+    # The rebuild is a plain nn.Sequential of the same children: anything
+    # else the container carries (a subclass's forward, its own parameters
+    # or buffers, hooks) would be dropped and the forward would change.
+    hooks = (
+        parent._forward_hooks,
+        parent._forward_pre_hooks,
+        parent._backward_hooks,
+        parent._backward_pre_hooks,
+    )
+    if type(parent) is not nn.Sequential or parent._parameters or parent._buffers or any(hooks):
+        raise ValueError(
+            f"deepen: Sequential {parent_path or '<root>'!r} is a {type(parent).__name__} with its own "
+            "forward, parameters, buffers or hooks, which a rebuilt nn.Sequential would drop"
+        )
+    from .widen import _has_hooks
+
+    if _has_hooks(parent._modules[attr]):  # the inserted ReLU(I·y) would act on the hook's output
+        raise ValueError(
+            f"deepen: the ReLU {attr!r} in {parent_path or '<root>'!r} has hooks, which the insertion would change"
+        )
     entries = list(parent._modules.items())
     keys = [key for key, _ in entries]
     if attr not in keys:  # pragma: no cover — get_module resolved it, so this cannot happen
         raise KeyError(f"deepen: no module named {attr!r} in Sequential {parent_path or '<root>'!r}")
     idx = keys.index(attr)
 
-    # Find the nearest Linear registered earlier in the Sequential — its
-    # out_features is the activation's hidden dimension.
+    # The ReLU's width comes from the Linear feeding it, through elementwise
+    # modules only: an adapter, a factorized Sequential or any other
+    # width-changing module in between would size the identity layer wrong.
+    from .widen import _ELEMENTWISE_MODULES
+
     src_linear: Optional[nn.Linear] = None
-    for _, mod in reversed(entries[:idx]):
-        if isinstance(mod, nn.Linear):
-            src_linear = mod
-            break
+    for key, mod in reversed(entries[:idx]):
+        # Width-preserving modules (elementwise ones, and norms: the identity
+        # layer goes after the ReLU, so their statistics are untouched).
+        if isinstance(mod, (*_ELEMENTWISE_MODULES, nn.BatchNorm1d, nn.LayerNorm)):
+            continue
+        if not isinstance(mod, nn.Linear):
+            raise ValueError(
+                f"deepen: the ReLU at position {idx} is fed by {key!r}, a {type(mod).__name__}, not an nn.Linear "
+                "(through elementwise modules only), so its width cannot be read safely"
+            )
+        src_linear = mod
+        break
     if src_linear is None:
         raise ValueError(
             "deepen: could not find an upstream nn.Linear before "
@@ -194,7 +237,11 @@ def _insert_after_relu_in_sequential(
         rebuilt[relu_key] = new_relu
         rebuilt.update(entries[idx + 1 :])
         new_sequential = nn.Sequential(rebuilt)
-    new_sequential.train(parent.training)
+    # The container and the two new layers take the parent's mode; existing
+    # children keep their own (Module.train() would flatten a mixed tree).
+    new_sequential.training = parent.training
+    new_linear.train(parent.training)
+    new_relu.train(parent.training)
 
     # If the Sequential IS the root model, return the new Sequential
     # directly; otherwise splice it into the original root in place of
@@ -242,8 +289,19 @@ def _insert_after_linear_in_module_list(
     # The grandparent (e.g. FeedFwdNN) must declare ReLU as its activation.
     # We walk up one level and read either `.params.activation` (NNx's
     # FeedFwdNN contract) or refuse.
-    grandparent_path, _, _ = parent_path.rpartition(".")
+    grandparent_path, _, list_attr = parent_path.rpartition(".")
     grandparent = new_model if not grandparent_path else new_model.get_submodule(grandparent_path)
+    from ..nn.net.conv_nn import ConvNN
+    from ..nn.net.feed_fwd_nn import FeedFwdNN
+
+    # As widen: registration order is the data flow only for the stock
+    # forward over FeedFwdNN.layers / ConvNN.fcs (a subclass may add residuals).
+    proven = {"layers": FeedFwdNN, "fcs": ConvNN}.get(list_attr)
+    if proven is None or not isinstance(grandparent, proven) or type(grandparent).forward is not proven.forward:
+        raise ValueError(
+            f"deepen: {parent_path!r} is not FeedFwdNN.layers / ConvNN.fcs under the stock forward "
+            f"({type(grandparent).__name__}); its data flow cannot be proven"
+        )
     _check_relu_activation(grandparent, parent_path, idx)
 
     new_linear = _identity_linear(
@@ -259,6 +317,10 @@ def _insert_after_linear_in_module_list(
     children = list(parent)
     new_children = children[: idx + 1] + [new_linear] + children[idx + 1 :]
     new_module_list = nn.ModuleList(new_children)
+    # The list and the new layer take the parent's mode, as in the
+    # Sequential path; existing children keep their own.
+    new_module_list.training = parent.training
+    new_linear.train(parent.training)
     set_module(new_model, parent_path, new_module_list)
 
     # Keep the owner's immutable configuration aligned with its layers
@@ -345,7 +407,7 @@ def _check_relu_activation(grandparent: nn.Module, parent_path: str, idx: int) -
     except Exception as e:  # pragma: no cover — defensive
         raise ValueError(f"deepen: could not instantiate activation {act!r} to check it; {e}") from e
 
-    if not isinstance(probe, nn.ReLU):
+    if not isinstance(probe, nn.ReLU) or type(probe).forward is not nn.ReLU.forward:
         raise ValueError(
             f"deepen: activation is {type(probe).__name__ if probe else act!r}, "
             "but identity-init insertion is function-preserving only for ReLU. "

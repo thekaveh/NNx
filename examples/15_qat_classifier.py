@@ -4,7 +4,7 @@ convert to int4 weights / int8 dynamic activations at the end.
 QAT trades one training run for accuracy recovery on aggressive low-bit
 schemes. The flow:
 
-  1. Build a small classifier (FeedFwdNN with three Linear layers).
+  1. Build a small classifier (FeedFwdNN with four Linear layers, hidden 128, 128, 64).
   2. Wire up ``QATLifecycleCallback`` + ``qat_train_step_factory`` —
      ``on_train_begin`` swaps every Linear for a fake-quantized variant,
      so the network learns under int4/int8 rounding noise.
@@ -17,9 +17,9 @@ schemes. The flow:
   5. The saved LAST checkpoint holds the CONVERTED (quantized) weights
      — ``NNModel.train`` re-saves it after ``on_train_end`` fires, so
      the on-disk state carries the int4 scales/zeros, not the pre-convert
-     FP32 tensors. Reloading takes a fresh net through the same
-     prepare→convert before ``load_state_dict`` (the quantized state
-     dict has keys a plain FP32 net can't absorb).
+     FP32 tensors. ``NNModel.from_checkpoint`` reloads it: the checkpoint
+     records the ``torchao_qat`` transform, and the loader replays the
+     same prepare→convert before it loads the quantized state dict.
 
 Compared to PTQ (``examples/12_quantize_int8.py``):
 
@@ -30,10 +30,11 @@ Compared to PTQ (``examples/12_quantize_int8.py``):
     typically recovers most of the accuracy lost to int4 weights +
     int8 activations.
 
-Requires the ``quantize`` extra (for ``torchao``'s QAT primitives) AND
-the ``onnx-dynamo`` extra (Phase 6 exports the converted int4/int8
-model through the dynamo-based ONNX path — torchao's quantized tensor
-subclasses don't round-trip through the legacy TorchScript exporter):
+Requires the ``quantize`` extra (for ``torchao``'s QAT primitives). The
+``onnx-dynamo`` extra enables the optional Phase-6 export of the converted
+int4/int8 model through the dynamo-based ONNX path (torchao's quantized
+tensor subclasses don't round-trip through the legacy TorchScript
+exporter); without it, Phase 6 is skipped:
 
     pip install 'thekaveh-nnx[quantize,onnx-dynamo]'
 
@@ -70,7 +71,7 @@ from nnx import (
 
 
 def _make_classifier() -> NNModel:
-    """Three hidden layers of width 128. Each width is a multiple of the
+    """Three hidden layers (128, 128, 64). Each width is a multiple of the
     int4 weight quantizer's default groupsize (32) so the 8da4w recipe
     applies cleanly without padding."""
     return NNModel(
@@ -147,6 +148,9 @@ def main():
     run = model.train(
         params=NNTrainParams(
             n_epochs=6,
+            # The QAT callback is not part of the run id: without its own
+            # data_id this run would share 12_quantize_int8.py's id.
+            data_id="qat-8da4w",
             train_loader=train_loader,
             val_loader=val_loader,
             optim=NNOptimParams(
@@ -198,12 +202,9 @@ def main():
     assert ckpt is not None
     quant_keys = sorted(k for k in ckpt.net_state if k.endswith(("scales", "zeros")))
     print(f"quantized keys in the saved LAST checkpoint: {quant_keys}")
+    assert quant_keys, "LAST must hold the converted int4 scales/zeros"
 
-    reloaded = _make_classifier()
-    quantizer = QATLifecycleCallback(qat_config="8da4w").quantizer
-    quantizer.prepare(reloaded.net)
-    quantizer.convert(reloaded.net)
-    reloaded.net.load_state_dict(ckpt.net_state)
+    reloaded = NNModel.from_checkpoint(ckpt)
     reloaded_acc = _val_accuracy(reloaded, val_loader)
     print(f"reloaded val accuracy: {reloaded_acc * 100:.2f}%  (converted model: {acc * 100:.2f}%)")
     assert reloaded_acc == acc, "reloaded quantized model should match the converted one"

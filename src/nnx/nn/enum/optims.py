@@ -73,8 +73,9 @@ class Optims(Enum):
         """Build the underlying torch optimizer.
 
         When ``param_groups`` is None (back-compat default), constructs
-        the optimizer with a single group: every trainable parameter of
-        ``net`` at ``lr=lr_start``, ``weight_decay=weight_decay``.
+        the optimizer with a single group: every parameter of ``net``
+        (frozen ones included; they receive no gradient) at
+        ``lr=lr_start``, ``weight_decay=weight_decay``.
 
         When ``param_groups`` is set to a list of
         :class:`nnx.finetune.NNParamGroupSpec`, dispatches to
@@ -104,6 +105,18 @@ class Optims(Enum):
             strict_param_groups=strict_param_groups,
         )
 
+        # The momentum shape matches the family (is_valid() refuses a
+        # mismatch in train(); a direct build gets the reason here).
+        adam = self in (Optims.ADAM, Optims.ADAMW, Optims.ADAM_AMSGRAD)
+        if adam != isinstance(momentum, tuple):
+            expected = "a (beta1, beta2) pair" if adam else "one real momentum"
+            raise ValueError(f"{self} requires {expected}, got {momentum!r}")
+        # Validated reals (an int 0 included) as the floats torch expects;
+        # the params' state() keeps the value as given (run ids never shift).
+        if isinstance(momentum, tuple):
+            momentum = (float(momentum[0]), float(momentum[1]))
+        else:
+            momentum = float(momentum)
         match self:
             case Optims.SGD:
                 assert isinstance(momentum, float)

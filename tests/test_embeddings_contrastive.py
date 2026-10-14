@@ -10,13 +10,13 @@ Two layers of coverage:
   - End-to-end "training reduces anchor-positive distance" check using
     a tiny hash-embedding encoder built inline (no sentence-transformers
     download, fully hermetic). The skip-gracefully guard on the
-    optional ``sentence-transformers`` integration is in
-    :func:`test_train_contrastive_accepts_sentence_transformers_when_installed`.
+    sentence-transformers path (``preprocess`` / legacy ``tokenize`` →
+    ``out["sentence_embedding"]``) is covered hermetically by
+    :func:`test_the_sentence_transformer_path_reads_sentence_embedding`.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import zlib
 
 import pytest
@@ -336,11 +336,8 @@ def test_embed_texts_batches_match_unbatched():
 
 
 # -------------------------------------------------------------------------
-# Sentence-transformers integration — skip-gracefully when unavailable.
+# Sentence-transformers integration (hermetic: a fake backbone stands in).
 # -------------------------------------------------------------------------
-
-
-HAS_SBERT = importlib.util.find_spec("sentence_transformers") is not None
 
 
 def test_is_sentence_transformer_negatives():
@@ -352,7 +349,6 @@ def test_is_sentence_transformer_negatives():
     assert _is_sentence_transformer(None) is False
 
 
-@pytest.mark.skipif(not HAS_SBERT, reason="sentence-transformers not installed")
 def test_is_sentence_transformer_detects_sbert_subclass():
     """A torch.nn.Module that quacks like SBERT (has preprocess) MUST be
     flagged — this is the routing trigger in :func:`_encode`."""
@@ -372,3 +368,34 @@ def test_train_contrastive_rejects_batch_size_one():
     backbone = _HashEmbedder(vocab_size=64, dim=8)
     with pytest.raises(ValueError, match="batch_size"):
         train_contrastive(backbone, pairs, n_epochs=1, batch_size=1)
+
+
+class _FakeSBERTBackbone(nn.Module):
+    """A duck-typed SentenceTransformer: features from ``preprocess`` (or
+    the legacy ``tokenize``), a dict output with ``sentence_embedding``."""
+
+    def __init__(self, *, legacy: bool = False) -> None:
+        super().__init__()
+        self.proj = nn.Linear(4, 3)
+        if legacy:
+            self.tokenize = self._features
+        else:
+            self.preprocess = self._features
+
+    def _features(self, texts):
+        return {"x": torch.tensor([[float(len(t)), 1.0, 0.0, -1.0] for t in texts])}
+
+    def forward(self, features):
+        return {"sentence_embedding": self.proj(features["x"])}
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["preprocess", "tokenize"])
+def test_the_sentence_transformer_path_reads_sentence_embedding(legacy):
+    from nnx.embeddings.contrastive_trainer import embed_texts
+
+    backbone = _FakeSBERTBackbone(legacy=legacy)
+    out = embed_texts(backbone, ["a", "bbb", "cc"], batch_size=2)
+    assert out.shape == (3, 3)
+    with torch.no_grad():
+        expected = backbone({"x": backbone._features(["a", "bbb", "cc"])["x"]})["sentence_embedding"]
+    assert torch.allclose(out, torch.nn.functional.normalize(expected, dim=-1), atol=1e-6)

@@ -462,9 +462,9 @@ def test_review_round_twelve_string_labels_and_undeclared_widths():
     target, decided = np.array(["a", "b", "a"]), np.array(["a", "a", "a"])
     f1.update(target, decided)  # labels that are not class indices: scored by scikit-learn, as before
     assert f1.result() == pytest.approx(sk.f1_score(target, decided, average="macro", zero_division=0))
-    with pytest.raises(ValueError, match="one kind"):
-        mixed = MetricSpec("f1").accumulator()
-        mixed.update(np.array([0, 1]), np.array([0, 1]))
+    mixed = MetricSpec("f1").accumulator()
+    mixed.update(np.array([0, 1]), np.array([0, 1]))
+    with pytest.raises(ValueError, match="one kind"):  # the second kind is refused
         mixed.update(target, decided)
     counted = MetricSpec("f1").accumulator()
     counted.update(np.array([0, 1]), np.array([0, 1]))

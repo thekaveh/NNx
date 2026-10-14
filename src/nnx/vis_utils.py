@@ -8,8 +8,10 @@ visualization — weight histograms, activation maps, gradient flow,
 Netron export); the two subpackages are deliberately independent and
 do not share code.
 
-Every method is a `@staticmethod` returning either a `plotly.graph_objects.Figure`
-(for plots) or a `pandas.DataFrame` (for tables). The class itself
+Every plotting method is a `@staticmethod` returning either a
+`plotly.graph_objects.Figure` (for plots) or a `pandas.DataFrame` (for
+tables); the helpers `generate_colors` (a color list) and
+`get_scatter_plot_vm` (a scatter view-model) feed them. The class itself
 carries layout constants (`TITLE_SIZE`, `LABEL_SIZE`, `FIG_SIZE`,
 `MARGIN_SIZE`) shared across methods, plus an opt-in `RENDERER`
 override for environments where Plotly's default renderer doesn't
@@ -47,7 +49,11 @@ class VisUtils:
     and `nnx.vis_utils`'s module-level aliases (which re-export the most
     common methods of this class for ergonomic top-level access).
 
-    Class attributes are styling defaults shared by every plotting method:
+    Class attributes are the plotting methods' styling defaults.
+    ``confusion_matrix`` reads them at each call. ``multi_line_plot``,
+    ``scatter_plot`` and ``two_dim_tsne_checkpoint_logits`` take them as
+    keyword defaults fixed when the class is defined: pass ``renderer=`` /
+    ``fig_size=`` (and so on) per call to change them there.
 
     - `TITLE_SIZE` / `LABEL_SIZE`: Plotly title and axis-label font sizes.
     - `FIG_SIZE`: default `(width, height)` in pixels.
@@ -56,7 +62,7 @@ class VisUtils:
       (notebook / browser / etc.); set to a string like ``"png"`` or
       ``"browser"`` to pin behavior in non-default environments.
 
-    See the README §1.2 "Visualization" bullet and `docs/concepts.md`
+    See README §4.6 "Visualization" and `docs/concepts.md`
     for usage examples.
     """
 
@@ -117,10 +123,17 @@ class VisUtils:
         fig = make_subplots()
 
         ls = ["solid", "dash", "dot", "dashdot"]
+        if any(len(ys) > len(ls) for ys in yss):
+            raise ValueError(f"multi_line_plot draws at most {len(ls)} lines per group (one dash style each)")
         cs = VisUtils.generate_colors(n=len(yss))
-        n_lines_per_series = len(yss[0])
+        n_lines_per_series = max(len(ys) for ys in yss)  # every drawn dash style gets a legend entry
 
         group_labels, line_labels = yss_legend
+        if len(group_labels) < len(yss) or len(line_labels) < n_lines_per_series:
+            raise ValueError(
+                f"multi_line_plot needs a label per group ({len(yss)}) and per line ({n_lines_per_series}); "
+                f"got {len(group_labels)} and {len(line_labels)}"
+            )
         for ys_idx, ys in enumerate(yss):
             for y_idx, y in enumerate(ys):
                 fig.add_trace(
@@ -160,7 +173,7 @@ class VisUtils:
             xaxis=dict(
                 title=dict(text=x_axis_label, font=dict(size=label_size)),
                 tickmode="array",
-                tickvals=list(range(0, len(x), x_ticks_inc)),
+                tickvals=list(x)[::x_ticks_inc],
             ),
         )
 
@@ -254,7 +267,7 @@ class VisUtils:
         checkpoint — pass the BEST checkpoint to see how well-trained the
         decision space ended up. Returns the Plotly Figure.
 
-        FEAT-006: a registered module is rebuilt through its factory and
+        A registered module is rebuilt through its factory and
         batches are split by its batch adapter (``batch_adapter=`` overrides
         it). A runtime-only checkpoint needs ``module=`` — the weights are
         loaded into it (its identity, state keys and training modes are
@@ -271,6 +284,13 @@ class VisUtils:
             key: value for key, value in (("module", module), ("batch_adapter", batch_adapter)) if value is not None
         }
         model = cast(Any, NNModel.from_checkpoint(checkpoint=checkpoint, **reload_kwargs))
+        task = getattr(getattr(model, "params", None), "task", None)
+        if task is not None and getattr(task, "kind", None) != "categorical":
+            # Coloured by class: a regression or multilabel target has none
+            # (and failed only after the whole inference and t-SNE ran).
+            raise ValueError(
+                f"two_dim_tsne_checkpoint_logits colours points by class; the checkpoint's task is {task.kind!r}"
+            )
 
         ts = [t for t in range(ds.output_dim)]
         cs = VisUtils.generate_colors(n=ds.output_dim)
@@ -297,6 +317,11 @@ class VisUtils:
                 test_Y = model._split_batch(test_batch)[2]
                 batch_logits, _ = model._predict_logits(
                     [test_batch], caller="two_dim_tsne_checkpoint_logits()", batches=True
+                )
+            if test_Y.ndim != 1:  # a task-less multi-output (BCE) target has no single class per row
+                raise ValueError(
+                    "two_dim_tsne_checkpoint_logits colours points by class; the targets are "
+                    f"{tuple(test_Y.shape)}, not one class index per row"
                 )
             take = min(remaining, len(batch_logits))
             logits_chunks.append(batch_logits[:take])
@@ -339,7 +364,7 @@ class VisUtils:
                 col_ts="target",
                 label_xs="tsne_1",
                 label_ys="tsne_2",
-                title=f"2D t-SNE of output logits of best checkpoint @ epoch={checkpoint.idp.epoch_idx}",
+                title=f"2D t-SNE of output logits of the checkpoint @ epoch={checkpoint.idp.epoch_idx}",
             ),
         )
 
@@ -353,7 +378,9 @@ class VisUtils:
     ):
         """Render a confusion matrix heatmap. Y_true and Y_pred are 1-D arrays
         of integer class labels. If `class_names` is provided, axis labels use
-        the named classes; otherwise integer indices."""
+        the named classes, and every label must be a class index
+        ``0..len(class_names) - 1`` (others raise ``ValueError``); otherwise
+        the labels present, in sorted order."""
         go = require("plotly.graph_objects", "nnx.vis_utils.VisUtils")
         from sklearn.metrics import confusion_matrix as _sk_cm
 
@@ -362,15 +389,25 @@ class VisUtils:
         # labels=...: without it sklearn orders rows by the classes
         # PRESENT in the data, so an absent class silently shifts every
         # later row/column onto the wrong name.
-        cm_labels = list(range(len(class_names))) if class_names is not None else None
+        present = set(Y_true.ravel().tolist()) | set(Y_pred.ravel().tolist())
+        # Without class_names the axes name the labels present, in sorted order.
+        cm_labels = list(range(len(class_names))) if class_names is not None else sorted(present)
+        if class_names is not None:
+            # class_names[i] names class index i: any other label would be
+            # dropped from the matrix (or every name shifted), so refuse it.
+            stray = sorted((v for v in present if isinstance(v, bool) or v not in cm_labels), key=repr)
+            if stray:
+                raise ValueError(
+                    f"confusion_matrix: with class_names, labels must be class indices 0..{len(cm_labels) - 1}; "
+                    f"got {stray[:5]!r}"
+                )
         cm = _sk_cm(Y_true, Y_pred, labels=cm_labels)
         if normalize:
             row_sums = cm.sum(axis=1, keepdims=True)
             row_sums[row_sums == 0] = 1
             cm = cm / row_sums
 
-        n_classes = cm.shape[0]
-        labels = class_names if class_names is not None else list(range(n_classes))
+        labels = class_names if class_names is not None else cm_labels
 
         fig = go.Figure(
             data=go.Heatmap(
@@ -403,9 +440,23 @@ class VisUtils:
         from sklearn.metrics import classification_report as _sk_report
 
         target_names = [str(c) for c in class_names] if class_names is not None else None
+        # labels=...: when the data holds class indices 0..n-1 (as in
+        # confusion_matrix), a named class absent from the data keeps its row
+        # instead of shifting the names (or raising). Other labels (strings,
+        # 1-based ids) are left to scikit-learn's own label ordering.
+        report_labels = None
+        if class_names is not None:
+            present = set(np.asarray(Y_true).ravel().tolist()) | set(np.asarray(Y_pred).ravel().tolist())
+            indices = set(range(len(class_names)))
+            if (
+                all(isinstance(v, (int, np.integer)) and not isinstance(v, bool) for v in present)
+                and present <= indices
+            ):
+                report_labels = sorted(indices)
         report = _sk_report(
             Y_true,
             Y_pred,
+            labels=report_labels,
             target_names=target_names,
             output_dict=True,
             zero_division=cast(Any, 0),

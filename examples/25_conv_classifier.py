@@ -89,15 +89,14 @@ def _make_loaders(seed: int = 0) -> tuple[DataLoader, DataLoader]:
 
 
 def conv_integral_schema_roundtrip() -> None:
-    """Bounded config/checkpoint-schema helper (FIX-021) — one tiny forward,
-    no training schedule.
+    """Bounded config/checkpoint-schema helper — one tiny forward, no
+    training schedule.
 
     Conv dimensions routinely arrive as NumPy integers (``np.prod(shape)``,
     ``shape[0]``). ``NNConvParams`` accepts any non-boolean integral value,
     normalizes it to a plain ``int`` before the immutable lists and shape
-    arithmetic, and serializes it identically to the hand-typed config —
-    a raw ``numpy.int64`` used to make ``yaml.safe_dump`` (``run.yaml``)
-    fail. Fractional and boolean counts are rejected with the field named
+    arithmetic, and serializes it identically to the hand-typed config, so
+    ``yaml.safe_dump`` (``run.yaml``) accepts it. Fractional and boolean counts are rejected with the field named
     before any layer exists.
     """
     import numpy as np
@@ -214,6 +213,7 @@ def main() -> None:
     with torch.no_grad():
         same = torch.equal(model.net(X_imgs), model.net(X_imgs.view(8, -1)))
     print(f"(B,C,H,W) vs flat (B,{SIDE * SIDE}) input — identical logits: {same}")
+    assert same, "image and flattened inputs gave different logits"
 
     # ---- Checkpoint round-trip via resolve_from_state.
     ckpt = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
@@ -221,9 +221,12 @@ def main() -> None:
     reloaded = NNModel.from_checkpoint(ckpt)
     reloaded.net.eval()
     with torch.no_grad():
-        same = torch.allclose(model.net(X_imgs), reloaded.net(X_imgs))
-    print(f"checkpoint round-trip: net_params={type(ckpt.net_params).__name__}, ")
-    print(f"reloaded net={type(reloaded.net).__name__}, logits identical: {same}")
+        same = torch.equal(model.net(X_imgs), reloaded.net(X_imgs))  # the same weights: bit-exact
+    print(
+        f"checkpoint round-trip: net_params={type(ckpt.net_params).__name__}, "
+        f"reloaded net={type(reloaded.net).__name__}, logits identical: {same}"
+    )
+    assert same, "the reloaded checkpoint gave different logits"
 
     # ---- Integer-count schema: NumPy dims normalize, fractional dims fail early.
     conv_integral_schema_roundtrip()

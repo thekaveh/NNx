@@ -24,6 +24,7 @@ Returning a Plotly `Figure` keeps the module consistent with
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Union
 
 import torch
@@ -80,12 +81,17 @@ def activation_map(
         A Plotly `Figure` containing one or more `Heatmap` traces.
 
     Raises:
-        ValueError: If `layer_name` doesn't resolve to a submodule of `model`.
+        ValueError: If `layer_name` doesn't resolve to a submodule of `model`,
+            or if `max_channels` or `cols` is not a positive integer, or
+            if the layer returns a mapping that holds no tensor.
         RuntimeError: If the forward hook on `layer_name` never fires
             (the layer is not reached by this input's forward path).
     """
     # The figure needs the plots extra: refuse before running the model (FEAT-031).
     require("plotly.graph_objects", "nnx.viz.activation_map")
+    for name, value in (("max_channels", max_channels), ("cols", cols)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"activation_map: {name} must be a positive integer, got {value!r}")
     # Local import to avoid a circular import at package init time.
     from ..nn.nn_model import NNModel
 
@@ -115,6 +121,11 @@ def activation_map(
             captured["v"] = out.detach().cpu()
         elif isinstance(out, (tuple, list)) and out and isinstance(out[0], torch.Tensor):
             captured["v"] = out[0].detach().cpu()
+        elif isinstance(out, Mapping):
+            tensors = [value for value in out.values() if isinstance(value, torch.Tensor)]
+            if not tensors:
+                raise ValueError(f"activation_map: layer {layer_name!r} returned a mapping without a tensor")
+            captured["v"] = tensors[0].detach().cpu()
         else:
             # Last-ditch: try to coerce.
             captured["v"] = torch.as_tensor(out).detach().cpu()
@@ -177,6 +188,8 @@ def _activation_to_figure(
     """
     go = require("plotly.graph_objects", "nnx.viz.activation_map")
     make_subplots = require("plotly.subplots", "nnx.viz.activation_map").make_subplots
+    # NumPy has no bfloat16 (and Plotly wants plain floats): render in float32.
+    act = act.detach().cpu().float()
     if act.ndim == 4:
         # (N, C, H, W) — show the first sample, up to max_channels.
         sample = act[0]
@@ -186,8 +199,9 @@ def _activation_to_figure(
             rows=rows,
             cols=cols,
             subplot_titles=[f"ch{i}" for i in range(n_channels)],
-            vertical_spacing=0.06,
-            horizontal_spacing=0.04,
+            # Plotly needs spacing <= 1 / (n - 1): shrink it for large grids.
+            vertical_spacing=min(0.06, 0.5 / max(rows - 1, 1)),
+            horizontal_spacing=min(0.04, 0.5 / max(cols - 1, 1)),
         )
         for i in range(n_channels):
             r, c = i // cols + 1, i % cols + 1

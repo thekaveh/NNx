@@ -29,12 +29,15 @@ that's out of scope here. See ``docs/dpo.md`` for the honest tradeoffs.
 
 from __future__ import annotations
 
+import math
+import numbers
 from typing import Optional
 
 import torch
 import torch.nn.functional as F
 
-from .._step_helpers import finalize_step
+from .._step_helpers import finalize_step, imperative_step
+from .._validation import require_count
 from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
@@ -54,9 +57,9 @@ def dpo_train_step_factory(
             from. Its ``net`` is set to eval mode and every parameter
             has ``requires_grad`` cleared on factory call. Must share
             ``vocab_size`` and tokenization with the policy.
-        beta: temperature on the implicit reward. Larger ``beta`` makes
-            the loss sharper (closer to a hard preference); smaller
-            ``beta`` keeps the policy closer to the reference. The
+        beta: strength of the reference-policy constraint (the scale of
+            the implicit reward). Larger ``beta`` keeps the policy closer
+            to the reference; smaller ``beta`` lets it deviate more. The
             original DPO paper uses 0.1 as the default; values in
             ``[0.01, 0.5]`` are common. Must be > 0.
         pad_token_id: the id the dataset used to right-pad chosen /
@@ -82,13 +85,17 @@ def dpo_train_step_factory(
             (prompt_ids, chosen_ids, rejected_ids)
 
         — typically from :class:`nnx.NNPreferenceDataset`. All three
-        tensors must already be padded / right-aligned by the dataset.
+        tensors must be right-padded (content left-aligned) to fixed
+        lengths, as ``NNPreferenceDataset`` yields them.
 
     Raises:
-        ValueError: if ``beta`` ≤ 0.
+        ValueError: if ``beta`` is not a finite positive number, or if
+            ``pad_token_id`` is not a non-negative integer.
     """
-    if beta <= 0:
-        raise ValueError(f"beta must be positive, got {beta}")
+    if isinstance(beta, bool) or not isinstance(beta, numbers.Real) or not math.isfinite(beta) or beta <= 0:
+        raise ValueError(f"beta must be a finite positive number, got {beta}")
+    if pad_token_id is not None:  # a bool or a negative id would mask nothing
+        pad_token_id = require_count(pad_token_id, "pad_token_id", owner="dpo_train_step_factory", minimum=0)
 
     # Freeze the reference and pin to eval mode. The policy's training
     # never touches the reference; this just guards against accidental
@@ -171,7 +178,7 @@ def dpo_train_step_factory(
             },
         )
 
-    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
+    return full_precision_only(imperative_step(step, paradigm="dpo"))  # finalize_step: full precision
 
 
 def _unpack_preference_batch(batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

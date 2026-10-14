@@ -339,19 +339,29 @@ def test_resume_rebuilds_the_wrapper():
 
 
 def test_export_summary_and_tying_survive_a_compiled_fit(tmp_path):
-    pytest.importorskip("onnx")
-    from nnx.viz import summary
-
+    # Dependency-free claims first; each optional extra gates only the
+    # assertions after it, so a missing extra never hides the core ones.
     model = _transformer()
     run = model.train(params=_params(_lm_batches()), compile=FAST)
     assert model.net.lm_head.weight is model.net.tok_embed.weight
-    assert "OptimizedModule" not in str(summary(model, input_data=_lm_batches()[0][0]))
-    model.save_pretrained(tmp_path / "hub")
-    from_hub = NNModel.from_pretrained(tmp_path / "hub")
-    _assert_same_weights(model, from_hub)
     reloaded = NNModel.from_checkpoint(NNCheckpoint.load(run.id, Checkpoints.LAST))
     assert reloaded.net.lm_head.weight is reloaded.net.tok_embed.weight
     _assert_same_weights(model, reloaded)
+
+    pytest.importorskip("safetensors")
+    pytest.importorskip("huggingface_hub")
+    model.save_pretrained(tmp_path / "hub")
+    from_hub = NNModel.from_pretrained(tmp_path / "hub")
+    _assert_same_weights(model, from_hub)
+
+    pytest.importorskip("torchinfo")
+    from nnx.viz import summary
+
+    assert "OptimizedModule" not in str(summary(model, input_data=_lm_batches()[0][0]))
+
+
+def test_onnx_export_after_a_compiled_fit(tmp_path):
+    pytest.importorskip("onnx")
     ff = _feed_fwd()
     ff.train(params=_params(_ff_batches()), compile=FAST)
     ff.to_onnx(str(tmp_path / "ff.onnx"), _ff_batches()[0][0])
@@ -565,6 +575,25 @@ def test_a_bug_in_the_forward_is_the_users_error_not_a_compile_failure():
         assert "shapes cannot be multiplied" in str(caught.value) or "mat1" in str(caught.value)
 
 
+def test_the_users_forward_error_leaves_the_buffers_as_found():
+    """The eager re-run that tells a user error from a compile failure runs
+    the forward's side effects again; they are undone before it propagates."""
+    wrong = [(torch.randn(4, 5), torch.randint(0, 3, (4,)))]  # 5 features into a 4-input net
+    for policy in ("error", "eager"):
+        model = _feed_fwd()
+        model.net.register_buffer("calls", torch.zeros(()))
+
+        def bump(module, args):
+            module.calls += 1
+
+        model.net.register_forward_pre_hook(bump)
+        torch._dynamo.reset()
+        with pytest.raises(RuntimeError) as caught:
+            model.train(params=_params(wrong), compile=CompileSpec(backend="aot_eager", on_failure=policy))
+        assert not isinstance(caught.value, CompileFailed)
+        assert model.net.calls.item() == 0, policy
+
+
 def test_mode_is_for_inductor_only():
     with pytest.raises(ValueError, match="inductor"):
         CompileSpec(backend="aot_eager", mode="max-autotune")
@@ -643,3 +672,32 @@ def test_a_compile_failure_under_the_error_policy_leaves_buffers_as_found():
     with pytest.raises(CompileFailed):
         model.train(params=_params(_ff_batches()), compile=CompileSpec(backend="aot_eager", fullgraph=True))
     assert model.net.calls.item() == 0
+
+
+def test_a_skipped_frame_under_on_failure_error_restores_buffers(monkeypatch):
+    """When dynamo compiles nothing and on_failure="error", CompileFailed
+    leaves the model as the failed call found it — BatchNorm running
+    statistics included — like the other failure path."""
+    import nnx.compilation as compilation
+    from nnx import CompileFailed
+
+    net = torch.nn.Sequential(torch.nn.Linear(4, 3), torch.nn.BatchNorm1d(3))
+    session = _CompileSession(net, CompileSpec(backend="eager", on_failure="error"))
+    monkeypatch.setattr(compilation, "_unique_graphs", lambda: 0)  # no graph compiled ...
+    monkeypatch.setattr(compilation, "_cached_entries", lambda module: 0)  # ... and none cached: skipped
+    before = {name: tensor.clone() for name, tensor in net.state_dict().items()}
+    net.train()
+    with pytest.raises(CompileFailed, match="compiled nothing"):
+        session.forward(torch.randn(8, 4))
+    for name, tensor in net.state_dict().items():
+        assert torch.equal(tensor, before[name]), name
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs an MPS device")
+def test_the_compile_snapshot_restores_the_mps_generator():
+    from nnx.compilation import _Snapshot
+
+    snapshot = _Snapshot(torch.nn.Linear(2, 2))
+    first = torch.rand(3, device="mps")
+    snapshot.restore()
+    assert torch.equal(torch.rand(3, device="mps"), first)

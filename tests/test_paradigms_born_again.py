@@ -304,3 +304,27 @@ def test_born_again_returns_runs_and_mutates_model_in_place(tmp_path, monkeypatc
     # At least one parameter has moved — the model was trained.
     final = model.net.state_dict()
     assert any(not torch.equal(final[k], v) for k, v in initial.items())
+
+
+def test_born_again_refuses_gradient_accumulation_before_generation_zero(tmp_path, monkeypatch):
+    """The KD step of generations 1+ does not accumulate; refused before
+    generation 0 trains (not on generation 1's first batch)."""
+    import dataclasses
+
+    monkeypatch.chdir(tmp_path)
+    params = _train_params()
+    params = dataclasses.replace(params, optim=dataclasses.replace(params.optim, accumulate_grad_batches=2))
+    with pytest.raises(ValueError, match="accumulate_grad_batches=2"):
+        born_again_train(_make_classifier(), train_params=params, generations=2)
+    assert not (tmp_path / "runs").exists()
+    born_again_train(
+        _make_classifier(), train_params=params, generations=1
+    )  # one generation: no KD step, accumulation fine
+
+
+@pytest.mark.parametrize(("kwargs", "error"), [({"alpha": 2.0}, ValueError), ({"temprature": 4.0}, TypeError)])
+def test_born_again_checks_its_kd_keywords_before_generation_zero(tmp_path, monkeypatch, kwargs, error):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(error):
+        born_again_train(_make_classifier(), train_params=_train_params(), generations=2, **kwargs)
+    assert not (tmp_path / "runs").exists()

@@ -192,7 +192,9 @@ def test_candidate_identity_survives_sorting_device_moves_and_reload(tmp_path):
     base = task.split((x, q, c, r))
     devices = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
     for device, dtype in itertools.product(devices, (torch.int32, torch.int64)):
-        moved = (x.to(device), q.to(device, dtype), c.flip(0).to(device, dtype).flip(0), r.to(device))
+        strided = torch.stack([c, c], 1).to(device, dtype)[:, 0]  # a real strided view of the ids
+        assert not strided.is_contiguous() and torch.equal(strided.cpu(), c.to(dtype))
+        moved = (x.to(device), q.to(device, dtype), strided, r.to(device))
         _, qs, cs, rs, _ = task.split(moved)
         assert (qs, cs) == (base[1], base[2]) and torch.equal(rs, base[3]) and rs.device.type == "cpu"
     # Reload: a saved scorer reloaded from its checkpoint ranks the same ids.
@@ -463,7 +465,7 @@ def test_a_tiny_scorer_trains_selects_by_named_ndcg_and_checkpoints_the_task():
 def test_ranking_metrics_need_the_ranking_eval_step():
     task = RankingTask(k=(2,), max_relevance=2)
     model = _scorer()
-    loader = [(torch.randn(4, D), torch.randn(4, 1))]
+    loader = [(torch.randn(4, D), torch.randint(0, 3, (4, 1)).float())]  # integer relevance grades
     with pytest.raises(RankingError, match="query-grouped metrics"):
         model.train(
             params=NNTrainParams(
@@ -784,3 +786,32 @@ def test_only_blocks_worth_it_are_recomputed_in_backward(monkeypatch):
     assert calls and min(calls) >= 1
     assert float(every.detach()) == pytest.approx(float(small.detach()), rel=1e-12)
     assert torch.allclose(every_grad, small_grad, rtol=1e-6, atol=1e-7)
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs an MPS device")
+def test_ranking_validation_scores_an_mps_model():
+    # MPS has no float64: the scores widen on the CPU.
+    task = RankingTask(k=(1,), max_relevance=2)
+    model = NNModel(
+        net_params=NNParams(input_dim=D, output_dim=1, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.MPS, loss=Losses.MEAN_SQUARED_ERROR),
+    )
+    record = task.eval_step()(_Ctx(model, _loader(_data(3, seed=1), batch_size=5)))
+    assert record.metrics
+
+
+def test_ranking_validation_widens_scores_off_the_device(monkeypatch):
+    # Device-agnostic pin of the MPS fix: a score tensor that refuses .double() off the CPU.
+    task = RankingTask(k=(1,), max_relevance=2)
+
+    class _DeviceScores(torch.Tensor):
+        def double(self, *args, **kwargs):
+            raise TypeError("cannot widen on this device")
+
+        def cpu(self, *args, **kwargs):
+            return torch.Tensor(self).as_subclass(torch.Tensor)
+
+    real = RankingTask.scores
+    monkeypatch.setattr(RankingTask, "scores", lambda self, *a, **k: real(self, *a, **k).as_subclass(_DeviceScores))
+    record = task.eval_step()(_Ctx(_scorer(), _loader(_data(3, seed=1), batch_size=5)))
+    assert record.metrics

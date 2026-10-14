@@ -1,4 +1,4 @@
-"""Immutable fluent experiment plans (FEAT-012).
+"""Immutable fluent experiment plans.
 
 An ``ExperimentPlan`` holds one experiment's configuration: network, model
 and training parameters, data, seed and callbacks. Every ``with_*`` call

@@ -71,7 +71,7 @@ NNModelParams(..., precision=PrecisionPolicy("fp16"))                   # CUDA o
 NNModelParams(..., precision=PrecisionPolicy("fp16", fallback="fp32"))  # fp16 where it can run, else fp32
 ```
 
-`NNModelParams.precision` (FEAT-028) declares the precision training,
+`NNModelParams.precision` declares the precision training,
 evaluation and prediction run in. The policy is resolved against the model's
 device when the model is built and again, afresh, before a run is reserved:
 
@@ -81,42 +81,61 @@ device when the model is built and again, afresh, before a run is reserved:
 | `"fp16"` | `float16` autocast + a `torch.amp.GradScaler` | CUDA |
 | `"bf16"` | `bfloat16` autocast, no scaler | CPU; CUDA with native bf16 (compute capability 8.0+ — emulated bf16 does not count) |
 
-An explicit `PrecisionPolicy("fp32")` is the default (it normalizes to no
-policy, so it keeps the default's run id). A mode the device cannot run
-raises `PrecisionUnsupportedError` before any run directory exists, unless the policy names `fallback="fp32"`: the run then
-trains in full precision and records why. Autocast wraps only the forward
-pass and loss — the backward runs outside it, parameters stay `float32` (never
-`model.half()`), and the update keeps its unscale → normalize → finite-check
-→ clip → step order: FP16 `unscale_`s first (so `grad_clip_norm` clips true
-gradients) and steps through the scaler, which skips a non-finite update;
-scaler-free BF16 checks its gradients itself and raises `FloatingPointError`
-rather than apply a non-finite one. Evaluation and `predict()` /
-`predict_proba()` run under the same policy and return `float32` outputs, so
-their schemas are unchanged.
+An explicit `PrecisionPolicy("fp32")` is the default. It normalizes to no
+policy, so it keeps the default's run id. A mode the device cannot run
+raises `PrecisionUnsupportedError` before any run directory exists. The
+exception is a policy that names `fallback="fp32"`: the run then trains in
+full precision and records why.
 
-`run.precision` records what happened — `requested`, `effective`,
-`fallback_reason`, TF32 (reported separately, from torch's `fp32_precision`
-setting when made; NNx never sets it) and which NNx surfaces apply it
-(`covers`: the run's training where NNx runs the default step or an
-objective, and `evaluate()` / `predict()` whenever they are called;
-`not_covered`: surfaces that never do) — custom `train_step_fn` /
-`eval_step_fn` code is outside both (a training step reads `ctx.precision`
-and applies it itself) — and `NNRun.load` reads it back from
-`metadata.yaml`. The
-policy does not reach `nnx.lr_finder`, `nnx.diffusion.sampling` or
-generation. `nnx.precision_support()` reports each device's cells as
-`"verified"` (CPU FP32 and BF16, by NNx's seeded fixtures within
-`nnx.precision.REFERENCE_TOLERANCES`), `"supported"`, `"unverified"` (the
-hardware is absent here — nothing is claimed) or `"unsupported"`.
+Autocast wraps only the forward pass and loss. The backward runs outside it,
+and parameters stay `float32` (never `model.half()`). The update keeps its
+unscale → normalize → finite-check → clip → step order:
+
+- FP16 `unscale_`s first, so `grad_clip_norm` clips true gradients. It steps
+  through the scaler, which skips a non-finite update.
+- Scaler-free BF16 checks its gradients itself. It raises `FloatingPointError`
+  rather than apply a non-finite update.
+
+Evaluation and `predict()` / `predict_proba()` run under the same policy and
+return `float32` outputs, so their schemas are unchanged.
+
+`run.precision` records what happened, and `NNRun.load` reads it back from
+`metadata.yaml`. The record holds these fields:
+
+- `requested`, `effective` and `fallback_reason`.
+- TF32, reported separately from torch's `fp32_precision` setting when made.
+  NNx never sets it.
+- `covers`: the NNx surfaces that apply the policy. These are the run's
+  training where NNx runs the default step or an objective, and `evaluate()` /
+  `predict()` whenever they are called.
+- `not_covered`: the surfaces this run's policy did not reach. These are
+  the NNx surfaces outside this run, plus the surfaces that never apply the
+  policy.
+
+Custom `train_step_fn` / `eval_step_fn` code is outside both lists. A
+training step reads `ctx.precision` and applies it itself. The policy does
+not reach `nnx.lr_finder`, `nnx.diffusion.sampling` or generation.
+
+`nnx.precision_support()` reports each device's cells with one of four
+values:
+
+- `"verified"`: CPU FP32 and BF16, by NNx's seeded fixtures within
+  `nnx.precision.REFERENCE_TOLERANCES`.
+- `"supported"`: the hardware is present and the mode resolves, but no
+  NNx reference fixture checks it on that device.
+- `"unverified"`: the hardware is absent here, so nothing is claimed.
+- `"unsupported"`: the device type cannot run the mode.
 
 The scaler's state dictionary and the precision record travel with every
-checkpoint's training-state sidecar, so a warm resume continues from the
-saved scale factor and growth tracker. A stateful resume into a different
+checkpoint's training-state sidecar. A warm resume therefore continues from
+the saved scale factor and growth tracker. A stateful resume into a different
 effective precision is rejected (`resume precision mismatch`) before the
 model is touched; a weights-only warm start (`resume_mode="weights_only"`)
 may switch:
 
 ```python
+from nnx import Checkpoints, NNCheckpoint
+
 bf16 = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, precision=PrecisionPolicy("bf16"))
 first = NNModel(net_params=net_params, params=bf16).train(params=NNTrainParams(n_epochs=1, train_loader=train_loader))
 print(first.precision.record()["effective"])   # "bf16"
@@ -128,34 +147,39 @@ resumed = NNModel(net_params=net_params, params=bf16).train(
 ```
 
 `NNModel.from_checkpoint(..., device=...)` and Hub loading re-resolve the
-policy on the destination device — never from saved metadata — and take
-`precision=` to replace it (say, a CUDA FP16 model loaded on a CPU). The
-built-in imperative paradigm steps (`finalize_step`) run in full precision
-and refuse a reduced policy before any work is done (a wrapper keeps that
-refusal when it is written with `functools.wraps`, which carries the
-marker, or marked with `nnx.precision.full_precision_only`; otherwise
-`finalize_step` refuses at the first step); a custom
-`train_step_fn` applies `ctx.precision.autocast()` and `ctx.scaler` itself.
-In `Trainer`, an objective runs in the policy, while step functions (which
-own every update) refuse a reduced one.
+policy on the destination device, never from saved metadata. Both take
+`precision=` to replace it (say, a CUDA FP16 model loaded on a CPU).
+
+The built-in imperative paradigm steps (`finalize_step`) run in full
+precision. They refuse a reduced policy before any work is done. A wrapper
+keeps that refusal when it is written with `functools.wraps`, which carries
+the marker, or marked with `nnx.precision.full_precision_only`. Otherwise
+`finalize_step` refuses at the first step. A custom `train_step_fn` applies
+`ctx.precision.autocast()` and `ctx.scaler` itself. In `Trainer`, an
+objective runs in the policy, while step functions (which own every update)
+refuse a reduced one.
 
 The legacy `NNModelParams(mixed_precision=True)` keeps its meaning and run
-id: FP16 autocast with a scaler in `NNModel.train` on CUDA, silently plain
-FP32 elsewhere, and no effect on evaluation, prediction or `Trainer`.
-Combining it with a policy other than `fp16` is refused. A stateful resume
-of a checkpoint written before precision was recorded counts it as FP16
-exactly when it saved a scaler (`resume GradScaler presence mismatch` still
-names a scaler that appears or disappears).
+id. It means FP16 autocast with a scaler in `NNModel.train` on CUDA, silently
+plain FP32 elsewhere, and no effect on evaluation, prediction or `Trainer`.
+Combining it with a policy other than `fp16` is refused.
 
-The scaler factory is why NNx declares the PyTorch floor it does — see the
-[support matrix](external-contracts.md#21-pytorch-support-matrix) for the
+A stateful resume can load a checkpoint written before precision was
+recorded. It counts that checkpoint as FP16 exactly when the checkpoint saved
+a scaler. `resume GradScaler presence mismatch` still names a scaler that
+appears or disappears.
+
+The scaler factory is why NNx declares the PyTorch floor it does. The
+[support matrix](external-contracts.md#21-pytorch-support-matrix) lists the
 tested torch / torchvision / Python combinations and which of them carry real
-CUDA evidence. [`examples/01_synthetic_classification.py`](https://github.com/thekaveh/NNx/blob/main/examples/01_synthetic_classification.py)'s
-`precision_workflow()` (also `--precision bf16`) runs a bounded CPU FP32
-workflow and a BF16 one gated on `precision_support`;
-[`examples/02_resume_training.py`](https://github.com/thekaveh/NNx/blob/main/examples/02_resume_training.py)'s
-`amp_resume_compatibility()` runs the CPU no-scaler cycle everywhere and the
-enabled-AMP cycle only on a CUDA host.
+CUDA evidence. Two examples exercise the policy:
+
+- [`examples/01_synthetic_classification.py`](https://github.com/thekaveh/NNx/blob/main/examples/01_synthetic_classification.py)'s
+  `precision_workflow(mode)` runs one bounded CPU workflow: FP32 by default,
+  or BF16 (`--precision bf16`) where `precision_support` allows it.
+- [`examples/02_resume_training.py`](https://github.com/thekaveh/NNx/blob/main/examples/02_resume_training.py)'s
+  `amp_resume_compatibility()` runs the CPU no-scaler cycle everywhere. It
+  runs the enabled-AMP cycle only on a CUDA host.
 
 ### 2.3. Warm-resume training
 
@@ -175,28 +199,35 @@ model.train(params=NNTrainParams(
 Resume validates the checkpoint's optimizer topology and matching immutable
 training-state generation before applying it. It restores scheduler/scaler,
 completed epoch, loader generators, and Python/NumPy/PyTorch CPU/CUDA/MPS RNG
-state; use `num_workers=0` when exact continuation matters. Any re-iterable batch
-source works — a `DataLoader`, a list of `(X, Y)` batches, or the graph
-full-batch list — and the worker warning only appears for a real loader with
+state; use `num_workers=0` when exact continuation matters. Any re-iterable
+batch source works: a `DataLoader`, a list of `(X, Y)` batches, or the graph
+full-batch list. The worker warning only appears for a real loader with
 `num_workers > 0`.
 
-Callback and step state resumes too. `EarlyStopping`'s best value and
-patience counter, the I-JEPA target encoder (and the `jepa_objective` /
-`diffusion_objective` state: EMA target and counter, generator) and any object registered through
-`train(..., components=[...])` are written into every checkpoint and restored
-after the callbacks' reset hooks, so a split run stops at the same epoch as
-the uninterrupted one
-([Concepts §14.1](concepts.md#141-component-state)). `resume_mode="stateful"`
-fails before restoring anything when the checkpoint is weights-only, and
-`resume_mode="weights_only"` warm-starts from the weights alone (fresh optimizer,
-scheduler and components); the returned
+Callback and step state resumes too. NNx writes the following state into
+every checkpoint:
+
+- `EarlyStopping`'s best value and patience counter.
+- The I-JEPA target encoder, and the `jepa_objective` /
+  `diffusion_objective` state (EMA target and counter, generator).
+- Any object registered through `train(..., components=[...])`.
+
+This state is restored after the callbacks' reset hooks, so a split run stops
+at the same epoch as the uninterrupted one
+([Concepts §14.1](concepts.md#141-component-state)).
+
+`resume_mode="stateful"` fails before restoring anything when the checkpoint
+is weights-only. `resume_mode="weights_only"` warm-starts from the weights
+alone, with a fresh optimizer, scheduler and components. The returned
 `run.resume_status` says which happened. The multi-optimizer `Trainer` resumes
 the same way through `NNTrainerParams.builder().resume_from(run_id)`
 ([Concepts §8.4](concepts.md#84-warm-resume)).
 
-Probing for state is side-effect free: `NNCheckpoint.load_with_training_state(run=..., type=Checkpoints.LAST)`
-returns `(None, None)` for a run that was never written and does not create
-its directory, so a preflight check never blocks the first fit.
+Probing a run that was never written is side-effect free.
+`NNCheckpoint.load_with_training_state(run=..., type=Checkpoints.LAST)`
+returns `(None, None)` for it and does not create the run's directory, so a
+preflight check never blocks the first fit. On an existing run, a probe takes
+the checkpoint's lock file, created when missing.
 
 ### 2.4. Loading a finished run
 
@@ -211,9 +242,9 @@ model = NNModel.from_checkpoint(checkpoint=ckpt)
 ### 2.5. Tabular regression targets
 
 `NNTabularDataset` treats targets as class labels by default. For regression,
-request a floating target dtype, use a one-output network with a regression
-loss, and declare the task so the default step, `evaluate()` and `predict()`
-score continuous values instead of argmax classes:
+request a floating target dtype and use a one-output network with a regression
+loss. Declare the task so the default step, `evaluate()` and `predict()` score
+continuous values instead of argmax classes:
 
 ```python
 import pandas as pd
@@ -243,10 +274,11 @@ model_params = NNModelParams(
 ```
 
 With `task=TaskSpec.regression(...)` every training and validation record
-carries `mse` / `mae` in `edp.metrics` and the count of valid targets, leaves
-accuracy / f1 / recall / precision and `error` as `None` instead of
-fabricating them, and `model.predict(X).classes` holds the continuous
+carries `mse` / `mae` in `edp.metrics` and the count of valid targets. The
+records leave accuracy / f1 / recall / precision and `error` as `None` instead
+of fabricating them. `model.predict(X).classes` holds the continuous
 predictions. A NaN target is masked out of the loss and every metric alike.
+
 `TaskSpec.multilabel(n, threshold=...)` does the same for independent binary
 labels (`Losses.BINARY_CROSS_ENTROPY`). See
 [Concepts §6.3](concepts.md#63-task-adapters-categorical-multilabel-regression)
@@ -257,27 +289,32 @@ Leave `target_dtype=None` for classification, where targets remain `torch.long`
 and `output_dim` is the number of classes.
 
 **Admission checks.** Only the selected `feature_cols` and `target_col` are
-inspected — unrelated columns may hold anything. NaN in any of them is rejected
-naming the columns and the requested dtypes. Non-finite features are never
-admitted: `±inf` in a selected feature is rejected in source precision *before*
-the `feature_dtype` cast, so an int64 or bool cast cannot quietly absorb it
-(into an INT64 extreme or `True`); a non-finite target was already rejected.
-For an integer `feature_dtype`, finite values outside its range (for example
-`300` with `torch.int8`, `1e30` with `torch.int64`) are rejected in source
-precision too, since the cast would wrap them. A finite value that overflows a
-narrower floating or complex dtype during conversion (for example `1e5` with
-`feature_dtype` or `target_dtype=torch.float16`) is rejected after conversion.
-Errors name the columns and dtypes, and every admission check — including the
-classification label check — runs before the train/val/test split, so the
-caller's DataFrame and the global RNG are untouched. See
+inspected; unrelated columns may hold anything. NaN in any of them is rejected,
+naming the columns and the requested dtypes. The checks on values are:
+
+- Non-finite features are never admitted. `±inf` in a selected feature is
+  rejected in source precision *before* the `feature_dtype` cast. An int64 or
+  bool cast therefore cannot quietly absorb it (into an INT64 extreme or
+  `True`). A non-finite target was already rejected.
+- For an integer `feature_dtype`, finite values outside its range are rejected
+  in source precision too, since the cast would wrap them. Examples are `300`
+  with `torch.int8` and `1e30` with `torch.int64`.
+- A finite value that overflows a narrower floating or complex dtype during
+  conversion is rejected after conversion. An example is `1e5` with
+  `feature_dtype` or `target_dtype=torch.float16`.
+
+Errors name the columns and dtypes. Every admission check, including the
+classification label check, runs before the train/val/test split. The
+caller's DataFrame and the global RNG are therefore untouched. See
 [`examples/tabular_validation.py`](https://github.com/thekaveh/NNx/blob/main/examples/tabular_validation.py).
 
 **Batch sizes.** Every dataset wrapper (`NNDataset`, `NNTabularDataset`,
 `NNPreferenceDataset`, `NNGraphDataset`) takes `batch_sizes=(train, val, test)`.
-`None` — the default for every slot — means *one batch holding the complete
-split*, so the default train loader performs **one optimizer step per epoch**;
-pass an explicit train size for stochastic mini-batches (`NNDataset` wraps
-torchvision datasets: it needs the `vision` extra, `pip install "thekaveh-nnx[vision]"`):
+`None` is the default for every slot and means *one batch holding the
+complete split*. The default train loader therefore performs **one optimizer
+step per epoch**. Pass an explicit train size for stochastic mini-batches.
+`NNDataset` wraps torchvision datasets, so it needs the `vision` extra
+(`pip install "thekaveh-nnx[vision]"`):
 
 ```python
 from torchvision import datasets, transforms
@@ -293,19 +330,22 @@ dataset = NNDataset(
 
 A positive integer is used verbatim (larger than the split → one smaller
 batch); NumPy integers are normalized to `int`. Zero, `False`, negatives,
-fractions, strings and anything but a 3-tuple raise a `ValueError` naming the
-slot (`batch_sizes[0] (train)`) *before* the dataset factory, tokenizer or split
-runs — zero never disables a split. Empty optional splits come from the
-proportions: with `val_proportion=0.0` (tabular / preference: also
-`test_proportion=0.0`) that loader is `None` and the resolved `batch_sizes`
-carries a placeholder `1` for it. `NNGraphDataset(sampler="full")` rejects every
-explicit size, since the whole graph is always one batch.
+fractions, strings and anything but a 3-tuple raise a `ValueError`. The error
+names the slot (`batch_sizes[0] (train)`) and is raised *before* the dataset
+factory, tokenizer or split runs. Zero never disables a split.
+
+Empty optional splits come from the proportions. With `val_proportion=0.0`
+(tabular / preference: also `test_proportion=0.0`) that loader is `None`. Its
+resolved `batch_sizes` slot is a placeholder `1` when you requested it as
+`None`; an explicit size is kept.
+`NNGraphDataset(sampler="full")` rejects every explicit size, since the whole
+graph is always one batch.
 
 ### 2.6. Custom metrics
 
-Declared, registered metrics receive the input they declare — decoded labels,
-probabilities or continuous outputs — and are computed over the full sample of
-each epoch; a named monitor makes BEST selection, `ReduceLROnPlateau` and
+Declared, registered metrics receive the input they declare: decoded labels,
+probabilities or continuous outputs. They are computed over the full sample of
+each epoch. A named monitor makes BEST selection, `ReduceLROnPlateau` and
 `EarlyStopping` agree on one decision
 ([Concepts §6.4](concepts.md#64-named-metrics-and-monitors)):
 
@@ -338,15 +378,19 @@ NNTrainParams(
 # Recorded in `.extra["weighted_f1"]` wherever NNx computes metrics.
 ```
 
-Each callable receives `(y_true, y_pred)` — the truth first and the *decoded*
-class predictions second, never probabilities, so use label-based metrics
-(ranking metrics such as ROC-AUC need scores that `extra_metrics` does not
-see). The default classification training step calls them per batch (a batch
-whose targets are all `ignore_index` has no metrics at all), `evaluate()` (and
-so the default validation pass) calls them once on the aggregate predictions,
-and a custom `train_step_fn` / `eval_step_fn` decides whether and how to call
-them. The values persist in `idp.*_edp.extra` and
-survive `NNRun.load`; see
+Each callable receives `(y_true, y_pred)`: the truth first and the *decoded*
+class predictions second, never probabilities. Use label-based metrics;
+ranking metrics such as ROC-AUC need scores that `extra_metrics` does not see.
+The callables run as follows:
+
+- The default classification training step calls them per batch. A batch
+  whose targets are all `ignore_index` has no metrics at all.
+- `evaluate()`, and so the default validation pass, calls them once on the
+  aggregate predictions.
+- A custom `train_step_fn` / `eval_step_fn` decides whether and how to call
+  them.
+
+The values persist in `idp.*_edp.extra` and survive `NNRun.load`; see
 [`examples/03_custom_metrics.py`](https://github.com/thekaveh/NNx/blob/main/examples/03_custom_metrics.py).
 
 ### 2.7. Silencing the progress bar (CI / non-TTY)
@@ -362,7 +406,7 @@ NNX_TQDM_DISABLE=1 python your_train_script.py
 ### 2.8. TensorBoard
 
 ```bash
-pip install thekaveh-nnx[tensorboard]
+pip install "thekaveh-nnx[tensorboard]"
 ```
 
 ```python
@@ -400,31 +444,45 @@ NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.NEGATIVE_LOG_LI
 
 The network still emits raw logits and `predict().logits` stays raw. NNx applies
 `log_softmax` internally before the native `torch.nn.NLLLoss` during training
-and evaluation, so the reported loss equals cross-entropy from the same weights
-and checkpoints saved with this descriptor evaluate under the same rule when
-reloaded. A custom loss module or `train_step_fn` receives the raw logits.
+and evaluation. The reported loss therefore equals cross-entropy from the same
+weights. Checkpoints saved with this descriptor evaluate under the same rule
+when reloaded. A custom loss module or `train_step_fn` receives the raw logits.
 
 ### 2.11. Non-finite metrics, BEST and plateau scheduling
 
 BEST checkpoints, `runs/best` and `ReduceLROnPlateau` all track the first
-*finite* value in the order validation error → validation loss → training
-error → training loss (lower is better). A custom `eval_step_fn` that reports
-`error=nan` with a finite `loss` therefore still drives scheduling and BEST
-through its loss; the rejection is reported once per epoch as a
-`RuntimeWarning`. An epoch with no finite signal at all skips the plateau
-step instead of feeding it NaN, and its checkpoint counts as an unavailable
-baseline that the next finite epoch (or run) replaces. Raw NaN/inf
-observations stay in the run history as diagnostics.
+*finite* value in a fixed order (lower is better). The order is validation
+error → validation loss → training error → training loss. The training values
+come from the epoch's last batch record; declare a named monitor
+([Concepts §6.4](concepts.md#64-named-metrics-and-monitors)) to select on a
+whole-epoch training summary instead.
+
+A custom `eval_step_fn` may report `error=nan` with a finite `loss`. It
+therefore still drives scheduling and BEST through its loss. The rejection is
+reported once per epoch as a `RuntimeWarning`.
+
+A validation task record can be unavailable: every target is masked, or it
+has neither an error nor a loss. Such a record ends the walk, so that epoch
+gets no signal and the training values do not stand in
+([Concepts §6.2](concepts.md#62-custom-evaluation)).
+
+An epoch with no finite signal at all skips the plateau step instead of
+feeding it NaN. Its checkpoint counts as an unavailable baseline that the
+next finite epoch (or run) replaces. Raw NaN/inf observations stay in the run
+history as diagnostics.
 
 ### 2.12. Graph datasets with an empty validation split
 
 `NNGraphDataset` reads the split sizes from the graph's `train_mask` /
 `val_mask` / `test_mask`. An empty optional mask is an *absent* split: that
-loader is `None` (resolved `batch_sizes` entry `0`, `"0"` in `state()`), and
-passing it to `train()` skips validation instead of scoring zero seed rows —
-the same optional-loader contract `NNTabularDataset` and `NNPreferenceDataset`
-use. An empty `train_mask` raises at construction. Fully offline, no neighbor
-sampling backend needed:
+loader is `None` (resolved `batch_sizes` entry `0`, `"0"` in `state()`).
+Passing it to `train()` skips validation instead of scoring zero seed rows.
+`NNTabularDataset` and `NNPreferenceDataset` also return a `None` loader
+for an empty split. Their resolved `batch_sizes` keep a placeholder `1`
+for a slot requested as `None`, and an explicit size is kept (§2.5).
+
+An empty `train_mask` raises at construction. The example below runs fully
+offline and needs no neighbor-sampling backend:
 
 ```python
 import torch
@@ -489,26 +547,30 @@ result.sample_ids                           # identity of row i (input row index
 ```
 
 A model that declares a task (`NNModelParams(task=TaskSpec...)`, §2.5) may omit
-the spec: `model.predict_proba(X_val)` derives it from the task, and a
-regression task returns its continuous values in `decoded` with
-`probabilities=None` and `spec=None`.
+the spec: `model.predict_proba(X_val)` derives it from the task. A regression
+task returns its continuous values in `decoded` with `probabilities=None` and
+`spec=None`.
 
-`kind="bernoulli"` is for independent binary outputs (multi-label, or one
-binary logit trained with `Losses.BINARY_CROSS_ENTROPY`): element-wise sigmoid
-probabilities that are **not** normalized across outputs, and `decoded` holds
-0/1 indicators (`logit >= 0`, the same threshold `predict()` uses), which
-`result.class_indices` refuses to treat as class indices. The kind is always
-declared, never inferred from the loss or output shape. `class_axis` defaults
-to `-1` (fits `(N, C)` and class-last language-model logits); class-first
-outputs such as `(N, C, H, W)` need `class_axis=1`. A label count that does
-not match the class axis, an invalid axis, or NaN / ±inf logits raise
-`PredictionValidationError`. For an ordinary `DataLoader`, `sample_ids` are
-positions in iteration order — the dataset index only when the loader does not
-shuffle (a shuffling loader warns); for graph loaders only seed rows are
-returned and `sample_ids` holds their global node indices. A spec serializes with
-`spec.state()` / `ProbabilitySpec.from_state(...)`, label order included, and
-`prediction_from_logits(logits, spec)` applies the same rules to logits you
-already have.
+`kind="bernoulli"` is for independent binary outputs: multi-label, or one
+binary logit trained with `Losses.BINARY_CROSS_ENTROPY`. It gives element-wise
+sigmoid probabilities that are **not** normalized across outputs. `decoded`
+holds 0/1 indicators (`logit >= 0`, the same threshold `predict()` uses).
+`result.class_indices` refuses to treat these indicators as class indices.
+
+The kind is always declared, never inferred from the loss or output shape.
+`class_axis` defaults to `-1`, which fits `(N, C)` and class-last
+language-model logits. Class-first outputs such as `(N, C, H, W)` need
+`class_axis=1`. A label count that does not match the class axis, an invalid
+axis, or NaN / ±inf logits raise `PredictionValidationError`.
+
+For an ordinary `DataLoader`, `sample_ids` are positions in iteration order.
+They are the dataset index only when the loader does not shuffle (a shuffling
+loader warns). For graph loaders only seed rows are returned, and
+`sample_ids` holds their global node indices.
+
+A spec serializes with `spec.state()` / `ProbabilitySpec.from_state(...)`,
+label order included. `prediction_from_logits(logits, spec)` applies the same
+rules to logits you already have.
 
 ### 2.14. Your own `nn.Module`
 
@@ -528,9 +590,9 @@ wrapped = NNModel(module=encoder, params=NNModelParams(loss=Losses.CROSS_ENTROPY
 ```
 
 A registered module is built under the spec's `seed` (your RNG is left
-alone) and rebuilds from checkpoints, safetensors and the Hub; a wrapped
-instance is trained in place (`wrapped.net is encoder`) but is runtime-only —
-its weights reload only into a module you pass again
+alone). It rebuilds from checkpoints, safetensors and the Hub. A wrapped
+instance is trained in place (`wrapped.net is encoder`) but is runtime-only.
+Its weights reload only into a module you pass again
 (`NNModel.from_checkpoint(ckpt, module=...)`). See
 [Concepts §3.2](concepts.md#32-arbitrary-modules-and-registered-model-factories)
 and [`examples/custom_module.py`](https://github.com/thekaveh/NNx/blob/main/examples/custom_module.py).
@@ -576,9 +638,9 @@ dataset = NNTabularDataset(
 `strategy="group"` (with `groups=` and `proportions=`) keeps every group in one
 split, and `strategy="stratified"` (with `labels=`) keeps every class in every
 split. Rows are matched by id, so a reordered DataFrame replays into the same
-splits; duplicate, missing or unexpected ids raise before any loader is built,
-an empty validation or test split gives a `None` loader, and without `split=`
-the random split is unchanged. See
+splits. Duplicate, missing or unexpected ids raise before any loader is built.
+An empty validation or test split gives a `None` loader. Without `split=` the
+random split is unchanged. See
 [Concepts §13.3](concepts.md#133-reproducible-splits-group-time-and-stratified).
 
 ### 2.17. Train-only preprocessing and inference reload
@@ -627,8 +689,8 @@ report = calibrator.report(model.predict_proba(X_test, spec), y_test, model_id=m
 print(report.summary())                                   # "improved" only if held-out NLL and Brier did not get worse
 ```
 
-Use a calibration split that is neither the training nor the test split:
-`fit_temperature` rejects equal ids, and the calibrator records that ids cannot
+Use a calibration split that is neither the training nor the test split.
+`fit_temperature` rejects equal ids. The calibrator records that ids cannot
 prove the rows are disjoint. The fitted temperature is unrelated to the
 sampling `temperature=` of `GenerativeNNModel.generate`; it never changes the
 argmax. Logits with a different label order or from another model are refused
@@ -675,7 +737,7 @@ base = (ExperimentPlan()
 short, long = base.with_epochs(2), base.with_epochs(10)   # base, short and long stay unchanged
 
 base.validate().raise_for_errors()   # every problem at once; reads no loader, builds no model
-base.probe(next(iter(make_train_loader())))  # one no-grad forward pass on a temporary model
+base.probe(next(iter(make_train_loader())))  # temporary model: eval no-grad forward, plus a train-mode loss pass if the batch has a target
 result = base.fit()                  # FitResult(model, run, metrics, attempt_id)
 result.metrics["val"].values["loss"] # from the run's final epoch; no second loader pass
 child = base.with_epochs(20).resuming(result.run.id).fit()  # a new run; the parent stays intact
@@ -739,7 +801,7 @@ A weights-only checkpoint (a `ModelCheckpoint` snapshot) exports an
 
 For tasks where loss isn't `loss_fn(net(X), Y)` — autoencoder reconstruction, VAE composite loss, recommendation pairwise loss, diffusion noise prediction — pass `train_step_fn=` to `train()`. Link prediction with negative sampling is built in (§3.9). See [Concepts → Custom training paradigms](concepts.md#6-custom-training-paradigms).
 
-The same hook underpins the four specialization-paradigm pointers below.
+The sections below point to the specialization paradigms built on these hooks (`train_step_fn`, `objective=`, `eval_step_fn=`) and on `distributed=`.
 
 ### 3.1. Fine-tuning (transfer learning)
 
@@ -759,11 +821,13 @@ See [Concepts → Fine-tuning](concepts.md#7-fine-tuning-transfer-learning) and 
 
 ### 3.2. Multi-optimizer training (GANs, actor-critic)
 
-When per-batch updates need multiple optimizers (G + D for GANs, policy + value for actor-critic), use `nnx.trainer.Trainer` — accepts one `NNModel` and a dict of `NNOptimParams`, scoped via `NNParamGroupSpec` globs. See [Concepts → Multi-optimizer training](concepts.md#8-multi-optimizer-training-gans-actor-critic) and [`examples/09_gan_with_trainer.py`](https://github.com/thekaveh/NNx/blob/main/examples/09_gan_with_trainer.py).
+When per-batch updates need multiple optimizers, use `nnx.trainer.Trainer`. Examples are G + D for GANs and policy + value for actor-critic. `Trainer` accepts one `NNModel` and a dict of `NNOptimParams`, scoped via `NNParamGroupSpec` globs. See [Concepts → Multi-optimizer training](concepts.md#8-multi-optimizer-training-gans-actor-critic) and [`examples/09_gan_with_trainer.py`](https://github.com/thekaveh/NNx/blob/main/examples/09_gan_with_trainer.py).
 
 ### 3.3. Diffusion (DDPM)
 
-For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. The training step is a `train_step_fn` on `NNModel.train()` — no Trainer, no new params dataclass. `diffusion_objective(schedule)` is the same loss as an objective (`model.train(..., objective=...)`): the shared update engine adds gradient accumulation (exact for uneven microbatches), mixed precision and clipping, and the timesteps and noise come from the objective's own checkpointed generator, which a `sample(..., generator=...)` preview never perturbs; `jepa_objective` does the same for I-JEPA, advancing its EMA target once per committed update ([I-JEPA §5](jepa.md#5-objective-mode)). See [Concepts → Diffusion](concepts.md#9-diffusion-ddpm) and [`examples/08_diffusion_2d_mixture.py`](https://github.com/thekaveh/NNx/blob/main/examples/08_diffusion_2d_mixture.py).
+For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusion_train_step_factory, sample}`. The training step is a `train_step_fn` on `NNModel.train()` — no Trainer, no new params dataclass.
+
+`diffusion_objective(schedule)` is the same loss as an objective (`model.train(..., objective=...)`). The shared update engine adds gradient accumulation (exact for uneven microbatches), mixed precision and clipping. The timesteps and noise come from the objective's own checkpointed generator. A `sample(..., generator=...)` preview never perturbs that generator. `jepa_objective` does the same for I-JEPA, advancing its EMA target once per committed update ([I-JEPA §5](jepa.md#5-objective-mode)). See [Concepts → Diffusion](concepts.md#9-diffusion-ddpm) and [`examples/08_diffusion_2d_mixture.py`](https://github.com/thekaveh/NNx/blob/main/examples/08_diffusion_2d_mixture.py).
 
 ### 3.4. Training paradigms (KD, SimCLR, Mixup, CutMix)
 
@@ -771,32 +835,50 @@ For DDPM-style diffusion: `nnx.diffusion.{NoiseSchedulers, DiffusionMLP, diffusi
 
 ### 3.5. Parameter-efficient fine-tuning (LoRA, DoRA, IA3, Prefix, Prompt, Adapters)
 
-`nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}` plus DoRA / IA3 / PrefixTuner / PromptTuner. LoRA wraps `nn.Linear` submodules with a frozen base + trainable low-rank residual; DoRA layers in a per-output magnitude vector; IA3 is a per-output scaling; PrefixTuner / PromptTuner attach learned prefixes to a frozen `TransformerNN`; `AdapterLayer` is a bottleneck residual the user inserts manually. See [Concepts → Parameter-efficient fine-tuning](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters) and [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main/examples/07_lora_finetuning.py).
+`nnx.peft.{LoRALinear, apply_lora_to, save_lora_weights, load_lora_weights, AdapterLayer}` plus DoRA / IA3 / PrefixTuner / PromptTuner. LoRA wraps `nn.Linear` submodules with a frozen base + trainable low-rank residual. DoRA layers in a per-output magnitude vector, and IA3 is a per-output scaling. PrefixTuner / PromptTuner attach learned prefixes to a frozen `TransformerNN`. `AdapterLayer` is a bottleneck residual the user inserts manually. See [Concepts → Parameter-efficient fine-tuning](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters) and [`examples/07_lora_finetuning.py`](https://github.com/thekaveh/NNx/blob/main/examples/07_lora_finetuning.py).
 
 ### 3.6. Causal language models
 
-`nnx.lm_tasks.CausalLMTask(vocab_size=..., alignment="shift_inputs" | "pre_shifted", ignore_id=-100, pad_id=None, smoothing=0.0)` is the built-in next-token path for a `TransformerNN`: pass `objective=task.objective()` and `eval_step_fn=task.eval_step()` to `train()`. The ignore id, padding id and an optional loss mask pick the valid tokens; the objective divides by the window's valid-token count (so accumulation is token-weighted), and validation reports the unsmoothed token NLL as its loss with `perplexity = exp(NLL)` and token accuracy — no placeholder classification metrics. See [`docs/lm.md` §6](lm.md) and [`examples/11_tinystories_lm.py`](https://github.com/thekaveh/NNx/blob/main/examples/11_tinystories_lm.py).
+`nnx.lm_tasks.CausalLMTask(vocab_size=..., alignment="shift_inputs" | "pre_shifted", ignore_id=-100, pad_id=None, smoothing=0.0)` is the built-in next-token path for a `TransformerNN`: pass `objective=task.objective()` and `eval_step_fn=task.eval_step()` to `train()`. The ignore id, padding id and an optional loss mask pick the valid tokens. The objective divides by the window's valid-token count, so accumulation is token-weighted. Validation reports the unsmoothed token NLL as its loss, with `perplexity = exp(NLL)` and token accuracy. It reports no placeholder classification metrics. See [`docs/lm.md` §6](lm.md#6-how-it-composes-with-the-rest-of-nnx) and [`examples/11_tinystories_lm.py`](https://github.com/thekaveh/NNx/blob/main/examples/11_tinystories_lm.py).
 
 
 ### 3.7. Ranking and retrieval evaluation
 
-`nnx.ranking.RankingTask(k=(10,), max_relevance=2, weighting="query", candidate_sets="sampled")` trains and evaluates a scorer per query: pass `objective=task.objective()` (pairwise logistic loss over unequal-relevance pairs within a query) and `eval_step_fn=task.eval_step()` (MRR@k, Recall@k and NDCG@k per complete query, ties broken by candidate id, queries without a relevant candidate excluded and counted), and select BEST with `metrics=task.metric_specs(), monitor=MonitorSpec("ndcg_at_10")`. Batches are `(features, query_ids, candidate_ids, relevance)`. See [Concepts → Query-grouped ranking](concepts.md#24-query-grouped-ranking-nnxranking) and [`examples/ranking_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/ranking_offline.py).
+`nnx.ranking.RankingTask(k=(10,), max_relevance=2, weighting="query", candidate_sets="sampled")` trains and evaluates a scorer per query:
+
+- Pass `objective=task.objective()`, a pairwise logistic loss over unequal-relevance pairs within a query.
+- Pass `eval_step_fn=task.eval_step()`. It reports MRR@k, Recall@k and NDCG@k per complete query, with ties broken by candidate id. Queries without a relevant candidate are excluded and counted.
+- Select BEST with `metrics=task.metric_specs(), monitor=MonitorSpec("ndcg_at_10")`.
+
+Batches are `(features, query_ids, candidate_ids, relevance)`. See [Concepts → Query-grouped ranking](concepts.md#24-query-grouped-ranking-nnxranking) and [`examples/ranking_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/ranking_offline.py).
 
 
 ### 3.8. Graph-level classification
 
-`nnx.graph_tasks` (the `graph` extra, `pip install "thekaveh-nnx[graph]"`) classifies whole graphs: build a `GraphCollection(graphs, ids, targets=...)` (flag graphs without a target with `unlabeled=[...]`), split it by graph id with `subset(ids)`, and train `NNModelParams(net=graph_classifier_spec(input_dim=..., num_classes=..., pool="mean"), loss=Losses.CROSS_ENTROPY, task=TaskSpec.categorical(n, ignore_index=IGNORE))` on `collection.loader(batch_size)`. Loss and metrics are averaged over labeled graphs, `predict_proba` returns one row per graph with its graph id as the sample id, and a reload rebuilds the encoder, pool and head from the recipe. See [Concepts → Graph-level classification](concepts.md#25-graph-level-classification-nnxgraph_tasks) and [`examples/graph_classification_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/graph_classification_offline.py).
+`nnx.graph_tasks` (the `graph` extra, `pip install "thekaveh-nnx[graph]"`) classifies whole graphs:
+
+1. Build a `GraphCollection(graphs, ids, targets=...)`. Flag graphs without a target with `unlabeled=[...]`.
+2. Split it by graph id with `subset(ids)`.
+3. Train `NNModelParams(net=graph_classifier_spec(input_dim=..., num_classes=..., pool="mean"), loss=Losses.CROSS_ENTROPY, task=TaskSpec.categorical(n, ignore_index=IGNORE))` on `collection.loader(batch_size)`.
+
+Loss and metrics are averaged over labeled graphs. `predict_proba` returns one row per graph, with its graph id as the sample id. A reload rebuilds the encoder, pool and head from the recipe. See [Concepts → Graph-level classification](concepts.md#25-graph-level-classification-nnxgraph_tasks) and [`examples/graph_classification_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/graph_classification_offline.py).
 
 
 ### 3.9. Link and edge prediction
 
-`nnx.link_tasks` (the `graph` extra) splits edges, not nodes: `split = split_links(edge_index, num_nodes, val=0.1, test=0.1, seed=0)` gives a replayable manifest (canonical edges, fixed held-out negatives from the complement), and `task = LinkTask(split)` builds candidate batches over the training topology only — `task.loader("train" | "val" | "test", x, batch_size)`. Train `NNModelParams(net=link_predictor_spec(input_dim=...))` with `objective=task.objective()` and `eval_step_fn=task.eval_step()`, select BEST with `metrics=task.metric_specs(), monitor=MonitorSpec("auroc")`, and score candidates with `prediction = task.predict(model, loader)` and `link_metrics(prediction.logits, prediction.targets, from_logits=True)` — computed from the float64 logits, as the evaluator's are, so a confident model's AUROC / AP / BCE stay exact. A held-out positive in a message graph fails before any update, and the default `train` / `predict` paths refuse link batches (use the task's objective, evaluator and `predict`). See [Concepts → Link and edge prediction](concepts.md#26-link-and-edge-prediction-nnxlink_tasks) and [`examples/link_prediction_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/link_prediction_offline.py).
+`nnx.link_tasks` (the `graph` extra) splits edges, not nodes. `split = split_links(edge_index, num_nodes, val=0.1, test=0.1, seed=0)` gives a replayable manifest: canonical edges, and fixed held-out negatives from the complement. `task = LinkTask(split)` builds candidate batches over the training topology only, through `task.loader("train" | "val" | "test", x, batch_size)`.
+
+1. Train `NNModelParams(net=link_predictor_spec(input_dim=...))` with `objective=task.objective()` and `eval_step_fn=task.eval_step()`.
+2. Select BEST with `metrics=task.metric_specs(), monitor=MonitorSpec("auroc")`.
+3. Score candidates with `prediction = task.predict(model, loader)` and `link_metrics(prediction.logits, prediction.targets, from_logits=True)`.
+
+The metrics are computed from the float64 logits, as the evaluator's are, so a confident model's AUROC / AP / BCE stay exact. A held-out positive in a message graph fails before any update. The default `train` / `predict` paths refuse link batches; use the task's objective, evaluator and `predict`. See [Concepts → Link and edge prediction](concepts.md#26-link-and-edge-prediction-nnxlink_tasks) and [`examples/link_prediction_offline.py`](https://github.com/thekaveh/NNx/blob/main/examples/link_prediction_offline.py).
 
 
 ### 3.10. Data-parallel training on one machine
 
-Launch one process per device with `torchrun`; NNx partitions the data, keeps
-every update equal to the union batch's and lets one rank write the run:
+Launch one process per device with `torchrun`. NNx partitions the data and
+keeps every update equal to the union batch's. One rank writes the run:
 
 ```python
 # train.py — torchrun --standalone --nproc_per_node=2 train.py
@@ -813,7 +895,7 @@ run = model.train(params=params, distributed=distributed.DDP())  # the same run 
 distributed.shutdown()  # leave together: a bounded barrier, then the group is destroyed
 ```
 
-FP32, the default steps and one optimizer on one node; callbacks declare
+DDP supports FP32, the default steps and one optimizer on one node. Callbacks declare
 their rank behaviour (`Callback.distributed`) and `TensorBoardCallback` /
 `WandbCallback` go through `distributed.writer_only(...)`. See
 [Architecture §3](architecture.md#3-single-node-data-parallelism-nnxdistributed) and

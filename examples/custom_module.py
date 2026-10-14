@@ -1,4 +1,4 @@
-"""Arbitrary modules and registered model factories (FEAT-006).
+"""Arbitrary modules and registered model factories.
 
 ``NNModel`` is not limited to the built-in ``Nets`` enum:
 

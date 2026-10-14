@@ -24,12 +24,20 @@ as the KD / SimCLR / Mixup / CutMix paradigm factories.
 
 from __future__ import annotations
 
+import math
+
 import torch
 
-from .._metrics import classification_edp
-from .._step_helpers import finalize_step
+from .._step_helpers import finalize_step, imperative_step, predicted_labels, require_row_logits
 from ..nn.moe import MoELinear
-from ..nn.nn_model import TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
+from ..nn.nn_model import (
+    TrainStepContext,
+    TrainStepFn,
+    _check_scorable_target,
+    _classification_edp_for_loss,
+    _loss_input,
+    _single_input_batch,
+)
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
 
@@ -63,8 +71,8 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
     Raises:
         ValueError: if ``aux_loss_weight < 0``.
     """
-    if aux_loss_weight < 0:
-        raise ValueError(f"aux_loss_weight must be non-negative, got {aux_loss_weight}")
+    if not math.isfinite(aux_loss_weight) or aux_loss_weight < 0:
+        raise ValueError(f"aux_loss_weight must be non-negative and finite, got {aux_loss_weight}")
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
@@ -88,6 +96,7 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
         # The supervised forward populates each MoELinear's
         # ``.last_aux_loss`` as a side effect.
         Y_hat_logits = m._net_forward((X,), {})
+        require_row_logits(Y_hat_logits, "moe")
         supervised_loss = m.loss_fn(_loss_input(m.loss_fn, Y_hat_logits), Y)
 
         # Sum the per-layer aux losses across every MoE layer in the
@@ -103,13 +112,15 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
                 aux_loss = aux_loss + module.last_aux_loss
 
         loss = supervised_loss + aux_loss_weight * aux_loss
+        _check_scorable_target(m.loss_fn, Y, paradigm="moe")  # before the update: a refused batch changes nothing
         loss_val = finalize_step(loss, ctx, paradigm="moe")
 
-        return classification_edp(
-            Y=Y,
-            Y_hat=Y_hat_logits.argmax(dim=-1),
+        return _classification_edp_for_loss(
+            loss_fn=m.loss_fn,
+            target=Y,
+            prediction=predicted_labels(m.loss_fn, Y_hat_logits),
             loss=loss_val,
             extra_metrics=ctx.extra_metrics,
         )
 
-    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
+    return full_precision_only(imperative_step(step, paradigm="moe"))  # finalize_step: full precision

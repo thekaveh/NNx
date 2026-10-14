@@ -548,6 +548,15 @@ def test_load_lora_weights_counts_only_accepted_adapter_tensors():
     assert not torch.all(net.layers[0].base.weight == 0)
     with pytest.raises(RuntimeError, match="size mismatch"):
         load_lora_weights(net, {"layers.0.lora_A": torch.zeros(3, 8)})
+    # A refused load leaves every adapter untouched (torch's strict=False
+    # load copied the matching keys before raising).
+    before = {k: v.clone() for k, v in net.state_dict().items()}
+    with pytest.raises(RuntimeError, match="nothing was loaded"):
+        load_lora_weights(
+            net,
+            {"layers.0.lora_A": torch.full_like(before["layers.0.lora_A"], 7.0), "layers.1.lora_A": torch.zeros(3, 8)},
+        )
+    assert all(torch.equal(v, before[k]) for k, v in net.state_dict().items())
 
     root = LoRALinear(nn.Linear(4, 4), r=2)
     sd = {k: v for k, v in root.state_dict().items()}
@@ -683,7 +692,7 @@ def test_transformer_tuners_inherit_model_mode(tuner_name):
             n_heads=2,
             d_model=16,
             ffn_mult=2,
-            max_seq_len=16,
+            max_seq_len=32,  # room for PromptTuner's default 20 prompt tokens
         )
     ).eval()
     model.blocks[1].train()
@@ -784,3 +793,53 @@ def test_inference_helpers_restore_wrapped_mixed_modes():
     loader = DataLoader(TensorDataset(x, torch.tensor([0, 1, 2, 0, 1])), batch_size=5)
     model.evaluate(loader=loader)
     assert _mode_map(model.net) == before
+
+
+def test_ia3_refuses_to_wrap_a_dora_base_before_any_change():
+    """DoRALinear reads its base's weight in forward: a wildcard IA3 must not
+    wrap that base (DoRA(IA3(...)) used to fail on its first forward).
+    LoRA and IA3 only call their base, so those stacks still compose."""
+    from nnx.peft import apply_dora_to, apply_ia3_to, apply_lora_to
+
+    net = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.ReLU(), torch.nn.Linear(4, 2))
+    assert apply_dora_to(net, "*") == 2
+    before = [type(module).__name__ for module in net.modules()]
+    with pytest.raises(ValueError, match="DoRALinear, which reads its base's weight"):
+        apply_ia3_to(net, "*")
+    assert [type(module).__name__ for module in net.modules()] == before
+    net(torch.randn(3, 4))  # still runs
+
+    stacked = torch.nn.Sequential(torch.nn.Linear(4, 2))
+    apply_lora_to(stacked, "*")
+    assert apply_ia3_to(stacked, "*") == 1  # IA3 on LoRA's base: LoRA(IA3(Linear))
+    stacked(torch.randn(3, 4))
+
+
+def test_reapplying_an_adapter_in_a_mixed_stack_is_a_no_op():
+    """LoRA, then IA3, then LoRA again: the Linear already carries a LoRA
+    further up its wrapper chain, so the third call wraps nothing."""
+    from torch import nn
+
+    from nnx import apply_ia3_to, apply_lora_to
+
+    model = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2))
+    apply_lora_to(model, "*")
+    apply_ia3_to(model, "*")
+    before = repr(model)
+    apply_lora_to(model, "*")
+    assert repr(model) == before
+
+
+def test_reapplying_ia3_over_a_dora_stack_is_a_no_op():
+    """IA3 -> DoRA: re-applying IA3 skips the already-adapted Linears
+    instead of refusing to wrap the DoRA base it would never touch."""
+    from torch import nn
+
+    from nnx import apply_dora_to, apply_ia3_to
+
+    model = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2))
+    apply_ia3_to(model, "*")
+    apply_dora_to(model, "*")
+    before = repr(model)
+    apply_ia3_to(model, "*")
+    assert repr(model) == before

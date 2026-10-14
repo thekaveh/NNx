@@ -1,4 +1,4 @@
-"""Vision Transformer encoder params (#395).
+"""Vision Transformer encoder params.
 
 ``NNViTParams`` subclasses ``NNParams`` — the same lift-via-subclassing
 pattern ``NNTransformerParams`` / ``NNConvParams`` use — and carries every

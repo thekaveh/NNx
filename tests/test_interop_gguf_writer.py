@@ -99,6 +99,25 @@ def test_tensor_name_map_emits_expected_keys():
     assert set(tensors.keys()) == expected, set(tensors.keys()) - expected
 
 
+@pytest.mark.parametrize("adapter", ["lora", "ia3", "prefix"])
+def test_tensor_name_map_refuses_a_peft_adapted_network(adapter):
+    """GGUF stores plain weights: a wrapped projection has no weight of its
+    own (it raised AttributeError), and a prefix tuner's prefix has no GGUF
+    slot (it was silently dropped). Both are refused with a hint."""
+    from nnx.interop.gguf.tensor_name_map import map_tensors
+    from nnx.peft import PrefixTuner, apply_ia3_to, apply_lora_to
+
+    net = _tiny_transformer()
+    if adapter == "lora":
+        apply_lora_to(net, "blocks.*.attn.w_qkv", r=2)
+    elif adapter == "ia3":
+        apply_ia3_to(net, "blocks.*.attn.w_qkv")
+    else:
+        PrefixTuner(net, n_prefix=2)
+    with pytest.raises(TypeError, match="PEFT adapter"):
+        map_tensors(net)
+
+
 def test_tensor_name_map_omits_output_weight_when_tied():
     """tie_embeddings=True (the NNx default) means llama.cpp re-uses
     token_embd.weight — no separate output.weight in the file."""
@@ -473,3 +492,54 @@ def test_write_gguf_creates_parent_directories(tmp_path):
     out = write_gguf(net, tokenizer, nested)
     assert nested.exists()
     assert out == str(nested)
+
+
+def test_tensor_name_map_upcasts_bf16_weights_to_float32():
+    """numpy has no bfloat16: a bf16-resident net maps to exact float32
+    arrays instead of raising in .numpy()."""
+    import numpy as np
+    import torch
+
+    from nnx.interop.gguf.tensor_name_map import map_tensors
+
+    net = _tiny_transformer().to(torch.bfloat16)
+    tensors = map_tensors(net)
+    assert all(arr.dtype == np.float32 for arr in tensors.values())
+    assert np.array_equal(tensors["token_embd.weight"], net.tok_embed.weight.detach().float().numpy())
+
+
+def test_a_huge_integer_float_parameter_is_a_type_error():
+    """10**400 cannot become a float: refused as a non-finite number, not
+    an uncaught OverflowError."""
+    from nnx.interop.ollama import _validate_modelfile_inputs
+
+    with pytest.raises(TypeError, match="requires a finite number"):
+        _validate_modelfile_inputs("", None, {"temperature": 10**400})
+
+
+@pytest.mark.parametrize(
+    ("label", "error", "match"), [("F8", ValueError, "F8"), ("Q4_K_M", ImportError, "llama-quantize")]
+)
+def test_the_quantization_label_is_judged_before_gguf_is_required(monkeypatch, label, error, match):
+    """Without gguf installed, a misspelled label is still a ValueError and a
+    sub-F16 one still gets the two-step llama-quantize guidance."""
+    import sys
+
+    from nnx.interop.gguf.writer import write_gguf
+
+    monkeypatch.setitem(sys.modules, "gguf", None)
+    with pytest.raises(error, match=match):
+        write_gguf(_tiny_transformer(), None, "out.gguf", quantization=label)  # type: ignore[arg-type]
+
+
+def test_a_factorized_projection_is_refused_with_a_type_error():
+    """A low-rank factorized projection is a Sequential with no weight of
+    its own: refused like an adapter, not an AttributeError mid-export."""
+    from nnx.interop.gguf.tensor_name_map import _refuse_adapters
+    from nnx.surgery import low_rank_factorize
+
+    net = _tiny_transformer()
+    ffn = net.blocks[0].ffn
+    ffn.w1 = low_rank_factorize(ffn.w1, rank=4)
+    with pytest.raises(TypeError, match="plain nn.Linear projections"):
+        _refuse_adapters(net)

@@ -1,4 +1,4 @@
-"""Label-conditioned decision-model research pilot (FEAT-023).
+"""Label-conditioned decision-model research pilot.
 
 One bounded pilot of a **local** model that scores ``(state, question,
 candidate description)`` triples with a shared encoder and a shared scalar

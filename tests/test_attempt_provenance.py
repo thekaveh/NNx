@@ -164,6 +164,25 @@ def test_a_fit_that_fails_before_any_commit_releases_its_reservation():
     assert rerun.provenance.attempt.status == "completed"
 
 
+def test_a_fit_whose_first_run_save_fails_releases_its_reservation(monkeypatch):
+    """A first run.yaml write that fails leaves only NNRun.save's lock: the
+    reservation is released, so a retry of the same run is not refused with
+    "already exists". (A failed first LAST commit keeps an empty history,
+    like the eager run; tests/test_history_journal.py pins that.)"""
+    from nnx.nn.params import nn_run
+
+    def dump(*args, **kwargs):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(nn_run.yaml, "safe_dump", dump)
+        with pytest.raises(OSError, match="disk full"):
+            _model().train(params=_params(2, data_id="commit"), provenance=PLAN)
+    assert [name for name in os.listdir("runs") if not name.startswith(".")] == []
+    rerun = _model().train(params=_params(2, data_id="commit"), provenance=PLAN)
+    assert rerun.provenance.attempt.status == "completed"
+
+
 def test_a_failed_status_write_never_masks_the_training_error(monkeypatch):
     from nnx import provenance
 
@@ -231,6 +250,33 @@ def test_trainer_fits_are_recorded_attempts_too():
 # --- review hardening -------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("content", [[], "text", {"format": "x", "manifest": []}])
+def test_provenance_that_is_not_a_json_object_is_unreadable_not_a_crash(tmp_path, content):
+    """Valid JSON of the wrong shape is a ValueError (which run loading
+    tolerates), not an AttributeError that escapes it."""
+    run = _model().train(params=_params(1, data_id=f"shape-{type(content).__name__}"), provenance=PLAN)
+    with open(os.path.join("runs", run.id, "provenance.json"), "w", encoding="utf-8") as handle:
+        json.dump(content, handle)
+    with pytest.raises(ValueError, match="JSON object"):
+        load_provenance(run.id)
+    with pytest.warns(RuntimeWarning, match="unreadable provenance ignored"):
+        assert NNRun.load(run.id).provenance is None
+
+
+@pytest.mark.parametrize("field", ["data", "splits", "config"])
+def test_a_nested_manifest_field_of_the_wrong_shape_is_unreadable_not_a_crash(tmp_path, field):
+    run = _model().train(params=_params(1, data_id=f"nested-{field}"), provenance=PLAN)
+    path = os.path.join("runs", run.id, "provenance.json")
+    stored = json.load(open(path, encoding="utf-8"))
+    stored["manifest"][field] = ["not", "an", "object"]
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(stored, handle)
+    with pytest.raises(ValueError, match="JSON object"):
+        load_provenance(run.id)
+    with pytest.warns(RuntimeWarning, match="unreadable provenance ignored"):
+        assert NNRun.load(run.id).provenance is None
+
+
 def test_unreadable_provenance_never_breaks_loading_or_resuming(tmp_path):
     run = _model().train(params=_params(1, data_id="corrupt"), provenance=PLAN)
     path = os.path.join("runs", run.id, "provenance.json")
@@ -242,8 +288,9 @@ def test_unreadable_provenance_never_breaks_loading_or_resuming(tmp_path):
         load_provenance(run.id)
     with pytest.warns(RuntimeWarning, match="unreadable provenance ignored"):
         assert NNRun.load(run.id).provenance is None
-    with pytest.warns(RuntimeWarning, match="its attempt is not linked"):
+    with pytest.warns(RuntimeWarning, match="its attempt is not linked") as linked:
         child = _model().train(params=_params(1, resume_from_run_id=run.id), provenance=PLAN)
+    assert [w.filename for w in linked if "not linked" in str(w.message)] == [__file__]  # the caller's train()
     assert child.provenance.attempt.parent["attempt_id"] is None
     assert child.provenance.attempt.parent["generation"] is not None  # the checkpoint is still linked
 
@@ -259,9 +306,29 @@ def test_a_failed_completion_write_keeps_the_trained_run(monkeypatch):
         real(path, value)
 
     monkeypatch.setattr(provenance, "_write_json", flaky)
-    with pytest.warns(RuntimeWarning, match="could not be recorded as completed"):
+    with pytest.warns(RuntimeWarning, match="could not be recorded as completed") as caught:
         run = _model().train(params=_params(1, data_id="flaky"), provenance=PLAN)
     assert run.idps and load_provenance(run.id).attempt.status == "running"
+    assert [w.filename for w in caught if "recorded as completed" in str(w.message)] == [__file__]
+
+
+def test_a_failed_completion_write_keeps_the_trained_run_under_an_error_filter(monkeypatch):
+    import warnings
+
+    from nnx import provenance
+
+    real = provenance._write_json
+
+    def flaky(path, value):
+        if value.get("status") == "completed":
+            raise OSError("disk full")
+        real(path, value)
+
+    monkeypatch.setattr(provenance, "_write_json", flaky)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # -W error: the warning must not lose the saved run
+        run = _model().train(params=_params(1, data_id="flaky-error"), provenance=PLAN)
+    assert run.idps
 
 
 def test_checkpoint_summaries_never_load_the_weights():

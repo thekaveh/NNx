@@ -1,4 +1,4 @@
-"""Leakage-aware link and edge prediction on a static homogeneous graph (FEAT-027).
+"""Leakage-aware link and edge prediction on a static homogeneous graph.
 
 Node masks cannot hold out edges: a held-out edge left in the message graph
 is a leaked answer. This module splits **edges**, keeps the graph the model
@@ -7,8 +7,8 @@ every batch against that split before any forward pass.
 
 - :class:`LinkSplit` — a versioned manifest: the node count, canonical
   positive edges per split (``train`` / ``val`` / ``test``; an undirected
-  edge is ``(min, max)``, so a duplicate or a reverse can never sit in two
-  splits), fixed ``val`` / ``test`` negatives, directedness, the self-loop
+  edge is ``(min, max)``, so a duplicate, or in an undirected split a
+  reverse, can never sit in two splits), fixed ``val`` / ``test`` negatives, directedness, the self-loop
   policy, the seed, and — for edge-label tasks — the categories, each
   edge's category and whether labelled edges' **existence** is visible
   context. :func:`split_links` derives one from an ``edge_index`` with a
@@ -20,7 +20,8 @@ every batch against that split before any forward pass.
   positives. In edge-label mode with ``label_existence="visible"`` every
   labelled edge's existence is context (their categories never are).
 - **Negatives** come from the static complement — never a positive of any
-  split, its reverse, a duplicate or a barred self-loop. A request beyond
+  split, its reverse (in an undirected split), a duplicate or a barred
+  self-loop. A request beyond
   the complement's capacity fails before anything is sampled; ``val`` /
   ``test`` negatives are fixed in the manifest; training negatives are
   re-drawn every pass from ``(seed, pass)``.
@@ -33,8 +34,8 @@ every batch against that split before any forward pass.
   candidate outside its split fails before any update. Evaluation
   materialises every candidate (up to ``max_candidates``) for exact
   AUROC / AP, scored from the float64 logits (a probability rounds to 0 or
-  1 for a confident model); a one-class set reports them unavailable with
-  the reason.
+  1 for a confident model). For a one-class set, ``link_metrics`` reports
+  them unavailable with the reason, and the evaluator's record omits them.
   The manifest is checkpointed component state ``"link.task"``: a resume
   with another split fails before the first resumed update.
 - :func:`link_predictor_spec` — a registered recipe
@@ -204,6 +205,8 @@ class LinkSplit:
         if not self.train:
             raise LinkTaskError("a link split needs at least one training edge")
         if self.categories is not None:
+            if isinstance(self.categories, (str, bytes)):  # one name, not a set of its characters
+                raise LinkTaskError(f"categories must be a sequence of names, not the string {self.categories!r}")
             categories = tuple(str(c) for c in self.categories)
             if len(categories) < 2 or len(set(categories)) != len(categories) or not all(categories):
                 raise LinkTaskError(f"categories must be 2+ distinct non-empty names, got {self.categories!r}")
@@ -447,7 +450,9 @@ def split_links(
     """Split the graph's edges with a local generator seeded by ``seed``.
 
     Edges are canonicalised and de-duplicated first (an undirected reverse
-    is the same edge), so no duplicate or reverse can cross splits.
+    is the same edge), so no duplicate, and in an undirected split no
+    reverse, can cross splits (a directed split keeps ``u→v`` and ``v→u``
+    apart).
     ``val`` / ``test`` are fractions of the edges or exact counts.
     ``negatives`` fixed non-edges per ``val`` / ``test`` positive come from
     the complement of every positive (and barred self-loops); a request
@@ -472,7 +477,11 @@ def split_links(
         if u == v and self_loops == "bar":
             raise LinkTaskError(f"self-loop {(u, v)} with self_loops='bar'")
         edge = _canonical(u, v, directed)
-        label = None if edge_labels is None else int(edge_labels[position])
+        label = (
+            None
+            if edge_labels is None
+            else _count(_integer(edge_labels[position]), f"edge {(u, v)}'s category", minimum=0)
+        )
         if edge in edges and edges[edge] != label:
             raise LinkTaskError(f"edge {edge} appears twice with different categories ({edges[edge]} and {label})")
         edges[edge] = label
@@ -507,6 +516,8 @@ def split_links(
             )
         drawn = _complement_sample(needed, n, set(unique), directed=directed, self_loops=self_loops == "allow", rng=rng)
         val_negatives, test_negatives = drawn[: per * n_val], drawn[per * n_val :]
+    if isinstance(categories, (str, bytes)):  # one name, not a set of its characters
+        raise LinkTaskError(f"categories must be a sequence of names, not the string {categories!r}")
     return LinkSplit(
         num_nodes=n,
         train=tuple(sorted(train_edges)),
@@ -556,7 +567,22 @@ def link_metrics(probabilities: Any, targets: Any, *, from_logits: bool = False)
         raise LinkTaskError(f"{p.shape[0]} predictions for {y.shape[0]} targets")
     if y.shape[0] == 0:
         return {"bce" if p.ndim == 1 else "nll": MetricValue(None, "no candidates")}
+    if from_logits and np.isnan(p).any():
+        raise LinkTaskError("logits must not be NaN")
+    if from_logits and p.ndim == 2 and (np.isposinf(p).any() or not np.isfinite(p.max(axis=1)).all()):
+        # The max-shifted log-softmax is exact for a -inf category mask in a
+        # row with a finite maximum; a +inf logit or an all -inf row is inf - inf.
+        raise LinkTaskError("categorical logits need a finite maximum per row and no +inf")
+    if not from_logits and not ((p >= 0.0) & (p <= 1.0)).all():  # NaN fails both
+        raise LinkTaskError(
+            "probabilities must lie in [0, 1]; pass logits (LinkPrediction.logits) with from_logits=True"
+        )
     if p.ndim == 2:
+        # Categorical targets are class indices 0..C-1 (a fraction or an
+        # out-of-range index would index the wrong column or raise).
+        whole = np.issubdtype(y.dtype, np.number) and not np.issubdtype(y.dtype, np.bool_)
+        if not whole or not np.all(np.mod(y, 1) == 0) or y.min() < 0 or y.max() >= p.shape[1]:
+            raise LinkTaskError(f"categorical targets must be class indices 0..{p.shape[1] - 1}")
         rows = np.arange(y.shape[0]), y.astype(np.int64)
         if from_logits:
             shifted = p - p.max(axis=1, keepdims=True)  # the max-shifted log-softmax
@@ -567,6 +593,8 @@ def link_metrics(probabilities: Any, targets: Any, *, from_logits: bool = False)
             "nll": MetricValue(float(nll.mean())),
             "accuracy": MetricValue(float((p.argmax(axis=1) == y).mean())),
         }
+    if not np.isin(y, (0, 1)).all():
+        raise LinkTaskError("binary targets are 0 / 1")
     if from_logits:
         # -log sigmoid(z) for a positive, -log(1 - sigmoid(z)) = softplus(z) for a negative: exact for any logit.
         bce = float(np.logaddexp(0.0, np.where(y == 1, -p, p)).mean())
@@ -612,12 +640,18 @@ class LinkPredictor(nn.Module):
             raise LinkTaskError(f"decoder must be 'dot' or 'mlp', got {decoder!r}")
         if decoder == "dot" and outputs != 1:
             raise LinkTaskError("a dot decoder gives one logit per candidate; use 'mlp' for categories")
+        outputs = _count(outputs, "outputs", minimum=1)
+        if decoder == "mlp":
+            width = _count(width, "width (the encoder's embedding width, for the mlp decoder)", minimum=1)
         self.encoder = encoder
         self.decoder = decoder
         self.head = nn.Linear(2 * width, outputs) if decoder == "mlp" else None
         self.outputs = outputs
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor, edge_label_index: torch.Tensor) -> torch.Tensor:
+        parameter = next(self.parameters(), None)
+        if parameter is not None and x.is_floating_point() and x.dtype != parameter.dtype:
+            x = x.to(parameter.dtype)  # e.g. float64 features from NumPy for a float32 model, as GraphClassifier
         h = self.encoder(x, edge_index)
         hu, hv = h[edge_label_index[0]], h[edge_label_index[1]]
         if self.head is None:
@@ -835,6 +869,18 @@ class LinkTask:
         if self.mode == "edge_label" and negatives:
             raise LinkTaskError("an edge-label task samples no negatives: a non-edge is never a category")
         object.__setattr__(self, "train_negatives", negatives)
+        if self.mode == "binary" and negatives:
+            # The training pass draws negatives from the complement: a split
+            # that cannot hold them is refused here, not at the first batch.
+            split = self.split
+            excluded = set(split._all_positives()) | set(split.val_negatives) | set(split.test_negatives)
+            needed = negatives * len(split.positives("train"))
+            capacity = _total_pairs(split.num_nodes, split.directed, split.self_loops == "allow") - len(excluded)
+            if needed > capacity:
+                raise LinkTaskError(
+                    f"{needed} training negatives requested per pass; the complement holds {capacity}: lower "
+                    "train_negatives"
+                )
         object.__setattr__(self, "max_candidates", _count(self.max_candidates, "max_candidates", minimum=1))
         if self.version != 1 or isinstance(self.version, bool):
             raise LinkTaskError(f"this NNx supports link task version 1, got {self.version!r}")
@@ -952,10 +998,14 @@ class LinkTask:
             leaked = sorted((u, v) for u, v in messages - allowed if _canonical(u, v, split.directed) in held_out)
             if leaked:
                 raise LinkTaskError(f"leak: held-out positive(s) {leaked[:5]} are in the message graph")
-            if messages != allowed:
+            if messages != allowed or edge_index.shape[1] != len(allowed):
+                # A repeated message edge is a different aggregation, though
+                # its set of pairs matches.
                 extra, missing = sorted(messages - allowed)[:5], sorted(allowed - messages)[:5]
+                repeated = edge_index.shape[1] - len(messages)
                 raise LinkTaskError(
-                    f"the message graph must be the split's training topology (unexpected {extra}, missing {missing})"
+                    f"the message graph must be the split's training topology (unexpected {extra}, missing {missing}, "
+                    f"{repeated} repeated edge(s))"
                 )
         pairs = [(int(u), int(v)) for u, v in batch.edge_label_index.t().tolist()]
         targets = batch.edge_label.tolist()
@@ -1022,7 +1072,7 @@ class LinkTask:
         return LinkEval(self)
 
     def metric_specs(self) -> list[Any]:
-        """``MetricSpec``\\ s for ``MonitorSpec("auroc")`` / ``("ap")``
+        """``MetricSpec``s for ``MonitorSpec("auroc")`` / ``("ap")``
         (binary) — a one-class set leaves them unavailable, so it never
         wins BEST."""
         from .monitors import MetricSpec

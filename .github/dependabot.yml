@@ -9,11 +9,25 @@ updates:
         patterns:
           - "*"
     target-branch: develop
-  - package-ecosystem: "pip"
+  # "uv" updates pyproject.toml and uv.lock together ("pip" left the lock
+  # behind, so its pull requests tested the old lock).
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
     groups:
+      # Tools pinned in the ledger (docs/external-contracts.md) and in
+      # requirements-tools.txt move on their own, so a bump that needs those
+      # files updated by hand never holds back the other dependencies. A
+      # ruff bump also needs the matching pre-commit rev (a joint update).
+      pinned-tools:
+        patterns:
+          - "setuptools"
+          - "wheel"
+          - "twine"
+          - "pip-audit"
+          - "ruff"
+          - "pyright"
       python-dependencies:
         patterns:
           - "*"

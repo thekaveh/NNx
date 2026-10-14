@@ -18,7 +18,10 @@ additions on top of the raw PyTorch API:
      (fine-tuning included) immediately regrows the pruned entries and
      sparsity decays toward dense. Prune-then-finetune and iterative
      schedules must use ``bake=False`` (mask enforced through the
-     reparameterization) and bake once at the very end.
+     reparameterization) and bake once at the very end. ``NNModel.train``
+     refuses a registered net that still carries the reparameterization,
+     because its checkpoints could not rebuild it: fine-tune such a net
+     as ``NNModel(module=net)`` or with a custom loop.
 """
 
 from __future__ import annotations
@@ -63,20 +66,25 @@ def magnitude_prune(
             ``<name>.weight_mask`` instead of ``<name>.weight``. Use
             ``False`` for iterative pruning schedules (e.g., 10% per
             epoch for N epochs) where successive ``magnitude_prune``
-            calls need to compose with the existing mask.
+            calls need to compose with the existing mask. ``NNModel.train``
+            refuses a registered net that still carries the masks: run
+            such a schedule on ``NNModel(module=net)`` or a custom loop.
 
     Returns:
         The number of :class:`nn.Linear` submodules that were pruned.
         ``0`` if ``layer_pattern`` matched nothing.
 
     Raises:
-        ValueError: if ``sparsity`` is outside ``[0, 1)``.
+        ValueError: if ``sparsity`` is outside ``[0, 1)``, or if
+            ``bake=False`` selects a Linear whose parent reads its weight
+            directly (``nn.MultiheadAttention``'s ``out_proj``).
 
-    **Idempotency note:** calling ``magnitude_prune`` twice at the
-    same ``sparsity`` is a no-op for the second call — l1_unstructured
-    picks the smallest-magnitude entries, which after the first prune
-    are exactly the already-zeroed positions. The zero count stays the
-    same; nothing is double-pruned.
+    **Idempotency note:** with ``bake=True``, calling ``magnitude_prune``
+    twice at the same ``sparsity`` is a no-op for the second call —
+    l1_unstructured picks the smallest-magnitude entries, which after the
+    first prune are exactly the already-zeroed positions. With
+    ``bake=False`` the masks compose: a second call prunes ``sparsity`` of
+    the remaining weights (0.5 twice leaves 0.75 zero).
     """
     if not (0.0 <= sparsity < 1.0):
         raise ValueError(f"magnitude_prune sparsity must be in [0, 1), got {sparsity}")
@@ -90,6 +98,25 @@ def magnitude_prune(
     for name, mod in net.named_modules():
         if isinstance(mod, nn.Linear) and fnmatch.fnmatchcase(name, layer_pattern):
             targets.append((name, mod))
+    if not bake:
+        # The mask is applied by a forward pre-hook, which never runs when a
+        # parent reads the Linear's weight directly (MultiheadAttention's
+        # out_proj): its stale pruned weight breaks the second backward.
+        from ..peft._targets import WEIGHT_READING_PARENTS
+
+        read_directly = [
+            f"{name}.{child_name}" if name else child_name
+            for name, parent in net.named_modules()
+            if isinstance(parent, WEIGHT_READING_PARENTS)
+            for child_name, child in parent.named_children()
+            if any(child is mod for _, mod in targets)
+        ]
+        if read_directly:
+            raise ValueError(
+                f"magnitude_prune(bake=False): {', '.join(read_directly)} are read by their parent's weight "
+                "directly, so a mask could not apply; exclude them with layer_pattern or use bake=True. Nothing "
+                "was modified."
+            )
 
     for _, mod in targets:
         # l1_unstructured at amount=0.0 is a valid no-op — torch still

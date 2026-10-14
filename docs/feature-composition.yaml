@@ -11,7 +11,9 @@
 #                 negative tests (or `limitation` cites the exact documented
 #                 limitation when no test can exercise it).
 #   unverified  - claimed by neither: no executed evidence on the profiles CI
-#                 runs (e.g. CUDA AMP on a CPU runner).
+#                 runs (e.g. IE-05, ONNX Runtime parity owned by another job).
+#                 A CUDA row a CPU runner cannot execute keeps its status and
+#                 renders unverified only for lack of evidence.
 # Evidence (which tests passed, at which source digest, on which profile) is
 # stored apart: a run's JSON report (the CI `feature-composition-report`
 # artifact), rendered into docs/feature-composition.md by
@@ -95,7 +97,7 @@ scenarios:
     group: training-controls
     features: [FP16 automatic mixed precision, CUDA]
     entry_point: NNModelParams(precision=PrecisionPolicy("fp16"))
-    profile: {device: cuda, dtype: fp16, dependencies: [cuda]}
+    profile: {device: cuda, dtype: fp16, dependencies: []}
     expected: Trains through a GradScaler on CUDA, with finite losses and scaler updates.
     tests:
       - tests/test_cuda_evidence.py::test_fp16_amp_trains_through_a_grad_scaler_on_cuda
@@ -105,7 +107,7 @@ scenarios:
     group: training-controls
     features: [DDP, torch.compile]
     entry_point: NNModel.train(distributed=DDP(), compile=CompileSpec())
-    profile: {device: cpu, dtype: fp32, dependencies: []}
+    profile: {device: cpu, dtype: fp32, dependencies: [torch.distributed gloo]}
     expected: Refused on every rank before any run starts.
     tests:
       - tests/test_ddp_adapter.py::test_preflight_refusals_fail_on_every_rank_before_any_run
@@ -115,7 +117,7 @@ scenarios:
     group: training-controls
     features: [DDP, HistoryJournal]
     entry_point: NNModel.train(distributed=DDP(), history=HistoryJournal(...))
-    profile: {device: cpu, dtype: fp32, dependencies: []}
+    profile: {device: cpu, dtype: fp32, dependencies: [torch.distributed gloo]}
     expected: Refused on every rank before any run starts; DDP keeps the eager history.
     tests:
       - tests/test_ddp_adapter.py::test_preflight_refusals_fail_on_every_rank_before_any_run
@@ -124,8 +126,8 @@ scenarios:
   - id: TC-09
     group: training-controls
     features: [DDP, budgeted search, experiment plans]
-    entry_point: nnx.search.search / ExperimentPlan.fit under torchrun
-    profile: {device: cpu, dtype: fp32, dependencies: []}
+    entry_point: nnx.search.search / ExperimentPlan.fit / Trainer.train / NNModel.train without DDP() under torchrun
+    profile: {device: cpu, dtype: fp32, dependencies: [torch.distributed gloo]}
     expected: Refused on every rank of a multi-rank group before any study, factory call or run; a one-rank group behaves as no group.
     tests:
       - tests/test_ddp_adapter.py::test_single_process_entry_points_refuse_a_multi_rank_group
@@ -297,7 +299,7 @@ scenarios:
     group: inference-export
     features: [ordered logits pipeline, KV cache]
     entry_point: GenerativeNNModel.generate(logits_pipeline=...)
-    profile: {device: cpu, dtype: fp32, dependencies: []}
+    profile: {device: cpu, dtype: fp32, dependencies: [tokenizers]}
     expected: A pipeline equals the explicit processor list, cached and uncached.
     tests:
       - tests/test_ordered_logits_pipeline.py::test_generate_with_a_pipeline_equals_the_explicit_processor_list
@@ -332,7 +334,7 @@ scenarios:
     expected: Executed logits match the native model.
     tests:
       - tests/test_export_conformance.py::test_both_exporters_match_native_logits_in_onnx_runtime
-    rationale: Owned by the dedicated export-conformance job (FEAT-038); this matrix does not certify ONNX Runtime parity on the CPU lane.
+    rationale: Owned by the dedicated export-conformance job (docs/export-conformance.md); this matrix does not certify ONNX Runtime parity on the CPU lane.
     status: unverified
   - id: IE-06
     group: inference-export
@@ -437,9 +439,9 @@ scenarios:
   - id: DR-07
     group: decisions-results
     features: [decision-model pilot, empirical claims]
-    entry_point: examples/decision_model_pilot.py --empirical
+    entry_point: examples/decision_model_pilot.py --mode empirical
     profile: {device: cpu, dtype: fp32, dependencies: []}
-    expected: The empirical mode reports blocked (no licensed held-out corpus) even with every resource present; no empirical claim is made.
+    expected: The empirical mode reports blocked even with every resource present (the empirical training and baseline runs are not part of this repository); no empirical claim is made.
     tests:
       - tests/test_decision_model_pilot.py::test_the_empirical_mode_with_every_resource_present_still_reports_blocked
     rationale: Executed negative test of the documented no-go (docs/decision-model-pilot.md).
@@ -506,7 +508,7 @@ scenarios:
     features: [custom eval step, non-finite metric]
     entry_point: examples/26_custom_eval_step.py
     profile: {device: cpu, dtype: fp32, dependencies: []}
-    expected: The custom-eval example runs, and its non-finite-metric helper asserts its refusal.
+    expected: The custom-eval example runs, and its non-finite-metric helper asserts the finite-metric fallback.
     tests:
       - tests/test_examples_smoke.py::test_representative_examples_run_end_to_end[26_custom_eval_step.py]
       - tests/test_examples_smoke.py::test_bounded_example_helpers_execute[26_custom_eval_step.py-nonfinite_metric_workflow]

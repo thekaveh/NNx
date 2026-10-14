@@ -5,7 +5,7 @@ Each example is a ``(prompt, chosen, rejected)`` triple where the
 ``prompt``. The dataset encodes all three through an
 :class:`NNTokenizerParams`, optionally truncates/pads to fixed
 lengths, and yields ``(prompt_ids, chosen_ids, rejected_ids)`` as
-``torch.LongTensor``\\ s — the shape expected by
+``torch.LongTensor``s — the shape expected by
 :func:`nnx.paradigms.dpo.dpo_train_step_factory`.
 
 For DPO experimentation, plug a published HF Hub preference dataset
@@ -17,13 +17,14 @@ production-RLHF caveats.
 
 from __future__ import annotations
 
+from collections.abc import Sized
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, cast
 
 import torch
 from torch.utils.data import DataLoader, Dataset, random_split
 
-from ..._validation import require_batch_sizes
+from ..._validation import require_batch_sizes, require_count
 from .nn_dataset_base import NNDatasetBase
 
 
@@ -86,12 +87,17 @@ class NNPreferenceDataset(NNDatasetBase):
 
     Tokenizes every triple through ``tokenizer.encode`` once at
     construction, pads/truncates to fixed lengths, then splits into
-    train / val / test ``DataLoader``\\ s with the same shape as the
+    train / val / test ``DataLoader``s with the same shape as the
     rest of :class:`NNDatasetBase` (so callbacks and the standard
     training loop work unchanged).
 
     Each batch yielded is ``(prompt_ids, chosen_ids, rejected_ids)``
     where each entry is ``(B, T_*)`` ``torch.LongTensor``.
+
+    ``pad_token_id`` defaults to ``0``. Under :func:`train_bpe`'s default
+    special tokens, id 0 is ``"<unk>"`` and ``"<pad>"`` is id 1: pass the
+    tokenizer's pad id (``tokenizer.token_to_id("<pad>")``), or the DPO
+    step's padding mask would also hide every real ``<unk>`` token.
 
     ``batch_sizes`` is a ``(train, val, test)`` tuple. ``None`` (the
     default for every slot) means *one batch holding the complete split* —
@@ -102,8 +108,9 @@ class NNPreferenceDataset(NNDatasetBase):
     negatives, floats, strings and anything but a 3-tuple are rejected with
     the ``batch_sizes[i] (split)`` slot named before ``tokenizer.encode``
     is called. Zero never disables a split: `val_proportion=0.0` /
-    `test_proportion=0.0` do (that loader is then ``None`` with a
-    placeholder ``1`` in the resolved ``batch_sizes``).
+    `test_proportion=0.0` do (that loader is then ``None``; its resolved
+    ``batch_sizes`` slot is a placeholder ``1`` when requested as ``None``,
+    and an explicit size is kept).
     """
 
     prompts: list[str]
@@ -122,6 +129,18 @@ class NNPreferenceDataset(NNDatasetBase):
     seed: Optional[int] = field(default=None)
 
     def __post_init__(self):
+        # Counts and the pad id before a single tokenizer call: a bool, float
+        # or negative value was accepted, then failed late (or padded with -1).
+        for name, minimum in (("max_prompt_len", 1), ("max_response_len", 1), ("pad_token_id", 0)):
+            object.__setattr__(
+                self, name, require_count(getattr(self, name), name, owner="NNPreferenceDataset", minimum=minimum)
+            )
+        if self.seed is not None:  # the split generator's seed domain
+            object.__setattr__(
+                self,
+                "seed",
+                require_count(self.seed, "seed", owner="NNPreferenceDataset", minimum=0, maximum=2**32 - 1),
+            )
         if not 0.0 <= self.val_proportion < 1.0:
             raise ValueError(f"val_proportion must be in [0, 1), got {self.val_proportion}")
         if not 0.0 <= self.test_proportion < 1.0:
@@ -141,6 +160,16 @@ class NNPreferenceDataset(NNDatasetBase):
         # (FIX-022): `None` is the only full-split sentinel.
         requested = require_batch_sizes(self.batch_sizes, owner="NNPreferenceDataset")
 
+        # len() counts added tokens (a Hugging Face tokenizer's vocab_size does not).
+        vocab = len(cast(Sized, self.tokenizer)) if callable(getattr(type(self.tokenizer), "__len__", None)) else None
+        if vocab is None:
+            vocab = getattr(self.tokenizer, "vocab_size", None)
+        if vocab is None and callable(getattr(self.tokenizer, "get_vocab_size", None)):  # a raw tokenizers.Tokenizer
+            vocab = self.tokenizer.get_vocab_size()  # type: ignore[attr-defined]
+        if vocab is not None and self.pad_token_id >= int(vocab):  # the embedding lookup would fail mid-step
+            raise ValueError(
+                f"NNPreferenceDataset pad_token_id={self.pad_token_id} is outside the vocabulary ({vocab})"
+            )
         # Encode everything via the tokenizer up-front.
         encode = self.tokenizer.encode  # type: ignore[attr-defined]
         p_ids = [encode(p) for p in self.prompts]
@@ -205,7 +234,8 @@ class NNPreferenceDataset(NNDatasetBase):
         # input_dim / output_dim: there's no "feature dimension" for a
         # raw text-pair dataset — report the tokenizer's vocab size so
         # downstream sizing checks have a number to look at.
-        vocab_size = int(self.tokenizer.vocab_size)  # type: ignore[attr-defined]
+        # The full length (added tokens included), so an embedding sized from it covers the pad id.
+        vocab_size = int(vocab) if vocab is not None else int(self.tokenizer.vocab_size)  # type: ignore[attr-defined]
         object.__setattr__(self, "input_dim", vocab_size)
         object.__setattr__(self, "output_dim", vocab_size)
 

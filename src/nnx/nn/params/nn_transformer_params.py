@@ -21,9 +21,9 @@ import ast
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..._validation import require_count, require_finite_real
+from ..._validation import plain_real, require_count, require_finite_real
 from ..enum.activations import Activations
-from .nn_params import NNParams, _per_layer_from_state
+from .nn_params import NNParams, _is_probability, _per_layer_from_state
 
 if TYPE_CHECKING:
     from .nn_transformer_params_builder import NNTransformerParamsBuilder
@@ -31,6 +31,9 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNTransformerParams(NNParams):
+    """Architecture of the decoder-only `TransformerNN`: vocabulary size,
+    depth, width, attention heads and the maximum sequence length."""
+
     # Required architectural knobs. There's no meaningful default for
     # "vocabulary size" or "depth", so these are required.
     vocab_size: int
@@ -88,8 +91,11 @@ class NNTransformerParams(NNParams):
         # training=True, far from the config's origin).
         for name in ("attn_dropout", "resid_dropout"):
             value = getattr(self, name)
-            if not 0.0 <= value <= 1.0:
-                raise ValueError(f"NNTransformerParams requires 0.0 <= {name} <= 1.0, got {value}")
+            if not _is_probability(value):  # a real number in [0, 1], as NNParams.dropout_prob
+                raise ValueError(f"NNTransformerParams requires 0.0 <= {name} <= 1.0, got {value!r}")
+            object.__setattr__(self, name, plain_real(value))
+        if not isinstance(self.tie_embeddings, bool):  # a truthy string would tie while run.yaml recorded it
+            raise ValueError(f"NNTransformerParams.tie_embeddings must be a bool, got {self.tie_embeddings!r}")
         if self.d_model % self.n_heads != 0:
             raise ValueError(f"d_model={self.d_model} must be divisible by n_heads={self.n_heads}")
         # RoPE rotates pairs of head channels, so the head width must be
@@ -104,6 +110,7 @@ class NNTransformerParams(NNParams):
         # RoPE base feeds `1 / base ** (2k/dim)`: zero, negative or non-finite
         # bases produce non-finite tables silently (FIX-020).
         require_finite_real(self.rope_base, "rope_base", owner="NNTransformerParams", minimum=0.0, exclusive_min=True)
+        object.__setattr__(self, "rope_base", plain_real(self.rope_base))
 
     def state(self) -> dict:
         # Start with the base-class state (input_dim/output_dim/etc.)

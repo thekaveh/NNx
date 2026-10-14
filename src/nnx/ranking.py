@@ -1,4 +1,4 @@
-"""Query-grouped ranking and retrieval evaluation (FEAT-035).
+"""Query-grouped ranking and retrieval evaluation.
 
 A scorer ranks the **candidates of each query**; it is judged per query,
 never per batch. :class:`RankingTask` declares the relevance grades, the
@@ -12,8 +12,7 @@ A batch is ``(features, query_ids, candidate_ids, relevance)`` or
 ``features`` to one score per candidate row; ids are integer tensors or
 lists of strings; relevance grades are integers in ``0..max_relevance``.
 
-- :meth:`RankingTask.objective` — the **pairwise logistic** objective
-  (FEAT-004): for each query, every pair of its candidates with unequal
+- :meth:`RankingTask.objective` — the **pairwise logistic** objective: for each query, every pair of its candidates with unequal
   relevance contributes ``log(1 + exp(-(s_hi - s_lo)))``; equal-relevance
   pairs (ties) contribute nothing and a query without such a pair is
   skipped. ``weighting="query"`` averages each query's pairs and then the
@@ -330,7 +329,7 @@ class RankingTask:
         return [f"{metric}_at_{k}" for k in self.k for metric in ("mrr", "recall", "ndcg")]
 
     def metric_specs(self) -> list[Any]:
-        """``MetricSpec``\\ s declaring this task's metrics — registered ids
+        """``MetricSpec``s declaring this task's metrics — registered ids
         ``ranking.mrr`` / ``ranking.recall`` / ``ranking.ndcg`` with
         ``config={"k": k}``, reported as ``<metric>_at_<k>`` — so a
         ``MonitorSpec`` can select on them. :meth:`eval_step` computes them;
@@ -613,7 +612,9 @@ class RankingEval:
                         raise RankingError(
                             f"the evaluation stream exceeds max_buffered={self.task.max_buffered} candidate rows"
                         )
-                    scores = self.task.scores(model, features, len(query_ids)).detach().double().cpu().tolist()
+                    scores = (
+                        self.task.scores(model, features, len(query_ids)).detach().cpu().double().tolist()
+                    )  # MPS has no float64
                     for i, (query, candidate) in enumerate(zip(query_ids, candidate_ids, strict=True)):
                         if mask is not None and not bool(mask[i]):
                             continue

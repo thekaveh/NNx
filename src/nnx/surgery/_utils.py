@@ -9,6 +9,8 @@ attribute / index segments (e.g., ``"layers.0"``) because
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from torch import nn
 
 
@@ -100,3 +102,42 @@ def copy_param_roles(src: nn.Module, dst: nn.Module) -> None:
         if name in src_flags:
             p.requires_grad_(src_flags[name])
     dst.train(src.training)
+
+
+def stock_forward(module: nn.Module, *bases: type[nn.Module]) -> bool:
+    """Whether ``module`` is one of ``bases`` and runs that base's own
+    ``forward``: a rebuilt plain module would drop a subclass's forward
+    (a fake-quantized Linear, a scaled Embedding) silently."""
+    return any(isinstance(module, base) and type(module).forward is base.forward for base in bases)
+
+
+def refuse_parametrized(module: nn.Module, what: str) -> None:
+    """A ``weight_norm`` / ``spectral_norm`` (the ``torch.nn.utils.parametrize``
+    forms or the legacy hooks) or an unbaked prune mask would be dropped
+    silently by a rebuilt plain module, its frozen flags with it. The hooks
+    are recognized by type, never by parameter names."""
+    from torch.nn.utils import parametrize
+
+    if parametrize.is_parametrized(module):
+        raise ValueError(
+            f"{what} carries a parametrization ({sorted(cast(Any, module).parametrizations)}); a surgery primitive "
+            "would drop it silently. Remove it first (torch.nn.utils.parametrize.remove_parametrizations)"
+        )
+    from torch.nn.utils.prune import BasePruningMethod
+    from torch.nn.utils.spectral_norm import SpectralNorm
+    from torch.nn.utils.weight_norm import WeightNorm
+
+    hooks = [hook for hook in module._forward_pre_hooks.values() if isinstance(hook, (WeightNorm, SpectralNorm))]
+    if hooks:
+        names = sorted(getattr(hook, "name", "?") for hook in hooks)
+        raise ValueError(
+            f"{what} carries a legacy weight_norm / spectral_norm on {names}; a surgery primitive would drop it "
+            "silently. Remove it first (torch.nn.utils.remove_weight_norm / remove_spectral_norm)"
+        )
+    masks = [hook for hook in module._forward_pre_hooks.values() if isinstance(hook, BasePruningMethod)]
+    if masks:
+        names = sorted(getattr(hook, "_tensor_name", "?") for hook in masks)
+        raise ValueError(
+            f"{what} carries an unbaked prune mask on {names}; a surgery primitive would read a stale weight and "
+            "drop the mask. Bake it first (torch.nn.utils.prune.remove, or magnitude_prune(bake=True))"
+        )

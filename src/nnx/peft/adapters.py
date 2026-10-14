@@ -29,9 +29,9 @@ class AdapterLayer(nn.Module):
     """Bottleneck residual block: ``y = x + up(act(down(x)))``.
 
     ``up.weight`` and ``up.bias`` are zero-initialized so at step 0
-    the layer's output equals its input exactly. Gradient flow
-    through ``up`` and ``down`` is unblocked from the first step;
-    only the magnitude of the residual starts at zero.
+    the layer's output equals its input exactly. ``up`` receives a
+    gradient from the first step; ``down`` receives none until ``up``
+    moves away from zero (its gradient flows through ``up.weight``).
 
     Args:
         dim: input and output feature dimension. The adapter is

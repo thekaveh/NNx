@@ -276,3 +276,51 @@ def test_run_ids_are_validated_before_any_path_is_built():
         provenance.load_provenance("../outside")
     with pytest.raises(ValueError):
         compare("../outside", BASE)
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [({"a.b": 1}, {"a": {"b": 1}}), ({"x[0]": 1}, {"x": [1]})],
+    ids=["dotted-key", "bracketed-key"],
+)
+def test_compare_never_equates_manifests_whose_paths_collide(left, right):
+    """A key holding path syntax is quoted, so differently shaped configs
+    never compare as verified equal."""
+    assert not compare(ExperimentManifest(config=left), ExperimentManifest(config=right)).verified_equal
+
+
+def test_a_deeply_nested_provenance_file_is_malformed_input(tmp_path):
+    from nnx.provenance import MANIFEST_FILE, load_provenance
+
+    run = tmp_path / "runs" / ("a" * 32)
+    run.mkdir(parents=True)
+    (run / MANIFEST_FILE).write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+    with pytest.raises(ValueError, match="nested too deeply"):
+        load_provenance("a" * 32, root=str(tmp_path))
+
+
+def test_for_model_refuses_a_train_entry_twice():
+    """train= beside config={"train": ...} was dropped silently."""
+    with pytest.raises(ValueError, match="'train' entry"):
+        model = NNModel(module=nn.Linear(4, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+        ExperimentManifest.for_model(model, train=NNTrainParams(n_epochs=1), config={"train": "v1"})
+
+
+def test_a_planned_resume_keeps_the_plan_fingerprint():
+    """resume_epochs only says how n_epochs is read on a resume: like
+    n_epochs it describes the attempt, not the plan."""
+    model = NNModel(module=nn.Linear(4, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    base = ExperimentManifest.for_model(model, train=NNTrainParams(n_epochs=2))
+    planned = ExperimentManifest.for_model(
+        model, train=NNTrainParams(n_epochs=5, resume_from_run_id="a" * 32, resume_epochs="planned")
+    )
+    assert base.fingerprint() == planned.fingerprint()
+
+
+def test_a_manifest_with_config_none_reloads_with_its_fingerprint():
+    """from_state read a missing config as {}: a None config reloaded with a
+    different fingerprint and the run's provenance was dropped as corrupt."""
+    from nnx.provenance import ExperimentManifest
+
+    manifest = ExperimentManifest(config=None)
+    assert ExperimentManifest.from_state(manifest.state()).fingerprint() == manifest.fingerprint()

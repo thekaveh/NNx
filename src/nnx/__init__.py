@@ -1,9 +1,11 @@
 """nnx — lightweight PyTorch training / eval / visualization toolkit.
 
-The package is organized under `nnx.nn` (model, params, datasets, enums, nets,
-callbacks) and two top-level helpers (`nnx.utils.Utils`, `nnx.vis_utils.VisUtils`).
-The curated re-exports below give a flat surface for the most common imports
-without forbidding the deep paths existing notebook code relies on.
+The core lives under `nnx.nn` (model, params, datasets, enums, nets,
+callbacks); feature subpackages and modules such as `nnx.paradigms`,
+`nnx.peft`, `nnx.calibration` and `nnx.distributed` sit beside it (see
+`__all__`). The curated re-exports below give a flat surface for the most
+common imports without forbidding the deep paths existing notebook code
+relies on.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ from . import (
     decisions,
     distributed,
     embeddings,
+    export_conformance,
     graph_tasks,
     history,
     interop,
@@ -347,6 +350,8 @@ __all__ = [
     "CompileFailed",
     # Bounded forward benchmarks and profiling (FEAT-029)
     "benchmarking",
+    # Labelled ONNX export conformance records
+    "export_conformance",
     # Single-node DDP under torchrun (train(distributed=...); FEAT-030)
     "distributed",
     # Budgeted experiment search through Optuna (the `optuna` extra; FEAT-033)

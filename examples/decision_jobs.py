@@ -1,5 +1,5 @@
 """Deferred decision jobs: batch independent questions, chain dependent
-ones (FEAT-024).
+ones.
 
 A ``DecisionJob`` describes decision work without doing any: ``ask``,
 ``collect``, ``map`` and ``then`` build an immutable tree, and ``run`` /

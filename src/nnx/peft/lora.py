@@ -44,10 +44,10 @@ from typing import Any, Union
 import torch
 from torch import nn
 
-from .._validation import require_finite_real
+from .._validation import require_count, require_finite_real
 from ._mode import inherit_training_mode
 from ._ownership import owned_adapter_keys, select_owned
-from ._source import _resolve_source_to_state_dict
+from ._source import _refuse_shape_mismatch, _resolve_source_to_state_dict
 from ._targets import wrap_selected_linears
 
 
@@ -88,8 +88,8 @@ class LoRALinear(nn.Module):
         super().__init__()
         if not isinstance(base, nn.Linear):
             raise TypeError(f"LoRALinear requires an nn.Linear base, got {type(base).__name__}")
-        if r <= 0:
-            raise ValueError(f"LoRA rank r must be positive, got {r}")
+        # An integer >= 1 (not a bool), checked before the base is frozen.
+        r = require_count(r, "r", owner="LoRA", minimum=1, domain_message=f"LoRA rank r must be positive, got {r}")
         require_finite_real(alpha, "alpha", owner="LoRA", minimum=0.0, exclusive_min=True)
         if not (0.0 <= dropout < 1.0):
             raise ValueError(f"LoRA dropout must be in [0, 1), got {dropout}")
@@ -168,7 +168,7 @@ def apply_lora_to(
     every Linear. Every registration path is considered, including the
     non-first path through a shared container.
 
-    **Shared modules (FIX-014):** a Linear inside a container that is
+    **Shared modules:** a Linear inside a container that is
     registered under several names has one registration slot; it is
     wrapped once and every path sees the same wrapper. A Linear itself
     registered under more than one name (``m.a = m.b = linear``) cannot be
@@ -200,8 +200,11 @@ def apply_lora_to(
         match).
 
     Raises:
-        ValueError: if ``name_patterns`` is empty, or if a selected Linear
-            is registered under more than one name (nothing is modified).
+        ValueError: if ``name_patterns`` is empty, if a selected Linear
+            is registered under more than one name, or if its parent reads
+            its weight directly (``nn.MultiheadAttention.out_proj``, a torch
+            Transformer layer's ``linear1`` / ``linear2``); nothing is
+            modified.
 
     **Idempotency note:** if a layer is already a :class:`LoRALinear`,
     its inner ``.base`` is skipped — re-applying ``apply_lora_to``
@@ -281,10 +284,11 @@ def load_lora_weights(module: nn.Module, source: Union[str, Path, dict]) -> int:
     (derived from the destination, not from the source's key names), so
     a full checkpoint — or one carrying colliding ``*.base.*`` keys —
     can never overwrite a frozen base tensor. A wrong-shaped owned key
-    still raises the native size-mismatch error.
+    raises a size-mismatch ``RuntimeError`` before anything is copied.
     """
     sd = _resolve_source_to_state_dict(source, "load_lora_weights")
     sd = _lora_keys_only(module, sd)
+    _refuse_shape_mismatch(module, sd, "load_lora_weights")
     result = module.load_state_dict(sd, strict=False)
     # strict=False silently drops keys that don't exist on the module
     # (e.g. loading into an un-adapted model) — subtract them so the

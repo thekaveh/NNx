@@ -1,4 +1,4 @@
-"""Reproducible splits — plan, persist, replay (FEAT-017).
+"""Reproducible splits — plan, persist, replay.
 
 ``NNTabularDataset`` splits with a seeded ``random_split`` by default: rows
 of one patient can straddle train and test, and future rows can leak into
@@ -17,7 +17,7 @@ and replay:
      rows in reverse order: every id stays in its split, with no
      ``random_split`` and no global RNG draw.
   4. **One split identity.** The reloaded manifest has the same digest, so
-     ``ExperimentManifest(splits={...})`` (FEAT-019) records the same split.
+     ``ExperimentManifest(splits={...})`` records the same split.
 
 Fully offline, CPU only.
 

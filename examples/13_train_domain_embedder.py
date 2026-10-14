@@ -101,7 +101,9 @@ def main():
         ("she sang a song", "she sang a tune"),
         ("birds fly south", "birds migrate south"),
         ("snow falls in winter", "snow drifts in winter"),
-    ] * 4  # ×4 → 40 training pairs
+    ]
+    # Distinct pairs only: NT-Xent treats every other row of a batch as a
+    # negative, so a repeated pair would be its own negative.
     dataset = ContrastiveTextDataset(pairs)
     print(f"{len(dataset)} training pairs\n")
 
@@ -122,15 +124,16 @@ def main():
     train_contrastive(
         backbone,
         dataset,
-        n_epochs=5,
-        batch_size=8,
+        n_epochs=20,
+        batch_size=5,
         lr=5e-2,  # much higher than the SBERT default — backbone is from-scratch
         temperature=0.1,
         verbose=True,
     )
     post_sim = _mean_pair_cos()
     print(f"\nmean anchor-positive cosine: pre={pre_sim:.4f}, post={post_sim:.4f}")
-    print(f"delta: {post_sim - pre_sim:+.4f}  (training pulled the pairs together)\n")
+    verdict = "training pulled the pairs together" if post_sim > pre_sim else "no improvement on this run"
+    print(f"delta: {post_sim - pre_sim:+.4f}  ({verdict})\n")
 
     # ---- 3. Embed a corpus and export to FAISS.
     print("=" * 60)

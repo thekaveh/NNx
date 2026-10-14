@@ -104,3 +104,12 @@ def test_diffusion_mlp_rejects_odd_time_embed_dim():
 
     with pytest.raises(ValueError, match="time_embed_dim"):
         DiffusionMLP(input_dim=2, time_embed_dim=33)
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.bfloat16])
+def test_diffusion_mlp_runs_in_its_own_dtype(dtype):
+    """The time embedding is computed in float32 but runs in the input's
+    dtype, so a float64 / bf16 net's forward does not mix dtypes."""
+    net = DiffusionMLP(2).to(dtype)
+    out = net(torch.randn(4, 2, dtype=dtype), torch.tensor([0, 1, 2, 3]))
+    assert out.dtype == dtype and out.shape == (4, 2)

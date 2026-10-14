@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html import unescape as html_unescape
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
@@ -710,28 +710,67 @@ def parse_reference_definition(line: str) -> ReferenceDefinition | None:
     )
 
 
-def iter_reference_definitions(text: str):
-    """Yield single- and continuation-line reference definitions."""
+def block_reference_definitions(blocks, texts: list[str] | None = None) -> dict[int, list[ReferenceDefinition]]:
+    """Each unsuppressed block's reference definitions, offsets in its own
+    text (or in ``texts[i]``, the block after an HTML rewrite). A definition
+    only starts a line (CommonMark), so the rest of a line after an inline
+    code span holds none; an open list item carries across blocks."""
+    found: dict[int, list[ReferenceDefinition]] = {}
+    list_indent = 0
+    partial: str | None = None  # the start of a line split by an inline span
+    for index, block in enumerate(blocks):
+        text = block.text if texts is None else texts[index]
+        head, newline, lines = ("", "", text) if partial is None else text.partition("\n")
+        if partial is not None:
+            if not newline:  # the line goes on past this block
+                partial += text
+                if not block.suppressed:
+                    found[index] = []
+                continue
+            list_indent = _list_indent_after(partial + head, list_indent)  # the split line, read whole
+        if not block.suppressed:
+            shift = len(head) + len(newline)
+            found[index] = [
+                replace(definition, start=definition.start + shift, end=definition.end + shift)
+                for definition in iter_reference_definitions(lines, list_indent)
+            ]
+        complete, _, rest = lines.rpartition("\n")
+        list_indent = _list_indent_after(complete, list_indent)
+        partial = rest or None
+    return found
+
+
+def _list_step(body: str, active_list_indent: int) -> tuple[int, str]:
+    """One line's effect on the open list item's content indent, and the
+    line's body relative to that item."""
+    list_item = LIST_ITEM_RE.match(body)
+    if list_item is not None:
+        return _prefix_columns(list_item.group("prefix")), list_item.group("content")
+    if active_list_indent and _indent_columns(body) >= active_list_indent:
+        return active_list_indent, _strip_indent_columns(body, active_list_indent)
+    return (0 if body.strip() else active_list_indent), body
+
+
+def _list_indent_after(text: str, active_list_indent: int) -> int:
+    """The open list item's content indent after the lines of ``text``."""
+    for line in text.splitlines():
+        active_list_indent, _ = _list_step(_blockquote_parts(line)[1], active_list_indent)
+    return active_list_indent
+
+
+def iter_reference_definitions(text: str, list_indent: int = 0):
+    """Yield single- and continuation-line reference definitions.
+    ``list_indent`` is the content indent of a list item still open where
+    ``text`` starts (a chunk after an inline code span)."""
     lines = text.splitlines(keepends=True)
     offset = 0
     index = 0
-    active_list_indent = 0
+    active_list_indent = list_indent
     while index < len(lines):
         line = lines[index]
         content = line.rstrip("\r\n")
         quote_prefix, body = _blockquote_parts(content)
-        list_item = LIST_ITEM_RE.match(body)
-        if list_item is not None:
-            active_list_indent = _prefix_columns(list_item.group("prefix"))
-            parse_body = list_item.group("content")
-        else:
-            leading = _indent_columns(body)
-            if active_list_indent and leading >= active_list_indent:
-                parse_body = _strip_indent_columns(body, active_list_indent)
-            else:
-                if body.strip():
-                    active_list_indent = 0
-                parse_body = body
+        active_list_indent, parse_body = _list_step(body, active_list_indent)
         definition = parse_reference_definition(quote_prefix + parse_body)
         if definition is None:
             offset += len(line)
@@ -890,54 +929,6 @@ def _resolve_repo_target(source: Path, destination: str) -> Path | None:
     return (source.parent / path).resolve()
 
 
-def _rewrite_outside_code_spans(line: str, transform) -> str:
-    spans: list[tuple[int, int]] = []
-    cursor = 0
-    while cursor < len(line):
-        opening = line.find("`", cursor)
-        if opening < 0:
-            break
-        run_end = opening
-        while run_end < len(line) and line[run_end] == "`":
-            run_end += 1
-        width = run_end - opening
-        search = run_end
-        closing_end = -1
-        while search < len(line):
-            closing = line.find("`", search)
-            if closing < 0:
-                break
-            candidate_end = closing
-            while candidate_end < len(line) and line[candidate_end] == "`":
-                candidate_end += 1
-            if candidate_end - closing == width:
-                closing_end = candidate_end
-                break
-            search = candidate_end
-        if closing_end < 0:
-            cursor = run_end
-            continue
-        spans.append((opening, closing_end))
-        cursor = closing_end
-
-    link_spans = [(link.start, link.end) for link in iter_inline_links(line)]
-    link_spans.extend((usage.start, usage.end) for usage in iter_reference_usages(line))
-    spans = [
-        (start, end)
-        for start, end in spans
-        if not any(link_start <= start and end <= link_end for link_start, link_end in link_spans)
-    ]
-    if not spans:
-        return transform(line)
-    chunks: list[str] = []
-    cursor = 0
-    for start, end in spans:
-        chunks.extend((transform(line[cursor:start]), line[start:end]))
-        cursor = end
-    chunks.append(transform(line[cursor:]))
-    return "".join(chunks)
-
-
 def _line_ending(line: str) -> str:
     if line.endswith("\r\n"):
         return "\r\n"
@@ -1040,10 +1031,10 @@ def _project_wiki_heading_ids(text: str) -> str:
     return "".join(projected)
 
 
-def _rewrite_reference_definitions(text: str, rewrite_target) -> str:
+def _rewrite_reference_definitions(text: str, rewrite_target, definitions=None) -> str:
     chunks: list[str] = []
     cursor = 0
-    for definition in iter_reference_definitions(text):
+    for definition in iter_reference_definitions(text) if definitions is None else definitions:
         chunks.append(text[cursor : definition.start])
         original = text[definition.start : definition.end]
         rewritten = rewrite_target(definition.target, is_image=False) if definition.target else None
@@ -1141,12 +1132,14 @@ def rewrite_markdown(
 
     rendered: list[str] = []
     projected_text = _project_wiki_heading_ids(text) if surface == "wiki" else text
-    for block in markdown_blocks(projected_text):
-        chunk = rewrite_html(block.text) if block.html_processable else block.text
+    blocks = markdown_blocks(projected_text)
+    chunks = [rewrite_html(block.text) if block.html_processable else block.text for block in blocks]
+    definitions = block_reference_definitions(blocks, chunks)
+    for index, (block, chunk) in enumerate(zip(blocks, chunks, strict=True)):
         if block.suppressed:
             rendered.append(chunk)
             continue
-        chunk = _rewrite_reference_definitions(chunk, rewrite_target)
+        chunk = _rewrite_reference_definitions(chunk, rewrite_target, definitions[index])
         rendered.append(replace_inline_links(ATTR_RE.sub("", chunk), replace))
     return "".join(rendered).rstrip() + "\n"
 

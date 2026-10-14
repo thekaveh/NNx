@@ -164,6 +164,24 @@ def test_selective_risk_applies_a_policy_as_given():
     assert none.value is None and none.reason == "no accepted rows" and none.denominator == 0
 
 
+def test_selective_coverage_notes_the_boolean_rows_it_does_not_count():
+    """A Choice / Score policy applies to no Boolean row: those rows leave the
+    coverage denominator, and the value's note says so."""
+    samples, records = fixture()
+    spam = Boolean("Spam?")
+    samples += [Sample("b0", spam, "text b", True), Sample("b1", spam, "text c", False)]
+    records += [
+        Record(sample_id="b0", question_digest=spam.digest(), provider="stub", status="answered", p_true=0.9),
+        Record(sample_id="b1", question_digest=spam.digest(), provider="stub", status="answered", p_true=0.2),
+    ]
+    policy = AbstentionPolicy("max_probability", 0.75, labels=("a", "b"), model_id="stub-v1", tuning_split_id="val")
+    coverage = metric(
+        evaluate(samples, records, split="test-v1", policy=policy, model_id="stub-v1"), "selective_coverage"
+    )
+    assert (coverage.value, coverage.denominator) == (0.5, 4)
+    assert coverage.reason is None and coverage.note == "2 Boolean row(s) are not counted"
+
+
 # --- AC3: resources -----------------------------------------------------------------------------------------
 
 
@@ -376,6 +394,7 @@ def test_bootstrap_groups():
     tied[3] = Record("s3", AB.digest(), "stub", "answered", distribution=(("a", 0.3), ("b", 0.7)))
     constant = bootstrap_interval(same, tied, metric="accuracy", seed=0, resamples=50)
     assert constant.degenerate and constant.low == constant.high == 1.0
+    assert constant.reason == "every resample gave the same value"
 
 
 # --- AC7: exports and comparison -----------------------------------------------------------------------------
@@ -478,7 +497,7 @@ def test_intervals_flag_non_finite_bounds_and_select_one_provider():
     zero = list(records)
     zero[1] = Record("s1", AB.digest(), "stub", "answered", distribution=(("a", 1.0), ("b", 0.0)))
     interval = bootstrap_interval(samples, zero, metric="nll", seed=0, resamples=200)
-    assert interval.degenerate and interval.reason == "a resample gave a non-finite value" and interval.high == math.inf
+    assert interval.degenerate and interval.reason == "an interval bound is non-finite" and interval.high == math.inf
     other = [Record(r.sample_id, r.question_digest, "other", r.status, distribution=r.distribution) for r in records]
     with pytest.raises(BenchmarkError, match="several providers"):
         bootstrap_interval(samples, records + other, metric="accuracy", seed=0)
@@ -910,3 +929,81 @@ def test_round_four_edges(tmp_path):
         read_records(lines)
     infinite = [Record("s0", AB.digest(), "stub", "answered", distribution=(("a", 0.0), ("b", 1.0))), *records[1:]]
     assert "nll: Infinity" in evaluate(samples, infinite, split="x").text()
+
+
+def test_an_available_value_carries_a_note_not_an_unavailable_reason():
+    """``reason`` is only for an unavailable value; a note on an available
+    one (rows the policy does not fit, say) is exported on its own."""
+    from nnx.decisions.benchmark import MetricValue
+
+    noted = MetricValue("selective_coverage", 1.0, 1, note="1 eligible row(s) the policy does not fit are not counted")
+    assert noted.state()["reason"] is None and noted.state()["note"].startswith("1 eligible")
+    assert "note" not in MetricValue("selective_coverage", 1.0, 1).state()  # earlier reports keep their shape
+
+
+def test_an_empty_heldout_slice_reports_no_eligible_rows_for_selective_metrics():
+    """Not "the policy fits no eligible row": there are simply no rows."""
+    samples, records = fixture()
+    policy = AbstentionPolicy("max_probability", 0.75, labels=("a", "b"), model_id="stub-v1", tuning_split_id="val")
+    report = evaluate(samples, records, split="test-v1", policy=policy, model_id="stub-v1")
+    for name in ("selective_coverage", "selective_risk"):
+        assert metric(report, name, "heldout").reason == "no eligible rows"
+        assert metric(report, name, "heldout").denominator == 0
+
+
+def test_coinciding_bounds_over_varying_resamples_are_named_as_such():
+    # 40 units, one wrong: the 2.5% and 97.5% bounds can meet while resamples still vary.
+    samples = [Sample(f"u{i}", AB, f"text {i}", "a") for i in range(40)]
+    records = [
+        Record(
+            f"u{i}",
+            AB.digest(),
+            "stub",
+            "answered",
+            distribution=(("a", 0.1), ("b", 0.9)) if i == 0 else (("a", 0.9), ("b", 0.1)),
+        )
+        for i in range(40)
+    ]
+    interval = bootstrap_interval(samples, records, metric="accuracy", seed=0, resamples=200, level=0.05)
+    assert interval.low == interval.high == 0.975  # this seed's draw
+    assert interval.degenerate and interval.reason == "the interval bounds coincide"
+
+
+def test_coverage_reasons_count_one_fault_across_samples():
+    samples, records = fixture()
+    wrong = [
+        Record(r.sample_id, r.question_digest, r.provider, r.status, distribution=tuple(reversed(r.distribution)))
+        for r in records
+    ]
+    report = evaluate(samples, wrong, split="test-v1")
+    reasons = dict(report.slices["in_family"].coverage.reasons)
+    assert len(reasons) == 1 and next(iter(reasons.values())) == len(samples)
+
+
+@pytest.mark.parametrize("fault", ["no_distribution", "wrong_question"])
+def test_a_collected_fault_counts_once_across_samples(fault):
+    from types import SimpleNamespace
+
+    other = Choice("Other?", (("x", "x"), ("y", "y")))
+
+    class Faulty(KeywordProvider):
+        def decide(self, question, texts):
+            if fault == "no_distribution":
+                return [SimpleNamespace(question_digest=question.digest(), distribution=None) for _ in texts]
+            return [validate_response(other, {"x": 0.5, "y": 0.5}) for _ in texts]
+
+    samples = [Sample(f"g{i}", TOPIC, f"goal {i}", "sport") for i in range(4)]
+    collection = collect(Faulty(), samples, provider_id="f", budget=Budget(max_calls=1))
+    assert len({record.reason for record in collection.records}) == 1  # no sample id in the reason
+
+
+def test_a_boolean_record_without_p_true_counts_once_across_samples():
+    question = Boolean("Is it a goal?")
+    samples = [Sample(f"b{i}", question, f"text {i}", True) for i in range(3)]
+    records = [
+        Record(f"b{i}", question.digest(), "stub", "answered", distribution=(("true", 0.5), ("false", 0.5)))
+        for i in range(3)
+    ]
+    report = evaluate(samples, records, split="test-v1")
+    reasons = dict(next(iter(report.slices.values())).coverage.reasons)
+    assert list(reasons.values()) == [3] and "p_true" in next(iter(reasons))

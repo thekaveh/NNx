@@ -1,4 +1,4 @@
-"""Fitted temperature calibration from supplied arrays, offline (FEAT-007).
+"""Fitted temperature calibration from supplied arrays, offline.
 
 A classifier's softmax confidence is often too high or too low. Temperature
 scaling fits one scalar ``T`` on a separate calibration split and serves

@@ -62,7 +62,11 @@ def _validate_modelfile_inputs(system: str, template: Optional[str], parameters:
             if type(value) is not int:
                 raise TypeError(f"parameter {key!r} requires an integer, got {type(value).__name__}")
         elif key in _FLOAT_PARAMETERS:
-            if type(value) not in (int, float) or not math.isfinite(value):
+            try:
+                finite = type(value) in (int, float) and math.isfinite(value)
+            except OverflowError:  # an int too large for a float
+                finite = False
+            if not finite:
                 raise TypeError(f"parameter {key!r} requires a finite number, got {value!r}")
         else:
             values = value if isinstance(value, (list, tuple)) else [value]

@@ -1,4 +1,4 @@
-"""Budgeted experiment search with Optuna, offline (FEAT-033).
+"""Budgeted experiment search with Optuna, offline.
 
 A three-trial study over the learning rate of a small classifier:
 
@@ -17,7 +17,8 @@ A three-trial study over the learning rate of a small classifier:
 
 Requires the ``optuna`` extra (``pip install "thekaveh-nnx[optuna]"``).
 Optuna's study lives in ``<output>/study.db`` (SQLite); NNx's runs in
-``<output>/runs/``.
+``<output>/runs/``. Without ``--output`` both go to a temporary directory,
+removed on exit; pass ``--output`` to keep them.
 
 Run:
     python examples/search_offline.py [--output search-out]
@@ -125,7 +126,11 @@ def search_workflow(output: str = ".") -> dict:
                 }
                 for o in first.outcomes
             ],
-            "best": {"lr": best.params["lr"], "run": best.run_id, "checkpoint": os.path.relpath(best.checkpoint)},
+            "best": {
+                "lr": best.params["lr"],
+                "run": best.run_id,
+                "checkpoint": os.path.join(output, os.path.relpath(best.checkpoint)),
+            },
             "reopened_asked": again.asked,
             "optuna_storage": os.path.join(output, "study.db"),
             "nnx_runs": os.path.join(output, "runs"),

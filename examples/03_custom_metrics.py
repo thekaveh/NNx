@@ -13,7 +13,7 @@ truth — so the example can check the argument order against the validation
 labels it knows: swapping the arguments would report the predicted class-0
 rate instead.
 
-Named metrics and monitors (FEAT-003) are the declarative counterpart:
+Named metrics and monitors are the declarative counterpart:
 ``NNTrainParams(metrics=[MetricSpec("nll"), ...], monitor=MonitorSpec(...))``
 computes registered metrics over the *full* sample of each epoch — labels,
 probabilities or continuous outputs, as each metric declares — and one

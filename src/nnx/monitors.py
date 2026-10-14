@@ -1,4 +1,4 @@
-"""Named metric and monitor contracts (FEAT-003).
+"""Named metric and monitor contracts.
 
 Two declarations make metric-driven decisions explicit and shared.
 
@@ -46,7 +46,6 @@ from __future__ import annotations
 import json
 import math
 import numbers
-import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Protocol, cast
@@ -101,7 +100,7 @@ class MetricAccumulator(Protocol):
     returns the metric over everything seen, or ``None`` if nothing was,
     without changing the accumulation.
 
-    Optional, for bounded streaming (FEAT-020, ``nnx.streaming``):
+    Optional, for bounded streaming (``nnx.streaming``):
     ``merge(other)`` adds another accumulator's state in place, keeping
     nothing of ``other`` that a later update could change, and returns
     ``None``; ``stores_scores = True`` marks an accumulator that keeps every
@@ -192,6 +191,10 @@ class MetricSpec:
             and string-keyed mappings).
         name: the key the value is reported under (default: ``id``); a slug,
             unique among a run's metrics, and never ``"loss"`` / ``"error"``.
+            A name equal to a task's own metric (``mse``, ``subset_accuracy``)
+            replaces that value in the record's ``metrics``; loggers report
+            one equal to a record field (``accuracy``, ``f1``) as
+            ``metrics/<name>``.
 
     The spec never holds code, so it round-trips through ``run.yaml`` and
     reloads without the metric being registered. It is resolved against
@@ -594,7 +597,7 @@ class MonitorTracker:
     epoch's :class:`MonitorRecord` and remembers the best value.
 
     The run's tracker is also an optional checkpointable component
-    (``nnx.monitor``, FEAT-005): a stateful warm resume continues from the
+    (``nnx.monitor``): a stateful warm resume continues from the
     source run's best, so BEST keeps agreeing with a restored
     ``EarlyStopping`` and plateau scheduler after the split — the resumed
     run writes BEST only on an epoch that beats it, and none when no
@@ -619,11 +622,11 @@ class MonitorTracker:
                 # so a monitor that is never fed would silently never
                 # select BEST.
                 self._warn_missing = False
-                warnings.warn(
+                from .nn.callbacks import _warn_at_user_frame
+
+                _warn_at_user_frame(
                     f"epoch {epoch}: monitor {spec.key!r} has no value, so this epoch makes no BEST / plateau "
                     "decision; a custom step or evaluator must report the metric in its record's metrics",
-                    RuntimeWarning,
-                    stacklevel=3,
                 )
             return MonitorRecord(spec, None, "missing", False)
         current = float(value)
@@ -852,8 +855,10 @@ class _TrainEpochSummary:
         self._error = _WeightedMean()
         self._pending: Optional[tuple[Optional[float], Optional[float]]] = None
         self._records = 0
-        # Objective runs: {term name: [reduction, weight, Σ numerator, Σ denominator]}.
-        self._terms: dict[str, list[Any]] = {}
+        # Objective runs: {(name, reduction): [reduction, Σ weight·numerator, Σ denominator]}.
+        self._terms: dict[tuple[str, str], list[Any]] = {}
+        self._staged: list[tuple[Any, ...]] = []  # the open window's terms
+        self._dropped_windows = 0
         self._pending_terms = False
 
     def observe(
@@ -871,24 +876,41 @@ class _TrainEpochSummary:
         self._metrics.update(target, output, valid)
         self._pending = (loss_weight, error_weight)
 
+    def stage_terms(self, terms: Sequence[Any]) -> None:
+        """Hold one objective microbatch's terms until its window closes."""
+        self._staged.append(tuple(terms))
+        self._pending_terms = True
+
+    def close_window(self, *, dropped: bool) -> None:
+        """Observe the window's staged terms, or discard them when the
+        engine dropped the window (a non-finite term under ``"skip"``)."""
+        staged, self._staged = self._staged, []
+        if dropped:
+            self._dropped_windows += 1
+            return
+        for terms in staged:
+            self.observe_terms(terms)
+
     def observe_terms(self, terms: Sequence[Any]) -> None:
-        """Called for each objective microbatch with its ``LossTerm``\\ s:
-        normalized terms add their numerators and denominators, summed terms
-        their totals."""
+        """Called for each objective microbatch with its ``LossTerm``s:
+        each term pools its *weighted* numerators (each microbatch's own
+        weight, so a weight annealed across windows counts as it was
+        applied) over its summed denominators; a summed term adds its
+        weighted totals. A term is keyed by its name and reduction."""
         for term in terms:
-            entry = self._terms.setdefault(term.name, [term.reduction, term.weight, 0.0, 0.0])
-            entry[2] += term._numerator_value
+            entry = self._terms.setdefault((term.name, term.reduction), [term.reduction, 0.0, 0.0])
+            entry[1] += float(term.weight) * term._numerator_value
             if term.reduction == "mean":
-                entry[3] += float(term.denominator)
+                entry[2] += float(term.denominator)
         self._pending_terms = True
 
     def _terms_loss(self) -> Optional[float]:
         present = [
-            (weight, numerator if reduction == "sum" else numerator / denominator)
-            for reduction, weight, numerator, denominator in self._terms.values()
+            weighted if reduction == "sum" else weighted / denominator
+            for reduction, weighted, denominator in self._terms.values()
             if reduction == "sum" or denominator
         ]
-        return sum(weight * value for weight, value in present) if present else None
+        return sum(present) if present else None
 
     def add(self, edp: NNEvaluationDataPoint, batch_size: int) -> None:
         fallback = float(edp.count if edp.count is not None else batch_size)
@@ -915,5 +937,12 @@ class _TrainEpochSummary:
             return None
         from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
-        loss = self._terms_loss() if self._terms else self._loss.result()
+        if self._terms:
+            loss = self._terms_loss()
+        elif self._dropped_windows:
+            # Every window was dropped as non-finite: the epoch's loss is
+            # non-finite (a monitor sees "nonfinite", not "missing").
+            loss = math.nan
+        else:
+            loss = self._loss.result()
         return NNEvaluationDataPoint(loss=loss, error=self._error.result(), metrics=self._metrics.results())

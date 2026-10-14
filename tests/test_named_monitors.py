@@ -409,7 +409,7 @@ def test_early_stopping_named_monitor_state_round_trips():
     other = EarlyStopping(monitor=MonitorSpec(metric="nll", min_delta=0.02), patience=3)
     other._bind_metrics((MetricSpec("nll"),))
     assert other.check_component_state(state, version=1)
-    assert fresh.selected_monitor is None or fresh.selected_monitor == "val.nll"
+    assert fresh.selected_monitor == "val.nll"  # an explicit monitor is selected from construction
 
 
 def _trainer_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
@@ -672,9 +672,179 @@ def test_a_validation_monitor_a_custom_evaluator_never_feeds_warns_once(tmp_path
             eval_step_fn=lambda ctx: NNEvaluationDataPoint(loss=1.0),
         )
     assert sum("monitor 'val.nll' has no value" in str(w.message) for w in caught) == 1
+    # attributed to this train() call, so a second run in a notebook warns again
+    assert [w.filename for w in caught if "has no value" in str(w.message)] == [__file__]
 
 
 def test_a_reused_early_stopping_resolves_each_run_from_its_declared_spec():
     stopper = EarlyStopping(monitor=MonitorSpec(metric="score"))
     assert stopper._bind_metrics((MetricSpec("mae", name="score"),)).mode == "min"
     assert stopper._bind_metrics((MetricSpec("accuracy", name="score"),)).mode == "max"
+
+
+def test_a_trainer_binds_a_writer_only_callbacks_monitor(tmp_path, monkeypatch):
+    """Without DDP, writer_only() callbacks are built before the monitor
+    preflight, so a built EarlyStopping is bound to the declared metrics as
+    under NNModel.train (it used to fail with "has no direction")."""
+    from nnx.distributed import writer_only
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X, Y = _data()
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(2)
+        .train_loader(_batches(X, Y, [5]))
+        .val_loader(_batches(X, Y, [5]))
+        .optimizer("main", NNOptimParams.builder().sgd(max_lr=0.05).build())
+        .metrics(MetricSpec("nll"))
+        .build()
+    )
+    early = writer_only(lambda: EarlyStopping(monitor=MonitorSpec(metric="nll"), patience=5))
+    run = Trainer(_model()).train(params=params, trainer_step_fn=_trainer_step, callbacks=[early])
+    assert len(run.idps) == 2
+
+
+def test_an_epoch_summary_keeps_each_windows_term_weight():
+    """A weight annealed across windows: the epoch loss pools each window's
+    weighted numerator over the summed denominators (never the first
+    window's weight for every window, nor a sum of per-window losses)."""
+    from types import SimpleNamespace
+
+    from nnx.monitors import _TrainEpochSummary
+
+    summary = _TrainEpochSummary((), None, None)
+
+    def term(numerator, denominator, weight, reduction="mean"):
+        return SimpleNamespace(
+            name="kl", reduction=reduction, weight=weight, _numerator_value=numerator, denominator=denominator
+        )
+
+    summary.observe_terms([term(10.0, 5, 0.0)])
+    summary.observe_terms([term(2.0, 5, 1.0)])
+    assert summary._terms_loss() == pytest.approx(0.2)  # (0*10 + 1*2) / (5 + 5)
+    annealed = _TrainEpochSummary((), None, None)
+    for weight in (1.0, 0.5, 0.25, 0.125):
+        annealed.observe_terms([term(8.0, 4, weight)])
+    # Pooled: (8 + 4 + 2 + 1) / 16, never the sum of the windows' losses.
+    assert annealed._terms_loss() == pytest.approx(0.9375)
+    constant = _TrainEpochSummary((), None, None)
+    for _ in range(4):
+        constant.observe_terms([term(8.0, 4, 1.0)])
+    assert constant._terms_loss() == pytest.approx(2.0)
+
+
+def test_an_unfed_monitor_warns_again_on_a_second_run_in_the_same_session(tmp_path, monkeypatch):
+    import warnings
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X, Y = _data()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("default")  # Python's own: once per (message, location)
+        for seed in (0, 1):
+            _model().train(
+                params=NNTrainParams(
+                    n_epochs=1,
+                    train_loader=_batches(X, Y, [5]),
+                    val_loader=_batches(X, Y, [5]),
+                    metrics=[MetricSpec("nll")],
+                    monitor=MonitorSpec(metric="nll"),
+                    seed=seed,
+                ),
+                eval_step_fn=lambda ctx: NNEvaluationDataPoint(loss=1.0),
+            )
+    hits = [w for w in caught if "monitor 'val.nll' has no value" in str(w.message)]
+    assert [w.filename for w in hits] == [__file__, __file__]
+
+
+@pytest.mark.parametrize("mode", ["stateful", "weights_only"])
+def test_a_trainer_failure_right_after_the_resume_restore_hands_the_model_back(tmp_path, monkeypatch, mode):
+    import nnx.trainer.trainer as trainer_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X, Y = _data()
+    loader = _batches(X, Y, [5])
+    source = Trainer(_model()).train(params=_trainer_params(loader), trainer_step_fn=_trainer_step)
+    model = _model(seed=3)
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    torch.manual_seed(5)
+    rng_before = torch.get_rng_state()
+    real = trainer_module.ResumeStatus
+
+    def refuse(**fields):  # stands in for a warnings-as-errors filter after the restore
+        if fields.get("mode") == mode:
+            raise RuntimeError("after the restore")
+        return real(**fields)
+
+    monkeypatch.setattr(trainer_module, "ResumeStatus", refuse)
+    with pytest.raises(RuntimeError, match="after the restore"):
+        Trainer(model).train(params=_trainer_params(loader, run_id=source.id, mode=mode), trainer_step_fn=_trainer_step)
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+    assert torch.equal(torch.get_rng_state(), rng_before)
+
+
+@pytest.mark.parametrize("fault", ["set_epoch", "unowned_warning", "worker_rng_warning"])
+def test_a_trainer_resume_failing_before_the_first_batch_hands_the_model_back(tmp_path, monkeypatch, fault):
+    import warnings
+
+    import nnx.trainer.trainer as trainer_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X, Y = _data()
+    source = Trainer(_model()).train(params=_trainer_params(_batches(X, Y, [5])), trainer_step_fn=_trainer_step)
+
+    class Breaking(list):
+        def set_epoch(self, epoch: int) -> None:
+            raise RuntimeError("set_epoch failed")
+
+    loader = Breaking(_batches(X, Y, [5])) if fault == "set_epoch" else _batches(X, Y, [5])
+    if fault == "unowned_warning":
+
+        def warn(*_args, **_kwargs):
+            warnings.warn("parameters ['x'] are trainable but no optimizer owns them", RuntimeWarning, stacklevel=2)
+
+        monkeypatch.setattr(trainer_module, "warn_unowned_trainables", warn)
+    if fault == "worker_rng_warning":
+        monkeypatch.setattr(trainer_module, "_loader_num_workers", lambda _loader: 1)
+    model = _model(seed=3)
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    torch.manual_seed(5)
+    rng_before = torch.get_rng_state()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises((RuntimeError, RuntimeWarning, UserWarning)):
+            Trainer(model).train(
+                params=_trainer_params(loader, run_id=source.id, mode="stateful"), trainer_step_fn=_trainer_step
+            )
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+    assert torch.equal(torch.get_rng_state(), rng_before)
+
+
+def test_a_trainer_weights_only_resume_starts_from_the_checkpoint_weights(tmp_path, monkeypatch):
+    from nnx import Callback, Checkpoints, NNCheckpoint
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X, Y = _data()
+    loader = _batches(X, Y, [5])
+    source = Trainer(_model()).train(params=_trainer_params(loader), trainer_step_fn=_trainer_step)
+    saved = NNCheckpoint.load(run=source.id, type=Checkpoints.LAST)
+    assert saved is not None
+    seen = {}
+
+    class Snapshot(Callback):
+        def on_train_begin(self, ctx) -> None:
+            seen.update({k: v.clone() for k, v in ctx.model.net.state_dict().items()})
+
+    Trainer(_model(seed=3)).train(
+        params=_trainer_params(loader, run_id=source.id, mode="weights_only"),
+        trainer_step_fn=_trainer_step,
+        callbacks=[Snapshot()],
+    )
+    for key, value in saved.net_state.items():
+        assert torch.equal(seen[key], value), key

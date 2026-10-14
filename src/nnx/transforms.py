@@ -1,4 +1,4 @@
-"""Replayable model transformation recipes (FEAT-016).
+"""Replayable model transformation recipes.
 
 A :class:`TransformRecipe` is an ordered, immutable list of topology
 operations on explicit ``nn.Linear`` targets of ``model.net``:
@@ -45,6 +45,7 @@ untransformed model, as before).
 from __future__ import annotations
 
 import math
+import numbers
 import weakref
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -158,11 +159,19 @@ class TransformOp:
             raise TypeError(f"targets must be a sequence of module paths, got the string {self.targets!r}")
         object.__setattr__(self, "targets", tuple(self.targets))
         config = dict(self.config)
+        # A NumPy integer count (a grid over np.arange) is the plain int.
+        for key in ("r", "rank"):
+            value = config.get(key)
+            if isinstance(value, numbers.Integral) and not isinstance(value, bool):
+                config[key] = int(value)
         if self.id == LORA:
-            # alpha=4 and alpha=4.0 are one recipe, with one run id.
+            # alpha=4 and alpha=4.0 are one recipe, with one run id; a NumPy
+            # real (a grid value) is the plain float.
             for key in ("alpha", "dropout"):
-                if type(config.get(key)) is int and _finite(config[key]):
-                    config[key] = float(config[key])
+                value = config.get(key)
+                if isinstance(value, numbers.Real) and not isinstance(value, bool) and type(value) is not float:
+                    if _finite(value):  # a huge int stays as given, for the validator to refuse
+                        config[key] = float(value)
         object.__setattr__(self, "config", _FrozenConfig(config))
 
     def state(self) -> dict[str, Any]:
@@ -467,6 +476,17 @@ def _registration_paths(net: nn.Module) -> dict[int, list[str]]:
     return paths
 
 
+def _weight_reading_parents(net: nn.Module) -> dict[str, str]:
+    """Paths whose parent reads the child's weight directly, with that parent's type."""
+    from .peft._targets import WEIGHT_READING_PARENTS, _registrations
+
+    return {
+        path: type(parent).__name__
+        for path, parent, _, _ in _registrations(net)
+        if isinstance(parent, WEIGHT_READING_PARENTS)
+    }
+
+
 def _validate(
     net: nn.Module,
     operations: Sequence[TransformOp],
@@ -484,6 +504,7 @@ def _validate(
     replay on."""
     problems = list(problems)
     paths = _registration_paths(net)
+    weight_readers = _weight_reading_parents(net)
     owners = [(op, path) for op in recorded for path in op.targets]
     for position, op in enumerate(operations):
         index = position if indexed else None
@@ -509,6 +530,10 @@ def _validate(
                 continue
             if type(module) is not nn.Linear:
                 problems.append((index, op.id, path, f"is a {type(module).__name__}; only nn.Linear is supported"))
+                continue
+            if path in weight_readers:  # as the apply_*_to helpers refuse it
+                reason = f"belongs to a {weight_readers[path]}, which reads its weight directly"
+                problems.append((index, op.id, path, reason))
                 continue
             aliases = paths.get(id(module), [])
             if len(aliases) > 1:

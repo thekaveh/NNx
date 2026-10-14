@@ -593,6 +593,11 @@ def test_review_callbacks_module_imports_without_ipython(monkeypatch):
         # remain authoritative.
         if original_callbacks_module is not None:
             sys.modules["nnx.nn.callbacks"] = original_callbacks_module
+            # The re-import also rebound the package attribute: restore it,
+            # or `from nnx.nn import callbacks` keeps the re-imported copy.
+            import nnx.nn
+
+            nnx.nn.callbacks = original_callbacks_module
 
 
 def test_n6_best_symlink_falls_back_to_pointer_file_when_symlink_fails(tmp_path, monkeypatch):

@@ -260,14 +260,14 @@ def test_resume_sample_text_save_failure(tmp_path, monkeypatch):
     source run loadable and resumable."""
     import runpy
     from dataclasses import replace
-    from pathlib import Path
 
     from nnx import NNRun, NNTrainParams, set_seed
+    from tests._repo_files import repo_file
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
     example = runpy.run_path(
-        str(Path(__file__).resolve().parents[1] / "examples" / "02_resume_training.py"),
+        str(repo_file("examples", "02_resume_training.py")),
         run_name="__nnx_fault_injection__",
     )  # import stays fault-free
     set_seed(0)

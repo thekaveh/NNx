@@ -1,5 +1,4 @@
-"""Multi-seed summaries and a paired comparison of two configurations
-(FEAT-032).
+"""Multi-seed summaries and a paired comparison of two configurations.
 
 One seed is one draw. ``nnx.comparison`` reports repeated runs as a
 population: count, mean and the sample standard deviation per
@@ -21,7 +20,8 @@ a declared meaning. This example:
      epoch (the failed attempt stays listed and counted, but has no value
      in the statistics), and the paired deltas ``wide - narrow`` per seed,
      never flipped for a metric to minimize. The bootstrap interval is
-     labelled what it is: seed variability over these three replicates.
+     labelled what it is: seed variability over the complete seed pairs
+     (two here; seed 2's failed attempt has no pair).
   5. **Saves and reloads** the report as strict JSON.
 
 Fully offline, CPU only.
@@ -100,7 +100,9 @@ def compare_seeds_workflow(base: Path | None = None) -> ComparisonReport:
     # 1. One fixed split, decided by sample id; its digest goes into every run's provenance.
     split = plan_split(ids, strategy="stratified", labels=labels, proportions=(0.6, 0.2, 0.2), seed=7)
     rows = split.resolve(ids)
-    manifest = ExperimentManifest(data={"train": hash_bytes(data.tensors[0].numpy().tobytes())}, splits={"main": split})
+    # The data digest names the whole pool (features and labels); the split says which rows train.
+    pool = data.tensors[0].numpy().tobytes() + data.tensors[1].numpy().tobytes()
+    manifest = ExperimentManifest(data={"pool": hash_bytes(pool)}, splits={"main": split})
     print(f"split {split.digest()[:20]}…: train={len(rows.train)} val={len(rows.validation)} test={len(rows.test)}")
 
     # 2. Three seeds over two configurations, each run fresh and in its own run root.

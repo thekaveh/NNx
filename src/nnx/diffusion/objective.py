@@ -1,4 +1,4 @@
-"""DDPM noise prediction as an objective (FEAT-040).
+"""DDPM noise prediction as an objective.
 
 :func:`diffusion_train_step_factory` is an imperative step: it draws the
 timesteps and noise from the global RNG, takes a mean ``F.mse_loss`` and
@@ -62,14 +62,14 @@ _TERM = "noise_mse"
 def _schedule_fingerprint(schedule: NoiseSchedule) -> str:
     """A stable identity for a schedule's betas (its other tensors derive
     from them)."""
-    betas = schedule.betas.detach().to("cpu", torch.float64).contiguous()
+    betas = schedule.betas.detach().cpu().to(torch.float64).contiguous()
     return hashlib.sha256(betas.numpy().tobytes()).hexdigest()
 
 
 class DiffusionObjective(Objective):
     """DDPM noise prediction as an objective — see the module docstring.
 
-    Callable as an objective and a checkpointable component (FEAT-005)
+    Callable as an objective and a checkpointable component
     named ``"diffusion.objective"``: its state is the objective spec (the
     schedule's length and fingerprint, the loss term) and the generator's
     state, so a stateful resume draws the timesteps and noise an
@@ -173,10 +173,14 @@ class DiffusionObjective(Objective):
             raise ValueError("diffusion_objective got an empty batch: there is no noise to predict")
         t, eps = self.draw(x_0)
         schedule = self._schedule_on(x_0.device)
-        sqrt_a = _extract(schedule.sqrt_alphas_cumprod, t, x_0.shape)
-        sqrt_1ma = _extract(schedule.sqrt_one_minus_alphas_cumprod, t, x_0.shape)
+        sqrt_a = _extract(schedule.sqrt_alphas_cumprod, t, x_0.shape, x_0.dtype)
+        sqrt_1ma = _extract(schedule.sqrt_one_minus_alphas_cumprod, t, x_0.shape, x_0.dtype)
         x_t = sqrt_a * x_0 + sqrt_1ma * eps
         eps_pred = model.net(x_t, t)
+        if eps_pred.shape != eps.shape:  # a broadcast would train on a wrong loss silently
+            raise ValueError(
+                f"the denoiser must predict noise of the input's shape {tuple(eps.shape)}, got {tuple(eps_pred.shape)}"
+            )
         error = full_precision(eps_pred) - full_precision(eps)
         term = LossTerm(_TERM, error.pow(2).sum(), error.numel(), "mean")
         value = term.value
@@ -227,5 +231,5 @@ def diffusion_objective(
 ) -> DiffusionObjective:
     """DDPM noise prediction as an objective (see :class:`DiffusionObjective`)
     — the objective counterpart of :func:`diffusion_train_step_factory`,
-    which stays available (and unchanged) as the imperative step."""
+    the imperative step."""
     return DiffusionObjective(schedule, seed=seed, noise_fn=noise_fn, nonfinite=nonfinite)
