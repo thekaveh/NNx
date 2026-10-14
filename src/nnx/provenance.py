@@ -515,13 +515,31 @@ def load_provenance(run_id: str, root: Optional[str] = None) -> Optional[Provena
         raise ValueError(f"run {run_id}: provenance JSON nested too deeply to read") from error
 
 
+_MAX_JSON_DEPTH = 512  # far deeper than any real config; the parser's own limit varies by Python version
+
+
+def _load_json(handle: Any) -> Any:
+    """Parse a provenance file, refusing nesting past ``_MAX_JSON_DEPTH``
+    on every Python version (3.14 parses 100,000 levels; older versions hit
+    the recursion limit). Measured without recursion."""
+    value = json.load(handle)
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, (dict, list)):
+            if depth > _MAX_JSON_DEPTH:
+                raise RecursionError("provenance JSON is nested too deeply")
+            stack.extend((child, depth + 1) for child in (item.values() if isinstance(item, dict) else item))
+    return value
+
+
 def _load_provenance(run_id: str, root: Optional[str]) -> Optional[ProvenanceRecord]:
     run_path = _run_dir(run_id, root)
     manifest_path = os.path.join(run_path, MANIFEST_FILE)
     if not os.path.isfile(manifest_path):
         return None
     with open(manifest_path, encoding="utf-8") as handle:
-        stored = json.load(handle)
+        stored = _load_json(handle)
     if not isinstance(stored, Mapping) or not isinstance(stored.get("manifest"), Mapping):
         raise ValueError(f"{manifest_path}: a provenance manifest must be a JSON object holding a manifest object")
     if stored.get("format") != FORMAT:
@@ -533,7 +551,7 @@ def _load_provenance(run_id: str, root: Optional[str]) -> Optional[ProvenanceRec
     attempt_path = os.path.join(run_path, ATTEMPT_FILE)
     if os.path.isfile(attempt_path):
         with open(attempt_path, encoding="utf-8") as handle:
-            attempt_state = json.load(handle)
+            attempt_state = _load_json(handle)
         if not isinstance(attempt_state, Mapping):
             raise ValueError(f"{attempt_path}: an attempt record must be a JSON object")
         attempt = Attempt.from_state(attempt_state)
