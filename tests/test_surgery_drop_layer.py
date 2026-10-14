@@ -144,3 +144,17 @@ def test_drop_layer_propagates_keyerror_inside_candidate_list():
     net = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
     with pytest.raises(KeyError, match="no module named 'bogus'"):
         drop_layer(net, layer_name=["0", "bogus"], importance=lambda m: 0.0)
+
+
+def test_a_non_finite_importance_score_is_refused():
+    import math
+
+    import pytest
+    from torch import nn
+
+    from nnx.surgery import drop_layer
+
+    model = nn.Sequential(nn.Linear(2, 2), nn.Linear(2, 2), nn.Linear(2, 2))
+    scores = {"0": 2.0, "1": math.nan, "2": 1.0}
+    with pytest.raises(ValueError, match=r"\['1'\]"):
+        drop_layer(model, layer_name=["0", "1", "2"], importance=lambda m: scores[str(list(model).index(m))])

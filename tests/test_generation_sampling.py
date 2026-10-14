@@ -114,3 +114,12 @@ def test_top_p_of_one_keeps_every_token_despite_cumsum_rounding():
     cumulative = torch.softmax(logits.sort(dim=-1, descending=True).values, dim=-1).cumsum(dim=-1)
     assert bool((cumulative[:, :-2] > 1.0).any())  # the rounding the fix guards against happens here
     assert torch.equal(TopPFilter(1.0)(logits, []), logits)
+
+
+def test_top_p_below_one_still_filters_a_peaked_distribution():
+    import torch
+
+    from nnx.generation import TopPFilter
+
+    logits = torch.tensor([[5.0, 1.0, 0.0, -1.0]])
+    assert torch.isinf(TopPFilter(0.95)(logits, [])).any()

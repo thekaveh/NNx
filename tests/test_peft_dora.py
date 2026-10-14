@@ -414,3 +414,31 @@ def test_a_wrapper_that_fails_to_build_leaves_every_slot_and_flag_unchanged():
         wrap_selected_linears(model, ("*",), skip_inside=LoRALinear, helper="test", wrap=wrap)
     assert type(model[0]) is nn.Linear and type(model[2]) is nn.Linear
     assert all(p.requires_grad for p in model.parameters())
+
+
+def test_dora_wraps_a_subclass_without_its_own_forward_and_keeps_frozen_flags_on_refusal():
+    import pytest
+    import torch
+    from torch import nn
+
+    from nnx.peft import apply_dora_to
+
+    class Tagged(nn.Linear):  # no forward of its own
+        pass
+
+    model = nn.Sequential(Tagged(3, 4), nn.ReLU(), nn.MultiheadAttention(4, 1).out_proj)
+    x = torch.randn(2, 3)
+    expected = model[0](x)
+    assert apply_dora_to(model, "*") == 2  # NonDynamicallyQuantizableLinear passes too
+    assert torch.allclose(model[0](x), expected, atol=1e-6)
+
+    class Scaled(nn.Linear):
+        def forward(self, x):
+            return super().forward(x) * 2
+
+    refused = nn.Sequential(nn.Linear(3, 4), nn.ReLU(), Scaled(4, 2))
+    refused[0].bias.requires_grad_(False)  # frozen by the caller before the call
+    flags = [p.requires_grad for p in refused.parameters()]
+    with pytest.raises(TypeError):
+        apply_dora_to(refused, "*")
+    assert [p.requires_grad for p in refused.parameters()] == flags

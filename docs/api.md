@@ -3082,7 +3082,8 @@ raise :class:`InvalidDecisionResponse` — a malformed distribution is
 never renormalized. For a :class:`Boolean`, ``response`` is ``p_true``
 or ``{"true": p, "false": 1 - p}``. ``raw`` (the provider's own output)
 and ``vendor_score`` (a :class:`Score` provider's own number) are kept
-apart from the normalized fields.
+apart from the normalized fields; a ``vendor_score`` for another kind
+of question raises :class:`InvalidDecisionResponse`.
 ```
 
 
@@ -9874,7 +9875,7 @@ A split, batch or setting that would leak or cannot be served.
 class nnx.nn.params.nn_params.NNParams(*, dropout_prob: 'float', n_heads: 'Optional[int]' = None, activation: 'Optional[Activations]' = leaky_relu, activations: 'Optional[list[Activations]]' = None, dropout_probs: 'Optional[list[float]]' = None, input_dim: 'int', output_dim: 'int', hidden_dims: 'Optional[list[int]]' = None) -> 'None'
 ```
 
-Architecture of a built-in feed-forward network: input and output sizes, hidden layer widths, activation and dropout (net-wide or per layer). Subclasses add the convolutional, MoE, ViT and transformer fields.
+Architecture of a built-in feed-forward or graph network: input and output sizes, hidden layer widths, activation and dropout (net-wide or per layer), and attention heads (``n_heads``, GRAPH_ATT only). Subclasses add the convolutional, MoE, ViT and transformer fields.
 
 ##### `nnx.nn.params.nn_params.NNParams.dims`
 
@@ -14403,7 +14404,7 @@ Raises:
     KeyError: if any candidate name is missing.
     ValueError: if ``layer_name`` is an empty list, or a list
         without ``importance``, or a single string with
-        ``importance``.
+        ``importance``, or a candidate scores NaN or infinite.
 ```
 
 
@@ -14827,6 +14828,10 @@ Args:
 
 Returns:
     A function suitable for ``NNModel.train(..., train_step_fn=...)``.
+
+Raises:
+    TypeError: if ``schedule`` is not a :class:`NoiseSchedule` (the
+        enum member itself, say, instead of ``NoiseSchedulers.COSINE()``).
 ```
 
 
@@ -16757,7 +16762,7 @@ LogitsChain — a typed, ordered chain of LogitsProcessors.
 **Details**
 
 ```text
-Plan 5 of the Builder-pattern rollout. The Builder is the opt-in alternative to
+The Builder is the opt-in alternative to
 `GenerativeNNModel.generate(temperature=..., top_k=..., top_p=...,
 repetition_penalty=...)`: it lets the user compose the chain
 declaratively and add custom processors (e.g., logit-bias for

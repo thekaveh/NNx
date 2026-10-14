@@ -300,3 +300,52 @@ def test_a_sidecar_warning_raised_as_an_error_hands_the_model_back(tmp_path, mon
             model.train(params=_params(2, resume_from_run_id=first.id, resume_from_checkpoint="last"))
     assert all(torch.equal(before[name], value) for name, value in model.net.state_dict().items())
     assert torch.equal(torch.get_rng_state(), rng_before)
+
+
+def test_an_unowned_warning_raised_as_an_error_on_the_first_resumed_epoch_hands_the_model_back(tmp_path, monkeypatch):
+    import warnings
+
+    import nnx.nn.nn_model as nn_model_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = _tiny_supervised().train(params=_params(1))
+
+    def warn(*_args, **_kwargs):
+        warnings.warn("parameters ['x'] are trainable but no optimizer owns them", RuntimeWarning, stacklevel=2)
+
+    monkeypatch.setattr(nn_model_module, "warn_unowned_trainables", warn)
+    model = _tiny_supervised()
+    with torch.no_grad():
+        for parameter in model.net.parameters():
+            parameter.add_(1.0)
+    before = {name: value.clone() for name, value in model.net.state_dict().items()}
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message=".*no optimizer owns")
+        with pytest.raises(RuntimeWarning, match="no optimizer owns"):
+            model.train(params=_params(2, resume_from_run_id=first.id))
+    assert all(torch.equal(before[name], value) for name, value in model.net.state_dict().items())
+
+
+def test_the_worker_rng_warning_raised_as_an_error_hands_the_model_back(tmp_path, monkeypatch):
+    import warnings
+
+    import nnx.nn.nn_model as nn_model_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = _tiny_supervised().train(params=_params(1))
+    monkeypatch.setattr(nn_model_module, "_loader_num_workers", lambda _loader: 1)
+    model = _tiny_supervised()
+    with torch.no_grad():
+        for parameter in model.net.parameters():
+            parameter.add_(1.0)
+    before = {name: value.clone() for name, value in model.net.state_dict().items()}
+    torch.manual_seed(5)
+    rng_before = torch.get_rng_state()
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="exact warm-resume continuity")
+        with pytest.raises(Warning, match="exact warm-resume continuity"):
+            model.train(params=_params(2, resume_from_run_id=first.id))
+    assert all(torch.equal(before[name], value) for name, value in model.net.state_dict().items())
+    assert torch.equal(torch.get_rng_state(), rng_before)

@@ -88,7 +88,7 @@ class ConvNN(nn.Module):
         self.__dict__["_hidden"] = tuple((params.activation_for(i)(), params.dropout_for(i)) for i in range(n_hidden))
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        X = X.view(X.size(0), self._in_channels, self._side, self._side)
+        X = X.reshape(X.size(0), self._in_channels, self._side, self._side)  # channels_last too
 
         activation = self._conv_activation
         if activation is None:
@@ -98,7 +98,7 @@ class ConvNN(nn.Module):
             X = activation(X)
             X = F.max_pool2d(X, kernel_size=self._pool_size)
 
-        X = X.view(X.size(0), -1)
+        X = X.reshape(X.size(0), -1)
 
         for fc, (hidden_activation, dropout) in zip(self.fcs[:-1], self._hidden, strict=True):
             X = fc(X)

@@ -167,6 +167,9 @@ The params' `state()` round-trips too, except `NNModelParams.device`. It
 takes `map_location` (default `"cpu"`), so a GPU or MPS model reloads on the
 CPU unless you pass one.
 
+The saved precision policy is resolved again on the destination device.
+`precision=` replaces it, and the legacy `mixed_precision` flag with it.
+
 A model can be saved with extra top-level submodules attached to its net,
 such as a JEPA predictor registered as `model.net._jepa_predictor`. It
 rebuilds without them through `exclude_submodules`. Every other key still

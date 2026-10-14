@@ -60,7 +60,7 @@ class FeedFwdMoENN(nn.Module):
         )
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        X = X.view(X.size(0), -1)
+        X = X.reshape(X.size(0), -1)  # a non-contiguous input (a transposed array) too
 
         for layer, (activation, dropout) in zip(self.layers[:-1], self._hidden, strict=True):
             X = layer(X)

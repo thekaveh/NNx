@@ -2,7 +2,8 @@
 
 Walks `model.named_parameters()` and emits one histogram trace per
 tensor, laid out in a grid subplot. Useful for spotting dead layers,
-NaN / Inf weights, or saturation patterns at a glance. Returns a Plotly
+NaN / Inf weights (counted in each subplot title, since Plotly drops them
+when binning), or saturation patterns at a glance. Returns a Plotly
 `Figure` to stay consistent with the `nnx.vis_utils` idiom (the
 existing run-output viz module also returns Plotly figures so callers
 can compose them into dashboards or notebook layouts).
@@ -13,6 +14,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Union
 
+import numpy as np
 from torch import nn
 
 from .._optional import require
@@ -73,7 +75,11 @@ def weight_histogram(
     fig = make_subplots(
         rows=rows,
         cols=cols,
-        subplot_titles=[name for name, _ in params],
+        # Plotly drops NaN / Inf when binning: the title counts them.
+        subplot_titles=[
+            f"{name} ({count} non-finite)" if (count := int((~np.isfinite(vals)).sum())) else name
+            for name, vals in params
+        ],
         # Plotly needs spacing <= 1 / (n - 1): shrink it for large grids.
         vertical_spacing=min(0.08, 0.5 / max(rows - 1, 1)),
         horizontal_spacing=min(0.05, 0.5 / max(cols - 1, 1)),

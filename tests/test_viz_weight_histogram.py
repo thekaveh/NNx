@@ -83,3 +83,14 @@ def test_weight_histogram_renders_a_model_with_many_tensors():
 def test_weight_histogram_validates_its_grid_arguments(bad):
     with pytest.raises(ValueError, match="positive integer"):
         weight_histogram(nn.Linear(2, 2), **bad)
+
+
+def test_weight_histogram_counts_non_finite_values_in_the_title():
+    import torch
+
+    layer = nn.Linear(2, 2)
+    with torch.no_grad():
+        layer.weight[0, 0] = float("nan")
+        layer.weight[1, 1] = float("inf")
+    titles = [annotation.text for annotation in weight_histogram(layer).layout.annotations]
+    assert "weight (2 non-finite)" in titles and "bias" in titles

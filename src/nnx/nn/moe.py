@@ -92,29 +92,22 @@ class MoELinear(nn.Module):
         top_k: int = 2,
     ):
         super().__init__()
-        if in_features <= 0:
-            raise ValueError(f"in_features must be positive, got {in_features}")
-        if out_features <= 0:
-            raise ValueError(f"out_features must be positive, got {out_features}")
+        # First, as NNMoEParams: a string, None, float or bool count fails here
+        # with its name; a NumPy integer is normalized to int.
+        in_features = require_count(in_features, "in_features", owner="MoELinear", minimum=1)
+        out_features = require_count(out_features, "out_features", owner="MoELinear", minimum=1)
+        num_experts = require_count(num_experts, "num_experts", owner="MoELinear", minimum=1)
+        top_k = require_count(top_k, "top_k", owner="MoELinear", minimum=1)
         if num_experts <= 1:
             raise ValueError(
                 f"num_experts must be ≥ 2 (a single-expert MoELinear is just "
                 f"an nn.Linear with extra book-keeping), got {num_experts}"
             )
-        if top_k <= 0:
-            raise ValueError(f"top_k must be positive, got {top_k}")
         if top_k > num_experts:
             raise ValueError(
                 f"top_k ({top_k}) cannot exceed num_experts ({num_experts}) — "
                 "a token cannot be dispatched to more experts than exist."
             )
-        for name, value in (
-            ("in_features", in_features),
-            ("out_features", out_features),
-            ("num_experts", num_experts),
-            ("top_k", top_k),
-        ):  # as NNMoEParams: a float / bool count fails here, not inside torch
-            require_count(value, name, owner="MoELinear", minimum=1)
 
         self.in_features = in_features
         self.out_features = out_features

@@ -126,9 +126,14 @@ class VisUtils:
         if any(len(ys) > len(ls) for ys in yss):
             raise ValueError(f"multi_line_plot draws at most {len(ls)} lines per group (one dash style each)")
         cs = VisUtils.generate_colors(n=len(yss))
-        n_lines_per_series = len(yss[0])
+        n_lines_per_series = max(len(ys) for ys in yss)  # every drawn dash style gets a legend entry
 
         group_labels, line_labels = yss_legend
+        if len(group_labels) < len(yss) or len(line_labels) < n_lines_per_series:
+            raise ValueError(
+                f"multi_line_plot needs a label per group ({len(yss)}) and per line ({n_lines_per_series}); "
+                f"got {len(group_labels)} and {len(line_labels)}"
+            )
         for ys_idx, ys in enumerate(yss):
             for y_idx, y in enumerate(ys):
                 fig.add_trace(
@@ -312,6 +317,11 @@ class VisUtils:
                 test_Y = model._split_batch(test_batch)[2]
                 batch_logits, _ = model._predict_logits(
                     [test_batch], caller="two_dim_tsne_checkpoint_logits()", batches=True
+                )
+            if test_Y.ndim != 1:  # a task-less multi-output (BCE) target has no single class per row
+                raise ValueError(
+                    "two_dim_tsne_checkpoint_logits colours points by class; the targets are "
+                    f"{tuple(test_Y.shape)}, not one class index per row"
                 )
             take = min(remaining, len(batch_logits))
             logits_chunks.append(batch_logits[:take])

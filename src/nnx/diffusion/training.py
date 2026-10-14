@@ -74,7 +74,16 @@ def diffusion_train_step_factory(schedule: NoiseSchedule) -> TrainStepFn:
 
     Returns:
         A function suitable for ``NNModel.train(..., train_step_fn=...)``.
+
+    Raises:
+        TypeError: if ``schedule`` is not a :class:`NoiseSchedule` (the
+            enum member itself, say, instead of ``NoiseSchedulers.COSINE()``).
     """
+    if not isinstance(schedule, NoiseSchedule):  # before a run is reserved, as diffusion_objective does
+        raise TypeError(
+            f"diffusion_train_step_factory needs a NoiseSchedule (call the NoiseSchedulers member), "
+            f"got {type(schedule).__name__}"
+        )
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model

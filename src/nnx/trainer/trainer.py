@@ -728,18 +728,19 @@ class Trainer:
             for local_epoch in range(params.n_epochs):
                 idx_epoch = start_epoch + local_epoch
                 ctx.epoch = idx_epoch
-                _set_loader_epoch(params.train_loader, idx_epoch)
                 try:
+                    _set_loader_epoch(params.train_loader, idx_epoch)
                     for cb in normalized_callbacks:
                         cb.on_epoch_begin(ctx)
                     _refuse_update_listeners(ctx)
+                    warn_unowned_trainables(self.model.net, optimizers.values(), unowned_warned)
                 except BaseException:
                     # Before the first batch nothing has trained: a resume's
-                    # loaded state goes back as it was.
+                    # loaded state goes back as it was (a warning raised as an
+                    # error included).
                     if local_epoch == 0 and rollback is not None:
                         rollback()
                     raise
-                warn_unowned_trainables(self.model.net, optimizers.values(), unowned_warned)
 
                 records.begin_epoch()
                 for clock in clocks.values():

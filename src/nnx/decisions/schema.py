@@ -256,7 +256,19 @@ def _probability(value: Any, *, what: str) -> float:
     return probability
 
 
-def _check_distribution(pairs: tuple[tuple[str, float], ...], *, owner: str) -> tuple[tuple[str, float], ...]:
+def _check_distribution(distribution: Any, *, owner: str) -> tuple[tuple[str, float], ...]:
+    # (id, p) pairs only: a mapping would iterate its keys, and a string
+    # id would unpack character by character.
+    if isinstance(distribution, (Mapping, str, bytes)) or not isinstance(distribution, Iterable):
+        raise InvalidDecisionResponse(f"{owner} distribution must be (id, p) pairs, got {type(distribution).__name__}")
+    pairs = tuple(distribution)
+    malformed = [
+        entry
+        for entry in pairs
+        if isinstance(entry, (str, bytes)) or not isinstance(entry, Sequence) or len(entry) != 2
+    ]
+    if malformed:
+        raise InvalidDecisionResponse(f"{owner} distribution entries must be (id, p) pairs, got {malformed[:3]!r}")
     if len(pairs) < 2:
         raise InvalidDecisionResponse(f"{owner} needs a distribution over at least 2 ids, got {len(pairs)}")
     ids = [option_id for option_id, _ in pairs]
@@ -303,7 +315,7 @@ class ChoiceResult:
     kind: ClassVar[str] = "choice"
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "distribution", _check_distribution(tuple(self.distribution), owner="ChoiceResult"))
+        object.__setattr__(self, "distribution", _check_distribution(self.distribution, owner="ChoiceResult"))
 
     def probabilities(self) -> dict[str, float]:
         return dict(self.distribution)
@@ -353,7 +365,7 @@ class ScoreResult:
     kind: ClassVar[str] = "score"
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "distribution", _check_distribution(tuple(self.distribution), owner="ScoreResult"))
+        object.__setattr__(self, "distribution", _check_distribution(self.distribution, owner="ScoreResult"))
         object.__setattr__(self, "vendor_score", _check_vendor_score(self.vendor_score))
 
     def probabilities(self) -> dict[str, float]:
@@ -406,10 +418,13 @@ def validate_response(
     never renormalized. For a :class:`Boolean`, ``response`` is ``p_true``
     or ``{"true": p, "false": 1 - p}``. ``raw`` (the provider's own output)
     and ``vendor_score`` (a :class:`Score` provider's own number) are kept
-    apart from the normalized fields.
+    apart from the normalized fields; a ``vendor_score`` for another kind
+    of question raises :class:`InvalidDecisionResponse`.
     """
     if not isinstance(question, (Choice, Boolean, Score)):  # before digest(): any object would AttributeError
         raise InvalidDecisionRequest(f"not a decision question: {type(question).__name__}")
+    if vendor_score is not None and not isinstance(question, Score):  # never dropped silently
+        raise InvalidDecisionResponse(f"vendor_score is a Score provider's own number; a {question.kind} has none")
     digest = question.digest()
     if isinstance(question, Boolean):
         if isinstance(response, Mapping):

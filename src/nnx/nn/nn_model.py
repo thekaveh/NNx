@@ -491,17 +491,20 @@ def _restore_weights_only(
 def _rollback_resume(
     net: torch.nn.Module, net_state: dict[str, Any], rng_state: dict[str, Any], train_loader: Any
 ) -> None:
-    """Put the model and RNG back after a failed component restore, which
-    runs after ``on_train_begin``. A callback may have changed the network
-    there (QAT preparation swaps modules); a rollback that cannot load is
-    reported as a warning instead of replacing the original error."""
+    """Put the model and RNG back after a resume fails after its restore
+    (a refused ``on_train_begin`` or first ``on_epoch_begin``, a failed
+    component restore, a warning raised as an error). A callback may have
+    changed the network by then (QAT preparation swaps modules); a rollback
+    that cannot load is reported as a warning instead of replacing the
+    original error."""
     try:
         net.load_state_dict(net_state)
     except Exception as error:
         from .callbacks import _warn_at_user_frame
 
         _warn_at_user_frame(
-            f"component restore failed and the model could not be rolled back ({type(error).__name__}: {error})",
+            "the resume failed after its restore and the model could not be rolled back "
+            f"({type(error).__name__}: {error})",
         )
     _restore_rng_state(rng_state, train_loader)
 
@@ -4105,13 +4108,14 @@ class NNModel(_HubMixinBase):
                     with contextlib.nullcontext() if ddp is None else _collectively(f"epoch {idx_epoch}'s start"):
                         for cb in normalized_callbacks:
                             cb.on_epoch_begin(ctx)
+                    warn_unowned_trainables(self.net, [optimizer], unowned_warned)  # unfrozen but never trained
                 except BaseException:
                     # Before the first batch nothing has trained: a resume's
-                    # loaded state goes back as it was (every rank, after the agreement).
+                    # loaded state goes back as it was (every rank, after the
+                    # agreement; a warning raised as an error included).
                     if local_epoch == 0 and previous_net_state is not None and previous_rng_state is not None:
                         _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
                     raise
-                warn_unowned_trainables(self.net, [optimizer], unowned_warned)  # unfrozen but never trained
 
                 records.begin_epoch()
                 accumulation_state = GradientAccumulationState()

@@ -156,6 +156,11 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - Surgery refuses a subclass of `nn.Linear` / `nn.Embedding` / `nn.ReLU` with its own `forward` (a fake-quantized QAT Linear, say) instead of rebuilding it as a plain module.
     - A resume that fails after restoring its state (a warnings-as-errors filter, say) hands the model and RNG back unchanged in a single-process fit too, through `NNModel.train` and `Trainer.train`.
     - `TopPFilter(1.0)` (and `generate(top_p=1.0)`) keeps every token; float32 rounding had dropped some.
+    - A resume whose first epoch fails before any batch (a loader `set_epoch`, or the unowned-trainables warning raised as an error) hands the model and RNG back in `Trainer.train` too.
+    - `validate_response` refuses a `vendor_score` for a Choice or Boolean instead of dropping it; `ChoiceResult` / `ScoreResult` refuse a distribution that is not `(id, p)` pairs with `InvalidDecisionResponse`.
+    - `FeedFwdNN`, `FeedFwdMoENN` and `ConvNN` accept non-contiguous inputs (a transposed NumPy array, a `channels_last` tensor or net); `MoELinear` names a malformed count with `ValueError`.
+    - `drop_layer` refuses a NaN or infinite importance score; `diffusion_train_step_factory` refuses a non-`NoiseSchedule` before training.
+    - `two_dim_tsne_checkpoint_logits` refuses multi-output targets before the projection; `multi_line_plot` legends every drawn dash style and checks label counts; `weight_histogram` counts NaN / Inf values in each subplot title.
     - DoRA refuses an `nn.Linear` subclass with its own `forward` (a QAT fake-quantized layer), at wrap time and when QAT prepare swaps the base later, instead of bypassing it; a PEFT wrap that fails part-way leaves every layer and its trainability unchanged.
     - `benchmark_forward` / `compare_compile` no longer recurse without end on a tensor-subclass wrapper buffer; `random_block_mask` refuses a non-finite `block_aspect` with `ValueError`; the docs builders' link validators read prose after an inline code span as prose too.
     - A `Trainer` run whose callbacks convert modules at train end (QAT) resumes statefully from its final LAST: the checkpoint records the optimizer topology from before the conversion, as `NNModel.train` does.

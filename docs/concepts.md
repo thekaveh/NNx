@@ -2876,12 +2876,15 @@ with:
 
 - the parent's own identity, followed back through every ancestor;
 - the data and split identities its provenance declares;
-- the checkpoint tag and the resume mode from `metadata.yaml`.
+- the checkpoint tag (from `run.yaml`) and the resume mode (from
+  `metadata.yaml`).
 
-With the default `resume_epochs="additional"`, `n_epochs` counts the epochs a run adds. Under `"planned"` it is the plan's total, and both settings are in the identity. Such a run therefore pools only
-with runs descended the same way from identically configured parents. It
-never pools with fresh runs, with its parent, or with fine-tunes of other
-pretraining. Only recorded facts decide, and an unknown lineage never pools.
+A run with a parent therefore pools only with runs descended the same way
+from identically configured parents. It never pools with fresh runs, with
+its parent, or with fine-tunes of other pretraining. Only recorded facts
+decide, and an unknown lineage never pools.
+
+With the default `resume_epochs="additional"`, `n_epochs` counts the epochs a run adds. Under `"planned"` it is the plan's total, and both settings are in the identity.
 
 **Start epoch.** A resumed run carries the epoch it started from, as
 recorded in its `attempt.json`, when that epoch is part of the procedure.
