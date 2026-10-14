@@ -389,3 +389,33 @@ def test_the_ema_counter_counts_each_runs_steps():
     assert objective.ema_updates == 2
     model.train(_params(loader, seed=1), objective=objective)  # a fresh run, not a resume
     assert objective.ema_updates == 2
+
+
+def test_a_predictor_of_the_wrong_output_shape_is_refused_on_both_paths():
+    """(B, 1, D) for several target patches broadcast against the targets and
+    trained on 'one vector for every target' silently."""
+    from nnx.paradigms.jepa import jepa_train_step_factory
+
+    class OneVector(torch.nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, context, context_positions, target_positions):
+            return self.inner(context, context_positions, target_positions)[:, :1, :]
+
+    model, target, predictor = _parts()
+    wrapped = OneVector(predictor)
+    batch = _batch(_images(3))
+    with pytest.raises(ValueError, match="target embeddings' shape"):
+        jepa_objective(target, wrapped, _masks(FOUR), ema_momentum=0.5)(
+            ObjectiveContext(model=model, batch=batch, epoch_idx=0, batch_idx=0)
+        )
+    model, target, predictor = _parts(attach=False)
+    wrapped = OneVector(predictor)
+    model.net.add_module("_jepa_predictor", wrapped)
+    with pytest.raises(ValueError, match="target embeddings' shape"):
+        model.train(
+            params=_params([batch]),
+            train_step_fn=jepa_train_step_factory(target, wrapped, _masks(FOUR), ema_momentum=0.5),
+        )

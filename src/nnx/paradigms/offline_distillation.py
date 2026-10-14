@@ -1,5 +1,5 @@
 """Offline teacher distributions: distill a student from stored, permissioned
-teacher probabilities (FEAT-022).
+teacher probabilities.
 
 ``kd_train_step_factory`` and ``kd_objective`` forward a **live** teacher
 every step and compare temperature-softened **logits** (scaled by ``T²``).
@@ -25,9 +25,9 @@ records directly, offline:
   naming an unknown or duplicate one, another schema digest, a repeated
   sample id or a sample with no input is refused when the dataset is built
   — before any optimizer exists. :meth:`TeacherDataset.loader` yields
-  :class:`TeacherBatch`\\ es.
+  :class:`TeacherBatch`es.
 - :class:`OfflineDistillationObjective` (:meth:`TeacherDataset.objective`)
-  — an objective for NNx's shared update engine (FEAT-004): ``alpha ·
+  — an objective for NNx's shared update engine: ``alpha ·
   KL(teacher ‖ student) + (1 − alpha) · CE(student, label)``, both at
   temperature 1 — no logits are invented and no ``T²`` is applied. The two
   terms share one mask (every row) and one denominator (the microbatch's
@@ -64,12 +64,15 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Union
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from .._step_helpers import full_precision
 from ..components import ComponentSpec
 from ..objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult
+from ..utils import _writable
 
 if TYPE_CHECKING:
     from ..nn.nn_model import NNModel
@@ -297,7 +300,7 @@ class TeacherBatch:
 
 
 class TeacherDataset(torch.utils.data.Dataset):
-    """:class:`TeacherRecord`\\ s joined to the student's ``inputs`` (a
+    """:class:`TeacherRecord`s joined to the student's ``inputs`` (a
     mapping from sample id to its input tensor) and aligned to the student's
     output order ``candidates`` (see the module docstring).
 
@@ -358,7 +361,8 @@ class TeacherDataset(torch.utils.data.Dataset):
             distribution = record.distribution()
             rows.append([distribution[candidate] for candidate in self.candidates])  # aligned by id
             targets.append(-1 if record.label is None else index[record.label])
-            tensors.append(torch.as_tensor(inputs[record.sample_id]))
+            value = inputs[record.sample_id]
+            tensors.append(torch.as_tensor(_writable(value) if isinstance(value, np.ndarray) else value))
         questions = sorted({record.question_id for record in records})
         if len(questions) > 1:
             raise TeacherRecordError(f"a teacher dataset answers one question; its records answer {questions}")
@@ -402,7 +406,7 @@ class TeacherDataset(torch.utils.data.Dataset):
         )
 
     def loader(self, batch_size: int, *, shuffle: bool = False, seed: Optional[int] = None) -> DataLoader:
-        """A ``DataLoader`` of :class:`TeacherBatch`\\ es; ``shuffle`` draws
+        """A ``DataLoader`` of :class:`TeacherBatch`es; ``shuffle`` draws
         its order from ``seed`` (a generator a stateful resume restores)."""
         if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
             raise TeacherRecordError(f"batch_size must be a positive integer, got {batch_size!r}")
@@ -474,7 +478,11 @@ def _teacher_batch(batch: Any, schema_digest: str, candidates: tuple[str, ...], 
 
 
 def _log_probabilities(model: Any, batch: TeacherBatch, ctx: Optional[ObjectiveContext], who: str) -> torch.Tensor:
-    logits = model._net_forward((batch.inputs.to(model.device),), {})
+    inputs = batch.inputs
+    net_dtype = next((p.dtype for p in model.net.parameters() if p.is_floating_point()), None)
+    if net_dtype is not None and inputs.is_floating_point() and inputs.dtype != net_dtype:
+        inputs = inputs.to(net_dtype)  # an fp64 student reads its own dtype, as predict() does
+    logits = model._net_forward((inputs.to(model.device),), {})
     if ctx is not None:
         logits = ctx.full_precision(logits)
     rows, classes = batch.teacher.shape
@@ -483,7 +491,7 @@ def _log_probabilities(model: Any, batch: TeacherBatch, ctx: Optional[ObjectiveC
             f"{who}: the student gives outputs of shape {tuple(logits.shape)} for {rows} rows and {classes} "
             "candidates; its head must score each candidate in the dataset's order"
         )
-    return F.log_softmax(logits.float(), dim=-1)
+    return F.log_softmax(full_precision(logits), dim=-1)  # fp16 / bf16 widened, fp64 kept
 
 
 def _kl_rows(q: torch.Tensor, log_p: torch.Tensor) -> torch.Tensor:
@@ -664,13 +672,14 @@ class _Tally:
         top = log_p.argmax(dim=-1)
         self.rows += int(q.shape[0])
         self.agree += int((top == q.argmax(dim=-1)).sum())
-        self.kl += float(_kl_rows(q, log_p).double().sum())
+        # float64 sums on the CPU: MPS has no float64.
+        self.kl += float(_kl_rows(q, log_p).detach().cpu().double().sum())
         mask = batch.labelled.to(log_p.device)
         if bool(mask.any()):
             target = batch.target.to(log_p.device)[mask]
             self.labelled += int(mask.sum())
             self.correct += int((top[mask] == target).sum())
-            self.nll += float(F.nll_loss(log_p[mask].double(), target, reduction="sum"))
+            self.nll += float(F.nll_loss(log_p[mask].detach().cpu().double(), target.cpu(), reduction="sum"))
 
     def report(self, candidates: tuple[str, ...], schema_digest: str) -> DistillationReport:
         if self.rows == 0:
@@ -707,10 +716,11 @@ def _score(
 
 
 def evaluate_offline(
-    model: NNModel, data: Union[TeacherDataset, Iterable[TeacherBatch]], *, batch_size: int = 256
+    model: NNModel, data: Union[TeacherDataset, DataLoader], *, batch_size: int = 256
 ) -> DistillationReport:
-    """Score ``model`` against a :class:`TeacherDataset` (or a loader of its
-    batches): teacher agreement, imitation loss and labelled quality, each
+    """Score ``model`` against a :class:`TeacherDataset` (or a ``DataLoader``
+    over one, such as :meth:`TeacherDataset.loader`; its ``dataset`` gives
+    the schema and candidates): teacher agreement, imitation loss and labelled quality, each
     with its own denominator (see :class:`DistillationReport`). Runs in eval
     mode under ``no_grad`` and restores the model's modes."""
     if isinstance(data, TeacherDataset):
@@ -723,7 +733,7 @@ def evaluate_offline(
 
 class OfflineDistillationEval:
     """An ``eval_step_fn`` (``NNModel.train(eval_step_fn=...)``) over a
-    validation loader of :class:`TeacherBatch`\\ es: its ``metrics`` are
+    validation loader of :class:`TeacherBatch`es: its ``metrics`` are
     ``teacher_kl``, ``teacher_agreement`` and — with labelled records —
     ``label_accuracy`` and ``label_nll``.
 

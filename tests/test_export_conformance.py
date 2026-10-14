@@ -38,6 +38,7 @@ from nnx.export_conformance import (
     verify_artifacts,
 )
 from nnx.nn.nn_model import NNModel
+from tests._repo_files import repo_file
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -157,6 +158,10 @@ def _valid_record(tmp_path):
         (lambda r: r.update(level="structural"), "level 'structural' contradicts"),
         (lambda r: r.update(status="failed"), "status 'failed' contradicts"),
         (lambda r: r["artifacts"]["files"][0].update(sha256="xyz"), "malformed sha256"),
+        (lambda r: r["config"].update(weights_sha256="x"), "weights_sha256 is malformed"),
+        (lambda r: r["config"].update(weights_sha256=None), "weights_sha256 is malformed"),
+        (lambda r: r["config"].update(weights_sha256="a" * 63), "weights_sha256 is malformed"),
+        (lambda r: r["config"].update(weights_sha256="A" * 64), "weights_sha256 is malformed"),
         (lambda r: r["tolerances"].update(rtol=float("nan")), "finite"),
         (
             lambda r: (
@@ -377,7 +382,7 @@ def test_core_import_does_not_need_the_runtime_extra():
 
 def _script():
     spec = importlib.util.spec_from_file_location(
-        "check_export_conformance", ROOT / "scripts" / "check_export_conformance.py"
+        "check_export_conformance", repo_file("scripts", "check_export_conformance.py")
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -926,3 +931,20 @@ def test_a_model_changed_in_place_or_by_a_failing_exporter_is_recorded_as_it_ran
     assert record["failure"] == "state-changed" and record["model_state"]["parameters"] is False
     assert "exporter gave up" in record["stages"]["export"]["detail"]["export"]["error"]
     assert exit_code({"profiles": [record]}) == EXIT_CODES["state-changed"]
+
+
+def test_the_profile_model_and_inputs_are_fp32_under_any_default_dtype():
+    """The records say FP32: the model and the case inputs are built in
+    float32 even when torch's default dtype is float64."""
+    from nnx.export_conformance import _inputs, build_model
+
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float64)
+    try:
+        model = build_model()
+        assert {p.dtype for p in model.net.parameters()} == {torch.float32}
+        assert _inputs({"shape": [2, 4], "seed": 0}).dtype == torch.float32
+    finally:
+        torch.set_default_dtype(previous)
+    fp32 = build_model()
+    assert all(torch.equal(a, b) for a, b in zip(model.net.parameters(), fp32.net.parameters(), strict=True))

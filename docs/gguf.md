@@ -116,19 +116,27 @@ export_ollama_modelfile(
         "top_p": 0.95,
         "stop": ["<eos>"],
     },
-    template="{{ .Prompt }}",
+    template="{{ if .System }}{{ .System }}\n{{ end }}{{ .Prompt }}",
 )
 ```
 
+A `SYSTEM` message reaches the model only through `{{ .System }}` in the
+template, so a template without it drops the system prompt.
+
 The generated directory contains `model.gguf` and `Modelfile`; it may also
-contain `tokenizer.json` when the tokenizer was saved there. The helper
-validates the Ollama `v0.32.2` tagged-source parameter set: integer `num_ctx`, `repeat_last_n`,
-`seed`, `num_predict`, `draft_num_predict`, and `top_k`; finite numeric
-`repeat_penalty`, `temperature`, `top_p`, and `min_p`; and scalar or repeated
-string `stop`. Unknown names and mismatched types fail before GGUF generation.
-Parameter strings intentionally use a restricted safe subset that rejects
-quotes and control characters rather than attempting broader Modelfile
-escaping. The helper writes the standard `FROM`, `PARAMETER`, `TEMPLATE`, and
+contain `tokenizer.json` when the tokenizer was saved there.
+
+The helper validates the Ollama `v0.32.2` tagged-source parameter set:
+
+- integer `num_ctx`, `repeat_last_n`, `seed`, `num_predict`,
+  `draft_num_predict`, and `top_k`;
+- finite numeric `repeat_penalty`, `temperature`, `top_p`, and `min_p`;
+- scalar or repeated string `stop`.
+
+Unknown names and mismatched types fail before GGUF generation.
+A string parameter value may not contain a double quote, carriage return,
+line feed or NUL byte. NNx rejects these rather than escaping them; other
+characters pass unchanged. The helper writes the standard `FROM`, `PARAMETER`, `TEMPLATE`, and
 `SYSTEM` directives. Stock `ollama create` still rejects or cannot execute the
 `nnx_transformer` architecture.
 

@@ -11,8 +11,9 @@ relabel the GGUF as ``llama`` because the RoPE layouts differ.
 
 Scope: the GGUF is written at F16 (the default). For smaller files use
 the ``llama-quantize`` shell-out recipe from
-``examples/17_export_transformer_to_gguf.py``, then point the Modelfile's
-``FROM`` line at the quantized file.
+``examples/17_export_transformer_to_gguf.py``. Its ``llama-quantize`` must
+come from a llama.cpp revision or patch that supports ``nnx_transformer``.
+Then point the Modelfile's ``FROM`` line at the quantized file.
 
 Requires the ``gguf-write`` optional extra (for
 ``nnx.interop.export_ollama_modelfile``, which wraps
@@ -29,11 +30,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nnx import NNTokenizerParams, NNTransformerParams, TransformerNN, train_bpe
+from nnx import NNTokenizerParams, NNTransformerParams, TransformerNN, set_seed, train_bpe
 from nnx.interop import export_ollama_modelfile
 
 
 def main() -> None:
+    set_seed(0)  # the same weights, so the same GGUF bytes, on every run
     out_dir = Path("artifacts/ollama_bundle")
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -73,10 +75,10 @@ def main() -> None:
             "top_p": 0.95,
             "stop": ["<eos>"],
         },
-        # Optional Go-template carried by the generated Modelfile.
-        # The TinyStories model has no chat structure, so we keep it
-        # minimal here.
-        template="{{ .Prompt }}",
+        # Optional Go-template carried by the generated Modelfile. This
+        # untrained fixture model has no chat structure, so it stays minimal; the
+        # SYSTEM text reaches the model only through {{ .System }}.
+        template="{{ if .System }}{{ .System }}\n{{ end }}{{ .Prompt }}",
     )
 
     print(f"[ollama] Modelfile: {mf_path}")

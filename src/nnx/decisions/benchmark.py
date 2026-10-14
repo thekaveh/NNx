@@ -1,4 +1,4 @@
-"""A reproducible, offline-first decision-provider benchmark (FEAT-021).
+"""A reproducible, offline-first decision-provider benchmark.
 
 Score decision providers (``nnx.decisions``) on **identical samples**, join
 their outputs by sample id and question digest, and report probability
@@ -23,7 +23,7 @@ metrics — replayed from saved records, with no provider and no network.
 - :func:`evaluate` — **replay**: joins samples and records (never by row
   position) and reports, per slice (in-family, held-out, each family and
   each perturbation), the coverage — eligible, missing, duplicate, extra,
-  mismatched-digest, unsupported and failed counts, with reasons — and
+  mismatched-digest, invalid, unsupported and failed counts, with reasons — and
   accuracy, macro-F1, NLL (exact by default), Brier, reliability bins with
   ECE and, given an abstention policy, selective coverage and risk. A
   metric that cannot be computed is reported unavailable with its reason
@@ -37,10 +37,13 @@ metrics — replayed from saved records, with no provider and no network.
   it ``None``.
 
 Metrics are defined per row over each question's own options, so samples
-with different label spaces share one report: NLL and Brier are the named
-``nll`` / ``brier`` metrics' terms (``nnx.calibration``), a Boolean is the
-two options ``("true", "false")`` and the top-1 prediction is the first
-option of maximal probability.
+with different label spaces share one report: NLL and Brier follow the
+definitions of the named ``nll`` / ``brier`` metrics (``nnx.monitors``),
+a Boolean is the two options ``("true", "false")`` and the top-1 prediction
+is the first option of maximal probability. One difference: the replay NLL
+is exact by default (``epsilon=None``: ``inf`` when a true option has
+probability 0), where the named ``nll`` metric floors probabilities at
+``1e-12``; pass ``epsilon`` to floor them here too.
 """
 
 from __future__ import annotations
@@ -58,6 +61,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Union
 
+from .providers import _synchronous
 from .schema import (
     PROBABILITY_TOLERANCE,
     Boolean,
@@ -408,6 +412,18 @@ class Record:
             _text(getattr(self, name), f"Record.{name}", optional=True)
         if not isinstance(self.execution, Mapping):
             raise BenchmarkError(f"Record.execution must be a mapping, got {self.execution!r}")
+        # Strict JSON with string keys, as write_records needs it (a NumPy
+        # scalar, a NaN or an int key would fail or change on the round trip).
+        if not all(isinstance(key, str) for key in self.execution):
+            raise BenchmarkError(f"Record.execution keys must be strings, got {list(self.execution)!r}")
+        try:
+            round_trip = json.loads(json.dumps(dict(self.execution), allow_nan=False))
+        except (TypeError, ValueError) as error:
+            raise BenchmarkError(f"Record.execution must be strict JSON: {error}") from error
+        if round_trip != dict(self.execution):  # a nested int key or a tuple would change on the round trip
+            raise BenchmarkError(
+                "Record.execution must survive a JSON round trip unchanged (string keys, lists, plain numbers)"
+            )
         object.__setattr__(self, "execution", dict(self.execution))
 
     def state(self) -> dict[str, Any]:
@@ -544,15 +560,13 @@ def _answer(sample: Sample, result: Any, provider_id: str) -> dict[str, Any]:
     distribution into the question's option order."""
     digest = getattr(result, "question_digest", None)
     if digest != sample.digest:
-        raise InvalidDecisionResponse(
-            f"sample {sample.id!r}: the result answers question {digest!r}, not {sample.digest!r}"
-        )
+        raise InvalidDecisionResponse(f"the result answers question {digest!r}, not the sample's {sample.digest!r}")
     if isinstance(sample.question, Boolean):
         checked: Any = validate_response(sample.question, getattr(result, "p_true", None), provider=provider_id)
         return {"p_true": float(checked.p_true)}
     pairs = getattr(result, "distribution", None)
     if pairs is None:
-        raise InvalidDecisionResponse(f"sample {sample.id!r}: the result carries no distribution")
+        raise InvalidDecisionResponse("the result carries no distribution")
     pairs = pairs if isinstance(pairs, Mapping) else tuple(pairs)  # pairs keep duplicates for the validator to see
     reordered: Any = validate_response(sample.question, pairs, provider=provider_id)
     return {"distribution": tuple((option_id, float(p)) for option_id, p in reordered.distribution)}
@@ -580,6 +594,7 @@ def _records(
     ]
 
 
+@_synchronous
 def collect(
     provider: Any,
     samples: Sequence[Sample],
@@ -735,24 +750,29 @@ def _refusal(provider: Any, question: Question, inputs: Any, rows: int) -> Optio
 @dataclass(frozen=True)
 class MetricValue:
     """A metric's ``value`` over ``denominator`` rows, or ``None`` with the
-    ``reason`` it is unavailable."""
+    ``reason`` it is unavailable. ``note`` qualifies an available value
+    (rows it does not count, say)."""
 
     name: str
     value: Optional[float]
     denominator: int
     reason: Optional[str] = None
+    note: Optional[str] = None
 
     @property
     def unit(self) -> str:
         return UNITS[self.name]
 
     def state(self) -> dict[str, Any]:
-        return {
+        state = {
             "value": _json_number(self.value),
             "denominator": self.denominator,
             "reason": self.reason,
             "unit": self.unit,
         }
+        if self.note is not None:  # emitted only when set: earlier reports keep their shape
+            state["note"] = self.note
+        return state
 
 
 def _json_number(value: Optional[float]) -> Any:
@@ -971,10 +991,10 @@ def _row(sample: Sample, record: Record) -> _Row:
     labels = _labels(sample.question)
     if isinstance(sample.question, Boolean):
         if record.p_true is None:
-            raise BenchmarkError(f"record {record.sample_id!r} answers a Boolean without p_true")
+            raise BenchmarkError("the record answers a Boolean without p_true")
         return _Row(sample, labels, (record.p_true, 1.0 - record.p_true))
     if record.distribution is None or tuple(k for k, _ in record.distribution) != labels:
-        raise BenchmarkError(f"record {record.sample_id!r}'s distribution does not follow its question's options")
+        raise BenchmarkError("the record's distribution does not follow its question's options")
     return _Row(sample, labels, tuple(p for _, p in record.distribution))
 
 
@@ -1008,6 +1028,11 @@ def _selective(rows: Sequence[_Row], policy: Any, model_id: Optional[str]) -> di
     from ..abstention import AbstentionSchemaError, decide
     from .schema import ChoiceResult
 
+    if not rows:  # an empty slice (no held-out sample): not the policy's fault
+        return {
+            "selective_coverage": MetricValue("selective_coverage", None, 0, "no eligible rows"),
+            "selective_risk": MetricValue("selective_risk", None, 0, "no eligible rows"),
+        }
     eligible = [row for row in rows if not isinstance(row.sample.question, Boolean)]
     accepted = []
     skipped = 0
@@ -1027,8 +1052,11 @@ def _selective(rows: Sequence[_Row], policy: Any, model_id: Optional[str]) -> di
             "selective_coverage": MetricValue("selective_coverage", None, 0, reason),
             "selective_risk": MetricValue("selective_risk", None, 0, reason),
         }
-    note = f"{skipped} eligible row(s) the policy does not fit are not counted" if skipped else None
-    coverage = MetricValue("selective_coverage", len(accepted) / applied, applied, note)
+    booleans = len(rows) - len(eligible)
+    skipped_notes = [f"{skipped} eligible row(s) the policy does not fit"] if skipped else []
+    skipped_notes += [f"{booleans} Boolean row(s)"] if booleans else []
+    note = f"{' and '.join(skipped_notes)} are not counted" if skipped_notes else None
+    coverage = MetricValue("selective_coverage", len(accepted) / applied, applied, note=note)
     if not accepted:
         return {
             "selective_coverage": coverage,
@@ -1198,8 +1226,10 @@ def _sample_set(samples: Sequence[Sample]) -> str:
 class Interval:
     """A percentile bootstrap interval of one metric, resampling the
     declared grouping units (``unit="group"``) with ``seed``. ``degenerate``
-    flags a sample that cannot vary: fewer than two units, or every
-    resample giving the same value (``low == high``)."""
+    flags an interval that carries no spread information: fewer than two
+    units, every resample giving the same value, bounds that coincide
+    (``low == high``) while the resamples still vary, or a non-finite
+    bound."""
 
     metric: str
     estimate: Optional[float]
@@ -1286,9 +1316,11 @@ def bootstrap_interval(
     high = float(np.quantile(drawn_values, 1.0 - tail, method="higher"))
     reason = None
     if not (math.isfinite(low) and math.isfinite(high)):
-        reason = "a resample gave a non-finite value"
-    elif low == high:
+        reason = "an interval bound is non-finite"
+    elif drawn_values.min() == drawn_values.max():
         reason = "every resample gave the same value"
+    elif low == high:
+        reason = "the interval bounds coincide"
     return Interval(
         estimate=statistic(rows),
         low=low,
@@ -1332,7 +1364,7 @@ class BenchmarkReport:
 
     def csv_rows(self) -> list[dict[str, Any]]:
         """One row per slice and metric: value, unit, denominator, the
-        unavailable reason, every coverage count of the slice (samples,
+        unavailable reason, an available value's note, every coverage count of the slice (samples,
         eligible, failed, unsupported, missing, duplicate, mismatched,
         invalid — they add up to the slice's samples) and the report's
         ``extra`` records. A non-finite value is written as in the JSON."""
@@ -1349,6 +1381,7 @@ class BenchmarkReport:
                         "unit": value.unit,
                         "denominator": value.denominator,
                         "unavailable": value.reason or "",
+                        "note": value.note or "",
                         "samples": coverage.samples,
                         "eligible": coverage.eligible,
                         "failed": coverage.failed,
@@ -1364,7 +1397,8 @@ class BenchmarkReport:
 
     def to_csv(self) -> str:
         buffer = io.StringIO()
-        fields = ["slice", "metric", "value", "unit", "denominator", "unavailable", "samples", "eligible", "failed"]
+        fields = ["slice", "metric", "value", "unit", "denominator", "unavailable", "note", "samples", "eligible"]
+        fields += ["failed"]
         fields += ["unsupported", "missing", "duplicate", "mismatched", "invalid", "extra"]
         writer = csv.DictWriter(buffer, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
@@ -1386,7 +1420,10 @@ class BenchmarkReport:
                 if value.value is None:
                     lines.append(f"    {metric}: unavailable ({value.reason}; n={value.denominator}) [{value.unit}]")
                 else:
-                    lines.append(f"    {metric}: {_csv_number(value.value)} (n={value.denominator}) [{value.unit}]")
+                    note = f"; {value.note}" if value.note else ""
+                    lines.append(
+                        f"    {metric}: {_csv_number(value.value)} (n={value.denominator}{note}) [{value.unit}]"
+                    )
         resources = {k: v for k, v in self.resources.state().items() if v is not None}
         lines.append(f"resources: {resources or 'not measured'}")
         return "\n".join(lines) + "\n"

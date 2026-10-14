@@ -11,14 +11,18 @@ from pathlib import Path
 import pytest
 import torch
 
+from tests._repo_files import repo_file
+
 ROOT = Path(__file__).resolve().parents[1]
-pilot = runpy.run_path(str(ROOT / "examples" / "decision_model_pilot.py"), run_name="__nnx_pilot_tests__")
+# Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
+# so a packager running its suite skips this module instead of failing collection.
+pilot = runpy.run_path(str(repo_file("examples", "decision_model_pilot.py")), run_name="__nnx_pilot_tests__")
 
 from nnx.decisions import Boolean, Choice, Score, UnsupportedCapability  # noqa: E402
 from nnx.decisions.benchmark import read_records  # noqa: E402
 from nnx.nn.enum.nets import Nets  # noqa: E402
 
-# One worker runs this module, so its module-scoped torchrun launch runs once (FIX-031).
+# One worker runs this module, so its expensive module-scoped mechanics run happens once.
 pytestmark = pytest.mark.xdist_group("decision_model_pilot")
 
 

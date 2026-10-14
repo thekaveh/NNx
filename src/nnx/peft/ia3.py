@@ -35,7 +35,7 @@ from torch import nn
 
 from ._mode import inherit_training_mode
 from ._ownership import owned_adapter_keys, select_owned
-from ._source import _resolve_source_to_state_dict
+from ._source import _refuse_shape_mismatch, _resolve_source_to_state_dict
 from ._targets import wrap_selected_linears
 
 
@@ -121,15 +121,30 @@ def apply_ia3_to(module: nn.Module, *name_patterns: str) -> int:
         or every match is already wrapped).
 
     Raises:
-        ValueError: if ``name_patterns`` is empty, or if a selected Linear
+        ValueError: if ``name_patterns`` is empty, if a selected Linear
+            is read directly by its parent (``nn.MultiheadAttention.out_proj``,
+            a torch Transformer layer's ``linear1`` / ``linear2``), or if it
             is registered under more than one name — the whole matched set
             is validated before any wrapper is built, so nothing is
             modified. A Linear inside a shared container is one slot and is
             wrapped once; tied tensors between distinct modules are outside
-            this check (see :func:`nnx.peft.apply_lora_to`).
+            this check (see :func:`nnx.peft.apply_lora_to`). Also raised,
+            before any change, when a selected Linear is the base of a
+            :class:`DoRALinear` (DoRA reads its base's weight directly).
     """
     # Same two-phase select/validate-then-mutate as apply_lora_to (FIX-014).
-    return wrap_selected_linears(module, name_patterns, skip_inside=IA3Linear, helper="apply_ia3_to", wrap=IA3Linear)
+    from .dora import DoRALinear
+
+    # DoRALinear reads its base's weight in forward, so its .base must stay
+    # an nn.Linear (LoRA and IA3 only call their base, so they compose).
+    return wrap_selected_linears(
+        module,
+        name_patterns,
+        skip_inside=IA3Linear,
+        refuse_inside=(DoRALinear,),
+        helper="apply_ia3_to",
+        wrap=IA3Linear,
+    )
 
 
 def _ia3_keys_only(module: nn.Module, state_dict: Mapping[str, Any]) -> dict:
@@ -186,6 +201,7 @@ def load_ia3_weights(module: nn.Module, source: Union[str, Path, dict]) -> int:
     # Allowlist from the DESTINATION's registered wrappers: a full or
     # colliding source can never write a frozen base tensor.
     sd = _ia3_keys_only(module, sd)
+    _refuse_shape_mismatch(module, sd, "load_ia3_weights")
     result = module.load_state_dict(sd, strict=False)
     # strict=False silently drops keys that don't exist on the module
     # (e.g. loading into an un-adapted model) — subtract them so the

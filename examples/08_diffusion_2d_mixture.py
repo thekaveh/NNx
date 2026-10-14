@@ -18,7 +18,7 @@ intentionally minimal so the train/sample plumbing is visible. For
 image-space diffusion, swap `DiffusionMLP` for a U-Net of your choice;
 the schedule / train step / sampler are architecture-agnostic.
 
-**Objective mode (FEAT-040).** ``diffusion_objective(schedule)`` describes
+**Objective mode.** ``diffusion_objective(schedule)`` describes
 the same noise-prediction loss as an objective: NNx's shared update engine
 then owns backward, gradient accumulation (exact for uneven microbatches),
 clipping and the optimizer step, and the timesteps and noise come from the
@@ -39,16 +39,13 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
-    Activations,
     Callback,
     Devices,
     DiffusionMLP,
     Losses,
-    Nets,
     NNModel,
     NNModelParams,
     NNOptimParams,
-    NNParams,
     NNSchedulerParams,
     NNTrainParams,
     NoiseSchedulers,
@@ -85,11 +82,11 @@ def objective_mode() -> dict:
     fields.
     """
     set_seed(0)
+    # As in main(): the run records the real net, so its checkpoints reload.
     model = NNModel(
-        net_params=NNParams(input_dim=2, output_dim=2, hidden_dims=[16], dropout_prob=0.0, activation=Activations.RELU),
-        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        module=DiffusionMLP(input_dim=2, hidden_dims=[32, 32], time_embed_dim=16),
+        params=NNModelParams(device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR),
     )
-    model.net = DiffusionMLP(input_dim=2, hidden_dims=[32, 32], time_embed_dim=16).to(model.device)
     schedule = NoiseSchedulers.LINEAR(T=50)
     objective = diffusion_objective(schedule, seed=0)
     untouched: list[bool] = []
@@ -134,33 +131,14 @@ def main():
     set_seed(0)
     loader = make_mixture_loader()
 
-    # An NNModel with placeholder NNParams; the real network is the
-    # DiffusionMLP swapped in below. The placeholder mirrors the
-    # diffusion net's surface dim so the run.yaml stays readable.
+    # The diffusion net's forward is (x_t, t) -> epsilon, not a built-in
+    # net: NNModel(module=...) wraps the instance itself, and its run id
+    # records the module's topology (two different DiffusionMLPs are two
+    # runs). The loss is unused: the diffusion step / objective owns it.
     model = NNModel(
-        net_params=NNParams(
-            input_dim=2,
-            output_dim=2,
-            hidden_dims=[16],
-            dropout_prob=0.0,
-            activation=Activations.RELU,
-        ),
-        params=NNModelParams(
-            net=Nets.FEED_FWD,
-            device=Devices.CPU,
-            loss=Losses.CROSS_ENTROPY,
-        ),
+        module=DiffusionMLP(input_dim=2, hidden_dims=[64, 64], time_embed_dim=16),
+        params=NNModelParams(device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR),
     )
-    # The FeedFwdNN built by Nets.FEED_FWD has forward(X) → logits — wrong
-    # shape for diffusion (which needs forward(x_t, t) → ε). Swap it for
-    # the DiffusionMLP. NNModel.train() reaches model.net.parameters()
-    # and model.net_params (stored on the model itself, not the net),
-    # so this substitution works without further setup.
-    model.net = DiffusionMLP(
-        input_dim=2,
-        hidden_dims=[64, 64],
-        time_embed_dim=16,
-    ).to(model.device)
 
     # T=200 is enough for this toy problem and keeps sampling fast.
     schedule = NoiseSchedulers.LINEAR(T=200)
@@ -197,17 +175,19 @@ def main():
     print(f"\nDiffusion noise-prediction loss: {first:.4f} → {last:.4f}")
     print(f"trained {len(run.idps)} iterations; saved under runs/{run.id}/")
 
-    # Sample and report the rough mode coverage. With 4 modes evenly
-    # distributed, ~25% of well-trained samples should land near each
-    # mode (within a small radius); pure noise would be ~uniform around
-    # the origin.
+    # Sample and report the rough mode coverage: count the samples within
+    # radius 1 of each mode. With 4 evenly weighted modes, a well-trained
+    # model puts ~25% of its samples near each one; pure noise puts few
+    # samples inside any radius-1 disc.
     n_samples = 256
     samples = sample(model, schedule, shape=(n_samples, 2))
     centers = torch.tensor([[-2, -2], [-2, 2], [2, -2], [2, 2]], dtype=torch.float32)
-    nearest = torch.cdist(samples, centers).argmin(dim=1)
-    print("samples per mode (target ~64 each):")
+    distances = torch.cdist(samples, centers)
+    nearest = distances.argmin(dim=1)
+    close = distances.min(dim=1).values < 1.0
+    print(f"samples within radius 1 of a mode (a trained model: ~{n_samples // 4} each):")
     for i, c in enumerate(centers.tolist()):
-        count = int((nearest == i).sum())
+        count = int(((nearest == i) & close).sum())
         print(f"  near ({int(c[0]):+d}, {int(c[1]):+d}): {count}")
 
 

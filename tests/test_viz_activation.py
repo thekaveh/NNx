@@ -126,3 +126,25 @@ def test_activation_map_leaves_eval_mode_alone():
     model.eval()
     activation_map(model, torch.randn(1, 3, 4, 4), "conv1")
     assert model.training is False
+
+
+def test_activation_map_renders_a_bfloat16_activation():
+    """NumPy has no bfloat16: a bf16 module's activation renders in float32."""
+    net = nn.Sequential(nn.Linear(4, 3), nn.ReLU()).to(torch.bfloat16)
+    fig = activation_map(net, torch.randn(2, 4, dtype=torch.bfloat16), "0")
+    assert isinstance(fig, go.Figure) and len(fig.data) == 1
+
+
+def test_activation_map_renders_many_channels_in_a_wide_grid():
+    """Plotly caps subplot spacing: 128 channels (or 30 columns) used to
+    raise after the forward pass had run."""
+    model = nn.Sequential(nn.Conv2d(1, 128, 1))
+    x = torch.randn(1, 1, 2, 2)
+    assert len(activation_map(model, x, "0", max_channels=128).data) == 128
+    assert len(activation_map(model, x, "0", max_channels=30, cols=30).data) == 30
+
+
+@pytest.mark.parametrize("bad", [{"cols": 0}, {"max_channels": 0}])
+def test_activation_map_validates_its_grid_arguments(bad):
+    with pytest.raises(ValueError, match="positive integer"):
+        activation_map(nn.Sequential(nn.Conv2d(1, 2, 1)), torch.randn(1, 1, 2, 2), "0", **bad)

@@ -1,5 +1,5 @@
 """Deferred decision jobs: batch independent questions, chain dependent
-ones (FEAT-024).
+ones.
 
 A :class:`DecisionJob` is an **immutable description** of decision work —
 building one calls no provider, runs no callback and draws no RNG::
@@ -77,6 +77,7 @@ from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Se
 from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Union, cast
 
+from .providers import _synchronous
 from .schema import (
     Boolean,
     BooleanResult,
@@ -250,7 +251,8 @@ class Limits:
 
     Attributes:
         max_questions: the most questions per provider call (``None``: the
-            provider's own cap; a provider without one answers one per call).
+            provider's own cap, or any number when it declares none; a
+            provider without ``decide_many`` answers one per call).
         max_tokens: the most tokens per provider call — enforceable only by
             a provider with ``count_tokens(questions, state)``; any other is
             refused before any call.
@@ -307,8 +309,9 @@ class QuestionOutcome:
     ``kind`` is ``"answered"`` (the provider answered; rows may still
     abstain), ``"failed"`` (its provider call raised — ``error``),
     ``"skipped"`` (never sent: a failure, a limit or the timeout stopped
-    scheduling) or ``"cancelled"`` (the run was cancelled, or a sibling call
-    failed first; ``sent`` says whether the request had already gone out —
+    scheduling) or ``"cancelled"`` (the run was cancelled, a sibling call
+    failed first, or the timeout elapsed while its call was in flight in
+    ``arun``; ``sent`` says whether the request had already gone out —
     a sent request is not rolled back).
     """
 
@@ -483,6 +486,7 @@ class DecisionJob:
 
     # ---------- running (the effect boundaries) ----------
 
+    @_synchronous
     def run(self, provider: Any, *, state: Any, limits: Optional[Limits] = None) -> JobResult:
         """Run the job synchronously with ``provider`` (borrowed, never
         closed) over ``state``."""
@@ -560,6 +564,35 @@ def _modality(state: Any) -> tuple[str, int]:
     raise UnsupportedCapability(
         f"a job's state must be a batch the provider reads (texts or a tensor / array), got {type(state).__name__}"
     )
+
+
+def _check_results(question: Any, results: Any, rows: Optional[int], label: str) -> tuple[DecisionResult, ...]:
+    """``results`` checked as ``question``'s answers: a sequence of decision
+    results, one per input row (when ``rows`` is known), each carrying the
+    question's digest, kind and options in order."""
+    if isinstance(results, (str, bytes)) or not isinstance(results, Sequence):
+        raise InvalidDecisionResponse(
+            f"{label}: expected a sequence of results (one per input row), got {type(results).__name__}"
+        )
+    results = tuple(results)
+    if rows is not None and len(results) != rows:
+        raise InvalidDecisionResponse(f"{label}: {len(results)} results for {rows} input rows")
+    digest = question.digest()
+    options = None if isinstance(question, Boolean) else tuple(question.option_ids)
+    wrong = [
+        i
+        for i, result in enumerate(results)
+        if not isinstance(result, (ChoiceResult, BooleanResult, ScoreResult))
+        or result.question_digest != digest
+        or result.kind != question.kind
+        or (options is not None and tuple(i for i, _ in getattr(result, "distribution", ())) != options)
+    ]
+    if wrong:
+        raise InvalidDecisionResponse(
+            f"{label}: results {wrong} do not answer it (another question's digest or kind, options other than "
+            "its own in its order, or not a decision result)"
+        )
+    return results
 
 
 @dataclass
@@ -827,34 +860,10 @@ class _Runner:
             rows: Optional[int] = _modality(chunk[0].state)[1]
         except UnsupportedCapability:  # a provider-specific input: its row count is the provider's to check
             rows = None
-        checked = []
-        for item, results in zip(chunk, answers, strict=True):
-            if isinstance(results, (str, bytes)) or not isinstance(results, Sequence):
-                raise InvalidDecisionResponse(
-                    f"question {item.ask.id!r}: expected a sequence of results (one per input row), got "
-                    f"{type(results).__name__}"
-                )
-            results = tuple(results)
-            if rows is not None and len(results) != rows:
-                raise InvalidDecisionResponse(f"question {item.ask.id!r}: {len(results)} results for {rows} input rows")
-            question = item.ask.question
-            digest = question.digest()
-            options = None if isinstance(question, Boolean) else tuple(question.option_ids)
-            wrong = [
-                i
-                for i, result in enumerate(results)
-                if not isinstance(result, (ChoiceResult, BooleanResult, ScoreResult))
-                or result.question_digest != digest
-                or result.kind != question.kind
-                or (options is not None and tuple(i for i, _ in getattr(result, "distribution", ())) != options)
-            ]
-            if wrong:
-                raise InvalidDecisionResponse(
-                    f"question {item.ask.id!r}: results {wrong} do not answer it (another question's digest or "
-                    "kind, options other than its own in its order, or not a decision result)"
-                )
-            checked.append(results)
-        return checked
+        return [
+            _check_results(item.ask.question, results, rows, f"question {item.ask.id!r}")
+            for item, results in zip(chunk, answers, strict=True)
+        ]
 
     def _call(self, chunk: list[_Ready]) -> list[Sequence[DecisionResult]]:
         questions = [item.ask.question for item in chunk]

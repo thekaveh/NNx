@@ -297,3 +297,12 @@ def test_diffusion_step_reports_loss_and_error_equal(tmp_path, monkeypatch):
         assert idp.train_edp.loss == idp.train_edp.error, (
             f"diffusion step contract violated: loss={idp.train_edp.loss} != error={idp.train_edp.error}"
         )
+
+
+def test_the_step_factory_refuses_a_schedule_enum_member_before_training():
+    import pytest
+
+    from nnx.diffusion import NoiseSchedulers, diffusion_train_step_factory
+
+    with pytest.raises(TypeError, match="NoiseSchedule"):
+        diffusion_train_step_factory(NoiseSchedulers.COSINE)  # type: ignore[arg-type]

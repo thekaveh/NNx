@@ -18,7 +18,13 @@ from pathlib import Path
 
 import pytest
 
-from scripts.release.finalize_changelog import finalize, release_notes
+from tests._repo_files import repo_file
+
+# Repository-only: the sdist ships tests/ but not scripts/, examples/ or docs/,
+# so a packager running its suite skips this module instead of failing collection.
+repo_file("scripts", "release", "finalize_changelog.py")
+
+from scripts.release.finalize_changelog import finalize, release_notes  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).parent / "fixtures" / "release_finalize"
@@ -168,3 +174,75 @@ def test_release_please_bumps_the_readme_version_line_and_its_pypi_copy_alike():
     bumped = _release_please_bump(readme, "9.8.7")
     assert "NNx 9.8.7 and its unreleased changes" in bumped
     assert _release_please_bump(pypi, "9.8.7").count("NNx 9.8.7 and") == 1
+
+
+_SHIPPED = """# Changelog
+
+## [Unreleased]
+
+### Fixed
+
+- A shipped fix.
+"""
+
+_SYNCED = """# Changelog
+
+## [0.9.0](https://example.invalid) (2030-01-01)
+
+* generated A
+
+## [Unreleased]
+
+### Added
+
+- A develop-only feature.
+
+### Fixed
+
+- A shipped fix.
+- A develop-only fix.
+
+## [0.8.0]
+
+- old
+"""
+
+
+def test_the_post_release_sync_files_only_what_the_release_shipped():
+    """Entries develop added after the release branched stay in
+    [Unreleased]; only the shipped ones move under the version."""
+    finalized = finalize(_SYNCED, _SHIPPED)
+    unreleased, rest = finalized.split("## [0.9.0]", 1)
+    assert "A develop-only feature." in unreleased and "A develop-only fix." in unreleased
+    assert "A shipped fix." not in unreleased
+    released = rest.split("## [0.8.0]", 1)[0]
+    assert "A shipped fix." in released and "develop-only" not in released and "generated A" not in released
+    assert "### Added" in unreleased and unreleased.index("### Added") < unreleased.index("### Fixed")
+    assert finalize(finalized) == finalized
+
+
+def test_an_entry_edited_after_the_release_is_refused_rather_than_misfiled():
+    edited = _SYNCED.replace("- A shipped fix.", "- A shipped fix, reworded.")
+    with pytest.raises(ValueError, match="fix the changelog by hand"):
+        finalize(edited, _SHIPPED)
+
+
+def test_no_changelog_section_lists_one_entry_twice():
+    """merge=union keeps both sides of an edited line: two entries with one
+    bold title in a section are a union-merge duplicate, not two changes."""
+    import collections
+
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    for section in re.split(r"\n## ", text):
+        titles = re.findall(r"^- \*\*(.+?)\*\*", section, flags=re.M)
+        # A title ending in ":" is a category label ("Critical:"), repeated by design.
+        repeated = [t for t, count in collections.Counter(titles).items() if count > 1 and not t.endswith(":")]
+        assert not repeated, (section.splitlines()[0], repeated)
+
+
+def test_a_later_entry_keeps_its_blank_lines_and_fenced_code():
+    synced = _SYNCED.replace(
+        "- A develop-only fix.\n", "- A develop-only fix.\n\n  ```python\n  x = 1\n\n  y = 2\n  ```\n"
+    )
+    unreleased = finalize(synced, _SHIPPED).split("## [0.9.0]", 1)[0]
+    assert "  ```python\n  x = 1\n\n  y = 2\n  ```" in unreleased

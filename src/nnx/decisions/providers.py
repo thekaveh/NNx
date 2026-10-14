@@ -1,10 +1,13 @@
 """Decision providers: declared capabilities, the provider protocol and the
-fixed-head NNx adapter (FEAT-009)."""
+fixed-head NNx adapter."""
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import numbers
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Protocol, Union, runtime_checkable
 
@@ -21,12 +24,57 @@ from .schema import (
     validate_response,
 )
 
+# Set while a synchronous entry point (DecisionJob.run, benchmark.collect)
+# runs, so a provider's check() can refuse what only its async path serves
+# before a call is counted, even inside an event loop (a notebook cell). It
+# holds the loop the entry point was called from (None outside one): a loop
+# a provider starts itself (asyncio.run inside decide) is not synchronous.
+_NOT_SYNCHRONOUS = object()
+_SYNC_CALLER: ContextVar[Any] = ContextVar("nnx_decisions_sync_caller", default=_NOT_SYNCHRONOUS)
+
+
+def _running_loop() -> Any:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
+def _synchronous_caller() -> bool:
+    """Whether the current code runs directly under a synchronous entry point."""
+    return _SYNC_CALLER.get() is _running_loop()
+
+
+def _synchronous(function: Any) -> Any:
+    @functools.wraps(function)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        token = _SYNC_CALLER.set(_running_loop())
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _SYNC_CALLER.reset(token)
+
+    return wrapper
+
+
 if TYPE_CHECKING:
     from ..nn.nn_model import NNModel
 
 __all__ = ["Capabilities", "DecisionProvider", "FixedHeadProvider"]
 
 Question = Union[Choice, Boolean, Score]
+
+
+def _check_max_batch(max_batch: Any) -> None:
+    if max_batch is not None and (
+        isinstance(max_batch, bool) or not isinstance(max_batch, numbers.Integral) or max_batch < 1
+    ):
+        raise InvalidDecisionRequest(f"max_batch must be a positive integer or None, got {max_batch!r}")
+
+
+def _check_name(name: Any) -> None:
+    if not isinstance(name, str) or not name:
+        raise InvalidDecisionRequest(f"a provider name must be a non-empty string, got {name!r}")
 
 
 @dataclass(frozen=True)
@@ -42,7 +90,8 @@ class Capabilities:
             ``"text"``).
         dynamic_labels: whether a request may bring any option set; ``False``
             means the options must map exactly onto ``labels``.
-        labels: the fixed label space when ``dynamic_labels`` is ``False``.
+        labels: the fixed label space when ``dynamic_labels`` is ``False``;
+            ``None`` declares none, so option sets are not checked.
         max_batch: the most inputs per call (``None``: unbounded).
         inference / training / export: whether the backend can answer, be
             trained and be exported. A hosted provider declares inference
@@ -59,15 +108,23 @@ class Capabilities:
     export: bool = False
 
     def __post_init__(self) -> None:
+        # A string is one value, not a set of its characters.
+        for name in ("primitives", "modalities", "labels"):
+            if isinstance(getattr(self, name), (str, bytes)):
+                raise InvalidDecisionRequest(
+                    f"Capabilities.{name} must be a collection, not the string {getattr(self, name)!r}"
+                )
         object.__setattr__(self, "primitives", frozenset(self.primitives))
         object.__setattr__(self, "modalities", frozenset(self.modalities))
+        unknown = sorted(self.primitives - {"choice", "boolean", "score"})
+        if unknown:
+            raise InvalidDecisionRequest(f"unknown primitives {unknown}: a provider answers choice, boolean or score")
         if self.labels is not None:
             object.__setattr__(self, "labels", tuple(self.labels))
-        max_batch = self.max_batch
-        if max_batch is not None and (
-            isinstance(max_batch, bool) or not isinstance(max_batch, numbers.Integral) or max_batch < 1
-        ):
-            raise ValueError(f"max_batch must be a positive integer or None, got {max_batch!r}")
+        for name in ("dynamic_labels", "inference", "training", "export"):
+            if not isinstance(getattr(self, name), bool):
+                raise InvalidDecisionRequest(f"Capabilities.{name} must be a bool, got {getattr(self, name)!r}")
+        _check_max_batch(self.max_batch)
 
     def check(
         self,
@@ -150,8 +207,8 @@ class FixedHeadProvider:
     one :class:`Boolean`: ``question``, the one it was trained for. Its
     single probability is bound to no prompt, so any other Boolean (another
     digest) raises :class:`UnsupportedCapability` before :attr:`model_calls`
-    advances. Probabilities come from the model's ``predict_proba``
-    (FEAT-001), which evaluates in eval mode and restores every submodule's
+    advances. Probabilities come from the model's ``predict_proba``,
+    which evaluates in eval mode and restores every submodule's
     training mode; they are computed in float64 from the returned logits,
     so half-precision models meet the ``1e-6`` tolerance.
 
@@ -169,8 +226,10 @@ class FixedHeadProvider:
         model: the trained :class:`~nnx.NNModel`.
         labels: one name per output class, in column order; defaults to the
             model's ``TaskSpec`` labels, and must equal them when both exist.
-        option_map: request option id → head label (a bijection).
-        ordinal: whether the class order is meaningful (enables Score).
+        option_map: request option id → head label (a bijection);
+            categorical heads only.
+        ordinal: whether the class order is meaningful (enables Score);
+            categorical heads only.
         max_batch: the most inputs per call.
         name: the provider name recorded on results.
         question: the :class:`Boolean` a Bernoulli head was trained to
@@ -190,17 +249,33 @@ class FixedHeadProvider:
     def __post_init__(self) -> None:
         import torch
 
+        # Configuration fails here, as a decision error, not at the first call.
+        _check_max_batch(self.max_batch)
+        if not isinstance(self.ordinal, bool):
+            raise InvalidDecisionRequest(f"ordinal must be a bool, got {self.ordinal!r}")
+        _check_name(self.name)
         adapter = getattr(self.model, "task_adapter", None)
         spec = getattr(adapter, "spec", None)
         kind = getattr(spec, "kind", None)
-        if kind == "regression":
+        regression_loss = isinstance(
+            self.model.loss_fn, (torch.nn.MSELoss, torch.nn.L1Loss, torch.nn.SmoothL1Loss, torch.nn.HuberLoss)
+        )
+        if kind == "regression" or (kind is None and regression_loss):
+            # A regression loss without a task still trains a regression head:
+            # a softmax of its outputs is no probability distribution.
             raise UnsupportedCapability("a regression head justifies no decision primitive")
         task_labels = getattr(spec, "labels", None)
-        if self.labels is not None and task_labels is not None and tuple(self.labels) != tuple(task_labels):
+        if isinstance(self.labels, Iterable) and task_labels is not None and tuple(self.labels) != tuple(task_labels):
             raise InvalidDecisionRequest(
                 f"labels {tuple(self.labels)} disagree with the model's task labels {tuple(task_labels)}"
             )
         labels = self.labels if self.labels is not None else task_labels
+        if isinstance(labels, (str, bytes)):  # one value, not a set of its characters
+            raise InvalidDecisionRequest(f"labels must be a sequence of strings, not the string {labels!r}")
+        if labels is not None and not isinstance(labels, Iterable):
+            raise InvalidDecisionRequest(f"labels must be a sequence of strings, got {type(labels).__name__}")
+        if labels is not None and not all(isinstance(x, str) and x for x in tuple(labels)):
+            raise InvalidDecisionRequest(f"labels must be non-empty strings, got {tuple(labels)!r}")
         width = _head_width(self.model, spec)
         bernoulli = kind == "multilabel" or isinstance(self.model.loss_fn, torch.nn.BCEWithLogitsLoss)
         if bernoulli:
@@ -215,6 +290,10 @@ class FixedHeadProvider:
                 )
             if not isinstance(self.question, Boolean):
                 raise InvalidDecisionRequest(f"question must be a Boolean, got {type(self.question).__name__}")
+            if self.ordinal or self.option_map is not None:  # a Boolean has no options to order or map
+                raise InvalidDecisionRequest(
+                    "ordinal= and option_map= apply to a categorical head, not a Bernoulli one"
+                )
             self._head = "bernoulli"
             self.labels = tuple(labels) if labels is not None else None
             return
@@ -302,21 +381,34 @@ class FixedHeadProvider:
         if batch_size == 0:
             return []
 
-        from ..prediction import PredictionValidationError, ProbabilitySpec, prediction_from_logits
+        from ..prediction import (
+            NonFiniteLogitsError,
+            PredictionValidationError,
+            ProbabilitySpec,
+            prediction_from_logits,
+        )
 
         kind = "bernoulli" if self._head == "bernoulli" else "categorical"
         spec = ProbabilitySpec(kind=kind, class_axis=1, labels=caps.labels)
         self.model_calls += 1
         try:
             prediction = self.model.predict_proba(inputs, spec)
+        except NonFiniteLogitsError as error:  # the backend failed on a valid request
+            raise ProviderFailure(f"{self.name}: the model produced non-finite logits: {error}") from error
         except PredictionValidationError as error:
             raise InvalidDecisionRequest(f"{self.name}: the head's output does not fit its labels: {error}") from error
         except Exception as error:  # the backend failed on a valid, supported request
             raise ProviderFailure(f"{self.name}: the model failed to predict: {error}") from error
         logits = np.asarray(prediction.logits)
+        # Known only once the head ran (its width was unknown at construction):
+        # a misconfigured adapter on either path.
         if kind == "bernoulli" and (logits.ndim != 2 or logits.shape[1] != 1):
-            raise UnsupportedCapability(
+            raise InvalidDecisionRequest(
                 f"a Boolean needs a one-output head; this head produced shape {tuple(logits.shape)}"
+            )
+        if logits.ndim != 2:
+            raise InvalidDecisionRequest(
+                f"a categorical head must produce (rows, classes) logits; this head produced shape {tuple(logits.shape)}"
             )
         # Recomputed in float64 so half-precision logits still sum to 1 within 1e-6.
         probabilities = np.asarray(prediction_from_logits(logits.astype(np.float64), spec).probabilities)

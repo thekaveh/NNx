@@ -178,3 +178,22 @@ def test_load_pretrained_rejects_remap_collisions():
     }
     with pytest.raises(ValueError, match="collapses"):
         load_pretrained(target, src, prefix="model.")
+
+
+def test_a_shape_mismatch_refuses_the_load_before_copying_anything():
+    """A head of another width (1000 classes into 3) used to raise after the
+    body had already been copied; now the module is untouched."""
+    import torch
+    from torch import nn
+
+    from nnx.finetune import load_pretrained
+
+    torch.manual_seed(0)
+    source = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 10))
+    target = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 3))
+    before = {k: v.clone() for k, v in target.state_dict().items()}
+    with pytest.raises(RuntimeError, match=r"different shapes.*2\.weight"):
+        load_pretrained(target, source)
+    assert all(torch.equal(before[k], v) for k, v in target.state_dict().items())
+    head = {k: v for k, v in source.state_dict().items() if not k.startswith("2.")}
+    assert load_pretrained(target, head).loaded_keys == ["0.bias", "0.weight"]

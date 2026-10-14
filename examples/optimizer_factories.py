@@ -1,4 +1,4 @@
-"""Registered optimizer factories and AdamW (FEAT-013).
+"""Registered optimizer factories and AdamW.
 
 Demonstrates how a run uses an optimizer NNx does not ship, without
 disguising it as a built-in name:
@@ -73,7 +73,7 @@ def _step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
     loss.backward()
     for optimizer in ctx.optimizers.values():
         optimizer.step()
-    return NNEvaluationDataPoint(f1=0.0, recall=0.0, accuracy=0.0, precision=0.0, loss=float(loss.detach()), error=0.0)
+    return NNEvaluationDataPoint(loss=float(loss.detach()))
 
 
 def optimizer_factories_workflow() -> None:

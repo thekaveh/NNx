@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import runpy
 import subprocess
 import sys
@@ -10,7 +11,11 @@ from pathlib import Path
 
 import pytest
 
+from tests._repo_files import repo_file
+
 ROOT = Path(__file__).resolve().parents[1]
+# Every test here runs a script under examples/, which the sdist does not ship.
+repo_file("examples")
 # Unnumbered scripts are outside the numbered glob: register them here so
 # they are imported (without running main) and, below, executed.
 UNNUMBERED_EXAMPLES = [
@@ -51,9 +56,57 @@ EXAMPLES = sorted((ROOT / "examples").glob("[0-9][0-9]_*.py")) + [
 ]
 
 
+# Distributions whose import name is not their normalised distribution name.
+_IMPORT_NAMES = {"scikit-learn": "sklearn", "pyyaml": "yaml"}
+
+
+def _core_import_names() -> frozenset[str]:
+    """Top-level import names of pyproject's core ``[project] dependencies``
+    (regex over the raw text: ``tomllib`` is 3.11+ and NNx supports 3.10)."""
+    import re
+
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    block = re.search(r"^dependencies = \[(.*?)^\]", text, re.M | re.S)
+    assert block is not None, "pyproject.toml has no [project] dependencies list"
+    lines = (line.split("#", 1)[0] for line in block.group(1).splitlines())
+    requirements = re.findall(r'"([^"]+)"', "\n".join(lines))
+    distributions = (re.match(r"[A-Za-z0-9._-]+", req).group(0).lower() for req in requirements)
+    return frozenset(_IMPORT_NAMES.get(dist, dist.replace("-", "_").replace(".", "_")) for dist in distributions)
+
+
+def _skip_if_optional_extra_missing(exc: ImportError, what: str) -> None:
+    """Skip when ``exc`` is a missing optional extra: a third-party module
+    that is not installed and not a core dependency, or NNx's own
+    "pip install thekaveh-nnx[...]" error. Re-raise anything else (a broken
+    ``nnx`` import or a missing core dependency fails, never skips)."""
+    missing = exc.name or getattr(exc.__cause__, "name", None) or ""
+    top = missing.split(".", 1)[0]
+    if top == "nnx":
+        raise exc
+    if "thekaveh-nnx[" not in str(exc) and (not top or top in _core_import_names()):
+        raise exc
+    pytest.skip(f"{what} needs an optional extra: {exc}")
+
+
+def test_core_dependencies_never_count_as_optional_extras():
+    assert {"torch", "numpy", "pandas", "sklearn", "prettytable", "yaml", "tqdm", "filelock"} <= _core_import_names()
+    for name in ("torch", "sklearn", "yaml", "numpy.linalg", "nnx.vision"):
+        with pytest.raises(ImportError):
+            _skip_if_optional_extra_missing(ModuleNotFoundError(f"No module named {name!r}", name=name), "x")
+    with pytest.raises(ImportError):
+        _skip_if_optional_extra_missing(ImportError("cannot import name 'x'"), "x")  # no module named: a real bug
+    with pytest.raises(pytest.skip.Exception):
+        _skip_if_optional_extra_missing(ModuleNotFoundError("No module named 'plotly'", name="plotly"), "x")
+    with pytest.raises(pytest.skip.Exception):
+        _skip_if_optional_extra_missing(ImportError("pip install thekaveh-nnx[viz]"), "x")
+
+
 @pytest.mark.parametrize("example", EXAMPLES, ids=lambda path: path.stem)
 def test_example_imports_without_running_main(example):
-    runpy.run_path(str(example), run_name="__nnx_example_smoke__")
+    try:
+        runpy.run_path(str(example), run_name="__nnx_example_smoke__")
+    except ImportError as exc:
+        _skip_if_optional_extra_missing(exc, example.name)
 
 
 @pytest.mark.parametrize(
@@ -90,15 +143,26 @@ def test_example_imports_without_running_main(example):
 def test_representative_examples_run_end_to_end(name, tmp_path):
     env = os.environ.copy()
     env["NNX_TQDM_DISABLE"] = "1"
-    subprocess.run(
+    # conftest sets these for the in-process FAISS tests; a user's shell
+    # does not, so an example that needs them must set them itself.
+    env.pop("KMP_DUPLICATE_LIB_OK", None)
+    env.pop("OMP_NUM_THREADS", None)
+    done = subprocess.run(
         [sys.executable, str(ROOT / "examples" / name)],
         cwd=tmp_path,
         env=env,
-        check=True,
         capture_output=True,
         text=True,
         timeout=90,
     )
+    if done.returncode != 0:
+        # A missing optional extra (graph / vision) skips, as the import tests do.
+        missing = re.search(r"ModuleNotFoundError: No module named '([^']+)'", done.stderr)
+        if missing is not None:
+            _skip_if_optional_extra_missing(ImportError(missing.group(0), name=missing.group(1)), name)
+        if "thekaveh-nnx[" in done.stderr:
+            pytest.skip(f"{name} needs an optional extra")
+        raise AssertionError(f"{name} exited {done.returncode}:\n{done.stderr[-4000:]}")
 
 
 BOUNDED_EXAMPLE_HELPERS = [
@@ -176,8 +240,8 @@ def test_bounded_example_helpers_execute(name, helper, tmp_path, monkeypatch):
     helper's own assertions are the contract under test."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
-    namespace = runpy.run_path(str(ROOT / "examples" / name), run_name="__nnx_example_smoke__")
     try:
+        namespace = runpy.run_path(str(ROOT / "examples" / name), run_name="__nnx_example_smoke__")
         fn = namespace[helper]
         fn()
         if helper in {"dora_zero_row_composition", "manual_attention_lm_example"}:
@@ -187,7 +251,7 @@ def test_bounded_example_helpers_execute(name, helper, tmp_path, monkeypatch):
     except ImportError as exc:
         # Helpers that need an optional extra raise ImportError naming it:
         # an explicit skip in a core-only environment, never a silent pass.
-        pytest.skip(f"{name}:{helper} needs an optional extra: {exc}")
+        _skip_if_optional_extra_missing(exc, f"{name}:{helper}")
 
 
 def test_the_compile_benchmark_example_runs_with_its_documented_arguments(tmp_path):

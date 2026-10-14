@@ -350,8 +350,10 @@ def test_timeouts_are_explicit():
     async def slow():
         await Job.collect(_questions(2)).arun(SlowAsyncProvider(), state=TEXTS, limits=Limits(timeout=0.01))
 
-    with pytest.raises(JobTimeout, match="not rolled back"):
+    with pytest.raises(JobTimeout, match="not rolled back") as caught:
         asyncio.run(slow())
+    kinds = {(o.kind, o.sent) for o in caught.value.outcomes.values()}
+    assert ("cancelled", True) in kinds  # the call in flight when the timeout elapsed
 
 
 def test_outcome_kinds():
@@ -366,8 +368,7 @@ def test_outcome_kinds():
     with pytest.raises(JobFailed) as caught:
         Job.ask(Boolean("boom"), id="b").run(TextProvider(fail_on={"boom"}), state=TEXTS)
     assert caught.value.failed == ("b",)
-    kinds = {"answered", "failed", "skipped", "cancelled"}
-    assert {o.kind for o in result.outcomes.values()} <= kinds
+    assert caught.value.outcomes["b"].kind == "failed" and caught.value.completed == {}
 
 
 def _species_head() -> NNModel:

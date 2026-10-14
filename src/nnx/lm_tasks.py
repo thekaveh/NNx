@@ -1,5 +1,5 @@
 """A causal language-model task: declared alignment, masks and valid-token
-normalization (FEAT-034).
+normalization.
 
 A next-token step written by hand flattens ``(B, T, V)`` logits before any
 mask exists, divides by the batch count when it accumulates and returns
@@ -19,19 +19,23 @@ positions** — the objective's denominator, the NLL and the token accuracy
 all use exactly those. Shapes, dtypes, lengths and every non-ignored id are
 checked before any forward pass.
 
-- :meth:`CausalLMTask.objective` — a FEAT-004 objective: one ``"token_ce"``
+- :meth:`CausalLMTask.objective` — an objective: one ``"token_ce"``
   term per microbatch, the (smoothed) cross-entropy **sum** over valid
   positions with the valid count as its denominator, so accumulation
   windows normalize by the window's valid tokens. An all-masked microbatch
   contributes nothing, and an all-masked window takes no optimizer or
   scaler step (its gradients are cleared; schedulers still advance once per
-  epoch, and a plateau scheduler skips an epoch whose validation record is
+  epoch on the default epoch clock, or once per committed update on the
+  ``optimizer_update`` clock, and a plateau scheduler skips an epoch whose validation record is
   unavailable). The task configuration is
   checkpointed component state (``"lm.causal_task"``): a resume with another
   configuration is refused before the first resumed update.
 - :meth:`CausalLMTask.eval_step` — an ``eval_step_fn``: the epoch's
   **unsmoothed** NLL is the total valid-token negative log likelihood over
-  the valid-token count (independent of batching and padding), perplexity is
+  the valid-token count (independent of batching and right padding; the
+  model never receives the attention mask, so a mapping batch whose
+  ``attention_mask`` shows left padding is refused; ``pad_id`` alone does not
+  detect left padding, so right-pad the batch), perplexity is
   ``exp(NLL)`` (``+inf`` when it overflows, never a clipped finite value) and
   token accuracy is the top-1 rate. They are the record's ``loss`` and its
   ``metrics`` ``nll`` / ``perplexity`` / ``token_accuracy``; an epoch whose
@@ -170,6 +174,8 @@ class CausalLMTask:
         unknown = sorted(set(state) - known - {"tokenizer"})
         if unknown:
             raise LMTaskError(f"a causal-LM task state has unknown keys {unknown}")
+        if "vocab_size" not in state:
+            raise LMTaskError("a causal-LM task state needs its 'vocab_size'")
         return CausalLMTask(**{k: state[k] for k in known - {"kind"} if k in state}, tokenizer=state.get("tokenizer"))
 
     # ---------- batches ----------
@@ -186,8 +192,13 @@ class CausalLMTask:
         loss_mask])`` or a mapping ``{"inputs", "targets", "loss_mask"?}``.
         A loss mask (boolean, or 0/1 except in the ``(ids, loss_mask)``
         tuple) covers the ids (``"shift_inputs"``) or the targets
-        (``"pre_shifted"``). A mapping's ``attention_mask`` is never a loss
-        mask, but a position it pads that would still be scored is refused."""
+        (``"pre_shifted"``). A mapping's ``attention_mask`` aligns the same
+        way (the ids, or the targets when pre-shifted). It is never a loss
+        mask, but a position it pads that would still be scored is refused,
+        and so is padding before a real token (left or interior padding): the
+        model never receives the mask. Without one the task cannot detect
+        left padding (``pad_id`` only masks pad targets), so right-pad the
+        batch."""
         if isinstance(batch, Mapping):
             return self._split_mapping(batch)
         if isinstance(batch, torch.Tensor):
@@ -249,12 +260,21 @@ class CausalLMTask:
         self, attention_mask: Any, targets: torch.Tensor, loss_mask: Optional[torch.Tensor], *, shift: bool
     ) -> None:
         """An attention mask is never a loss mask, but a position it zeroes
-        that would still be scored is refused (padding scored as tokens)."""
+        that would still be scored is refused (padding scored as tokens).
+        The model never receives the mask, so padding before a real token
+        (left padding) is refused too: real tokens would attend to it."""
         if attention_mask is None:
             return
         if not isinstance(attention_mask, torch.Tensor):
             raise LMTaskError(f"attention_mask must be a tensor, got {type(attention_mask).__name__}")
+        if attention_mask.ndim != 2:  # checked before the shift slices a second axis
+            raise LMTaskError(f"attention_mask {tuple(attention_mask.shape)} does not fit the batch's tokens")
         padded = attention_mask == 0
+        if bool((padded[:, :-1] & ~padded[:, 1:]).any()):
+            raise LMTaskError(
+                "attention_mask has padding before a real token (left or interior padding); the model never "
+                "receives the mask, so real tokens would attend to the padding: right-pad the batch"
+            )
         if shift:
             padded = padded[:, 1:]
         if padded.shape != targets.shape:
@@ -388,7 +408,7 @@ class CausalLMTask:
             # Per-token NLL in (at least) float32 — no full-vocabulary float64
             # copy — summed in float64.
             per_token = torch.logsumexp(detached, dim=-1) - detached.gather(1, chosen.unsqueeze(1)).squeeze(1)
-            nll = float(per_token.double().sum())
+            nll = float(per_token.detach().cpu().double().sum())  # MPS has no float64
             correct = int((detached.argmax(dim=-1) == chosen).sum())
         return ce, nll, correct, n
 

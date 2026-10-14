@@ -299,3 +299,23 @@ def test_export_to_safetensors_uses_safetensors_when_available(tmp_path):
     assert set(loaded.keys()) == set(expected.keys())
     for k in expected:
         assert torch.equal(loaded[k], expected[k])
+
+
+@pytest.mark.skipif(not HAS_FAISS, reason="faiss-cpu not installed")
+def test_export_to_faiss_refuses_an_unknown_index_type_before_embedding(tmp_path):
+    calls = []
+
+    class Counting(_HashEmbedder):
+        def forward(self, texts):
+            calls.append(len(texts))
+            return super().forward(texts)
+
+    with pytest.raises(ValueError, match="unsupported index_type"):
+        export_to_faiss(Counting(vocab_size=64, dim=8), ["a", "b"], str(tmp_path / "x.faiss"), index_type="Bogus")
+    assert calls == []  # nothing was embedded
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5, True])
+def test_embed_texts_refuses_a_batch_size_below_one(bad):
+    with pytest.raises(ValueError, match="batch_size"):
+        embed_texts(_HashEmbedder(vocab_size=64, dim=8), ["a"], batch_size=bad)

@@ -137,3 +137,41 @@ def test_two_dim_tsne_checkpoint_logits_collects_across_batches(monkeypatch):
     assert captured["rows"] == 5
     assert captured["kwargs"]["perplexity"] == 4
     assert captured["kwargs"]["random_state"] == 0
+
+
+def test_two_dim_tsne_refuses_multi_output_targets_before_the_projection(monkeypatch):
+    import pytest
+
+    from nnx import vis_utils
+    from nnx.vis_utils import VisUtils
+
+    class _NeverTSNE:
+        def __init__(self, **kwargs):
+            raise AssertionError("t-SNE ran before the refusal")
+
+    class _FakeModel:
+        net = types.SimpleNamespace(unpack_batch=staticmethod(lambda batch: batch))
+
+        @staticmethod
+        def predict(X):
+            return types.SimpleNamespace(logits=np.zeros((len(X), 3)))
+
+    monkeypatch.setattr(vis_utils, "NNModel", types.SimpleNamespace(from_checkpoint=lambda checkpoint: _FakeModel()))
+    monkeypatch.setattr(vis_utils, "TSNE", _NeverTSNE)
+    ds = types.SimpleNamespace(output_dim=3, test_loader=[(torch.randn(4, 4), torch.ones(4, 3))])
+    with pytest.raises(ValueError, match="one class index per row"):
+        VisUtils.two_dim_tsne_checkpoint_logits(checkpoint=object(), ds=ds, n_samples=4, renderer=None)
+
+
+def test_multi_line_plot_legends_every_dash_style_and_checks_label_counts():
+    import pytest
+
+    from nnx.vis_utils import VisUtils
+
+    x = [0, 1, 2]
+    common = dict(title="t", x_axis_label="x", y_axis_label="y", renderer=None)
+    fig = VisUtils.multi_line_plot(x=x, yss=[[x], [x, x]], yss_legend=(["a", "b"], ["x", "y"]), **common)
+    legend = [trace.name for trace in fig.data if trace.showlegend is not False]
+    assert "x" in legend and "y" in legend
+    with pytest.raises(ValueError, match="label per group"):
+        VisUtils.multi_line_plot(x=x, yss=[[x], [x, x]], yss_legend=(["a"], ["x", "y"]), **common)

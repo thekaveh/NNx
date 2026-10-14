@@ -66,7 +66,9 @@ def load_pretrained(
             entries don't fire once a key has been remapped.
         strict: when True, raise if any source key has no target match
             OR any target key has no source. Default False (fine-tuning
-            commonly partial-loads).
+            commonly partial-loads). Either way a key both sides hold
+            with different shapes raises ``RuntimeError`` before anything
+            is copied.
         prefix: optional prefix to strip from source keys before
             matching. E.g., ``prefix="model."`` turns ``model.layer.0``
             into ``layer.0``. Applied BEFORE ``key_map``.
@@ -125,6 +127,21 @@ def load_pretrained(
             "load_pretrained(strict=True) found mismatches:\n"
             f"  missing in source:    {missing_keys}\n"
             f"  unexpected in source: {unexpected_keys}"
+        )
+
+    # A key both sides hold with different shapes would make load_state_dict
+    # raise after it had already copied every other tensor: refuse first,
+    # so a refused load leaves the module untouched.
+    target_state = module.state_dict()
+    mismatched = [
+        f"{key} {tuple(remapped[key].shape)} -> {tuple(target_state[key].shape)}"
+        for key in loaded_keys
+        if isinstance(remapped[key], torch.Tensor) and remapped[key].shape != target_state[key].shape
+    ]
+    if mismatched:
+        raise RuntimeError(
+            "load_pretrained: these keys have different shapes in the source and the module (nothing was "
+            f"loaded): {mismatched}. Drop them from the source, or rename them with key_map, to load the rest."
         )
 
     # 4. Apply only the overlapping keys. PyTorch's load_state_dict

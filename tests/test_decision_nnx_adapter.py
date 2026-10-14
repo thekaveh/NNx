@@ -114,7 +114,11 @@ def test_task_labels_supply_the_label_space():
     model = _classifier(task=TaskSpec.categorical(3, labels=LABELS))
     provider = FixedHeadProvider(model)
     assert provider.capabilities().labels == LABELS
-    assert provider.decide(_animals("dog", "fox", "cat"), X)[0].top in LABELS
+    order = ("dog", "fox", "cat")  # a permutation of the task's label order
+    with torch.no_grad():
+        probs = torch.softmax(model.net(X), dim=1)[:, [LABELS.index(name) for name in order]]
+    expected = [order[i] for i in probs.argmax(dim=1).tolist()]  # first maximum on ties, as .top
+    assert [result.top for result in provider.decide(_animals(*order), X)] == expected == ["cat", "dog", "cat"]
 
 
 def test_heads_serve_only_the_primitives_they_justify():
@@ -146,6 +150,8 @@ def test_heads_serve_only_the_primitives_they_justify():
         binary.decide(_animals("cat", "dog", "fox"), X)
     with pytest.raises(UnsupportedCapability, match="regression head"):
         FixedHeadProvider(_classifier(1, Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression(1)))
+    with pytest.raises(UnsupportedCapability, match="regression head"):  # a regression loss without a task
+        FixedHeadProvider(_classifier(2, Losses.MEAN_SQUARED_ERROR), labels=("lo", "hi"))
     with pytest.raises(UnsupportedCapability, match="multi-output Bernoulli"):
         FixedHeadProvider(_classifier(3, Losses.BINARY_CROSS_ENTROPY, task=TaskSpec.multilabel(3)))
 
@@ -188,7 +194,7 @@ def test_multi_output_bernoulli_heads_are_rejected_with_or_without_a_task():
         FixedHeadProvider(_classifier(3, Losses.BINARY_CROSS_ENTROPY))  # no task: the net's width decides
     wide = NNModel(module=nn.Linear(2, 3), params=NNModelParams(loss=Losses.BINARY_CROSS_ENTROPY))
     provider = FixedHeadProvider(wide, question=Boolean("Is it a cat?"))  # width unknown until the head runs
-    with pytest.raises(UnsupportedCapability, match="one-output head"):
+    with pytest.raises(InvalidDecisionRequest, match="one-output head"):
         provider.decide(Boolean("Is it a cat?"), X)
 
 
@@ -246,3 +252,69 @@ def test_empty_batches_answer_nothing_without_calling_the_model_and_raw_is_owned
     first, *_ = provider.decide(question, X)
     assert first.raw.base is None  # a copy, not a view keeping the whole batch alive
     assert question.digest() is question.digest()  # computed once per question
+
+
+@pytest.mark.parametrize("bad", [{"max_batch": 0}, {"max_batch": True}, {"ordinal": "no"}, {"name": ""}])
+def test_a_fixed_head_provider_is_configured_at_construction(bad):
+    """A bad setting fails at construction as a decision error, not at the
+    first call (where jobs reported it as a provider failure)."""
+    with pytest.raises(InvalidDecisionRequest):
+        FixedHeadProvider(_classifier(3), labels=("cat", "dog", "fox"), **bad)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [{"primitives": "choice"}, {"primitives": {"chioce"}}, {"labels": "ab"}, {"inference": "yes"}, {"max_batch": 0}],
+)
+def test_capabilities_refuse_malformed_declarations(bad):
+    from nnx.decisions import Capabilities
+
+    fields = {"primitives": {"choice"}, "modalities": {"text"}, **bad}
+    with pytest.raises(InvalidDecisionRequest):
+        Capabilities(**fields)
+
+
+def test_non_finite_logits_are_a_provider_failure():
+    """NaN logits are the backend failing on a valid request, not a
+    malformed request (decide_result returns Err("provider_failure"))."""
+    from torch import nn
+
+    from nnx.decisions import ProviderFailure
+
+    model = NNModel(module=nn.Linear(2, 3), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    with torch.no_grad():
+        model.net.weight.fill_(float("nan"))
+    provider = FixedHeadProvider(model, labels=("cat", "dog", "fox"))
+    with pytest.raises(ProviderFailure, match="non-finite"):
+        provider.decide(_animals("cat", "dog", "fox"), X)
+
+
+def test_fixed_head_labels_and_output_shapes_are_decision_errors():
+    from torch import nn
+
+    with pytest.raises(InvalidDecisionRequest, match="not the string"):
+        FixedHeadProvider(NNModel(module=nn.Linear(2, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY)), labels="ab")
+    bce = NNModel(module=nn.Linear(2, 1), params=NNModelParams(loss=Losses.BINARY_CROSS_ENTROPY))
+    with pytest.raises(InvalidDecisionRequest, match="non-empty strings"):
+        FixedHeadProvider(bce, labels=("",), question=Boolean("Is it a cat?"))
+
+    class Seg(nn.Module):
+        def forward(self, x):
+            return x.new_zeros(x.shape[0], 3, 4)  # (N, C, L): class-first but not (rows, classes)
+
+    seg = FixedHeadProvider(
+        NNModel(module=Seg(), params=NNModelParams(loss=Losses.CROSS_ENTROPY)), labels=("cat", "dog", "fox")
+    )
+    with pytest.raises(InvalidDecisionRequest, match="rows, classes"):
+        seg.decide(_animals("cat", "dog", "fox"), X)
+
+
+def test_a_bernoulli_head_refuses_categorical_settings_and_labels_must_be_iterable():
+    from nnx.decisions import InvalidDecisionRequest
+
+    bce = _classifier(1, Losses.BINARY_CROSS_ENTROPY)
+    for extra in ({"ordinal": True}, {"option_map": {"x": "y"}}):
+        with pytest.raises(InvalidDecisionRequest, match="categorical head, not a Bernoulli"):
+            FixedHeadProvider(bce, question=Boolean("Is it a cat?"), **extra)
+    with pytest.raises(InvalidDecisionRequest, match="sequence of strings, got int"):
+        FixedHeadProvider(_classifier(3, Losses.CROSS_ENTROPY), labels=3)

@@ -1,4 +1,4 @@
-"""Typed decisions on Jev models through the TypeSafe SDK (FEAT-010).
+"""Typed decisions on Jev models through the TypeSafe SDK.
 
 ``nnx.decisions.JevProvider`` sends NNx's typed questions to a Jev model with
 one ``system_one`` call per text — every question about that text in the same
@@ -18,8 +18,8 @@ request — and returns validated results in each question's own order:
      ``JevRateLimited`` with the service's request id; the SDK's
      ``RetryPolicy`` owns retries (disabled here), so the adapter sends it
      once.
-  4. **Async.** The same questions through ``adecide_many`` and an async
-     client.
+  4. **Async.** The Choice and Boolean questions through ``adecide_many``
+     and an async client.
 
 Requires the ``jev`` extra: ``pip install "thekaveh-nnx[jev]"``. In practice
 the provider builds its own client from ``TYPESAFE_API_KEY``. This example
@@ -121,7 +121,7 @@ def decision_jev_workflow() -> dict:
             raise AssertionError("expected a rate limit")
     assert rate_limit == {"type": "JevRateLimited", "request_id": "req-1", "requests": 1}
 
-    # 4. The same questions through the async client.
+    # 4. The Choice and Boolean questions through the async client.
     async def run_async():
         transport, _ = _service()
         async with AsyncTypeSafeClient(api_key="offline-key", transport=transport, retry=no_retries) as client:

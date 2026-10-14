@@ -1,17 +1,18 @@
 # 15. NNx vs Lightning / HF / fastai / Composer
 
 An evidence-oriented, scope-explicit comparison of NNx against nearby PyTorch
-training and specialization toolkits. (Comparing your own runs — repeated
-seeds, paired configurations — is `nnx.comparison`, described in
-[`docs/concepts.md` §23](concepts.md).) Competitor behavior was last checked
-against official documentation on **2026-08-08**; follow the linked sources
-before making a version-sensitive platform decision. NNx's own claims about
-**combinations** of its features — which are verified, refused or unverified on
-which profile — live in the
-[feature-composition matrix](feature-composition.md) (for example accumulation
-`TC-01`, DDP parity `TC-04`, compile and resume `CR-02`, compile with QAT refused
-`MT-01`, CUDA AMP unverified on CPU `TC-06`); the rows below describe single
-capabilities.
+training and specialization toolkits. Comparing your own runs (repeated
+seeds, paired configurations) is `nnx.comparison`, described in
+[`docs/concepts.md` §23](concepts.md#23-multi-seed-summaries-and-paired-comparisons-nnxcomparison). Competitor behavior was last checked
+against official documentation on **2026-08-08**. Follow the linked sources
+before making a version-sensitive platform decision.
+
+NNx's own claims about **combinations** of its features live in the
+[feature-composition matrix](feature-composition.md). It records which
+combinations are verified, refused or unverified on which profile. Examples
+are accumulation `TC-01`, DDP parity `TC-04`, compile and resume `CR-02`,
+compile with QAT refused `MT-01`, and CUDA AMP unverified on CPU `TC-06`. The
+rows below describe single capabilities.
 
 ## 1. Quick decision matrix
 
@@ -47,7 +48,7 @@ Each row: what NNx ships today, the credible competitor on that axis, and the sc
 | Aspect | NNx | Lightning |
 |---|---|---|
 | Loop abstraction | `NNModel.train(params, train_step_fn=...)` — functional injection hook | `LightningModule.training_step(self, batch, batch_idx)` — class method override |
-| Callback bus | `Callback.on_{train,epoch}_{begin,end}` — 4 hooks | `Callback.on_*` — ~30 hooks |
+| Callback bus | `Callback.on_{train,epoch}_{begin,end}` and `on_optimizer_update` — 5 hooks | `Callback.on_*` — ~30 hooks |
 | Auto-resume | Content-addressed: `resume_from_run_id=run.id` + `resume_from_checkpoint="last"` | `Trainer.fit(..., ckpt_path=path_or_last)` restores full training state |
 | Custom step | `train_step_fn=...` kwarg | Subclass override |
 
@@ -148,11 +149,10 @@ NNx publishes to the same Hub HF uses; there's no separate NNx model zoo.
 | Aspect | NNx | fastai | Lightning |
 |---|---|---|---|
 | LR finder | Yes (`nnx.lr_finder`, Smith 2017) | Yes (`Learner.lr_find`) | Yes (`Tuner.lr_find`) |
-| Per-layer gradient norms | Yes (`nnx.viz.gradient_flow`, Plotly bar chart) | Hook-based recipes | `grad_norm` utility from `on_before_optimizer_step` |
+| Per-parameter gradient norms | Yes (`nnx.viz.gradient_flow`, Plotly bar chart, one bar per parameter tensor) | Hook-based recipes | `grad_norm` utility from `on_before_optimizer_step` |
 | `_repr_html_` for runs in Jupyter | Yes (`NNRun._repr_html_`) | Notebook-native displays | Rich notebook/logging integrations; no `NNRun` equivalent |
 | PEP 561 `py.typed` marker | Yes | Check the installed fastai distribution/version | Yes |
 
-NNx's recently-shipped diagnostics close the most visible UX gap vs fastai's notebook ergonomics.
 
 ### 3.11. Label-conditioned (zero-shot) decisions
 
@@ -162,13 +162,14 @@ NNx's recently-shipped diagnostics close the most visible UX gap vs fastai's not
 | Model loading | Never: the caller passes a loaded model and tokenizer (and records the revision) | A Hub name (downloaded) or an already-loaded model and tokenizer passed to the pipeline | The caller loads a checkpoint (`GLiClassModel.from_pretrained`, a Hub name or a local path) and passes the model and tokenizer to its pipeline |
 | Scoring recorded with each result | Templates, label ids, scoring method, truncation, revision; `calibrated: False` | Scores only | Scores only |
 
-NNx ships only the NLI baseline as a provider; transfer to a decision task is
-measured on labelled records, never assumed, and GLiClass is a follow-on
+NNx ships only the NLI baseline as a provider. Transfer to a decision task is
+measured on labelled records, never assumed. GLiClass is a follow-on
 comparison under the same provider contract rather than a shipped adapter.
-A local label-conditioned scorer is a research pilot (FEAT-023), **experimental
-and no-go**: its mechanics are verified offline, and its empirical comparison
-against these baselines is blocked (resources not supplied; the empirical runs
-are outside this repository)
+
+A local label-conditioned scorer is a research pilot, **experimental
+and no-go**. Its mechanics are verified offline. Its empirical comparison
+against these baselines is blocked: resources were not supplied, and the
+empirical runs are outside this repository
 ([Decision-model pilot](decision-model-pilot.md)).
 
 ### 3.12. Decision-provider benchmarking
@@ -178,7 +179,7 @@ are outside this repository)
 | Aspect | NNx |
 |---|---|
 | Replay format | JSONL records (`nnx.decision-record/1`): sample id, question digest, provider, status, answer or reason, model revision, prompt identity, execution metadata; replay needs no provider, credentials or network |
-| Coverage statuses | `eligible`, `missing`, `duplicate`, `mismatched` (question digest), `invalid` (an answer that does not fit its question), `unsupported`, `failed` (with reasons) per sample; `extra` records; joined by sample id and digest, never row position |
+| Coverage statuses | Per sample: `eligible`, `missing`, `duplicate`, `mismatched` (question digest), `invalid` (an answer that does not fit its question), `unsupported`, `failed` (with reasons). `extra` records. Records are joined by sample id and digest, never row position. |
 | Capabilities | A provider's declared limits give `unsupported` rows with its own reason and denominator (a fixed head outside its label space), never scored as wrong |
 | Budgets | A live collection needs an explicit provider and `Budget(max_calls, max_samples)`; one attempt per batch; a cut-short batch is marked `partial_batch` |
 | Metrics | Accuracy, macro-F1, exact NLL, Brier, ECE and reliability bins, optional selective coverage / risk; unavailable values carry a reason and denominator |
@@ -189,6 +190,7 @@ no superiority claim.
 ## 4. When to use what
 
 **Use NNx when** any combination of these matters:
+
 - You need graph neural networks alongside LM / diffusion / PEFT in the same project.
 - Reproducibility via `run.id` content-addressing has organizational value.
 - You want model-surgery primitives (Net2Net, low-rank).
@@ -197,7 +199,7 @@ no superiority claim.
 
 **Use Lightning when** you need distributed training, accelerator strategy abstraction, or the deep callback-integrations ecosystem.
 
-**Use HF Transformers + PEFT + TRL when** you're doing production-scale LM work, you want the Hub model zoo, or you need QLoRA / RLHF / DeepSpeed integration.
+**Use HF Transformers + PEFT + TRL when** you're doing production-scale LM work. They also fit when you want the Hub model zoo, or need QLoRA / RLHF / DeepSpeed integration.
 
 **Use fastai when** you want strongly-opinionated defaults and built-in tabular / vision / collab-filtering stacks.
 
@@ -207,18 +209,26 @@ no superiority claim.
 
 This page documents NNx's current coverage as of `main`. Multi-node, elastic
 and sharded (FSDP / DeepSpeed) training, Lightning-style strategy abstraction,
-and a CLI equivalent are not shipped. Data parallelism is opt-in and single-node
-(FEAT-030, `nnx.distributed`): `torchrun` launches the processes, PyTorch's
-`DistributedDataParallel` averages gradients, and NNx makes every update equal
-the union batch's, keeps one writer rank for artifacts, and refuses — on every
-rank together — what it does not cover (custom steps or objectives, mixed
-precision, `compile=`, a history journal, graph nets, an undeclared callback).
-`torch.compile` is opt-in and deliberately narrow (FEAT-029, `nnx.compilation`):
-the built-in train step's full-precision (FP32) forward on built-in non-graph
-nets, refused with custom steps, reduced precision or topology-changing
-callbacks (QAT), and not combined with DDP or quantization; it guarantees no
-speedup — `nnx.benchmarking` measures compile cost and warmed latency on your
-hardware. If you need the missing capabilities, NNx today is the wrong tool.
+and a CLI equivalent are not shipped. If you need the missing capabilities,
+NNx today is the wrong tool.
+
+Data parallelism is opt-in and single-node (`nnx.distributed`). `torchrun`
+launches the processes, and PyTorch's `DistributedDataParallel` averages
+gradients. NNx makes every update equal the union batch's and keeps one
+writer rank for artifacts. On every rank together, it refuses what it does
+not cover:
+
+- custom steps or objectives, mixed precision and `compile=`;
+- a history journal, graph nets and batch normalization;
+- topology-changing callbacks (QAT) and loaders not built by `nnx.distributed`;
+- an undeclared callback.
+
+`torch.compile` is opt-in and deliberately narrow (`nnx.compilation`). It
+covers the built-in train step's full-precision (FP32) forward on built-in
+non-graph nets. It is refused with custom steps, reduced precision or
+topology-changing callbacks (QAT), and is not combined with DDP or
+quantization. It guarantees no speedup; `nnx.benchmarking` measures compile
+cost and warmed latency on your hardware.
 
 This page does not promise untracked roadmap work. Future capabilities should
 appear here only after they ship or when they have a linked, approved public
@@ -226,7 +236,7 @@ issue.
 
 ## 6. Primary comparison sources
 
-- [Lightning checkpoint resume](https://lightning.ai/docs/pytorch/stable/common/checkpointing_basic.html)
+- [Lightning checkpoint resume](https://lightning.ai/docs/pytorch/stable/common/checkpointing_basic.html),
   [Lightning `Tuner.lr_find`](https://lightning.ai/docs/pytorch/stable/api/pytorch_lightning.tuner.tuning.Tuner.html),
   and [Lightning gradient inspection](https://lightning.ai/docs/pytorch/stable/debug/debugging_intermediate.html)
 - [Hugging Face generation](https://huggingface.co/docs/transformers/main_classes/text_generation),

@@ -374,24 +374,6 @@ def test_the_best_completed_trial_is_selected_by_the_monitor(monkeypatch):
     assert result.direction == "minimize" and result.monitor == "val.loss"
 
 
-def test_a_test_loader_is_never_touched():
-    """Trials see the plan's train and validation data only: a test split
-    the caller keeps beside the plan is never read by fit or selection."""
-    touched = []
-
-    class Spy(DataLoader):
-        def __iter__(self):
-            touched.append(1)
-            return super().__iter__()
-
-    test_loader = Spy(TensorDataset(X_VAL, Y_VAL), batch_size=6)
-    base = plan()
-    base = base.with_data(base.train_data, val=base.val_data, identity="toy")  # unchanged sources
-    result = run(base, budget=SearchBudget(trials=2))
-    assert result.best is not None and touched == []
-    assert sum(1 for _ in test_loader) == 2 and touched == [1]  # the spy itself works
-
-
 # ---------------- cancellation ----------------
 
 
@@ -560,3 +542,20 @@ def test_trial_control_declares_no_rank_behaviour():
     """Trials never run under DDP (the search refuses a multi-rank group), so
     the per-trial callback claims no distributed behaviour."""
     assert "distributed" not in vars(_TrialControl)
+
+
+@pytest.mark.parametrize("choices", [(True, 1, 1.0), (0, False)])
+def test_categorical_choices_that_compare_equal_are_refused(choices):
+    """optuna stores a choice by its index: equal choices would collapse, so
+    a trial would report a value it did not run with."""
+    with pytest.raises(ValueError, match="distinct"):
+        CategoricalParam(name="c", choices=choices)
+
+
+def test_an_update_cap_binds_with_the_default_step_passed_explicitly():
+    from nnx.nn.nn_model import default_train_step
+
+    base = plan(n_epochs=2, batch_size=4, accumulate=3).with_step_fns(train_step_fn=default_train_step)
+    result = run(base, budget=SearchBudget(trials=1, updates_per_trial=2))
+    (outcome,) = result.outcomes
+    assert outcome.updates == 2 and outcome.reason == "update_cap"

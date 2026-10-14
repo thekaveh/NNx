@@ -401,3 +401,98 @@ def test_checkpoint_tsne_keeps_positional_and_keyword_inputs(monkeypatch):
         checkpoint, ds, n_samples=7, renderer=None, module=_MaskedClassifier(), batch_adapter=_MixedAdapter()
     )
     assert captured["rows"] == 7
+
+
+def test_a_materialized_lazy_module_resumes_statefully_from_last():
+    # LAST is written after the fit: its optimizer topology has the materialized shapes.
+    def lazy() -> nn.Module:
+        return nn.Sequential(nn.LazyLinear(8), nn.ReLU(), nn.Linear(8, 2))
+
+    module = lazy()
+    run = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY)).train(params=_params(_loader()))
+    resumed = lazy()
+    resumed(torch.randn(1, 4))  # materialize before a warm resume, as documented
+    model = NNModel(module=resumed, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    warm = model.train(params=_params(_loader(), epochs=3, resume_from_run_id=run.id, resume_mode="stateful"))
+    assert warm.resume_status is not None and warm.resume_status.mode == "stateful"
+
+
+def test_to_onnx_refuses_a_mapping_example_before_writing(tmp_path):
+    model = NNModel(module=nn.Linear(4, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    path = tmp_path / "model.onnx"
+    for example in ({"features": torch.randn(2, 4)}, (torch.randn(2, 4), {"mask": torch.ones(2)})):
+        with pytest.raises(TypeError, match="positional tensor inputs only"):
+            model.to_onnx(str(path), example)
+    assert not path.exists()
+
+
+def test_an_eval_step_fn_runs_in_eval_mode_and_the_modes_come_back():
+    from nnx import NNEvaluationDataPoint
+
+    seen = []
+
+    def evaluate(ctx):
+        seen.append(ctx.model.net.training)
+        return NNEvaluationDataPoint(loss=1.0)
+
+    module = nn.Sequential(nn.Linear(4, 8), nn.Dropout(0.5), nn.Linear(8, 2))
+    model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    model.train(params=_params(_loader(), val_loader=_loader(1)), eval_step_fn=evaluate)
+    assert seen == [False, False]
+    assert all(m.training for m in module.modules())  # the training modes came back
+
+
+def test_an_unbaked_pruned_runtime_module_trains_keeps_its_mask_and_resumes():
+    from nnx.prune import magnitude_prune
+
+    module = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+    magnitude_prune(module, 0.5, bake=False)
+    model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    run = model.train(params=_params(_loader()))
+    assert float((module[0].weight == 0).float().mean()) == pytest.approx(0.5)
+    warm = model.train(params=_params(_loader(), epochs=3, resume_from_run_id=run.id, resume_mode="stateful"))
+    assert warm.resume_status is not None and warm.resume_status.mode == "stateful"
+    assert float((module[0].weight == 0).float().mean()) == pytest.approx(0.5)
+
+
+def _writable_spy(monkeypatch):
+    # Torch warns about a read-only array once per process, so assert on the
+    # conversion itself rather than on that warning.
+    seen = []
+    from_numpy = torch.from_numpy
+
+    def spy(array):
+        seen.append(array.flags.writeable)
+        return from_numpy(array)
+
+    monkeypatch.setattr(torch, "from_numpy", spy)
+    X = np.random.default_rng(0).standard_normal((3, 4)).astype(np.float32)
+    X.flags.writeable = False  # what pandas' .to_numpy() returns
+    model = NNModel(module=nn.Linear(4, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    return seen, model, X
+
+
+def test_predict_hands_torch_a_writable_array(monkeypatch):
+    seen, model, X = _writable_spy(monkeypatch)
+    model.predict(X)
+    assert seen and all(seen)
+
+
+def test_onnx_exports_hand_torch_a_writable_array(tmp_path, monkeypatch):
+    pytest.importorskip("onnx")
+    from nnx.viz import netron_export
+
+    seen, model, X = _writable_spy(monkeypatch)
+    model.to_onnx(str(tmp_path / "model.onnx"), X)
+    netron_export(model, str(tmp_path / "netron.onnx"), X)
+    assert len(seen) >= 2 and all(seen)
+
+
+def test_a_parametrized_runtime_module_trains_and_resumes():
+    # The advice the train-time refusal gives for a registered net.
+    module = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+    torch.nn.utils.parametrizations.weight_norm(module[0])
+    model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    run = model.train(params=_params(_loader()))
+    warm = model.train(params=_params(_loader(), epochs=3, resume_from_run_id=run.id, resume_mode="stateful"))
+    assert warm.resume_status is not None and warm.resume_status.mode == "stateful"

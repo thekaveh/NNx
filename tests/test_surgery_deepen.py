@@ -437,3 +437,100 @@ def test_deepen_named_container_then_widen_by_numeric_key():
     wider = widen(deep, layer_name="1", new_width=6).eval()
     assert wider.get_submodule("1").out_features == 6 and wider.get_submodule("head").in_features == 6
     torch.testing.assert_close(wider(x), mixed(x), rtol=1e-5, atol=1e-5)
+
+
+def test_deepen_on_a_conv_net_head_updates_its_cached_forward_state():
+    """ConvNN resolves its per-layer activations from its params when they
+    are set, as FeedFwdNN does, so deepen's new params reach the forward."""
+    from nnx import Activations, NNConvParams
+    from nnx.nn.net.conv_nn import ConvNN
+
+    torch.manual_seed(0)
+    params = NNConvParams(
+        input_dim=64,
+        output_dim=3,
+        hidden_dims=[16],
+        conv_channels=[4],
+        kernel_size=3,
+        dropout_prob=0.0,
+        activation=Activations.RELU,
+    )
+    net = ConvNN(params).eval()
+    x = torch.randn(2, 64)
+    deeper = deepen(net, after_layer_name="fcs.0").eval()
+    assert deeper.params.hidden_dims == [16, 16] and len(deeper._hidden) == 2
+    torch.testing.assert_close(deeper(x), net(x), atol=1e-5, rtol=1e-5)
+
+
+def test_deepen_keeps_each_existing_childs_mode():
+    """The container and the new layers take the parent's mode; an existing
+    child in another mode (a train-mode Dropout under an eval container)
+    keeps it instead of being flattened."""
+    net = torch.nn.Sequential(
+        torch.nn.Linear(4, 4), torch.nn.ReLU(), torch.nn.Dropout(0.1), torch.nn.Linear(4, 2)
+    ).eval()
+    net[2].train()
+    deeper = deepen(net, after_layer_name="1")  # after the ReLU
+    assert deeper.training is False
+    modes = {type(m).__name__ + str(i): m.training for i, m in enumerate(deeper.children())}
+    assert modes == {
+        "Linear0": False,
+        "ReLU1": False,
+        "Linear2": False,
+        "ReLU3": False,
+        "Dropout4": True,
+        "Linear5": False,
+    }
+
+
+def test_deepen_refuses_a_sequential_it_cannot_rebuild_faithfully():
+    """A Sequential subclass (own forward) or a container with hooks would
+    lose them in the rebuilt plain nn.Sequential: refused, never a changed
+    forward."""
+
+    class Doubled(nn.Sequential):
+        def forward(self, x):
+            return super().forward(x) * 2
+
+    with pytest.raises(ValueError, match="Doubled"):
+        deepen(Doubled(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2)), after_layer_name="1")
+    hooked = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2))
+    hooked.register_forward_hook(lambda module, args, out: out * 2)
+    with pytest.raises(ValueError, match="hooks"):
+        deepen(hooked, after_layer_name="1")
+
+
+def test_deepen_a_feedfwd_net_in_eval_mode_keeps_eval_mode():
+    net = _ffn().eval()
+    deeper = deepen(net, after_layer_name="layers.0")
+    assert not deeper.layers.training
+    assert not any(layer.training for layer in deeper.layers)
+
+
+def test_deepen_refuses_an_adapted_layer_feeding_the_relu():
+    """A LoRA-wrapped Linear(8, 6) before the ReLU: the identity layer was
+    sized from the earlier Linear(4, 8) and the forward broke."""
+    from nnx import apply_lora_to
+
+    model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 6), nn.ReLU(), nn.Linear(6, 2))
+    apply_lora_to(model, "2")
+    with pytest.raises(ValueError, match="not an nn.Linear"):
+        deepen(model, after_layer_name="3")
+
+
+def test_deepen_walks_back_through_a_norm_to_the_feeding_linear():
+    """Linear -> BatchNorm1d -> ReLU is supported: the norm is skipped when
+    sizing the inserted identity Linear, and the output is preserved."""
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 8), nn.BatchNorm1d(8), nn.ReLU(), nn.Linear(8, 2)).eval()
+    x = torch.randn(5, 4)
+    deeper = deepen(model, after_layer_name="2").eval()
+    assert len(deeper) == 6
+    torch.testing.assert_close(deeper(x), model(x))
+
+
+def test_deepen_refuses_a_hooked_target_relu():
+    model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+    model[1].register_forward_hook(lambda module, args, out: out - 1.0)
+    with pytest.raises(ValueError, match="has hooks"):
+        deepen(model, after_layer_name="1")

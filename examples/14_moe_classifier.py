@@ -8,9 +8,7 @@ Demonstrates:
      ``num_experts``/``top_k``) with ``Nets.FEED_FWD_MOE`` gives a
      ``FeedFwdMoENN`` whose every hidden layer is an :class:`MoELinear`
      (the classifier head stays a plain ``nn.Linear``). No custom
-     subclassing or ``model.net`` swapping — earlier versions of this
-     example hand-rolled exactly that workaround, which also silently
-     hashed to the SAME ``run.id`` as a plain feed-forward twin.
+     subclassing or ``model.net`` swapping is needed.
      ``NNMoEParams.state()`` always emits ``num_experts``, so MoE runs
      get distinct ids and checkpoints round-trip to the right class.
   2. Training with :func:`moe_train_step_factory` — the standard
@@ -178,9 +176,12 @@ def main() -> None:
     model.net.eval()
     reloaded.net.eval()
     with torch.no_grad():
-        same = torch.allclose(model.net(all_X), reloaded.net(all_X))
-    print(f"\ncheckpoint round-trip: net_params={type(ckpt.net_params).__name__}, ")
-    print(f"reloaded net={type(reloaded.net).__name__}, logits identical: {same}")
+        same = torch.equal(model.net(all_X), reloaded.net(all_X))  # the same weights: bit-exact
+    print(
+        f"\ncheckpoint round-trip: net_params={type(ckpt.net_params).__name__}, "
+        f"reloaded net={type(reloaded.net).__name__}, logits identical: {same}"
+    )
+    assert same, "the reloaded checkpoint gave different logits"
 
 
 if __name__ == "__main__":

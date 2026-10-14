@@ -2,9 +2,9 @@
 
 `NNModel.to_onnx` writes a graph; `onnx.checker` proves the file is well
 formed. Neither says what a runtime computes from it. `nnx.export_conformance`
-separates the two claims: a **profile** fixes everything a parity claim
-depends on, executes the export in ONNX Runtime, and records every stage's
-outcome on its own.
+separates the two claims. A **profile** fixes everything a parity claim
+depends on. It executes the export in ONNX Runtime and records every
+stage's outcome on its own.
 
 ```text
 dependencies ─► export ─► check ─► load ─► parity
@@ -69,8 +69,8 @@ Each stage is `passed`, `failed` or `not_run`. A stage after a failed one
 does not run. The record's `failure` is the first failing stage's class.
 Its `level` is `executed` when parity passed, `structural` when only the
 checker did, and `none` otherwise. The script's exit status separates the
-failure classes; `1` is an error and `2` a usage error (an artifact folder
-that already holds a profile's files is refused unless `--force` clears it):
+failure classes. `1` is an error and `2` a usage error. An artifact folder
+that already holds a profile's files is refused unless `--force` clears it:
 
 | Exit | Failure | Stage | Meaning |
 |---|---|---|---|
@@ -81,17 +81,17 @@ that already holds a profile's files is refused unless `--force` clears it):
 | 13 | `checker-error` | check | `onnx.checker.check_model(path, full_check=True)` refused the file |
 | 14 | `hash-mismatch` | load | an artifact's SHA-256 or size differs from the record, or a file is missing or unlisted; nothing is loaded |
 | 15 | `load-error` | load | ONNX Runtime could not create a session on the declared provider |
-| 16 | `mismatch` | parity | a raw logit is outside `atol + rtol·|native|` or not finite, or the output count, dtype or shape differs |
-| 17 | `input-contract` | parity | a valid batch was refused as an invalid argument (e.g. a static batch dimension), a wrong feature width was accepted, or no valid case was compared |
+| 16 | `mismatch` | parity | a raw logit is outside `atol + rtol * abs(native)` or not finite, or the output count, dtype or shape differs |
+| 17 | `input-contract` | parity | a valid batch was refused as an invalid argument (e.g. a static batch dimension), or a wrong feature width was accepted |
 | 18 | `runtime-error` | parity | the runtime failed on a case for any other reason |
 
 ## 4. The record
 
 `nnx.export-conformance/1`. Each profile's record holds:
 
-- `source` — `revision`, where it came from (`given`, `git` when this
-  checkout is the one imported, or `unknown` for an installed copy), whether
-  the tree was `dirty`, and the NNx version.
+- `source` — `revision`, where it came from, whether the tree was `dirty`,
+  and the NNx version. The origin is `given`, `git` when this checkout is
+  the one imported, or `unknown` for an installed copy.
 - `config` — the model (net, dims, activation, dropout, weight generator
   and seed) and `weights_sha256`.
 - `exporter` — the exporter and its options (opset, dynamic batch, export
@@ -99,8 +99,9 @@ that already holds a profile's files is refused unless `--force` clears it):
   `stages.export.detail`.
 - `opset` — the requested opset and the model's actual `opset_import`.
 - `artifacts` — the profile's directory and every file the exporter wrote,
-  each with its role (`model`, `external-data`, or `sidecar` for a file no
-  tensor references), size and SHA-256. External tensors are included.
+  each with its role, size and SHA-256. The role is `model`,
+  `external-data`, or `sidecar` for a file no tensor references. External
+  tensors are included.
 - `versions` — Python, platform, NNx, torch, numpy, onnx, onnxruntime and
   onnxscript.
 - `runtime` — `onnxruntime`, its version, the provider and the session
@@ -111,17 +112,37 @@ that already holds a profile's files is refused unless `--force` clears it):
   export.
 - `stages` — every stage's `status`, `failure` and `detail`.
 
-Every record states a profile this module runs, exactly as `run_profile` writes it: its settings are rebuilt as a `Profile` (FP32 inputs in ONNX Runtime, the recorded session options, a feed-forward model of at most 64 hidden layers, 65,536 units per layer and 2^24 weights, and at most 64 batch sizes, none holding more than 2^24 values in any layer) and compared as canonical text — with the tested profile of that name, whose name stands for its exact settings, or with the rebuilt profile itself, so input cases, exporter options or an artifact layout no profile produces are refused. A `Profile` reusing a tested name with other settings is refused before anything is written. A symlinked artifact or artifact folder never verifies. `validate_record` refuses missing or unknown keys (in the record and in
-its `runtime`, `exporter` and `opset`), anything but strict JSON, unknown
-statuses, a failure class in the wrong stage (an input case's included),
-an input-case outcome no run gives, a stage that ran after a failure,
-contradictory `status` / `failure` / `level`, malformed hashes and
-non-finite tolerances, naming the problems it finds.
+Every record states a profile this module runs, exactly as `run_profile`
+writes it. Its settings are rebuilt as a `Profile` within these limits:
+
+- FP32 inputs in ONNX Runtime, with the recorded session options;
+- a feed-forward model of at most 64 hidden layers, 65,536 units per layer
+  and 2^24 weights;
+- at most 64 batch sizes, none holding more than 2^24 values in any layer.
+
+The rebuilt settings are compared as canonical text. The comparison is with
+the tested profile of that name, whose name stands for its exact settings,
+or with the rebuilt profile itself. So input cases, exporter options or an
+artifact layout no profile produces are refused. A `Profile` reusing a
+tested name with other settings is refused before anything is written. A
+symlinked artifact or artifact folder never verifies.
+
+`validate_record` names the problems it finds. It refuses:
+
+- missing or unknown keys, in the record and in its `runtime`, `exporter`
+  and `opset`;
+- anything but strict JSON;
+- unknown statuses;
+- a failure class in the wrong stage (an input case's included);
+- an input-case outcome no run gives;
+- a stage that ran after a failure;
+- contradictory `status` / `failure` / `level`;
+- malformed hashes and non-finite tolerances.
 
 ## 5. CI evidence
 
-The required `export-conformance` job in `.github/workflows/ci.yml` runs
-in four steps:
+The `export-conformance` job in `.github/workflows/ci.yml` (a CI lane, not a
+required check; see CONTRIBUTING §6) runs in four steps:
 
 1. It imports `nnx` in a core-only environment and checks that `onnx`,
    `onnxruntime` and `onnxscript` are absent.
@@ -136,4 +157,4 @@ in four steps:
    artifact.
 
 `uv.lock` resolves with `--all-extras`. The CPU profiles are not run on the
-`floor-deps` lane (torch 2.4.1, core only).
+`floor-deps` lane (torch 2.4.1, core plus the `domains` extra).

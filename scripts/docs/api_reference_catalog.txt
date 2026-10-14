@@ -50,9 +50,13 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.prediction.PredictionValidationError
 
+@api nnx.prediction.NonFiniteLogitsError
+
 ### 2.5. Optimizer construction and registered factories (`nnx.optimizers`)
 
 @api nnx.optimizers.build_optimizer
+
+@api nnx.optimizers.OptimizerFactory
 
 @api nnx.optimizers.OptimizerFactorySpec
 
@@ -67,6 +71,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 @api nnx.optimizers.optim_params_from_state
 
 ### 2.6. Task adapters (`nnx.tasks`)
+
+@api nnx.tasks members=
 
 @api nnx.tasks.TaskSpec
 
@@ -93,6 +99,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 ### 2.8. Named metrics and monitors (`nnx.monitors`)
 
 @api nnx.monitors.MetricSpec
+
+@api nnx.monitors.MetricDefinition
 
 @api nnx.monitors.MonitorSpec
 
@@ -136,6 +144,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.models.RuntimeModule
 
+@api nnx.models.ModelFactory
+
 @api nnx.models.register_model_factory
 
 @api nnx.models.unregister_model_factory
@@ -158,6 +168,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 ### 2.11. Typed decisions (`nnx.decisions`)
 
+@api nnx.decisions.Question
+
 @api nnx.decisions.Option
 
 @api nnx.decisions.Choice
@@ -167,6 +179,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 @api nnx.decisions.Score
 
 @api nnx.decisions.question_from_state
+
+@api nnx.decisions.DecisionResult
 
 @api nnx.decisions.ChoiceResult
 
@@ -182,7 +196,11 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.decisions.FixedHeadProvider
 
+@api nnx.decisions.nli members=
+
 @api nnx.decisions.NLIProvider
+
+@api nnx.decisions.jev members=
 
 @api nnx.decisions.JevProvider
 
@@ -205,6 +223,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 @api nnx.decisions.JevRateLimited
 
 @api nnx.decisions.JevMalformedResponse
+
+@api nnx.decisions.jobs members=
 
 @api nnx.decisions.DecisionJob
 
@@ -274,11 +294,15 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.decisions.benchmark.BenchmarkError
 
-Errors as values at fallible boundaries (`nnx.result`, opt-in; see Concepts §27):
+### 2.12. Errors as values at fallible boundaries (`nnx.result`)
+
+Opt-in; see Concepts §27.
 
 @api nnx.result.Ok
 
 @api nnx.result.Err
+
+@api nnx.result.Result
 
 @api nnx.result.UnwrapError
 
@@ -290,7 +314,9 @@ Errors as values at fallible boundaries (`nnx.result`, opt-in; see Concepts §27
 
 @api nnx.result.inspect_bundle_result
 
-Opt-in compilation of the built-in FP32 forward (`train(compile=...)`; see Concepts §28):
+### 2.13. Opt-in compilation (`nnx.compilation`)
+
+`train(compile=...)` compiles the built-in FP32 forward; see Concepts §28.
 
 @api nnx.compilation.CompileSpec
 
@@ -298,7 +324,9 @@ Opt-in compilation of the built-in FP32 forward (`train(compile=...)`; see Conce
 
 @api nnx.compilation.CompileFailed
 
-Bounded forward benchmarks and profiling (`nnx.benchmarking`):
+### 2.14. Forward benchmarks and profiling (`nnx.benchmarking`)
+
+Bounded forward benchmarks and profiling.
 
 @api nnx.benchmarking.benchmark_forward
 
@@ -312,7 +340,9 @@ Bounded forward benchmarks and profiling (`nnx.benchmarking`):
 
 @api nnx.benchmarking.ProfileReport
 
-Single-node data parallelism under torchrun (`nnx.distributed`; see Architecture §3):
+### 2.15. Single-node data parallelism (`nnx.distributed`)
+
+Under torchrun; see Architecture §3.
 
 @api nnx.distributed.init_process_group
 
@@ -332,7 +362,11 @@ Single-node data parallelism under torchrun (`nnx.distributed`; see Architecture
 
 @api nnx.distributed.DistributedFailure
 
-Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Concepts §29):
+### 2.16. Budgeted experiment search (`nnx.search`)
+
+Through Optuna (extra `optuna`); see Concepts §29.
+
+@api nnx.search members=
 
 @api nnx.search.search
 
@@ -350,7 +384,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.search.SearchResult
 
-### 2.12. Experiment provenance (`nnx.provenance`)
+### 2.17. Experiment provenance (`nnx.provenance`)
 
 @api nnx.provenance.ExperimentManifest
 
@@ -374,7 +408,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.provenance.FieldComparison
 
-### 2.13. Reproducible splits (`nnx.data_splits`)
+### 2.18. Reproducible splits (`nnx.data_splits`)
 
 @api nnx.data_splits.plan_split
 
@@ -384,7 +418,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.data_splits.SplitError
 
-### 2.14. Train-fitted preprocessing (`nnx.preprocessing`)
+### 2.19. Train-fitted preprocessing (`nnx.preprocessing`)
 
 @api nnx.preprocessing.Standardizer
 
@@ -394,7 +428,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.preprocessing.PreprocessingError
 
-### 2.15. Fitted classifier calibration (`nnx.calibration`)
+### 2.20. Fitted classifier calibration (`nnx.calibration`)
 
 @api nnx.calibration.fit_temperature
 
@@ -426,7 +460,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.calibration.CalibrationMismatchError
 
-### 2.16. Abstention and risk-coverage (`nnx.abstention`)
+### 2.21. Abstention and risk-coverage (`nnx.abstention`)
 
 @api nnx.abstention.AbstentionPolicy
 
@@ -458,7 +492,9 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.abstention.AbstentionSchemaError
 
-### 2.17. Experiment plans (`nnx.plans`)
+### 2.22. Experiment plans (`nnx.plans`)
+
+@api nnx.plans members=
 
 @api nnx.plans.ExperimentPlan
 
@@ -474,7 +510,9 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.plans.PlanError
 
-### 2.18. Streaming prediction and mergeable metrics (`nnx.streaming`)
+### 2.23. Streaming prediction and mergeable metrics (`nnx.streaming`)
+
+@api nnx.streaming members=
 
 @api nnx.streaming.PredictionStream
 
@@ -492,7 +530,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.streaming.MetricMergeError
 
-### 2.19. Run bundles (`nnx.bundles`)
+### 2.24. Run bundles (`nnx.bundles`)
 
 @api nnx.bundles.export_bundle
 
@@ -514,7 +552,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.bundles.BundleReconstructionError
 
-### 2.20. Replayable transformation recipes (`nnx.transforms`)
+### 2.25. Replayable transformation recipes (`nnx.transforms`)
 
 @api nnx.transforms.TransformRecipe
 
@@ -528,7 +566,9 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.transforms.RecipeError
 
-### 2.21. Execution precision (`nnx.precision`)
+### 2.26. Execution precision (`nnx.precision`)
+
+@api nnx.precision members=
 
 @api nnx.precision.PrecisionPolicy
 
@@ -542,7 +582,9 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.precision.precision_support
 
-### 2.22. Multi-seed summaries and paired comparisons (`nnx.comparison`)
+@api nnx.precision.full_precision_only
+
+### 2.27. Multi-seed summaries and paired comparisons (`nnx.comparison`)
 
 @api nnx.comparison.Metric
 
@@ -570,7 +612,9 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.comparison.IncompatibleObservations
 
-### 2.23. Causal language-model task (`nnx.lm_tasks`)
+### 2.28. Causal language-model task (`nnx.lm_tasks`)
+
+@api nnx.lm_tasks members=
 
 @api nnx.lm_tasks.CausalLMTask
 
@@ -582,7 +626,9 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.lm_tasks.LMTaskError
 
-### 2.24. Query-grouped ranking (`nnx.ranking`)
+### 2.29. Query-grouped ranking (`nnx.ranking`)
+
+@api nnx.ranking members=
 
 @api nnx.ranking.RankingTask
 
@@ -602,7 +648,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.ranking.RankingError
 
-### 2.25. Graph-level classification (`nnx.graph_tasks`)
+### 2.30. Graph-level classification (`nnx.graph_tasks`)
 
 @api nnx.graph_tasks.GraphCollection
 
@@ -614,9 +660,13 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 @api nnx.graph_tasks.check_graph_batch
 
+@api nnx.graph_tasks.is_graph_collection_batch
+
 @api nnx.graph_tasks.GraphTaskError
 
-### 2.26. Link and edge prediction (`nnx.link_tasks`)
+### 2.31. Link and edge prediction (`nnx.link_tasks`)
+
+@api nnx.link_tasks members=
 
 @api nnx.link_tasks.split_links
 
@@ -627,6 +677,14 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 @api nnx.link_tasks.LinkPredictor
 
 @api nnx.link_tasks.link_predictor_spec
+
+@api nnx.link_tasks.LinkObjective
+
+@api nnx.link_tasks.LinkEval
+
+@api nnx.link_tasks.MetricValue
+
+@api nnx.link_tasks.is_link_batch
 
 @api nnx.link_tasks.link_metrics
 
@@ -774,7 +832,7 @@ Budgeted experiment search through Optuna (`nnx.search`, extra `optuna`; see Con
 
 ## 9. Parameter-efficient fine-tuning (`nnx.peft`)
 
-LoRA + DoRA + IA3 + Prefix-Tuning + Prompt-Tuning + Adapters. All methods share the same in-place wrap + save/load idiom (per-method `save_*_weights` / `load_*_weights` persist only the trainable delta).
+LoRA + DoRA + IA3 + Prefix-Tuning + Prompt-Tuning + Adapters. The `apply_*_to` helpers wrap layers in place. LoRA, IA3, Prefix and Prompt ship `save_*_weights` / `load_*_weights`, which persist only the trainable delta. DoRA persists with the full `state_dict()` (the LoRA helpers omit `magnitude`), and `AdapterLayer` is inserted by hand.
 
 ### 9.1. LoRA
 
@@ -830,7 +888,7 @@ LoRA + DoRA + IA3 + Prefix-Tuning + Prompt-Tuning + Adapters. All methods share 
 
 ## 11. Model surgery (`nnx.surgery`)
 
-Walkthrough at [Model surgery](surgery.md). Every primitive returns a fresh `nn.Module` and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop.
+Walkthrough at [Model surgery](surgery.md). Every primitive returns a fresh module (`expand_embedding` also returns a frozen-row mask) and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop.
 
 @api nnx.surgery.widen.widen
 
@@ -864,6 +922,8 @@ PTQ INT8 weight-only + QAT 8da4w via [`torchao`](https://github.com/pytorch/ao) 
 
 @api nnx.diffusion.training.diffusion_train_step_factory
 
+@api nnx.diffusion.objective members=
+
 @api nnx.diffusion.objective.diffusion_objective
 
 @api nnx.diffusion.objective.DiffusionObjective
@@ -881,6 +941,8 @@ Each factory returns a `TrainStepFn` for the `train_step_fn=` hook on `NNModel.t
 @api nnx.paradigms.distillation.feature_kd_train_step_factory
 
 @api nnx.paradigms.born_again.born_again_train
+
+@api nnx.paradigms.offline_distillation members=
 
 @api nnx.paradigms.offline_distillation.TeacherRecord
 
@@ -930,6 +992,8 @@ Walkthrough at [I-JEPA](jepa.md). The `ViTNN` encoder is documented in §4.
 
 @api nnx.paradigms.jepa.JEPATrainStep
 
+@api nnx.paradigms.jepa_objective members=
+
 @api nnx.paradigms.jepa_objective.jepa_objective
 
 @api nnx.paradigms.jepa_objective.JEPAObjective
@@ -953,6 +1017,8 @@ Walkthrough at [DPO](dpo.md).
 End-to-end walkthrough at [Embeddings](embeddings.md). Opt-in via `pip install "thekaveh-nnx[embeddings]"`.
 
 @api nnx.embeddings.contrastive_trainer.ContrastiveTextDataset
+
+@api nnx.embeddings.contrastive_trainer.pair_collate
 
 @api nnx.embeddings.contrastive_trainer.train_contrastive
 
@@ -980,6 +1046,8 @@ Walkthrough and stock-runtime limitations at [Experimental GGUF export](gguf.md)
 
 Executable profiles that separate structural validity from numerical parity: `FeedFwdNN` 4-8-2 FP32 under both exporters, run in ONNX Runtime on CPU, with every stage's outcome and the evidence recorded. Walkthrough, failure classes and exit codes at [Export conformance](export-conformance.md). Opt-in via `pip install "thekaveh-nnx[onnx-runtime,onnx-dynamo]"`; `python scripts/check_export_conformance.py --output conformance.json` runs both profiles.
 
+@api nnx.export_conformance members=
+
 @api nnx.export_conformance.Profile
 
 @api nnx.export_conformance.run_profile
@@ -1006,8 +1074,8 @@ Executable profiles that separate structural validity from numerical parity: `Fe
 
 Opt-in via `pip install "thekaveh-nnx[hub]"`. Two integration surfaces:
 
-- **safetensors checkpoints** — `NNCheckpoint.to_file(..., format="safetensors")` and `NNCheckpoint.from_file(..., format="safetensors")` (see §3 `NNCheckpoint`) read and write checkpoints in the safetensors format alongside the default pickle path. Loadable by outside-Python tools (ComfyUI, vLLM, AutoGPTQ).
-- **Hub publish / load** — `NNModel` mixes in `huggingface_hub.PyTorchModelHubMixin`, so `save_pretrained(local_dir)`, `push_to_hub(repo_id)`, and `NNModel.from_pretrained(repo_id)` work directly on a trained model. The mixin methods are inherited and live on `NNModel` itself — see §2.1.
+- **safetensors checkpoints** — `NNCheckpoint.to_file(..., format="safetensors")` writes the safetensors format alongside the default pickle path, and `NNCheckpoint.from_file(path)` reads either (detected from the file; see §3 `NNCheckpoint`). Loadable by outside-Python tools (ComfyUI, vLLM, AutoGPTQ).
+- **Hub publish / load** — `NNModel` mixes in `huggingface_hub.PyTorchModelHubMixin`, so `save_pretrained(local_dir)`, `push_to_hub(repo_id)`, and `NNModel.from_pretrained(repo_id)` work directly on a trained model. The mixin methods are inherited and live on `NNModel` itself. The NNx keywords of `from_pretrained` (`precision=`, `exclude_submodules=`, `map_location=`, `strict=`) are documented in [Hub](hub.md).
 
 Walkthrough at [HuggingFace Hub](hub.md).
 
@@ -1017,9 +1085,13 @@ Walkthrough at [HuggingFace Hub](hub.md).
 
 @api nnx.generation.LogitsProcessor
 
+@api nnx.generation.logits_chain members=
+
 @api nnx.generation.LogitsChain
 
 @api nnx.generation.LogitsChainBuilder
+
+@api nnx.generation.pipeline members=
 
 @api nnx.generation.OrderedLogitsPipeline
 
@@ -1051,7 +1123,11 @@ Walkthrough at [HuggingFace Hub](hub.md).
 
 ### 19.1. Run-output viz (`nnx.vis_utils`)
 
-@api nnx.vis_utils members=confusion_matrix,classification_report,multi_line_plot,scatter_plot,two_dim_tsne_checkpoint_logits
+@api nnx.vis_utils members=confusion_matrix,classification_report,multi_line_plot,scatter_plot,two_dim_tsne_checkpoint_logits,generate_colors,get_scatter_plot_vm
+
+Each function above is also a `VisUtils` static method of the same name (`VisUtils.confusion_matrix` is `nnx.vis_utils.confusion_matrix`).
+
+@api nnx.vis_utils.VisUtils members=
 
 ### 19.2. Model-internals viz (`nnx.viz`)
 

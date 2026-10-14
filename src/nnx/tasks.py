@@ -42,7 +42,7 @@ Three kinds exist; the kind is always declared, never inferred:
   non-classification loss module assigned to ``model.loss_fn``).
 
 Language-model, ranking, link-prediction and structured-prediction tasks
-are out of scope; ``Nets.TRANSFORMER`` models are rejected. Models without
+are out of scope; ``Nets.TRANSFORMER`` and ``Nets.VIT`` models are rejected. Models without
 a task keep the legacy classification behaviour and serialization.
 """
 
@@ -160,7 +160,8 @@ class TaskSpec:
             raise TaskValidationError(f"a {self.kind} TaskSpec needs at least {minimum} label(s), got {len(labels)}")
         if self.num_outputs is not None and len(labels) != self.num_outputs:
             raise TaskValidationError(f"TaskSpec has {len(labels)} label(s) but num_outputs={self.num_outputs}")
-        object.__setattr__(self, "labels", labels)
+        # NumPy strings pass isinstance(str) but are not YAML-safe: store plain str.
+        object.__setattr__(self, "labels", tuple(str(label) for label in labels))
         if self.num_outputs is None:
             object.__setattr__(self, "num_outputs", len(labels))
 
@@ -221,6 +222,8 @@ class TaskSpec:
         unknown = sorted(set(state) - _STATE_KEYS)
         if unknown:
             raise TaskValidationError(f"unknown TaskSpec key(s) {unknown}")
+        if "kind" not in state:
+            raise TaskValidationError("a TaskSpec state needs its 'kind'")
         return TaskSpec(
             kind=state["kind"],
             num_outputs=state.get("num_outputs"),
@@ -361,7 +364,7 @@ class TaskAdapter:
     def check_model(self, *, net: Any, loss: Losses, output_dim: Optional[int]) -> None:
         """Reject a model configuration this task cannot drive — before
         any net is built or loader is iterated. ``net`` is a ``Nets`` member
-        or a registered / runtime descriptor (FEAT-006), whose output width
+        or a registered / runtime descriptor, whose output width
         is unknown until the first batch (``output_dim=None``)."""
         if net is Nets.TRANSFORMER:
             raise TaskValidationError(
@@ -411,7 +414,10 @@ class TaskAdapter:
 
         n_valid = int(valid.sum())
         if n_valid == 0:
-            zero = output.sum() * 0.0
+            # A graph-connected exact zero: output.sum() * 0.0 is NaN when an
+            # output is +-inf (a -inf class mask), which would poison the
+            # evaluated loss sum through a batch that adds no weight.
+            zero = output.reshape(-1)[:0].sum()
             return zero + float("nan"), zero, 0.0
         if n_valid == valid.numel():
             # Nothing masked: the loss sees the batch exactly as without a task.
@@ -454,7 +460,7 @@ class TaskAdapter:
     def accumulator(self, *, keep_arrays: bool = False, bounded: bool = False) -> TaskMetricAccumulator:
         """A fresh :class:`TaskMetricAccumulator`; pass ``keep_arrays=True``
         when ``extra_metrics`` will be computed from it. ``bounded=True``
-        (FEAT-020) keeps only counts and sums, so memory does not grow with
+        keeps only counts and sums, so memory does not grow with
         the number of samples; it cannot keep arrays."""
         raise NotImplementedError
 
@@ -545,7 +551,8 @@ class _CategoricalAdapter(TaskAdapter):
                     + (f" or ignore_index={ignore}" if ignore is not None else "")
                     + f", got values in [{low}, {high}]"
                 )
-        return flat_output, flat_target, valid
+        # Range-checked class indices: an exact cast, as the loss needs int64 (int32 / int16 fail there).
+        return flat_output, flat_target.long(), valid
 
     def loss_terms(self, loss_fn, output, target, valid):
         # Rows are masked by selection: (M', C) keeps the class axis, so class
@@ -554,7 +561,10 @@ class _CategoricalAdapter(TaskAdapter):
 
         n_valid = int(valid.sum())
         if n_valid == 0:
-            zero = output.sum() * 0.0
+            # A graph-connected exact zero: output.sum() * 0.0 is NaN when an
+            # output is +-inf (a -inf class mask), which would poison the
+            # evaluated loss sum through a batch that adds no weight.
+            zero = output.reshape(-1)[:0].sum()
             return zero + float("nan"), zero, 0.0
         if n_valid == valid.numel():
             return _loss_terms(loss_fn, output, target)
@@ -701,7 +711,8 @@ class _MultilabelAccumulator(TaskMetricAccumulator):
 
     def update(self, output, target, valid):
         prediction = self.adapter.decode(output).detach().cpu().numpy()
-        truth = target.detach().cpu().numpy()
+        # float32: NumPy has no bfloat16, and 0 / 1 / NaN are exact in it.
+        truth = target.detach().to(torch.float32).cpu().numpy()
         mask = valid.detach().cpu().numpy()
         n_labels = truth.shape[1]
         if self._tp is None:
@@ -802,8 +813,10 @@ class _RegressionAccumulator(TaskMetricAccumulator):
         self._sae = 0.0
 
     def update(self, output, target, valid):
-        prediction = output.detach().to(dtype=torch.float64)
-        truth = target.detach().to(dtype=torch.float64)
+        # float64 on the CPU: MPS has no float64.
+        prediction = output.detach().cpu().to(dtype=torch.float64)
+        truth = target.detach().cpu().to(dtype=torch.float64)
+        valid = valid.cpu()
         diff = (prediction - truth)[valid]
         sums = torch.stack([(diff * diff).sum(), diff.abs().sum()]).tolist()  # one device sync
         self._sse += sums[0]

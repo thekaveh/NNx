@@ -1,8 +1,9 @@
-"""Portable, data-only run bundles (FEAT-015).
+"""Portable, data-only run bundles.
 
-A run checkpoint (``runs/<id>/checkpoints/<tag>.pt``) and its training-state
-sidecar are pickles: reading them runs ``torch.load(weights_only=False)``,
-which is only safe for files you produced. A safetensors checkpoint
+A run checkpoint (``runs/<id>/checkpoints/<tag>.pt``) is a pickle: reading
+it runs ``torch.load(weights_only=False)``, which is only safe for files you
+produced. Its training-state sidecar is read with ``weights_only=True`` but
+belongs with a trusted checkpoint. A safetensors checkpoint
 (``NNCheckpoint.to_file(format="safetensors")``) is data only, but holds one
 weights dict and no training state. A **run bundle** is a directory that
 holds a run checkpoint — its weights, its training state and optional
@@ -159,6 +160,9 @@ class BundleInfo:
         model: the network descriptor (a built-in ``Nets`` name or a
             registered ``ModelSpec``).
         model_params: ``NNModelParams.state()`` of the checkpoint.
+        net_params: the built-in net's params ``state()`` (its dimensions:
+            the architecture reconstruction builds); ``None`` for a
+            registered module, whose architecture its factory builds.
         components: saved component metadata, ``{name: {"version", "required"}}``.
         calibrators: each calibrator's ``{"payload", "id", "labels", "model_id"}``.
         payloads: ``{name: {"sha256", "size"}}`` from the manifest.
@@ -174,6 +178,7 @@ class BundleInfo:
     epoch: int
     model: str
     model_params: Mapping[str, Any]
+    net_params: Optional[Mapping[str, Any]] = None
     components: Mapping[str, Any] = field(default_factory=dict)
     calibrators: tuple[Mapping[str, Any], ...] = ()
     payloads: Mapping[str, Any] = field(default_factory=dict)
@@ -199,7 +204,8 @@ class ReconstructedBundle:
     @property
     def resume_checkpoint(self) -> str:
         """The checkpoint label a resumed run records as its parent
-        checkpoint (``"bundle-<generation>_e<epoch>"``)."""
+        checkpoint (``"bundle-<generation[:16]>_e<epoch>"``: the first 16
+        hex characters of the generation)."""
         return f"bundle-{self.info.generation[:16]}_e{self.info.epoch}"
 
     def resume(self, params: NNTrainParams, **train_kwargs: Any) -> NNRun:
@@ -234,11 +240,17 @@ class ReconstructedBundle:
                 "submodules; to continue training, resume the original run (resume_from_run_id) on a model with "
                 "them attached"
             )
-        if self._checkpoint.transforms:
-            recipes = ", ".join(transform.name for transform in self._checkpoint.transforms)
+        from .transforms import _replayable
+
+        # A recorded recipe (LoRA, low-rank) is replayed on the rebuilt
+        # model, so its training state fits; a train-end conversion (QAT)
+        # changed the topology after the state was written.
+        converted = [transform.name for transform in self._checkpoint.transforms if not _replayable(transform)]
+        if converted:
             raise BundleCapabilityError(
-                f"the run bundle {self.info.path!r} holds a transformed topology ({recipes}): the rebuilt model "
-                "serves inference, but cannot take the pre-transform training state; resume the original run"
+                f"the run bundle {self.info.path!r} holds a transformed topology ({', '.join(converted)}): the "
+                "rebuilt model serves inference, but cannot take the pre-transform training state; resume the "
+                "original run"
             )
         if params.resume_from_run_id is not None or params.parent_run_id is not None:
             raise ValueError(
@@ -966,6 +978,9 @@ def _info(
         epoch=parts["idp"].epoch_idx,
         model=str(net),
         model_params=_freeze_config(parts["model_params"].state(), "", owner="BundleInfo"),
+        net_params=None
+        if parts["net_params"] is None
+        else _freeze_config(parts["net_params"].state(), "", owner="BundleInfo"),
         components=_freeze_config(components, "", owner="BundleInfo"),
         calibrators=tuple(_freeze_config(summary, "", owner="BundleInfo") for summary in calibrators),
         payloads=_freeze_config(manifest["payloads"], "", owner="BundleInfo"),
@@ -1192,6 +1207,8 @@ def export_bundle(
     from .nn.nn_model import _resume_checkpoint_type, _unportable_transform
     from .nn.params.nn_checkpoint import NNCheckpoint
 
+    if run_id == "best":  # a moving alias: a bundle records the run it came from
+        raise BundleError('export a run by its own id, not the "best" pointer (NNRun.load("best").id names it)')
     label = str(_resume_checkpoint_type(checkpoint))
     ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=label, root=root)  # type: ignore[arg-type]
     if ckpt is None:

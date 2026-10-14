@@ -5,6 +5,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import signal
 import tempfile
 import threading
@@ -79,6 +80,15 @@ def _checkpoint_path(run: str, type: Checkpoints, root: Optional[str] = None) ->
     from .nn_run import _validate_run_id
 
     _validate_run_id(run)
+    # ``type`` names the file; like ``run`` it can arrive from the public
+    # API, so a string must be a filename-safe tag (no separators).
+    if not isinstance(type, Checkpoints) and not (
+        isinstance(type, str) and re.fullmatch(_MODEL_CHECKPOINT_TAG, type) is not None
+    ):
+        raise ValueError(
+            f"checkpoint type must be a Checkpoints member or a filename-safe tag "
+            f"(letters, digits, '.', '_' or '-'), got {type!r}"
+        )
     base = root if root is not None else "."
     return os.path.join(base, "runs", run, "checkpoints", str(type) + ".pt")
 
@@ -114,7 +124,9 @@ def _generation_sidecar_paths(checkpoint_path: str) -> list[str]:
     paths = []
     for entry in os.scandir(directory):
         remainder = entry.name[len(prefix) :] if entry.name.startswith(prefix) else ""
-        if entry.is_file() and remainder.endswith(".pt") and remainder != "pt":
+        # Only the generation format (32 hex digits): a ModelCheckpoint tag
+        # such as "last.pt.opt.keep" names a user file, never a sidecar.
+        if entry.is_file() and re.fullmatch(r"[0-9a-f]{32}\.pt", remainder):
             paths.append(entry.path)
     return paths
 
@@ -501,8 +513,8 @@ class NNCheckpoint:
 
     @property
     def reconstructible(self) -> bool:
-        """Whether a model can be rebuilt from this checkpoint alone
-        (FEAT-006): ``False`` for a runtime-only module, whose weights need
+        """Whether a model can be rebuilt from this checkpoint alone:
+        ``False`` for a runtime-only module, whose weights need
         the module again (``NNModel.from_checkpoint(ckpt, module=...)``)."""
         return bool(getattr(self.model_params.net, "reconstructible", True))
 
@@ -527,28 +539,28 @@ class NNCheckpoint:
                   ComfyUI/vLLM/AutoGPTQ/HF tools, and proof against
                   arbitrary-code-execution on load. Requires the
                   ``thekaveh-nnx[hub]`` extra. Portable, so a runtime-only
-                  module (``reconstructible=False``, FEAT-006) is rejected
+                  module (``reconstructible=False``) is rejected
                   with ``MissingModelFactoryError`` before anything is
                   written.
 
-        Both formats write to ``<path>.tmp`` first and rename into place
-        so a KeyboardInterrupt during the underlying save can never leave
-        a half-written checkpoint at the destination — matching the
-        atomicity guarantee NNRun.save offers for YAML/CSV.
+        Both formats write to a hidden temporary file beside ``path``
+        (``.<name>.<random>``), flush it to disk and rename it into place,
+        so an interrupted save can never leave a half-written checkpoint at
+        the destination — matching the atomicity guarantee NNRun.save
+        offers for YAML/CSV.
         """
+        if format not in ("pickle", "safetensors"):  # before any directory is created
+            raise ValueError(f"unknown checkpoint format: {format!r} (expected 'pickle' or 'safetensors')")
         if format == "safetensors":
             self._require_portable()  # before any directory or file is created
         dir_path = os.path.dirname(path)
-        if dir_path and not os.path.exists(dir_path):
-            os.makedirs(dir_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)  # a concurrent writer may create it first
 
         if format == "pickle":
             _atomic_torch_save(self, path)
             return
-        if format == "safetensors":
-            self._to_safetensors_file(path)
-            return
-        raise ValueError(f"unknown checkpoint format: {format!r} (expected 'pickle' or 'safetensors')")
+        self._to_safetensors_file(path)
 
     def _require_portable(self) -> None:
         if not self.reconstructible:
@@ -597,6 +609,8 @@ class NNCheckpoint:
         os.close(fd)
         try:
             save_file(tensors, tmp, metadata=metadata)
+            with open(tmp, "rb+") as handle:  # durable before the rename, like the pickle path
+                _full_fsync(handle.fileno())
             os.replace(tmp, path)
         finally:
             if os.path.exists(tmp):
@@ -631,7 +645,7 @@ class NNCheckpoint:
     ) -> None:
         """Save the checkpoint to disk atomically.
 
-        Every save is a resume point (#394): a manifest
+        Every save is a resume point: a manifest
         (``<tag>.pt.manifest.json``, written last) stamps it with the tag's
         generation ordinal, the checkpoint id and the SHA-256 of each file it
         consists of, so a resume refuses a torn, mixed or corrupted point
@@ -642,7 +656,7 @@ class NNCheckpoint:
         ``committed_updates``, ``planned_n_epochs``) rides in the training
         state.
 
-        ``components`` (FEAT-005) is the ``ComponentRegistry.collect()``
+        ``components`` is the ``ComponentRegistry.collect()``
         mapping of every registered component's versioned state; it lives
         in the same generation sidecar as the optimizer state, so a model
         and component state from different generations are never paired.
@@ -654,8 +668,9 @@ class NNCheckpoint:
 
         When `optimizer_state` is supplied, a generation-addressed sibling
         file holds the training state, plus a fixed-name compatibility copy.
-        This sidecar is used by NNModel.train(resume_from=...) to warm-resume
-        with the prior optimizer momentum / Adam state.
+        This sidecar is used by NNModel.train when NNTrainParams'
+        resume_from_run_id / resume_from_checkpoint name this checkpoint, to
+        warm-resume with the prior optimizer momentum / Adam state.
 
         The immutable generation sidecar is committed first and the checkpoint
         second. The checkpoint names the sidecar it owns, so interruption
@@ -753,11 +768,11 @@ class NNCheckpoint:
 
     @staticmethod
     def resume_point(run: str, type: Checkpoints, root: Optional[str] = None) -> Optional[dict[str, Any]]:
-        """The manifest stamping this checkpoint's resume point (#394) —
+        """The manifest stamping this checkpoint's resume point —
         ``generation``, ``checkpoint_id``, ``completed_epoch``,
         ``global_step``, ``committed_updates``, ``planned_n_epochs`` and the
-        ``files`` with their SHA-256 — or ``None`` for a checkpoint written
-        before manifests existed. Read as is: after an interrupted publish
+        ``files`` with their SHA-256 — or ``None`` for a checkpoint without
+        a manifest. Read as is: after an interrupted publish
         the live manifest may name the previous checkpoint while a staged one
         describes the published files — :meth:`verify` checks both and
         returns the one that matches."""
@@ -770,8 +785,11 @@ class NNCheckpoint:
         loads as before). Raises :class:`ResumePointError` naming the reason:
         a listed file missing or a manifest naming another checkpoint
         (*torn*), files of different generations (*mixed*), or a file whose
-        SHA-256 differs (*digest mismatch*). No file is unpickled to decide
-        and nothing is written: a point whose writer stopped between
+        SHA-256 differs (*digest mismatch*). Every listed file is hashed; only
+        the matching training-state sidecar is deserialized, with
+        ``torch.load(weights_only=True)``, to compare its generation; no
+        checkpoint data is written (only the checkpoint's lock file
+        is taken, created when missing): a point whose writer stopped between
         publishing the checkpoint and its live manifest is recognized by its
         staged manifest — every digest matching — and that manifest is
         returned (the writer's next save makes it live)."""
@@ -920,13 +938,13 @@ class NNCheckpoint:
         root: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """Load the optimizer state sidecar for a checkpoint. Returns None
-        when no sidecar exists (e.g., checkpoints written before resume
-        support was added).
+        when no sidecar exists (e.g., checkpoints written without resume
+        support).
 
-        Loaded with ``weights_only=True`` — the optimizer state-dict
-        contains only tensors and standard scalar/dict/list types, so the
-        strict loader works AND it removes the arbitrary-code-execution
-        risk that the main NNCheckpoint.from_file documents."""
+        The sidecar itself is read with ``weights_only=True``. Locating it
+        reads the checkpoint through :meth:`load_training_state`, which
+        loads a pickle-format checkpoint with ``NNCheckpoint.from_file``:
+        trust the run directory as you would for ``from_file``."""
         state = NNCheckpoint.load_training_state(run, type, root=root)
         return None if state is None else state["optimizer"]
 
@@ -950,7 +968,7 @@ class NNCheckpoint:
           LOW byte can legitimately be ``0x80`` (any header length
           ≡ 128 mod 256), which would collide with the pickle PROTO
           opcode — so safetensors is positively identified by byte 8
-          BEFORE the ``\x80`` pickle check. The ZIP magic is checked
+          BEFORE the ``\\x80`` pickle check. The ZIP magic is checked
           first of all (a ZIP's byte 8 is the compression method, never
           ``{``; a torch-LEGACY pickle has the fixed magic byte ``0xf9``
           at offset 8, and a protocol ≥ 4 bare pickle has a frame-length

@@ -1,5 +1,5 @@
 """A reproducible decision-provider benchmark, collected once and replayed
-offline (FEAT-021).
+offline.
 
 ``nnx.decisions.benchmark`` scores providers on identical samples. This
 example:
@@ -124,8 +124,8 @@ def decision_benchmark_offline_workflow(workdir: Path | None = None) -> None:
         records = read_records(path)
         report = evaluate(samples, records, split="animals-demo-v1")
         interval = bootstrap_interval(samples, records, metric="nll", seed=0, resamples=500)
-        (workdir / "report.json").write_text(report.to_json())
-        (workdir / "report.csv").write_text(report.to_csv())
+        report.save(workdir / "report.json")  # atomic, UTF-8
+        (workdir / "report.csv").write_text(report.to_csv(), encoding="utf-8")
     assert provider.model_calls == calls_after_collection  # replay never called the provider
     print(report.text(), end="")
     pets, heldout = report.slices["in_family"], report.slices["heldout"]

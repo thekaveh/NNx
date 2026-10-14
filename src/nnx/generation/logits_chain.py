@@ -1,6 +1,6 @@
 """LogitsChain — a typed, ordered chain of LogitsProcessors.
 
-Plan 5 of the Builder-pattern rollout. The Builder is the opt-in alternative to
+The Builder is the opt-in alternative to
 `GenerativeNNModel.generate(temperature=..., top_k=..., top_p=...,
 repetition_penalty=...)`: it lets the user compose the chain
 declaratively and add custom processors (e.g., logit-bias for
@@ -36,7 +36,8 @@ from .logits_processors import (
 )
 
 # Canonical processor order. Used by LogitsChainBuilder.build() to
-# sort whatever the user chained into the conventional HF sequence.
+# sort whatever the user chained into NNx's order (see the module
+# docstring: temperature last, unlike Hugging Face transformers).
 # Custom processors (added via .custom()) go AFTER this group, in
 # the order they were added.
 _CANONICAL_ORDER: tuple[type[LogitsProcessor], ...] = (
@@ -109,7 +110,11 @@ class LogitsChainBuilder:
     def custom(self, processor: LogitsProcessor) -> LogitsChainBuilder:
         """Append a user-supplied LogitsProcessor after the canonical
         group. Useful for logit-bias / forbidden-token / domain-specific
-        adjustments. Multiple `.custom(...)` calls append in order."""
+        adjustments. Multiple `.custom(...)` calls append in order. Not with
+        ``temperature(0.0)`` (greedy): its ±inf argmax markers must not be
+        re-filtered, so ``build()`` refuses the pair; use
+        :class:`~nnx.generation.OrderedLogitsPipeline` with the custom stage
+        before greedy."""
         self._custom.append(processor)
         return self
 
@@ -119,7 +124,19 @@ class LogitsChainBuilder:
         Standard processors that were chained are emitted in the
         fixed `_CANONICAL_ORDER`; custom processors come after, in
         the order they were added.
+
+        Raises:
+            ValueError: for custom processors after ``temperature(0.0)``:
+                greedy turns the logits into ±inf argmax markers, which a
+                logit bias or a token ban would corrupt (the chain would pick
+                a banned or arbitrary token).
         """
+        greedy = self._standard.get(TemperatureScaling)
+        if self._custom and isinstance(greedy, TemperatureScaling) and greedy.temperature == 0:
+            raise ValueError(
+                "custom processors run after temperature(0.0), whose greedy argmax markers they would corrupt; "
+                "use OrderedLogitsPipeline with the custom stage before greedy"
+            )
         ordered: list[LogitsProcessor] = []
         for proc_type in _CANONICAL_ORDER:
             if proc_type in self._standard:

@@ -63,7 +63,12 @@ def require_finite_real(
             f"{owner} requires {field} to be a finite real number{_domain(minimum, maximum, exclusive_min, exclusive_max)}, "
             f"got {value!r} of type {type(value).__name__}"
         )
-    real = float(value)
+    try:
+        real = float(value)
+    except OverflowError as exc:
+        raise ValueError(
+            f"{owner} requires {field} to be a finite real number, got an integer too large for a float"
+        ) from exc
     if not math.isfinite(real):
         raise ValueError(
             f"{owner} requires {field} to be finite{_domain(minimum, maximum, exclusive_min, exclusive_max)}, got {value!r}"
@@ -76,6 +81,17 @@ def require_finite_real(
             or f"{owner} requires {field}{_domain(minimum, maximum, exclusive_min, exclusive_max)}, got {value!r}"
         )
     return real
+
+
+def plain_real(value: Any) -> Any:
+    """``value`` as a plain Python number for ``state()``: a validated real of
+    another type (a NumPy scalar, say) becomes ``int`` or ``float``, so ``run.yaml``
+    can serialize it. Python ``int`` and ``float`` are kept as given, so
+    existing run ids (an md5 of ``state()``) never shift."""
+    if type(value) in (int, float):
+        return value
+    # A NumPy integer is the same setting as the Python int (and run id).
+    return int(value) if isinstance(value, numbers.Integral) else float(value)
 
 
 def require_count(
@@ -159,10 +175,14 @@ def require_batch_sizes(value: object, *, owner: str) -> tuple[Optional[int], Op
 
 def _domain(minimum, maximum, exclusive_min, exclusive_max) -> str:
     parts = []
+
+    def shown(bound):  # integral bounds exactly (2**32 - 1, not 4.29497e+09)
+        return str(bound) if isinstance(bound, int) and not isinstance(bound, bool) else f"{bound:g}"
+
     if minimum is not None:
-        parts.append(f"{'>' if exclusive_min else '>='} {minimum:g}")
+        parts.append(f"{'>' if exclusive_min else '>='} {shown(minimum)}")
     if maximum is not None:
-        parts.append(f"{'<' if exclusive_max else '<='} {maximum:g}")
+        parts.append(f"{'<' if exclusive_max else '<='} {shown(maximum)}")
     return f" {' and '.join(parts)}" if parts else ""
 
 

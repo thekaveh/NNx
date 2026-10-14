@@ -59,7 +59,7 @@ def _build_attributor(method: str, model: nn.Module) -> Any:
     except ImportError as e:
         raise ImportError(
             "nnx.viz.attribute requires captum — install via `pip install thekaveh-nnx[viz]` "
-            "or `pip install captum>=0.7.0`."
+            "or `pip install 'captum>=0.7.0'`."
         ) from e
 
     factories = {
@@ -95,16 +95,18 @@ def _default_kwargs(method: str, x: torch.Tensor) -> dict[str, Any]:
 def _attribution_to_figure(attr: torch.Tensor, x: torch.Tensor) -> go.Figure:
     """Render an attribution tensor as a Plotly heatmap.
 
-    For 3-D / 4-D (image-shaped) tensors we collapse channels via mean
-    before plotting so the result is always a 2-D heatmap.
+    The tensor is batched like `x`: a 3-D / 4-D one renders its first
+    sample (4-D also averaged over channels) and a 2-D one a row per
+    sample, so the result is always a 2-D heatmap.
     """
     go = require("plotly.graph_objects", "nnx.viz.attribute")
-    a = attr.detach().cpu()
-    # Image-shaped inputs: (B, C, H, W) or (C, H, W) → mean over channels.
+    a = attr.detach().cpu().float()  # NumPy has no bfloat16
+    # Attributions are batched like `x`: (B, C, H, W) → the first sample,
+    # mean over channels; (B, H, W) / (B, C, L) → the first sample.
     if a.dim() == 4:
-        a = a.mean(dim=1)[0]  # first sample, mean over channels
+        a = a.mean(dim=1)[0]
     elif a.dim() == 3:
-        a = a.mean(dim=0)
+        a = a[0]
     elif a.dim() == 1:
         # 1-D → reshape to (1, N) so heatmap still renders.
         a = a.unsqueeze(0)
@@ -148,12 +150,13 @@ def attribute(
         A tuple `(attribution_tensor, figure)` where `attribution_tensor` is a
             `torch.Tensor` with the same shape as `x` (per Captum's standard
             return contract for these six methods) and `figure` is a Plotly
-            `Heatmap` visualizing the attribution. Image-shaped inputs (3-D /
-            4-D) are mean-pooled over channels before rendering.
+            `Heatmap` of the attribution: a 4-D input shows its first
+            sample mean-pooled over channels, a 3-D input its first sample,
+            and a 2-D ``(B, D)`` input one row per sample.
 
     Raises:
         ImportError: If `captum` is not installed. Install via
-            `pip install thekaveh-nnx[viz]` or `pip install captum>=0.7.0`.
+            `pip install thekaveh-nnx[viz]` or `pip install "captum>=0.7.0"`.
         ValueError: If `method` is not one of the supported keys.
     """
     # The figure needs the plots extra: refuse before running Captum (FEAT-031).

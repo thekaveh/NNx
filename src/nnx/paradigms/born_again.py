@@ -26,11 +26,14 @@ import copy
 from dataclasses import replace
 from typing import Any
 
+import torch
+
+from ..nn.enum.nets import Nets
 from ..nn.nn_model import NNModel
 from ..nn.params.nn_run import NNRun
 from ..nn.params.nn_train_params import NNTrainParams
 from ..precision import PrecisionUnsupportedError, resolve_precision
-from .distillation import kd_train_step_factory
+from .distillation import _check_kd_weights, kd_train_step_factory
 
 
 def born_again_train(
@@ -74,9 +77,20 @@ def born_again_train(
         KD run that used generation ``k-1``'s model as teacher.
 
     Raises:
-        ValueError: if ``generations < 1``.
+        ValueError: if ``generations < 1``; if ``generations > 1`` and the
+            optimizer accumulates gradients, ``alpha`` / ``temperature``
+            are out of range, the head has a single output with
+            ``alpha > 0`` (no class distribution to distill; the width is
+            read from the net's ``params.output_dim`` or from the last layer
+            of an ``nn.Sequential``), or the net is a ``TransformerNN``
+            (sequence output). Nothing is trained then. Another module's
+            single-output head is refused by the KD step at generation 1,
+            after generation 0 trained.
+        TypeError: if the training loader holds stored teacher records
+            (for any ``generations``), or if ``generations > 1`` and a
+            keyword is not a :func:`kd_train_step_factory` parameter.
         PrecisionUnsupportedError: if ``generations > 1`` and the model's
-            precision is reduced (FEAT-028): the KD generations run in full
+            precision is reduced: the KD generations run in full
             precision only, so nothing is trained.
     """
     if generations < 1:
@@ -97,7 +111,44 @@ def born_again_train(
             f"born_again_train distills generations 1+ with kd_train_step_factory, which runs in full precision "
             f"only, but this model resolves to {precision.effective}; train it in fp32"
         )
+    # The same step refuses gradient accumulation on its first batch: refuse
+    # it here too, before generation 0 trains.
+    if generations > 1 and train_params.optim.accumulate_grad_batches != 1:
+        raise ValueError(
+            "born_again_train distills generations 1+ with kd_train_step_factory, which does not accumulate "
+            f"gradients, but optim.accumulate_grad_batches={train_params.optim.accumulate_grad_batches}; set it to 1"
+        )
 
+    if generations > 1:
+        # The KD keywords reach the step factory only at generation 1:
+        # check their names and values now, before generation 0 trains.
+        import inspect
+
+        from . import distillation
+
+        bound = inspect.signature(distillation.kd_train_step_factory).bind(teacher=model, **kd_kwargs)
+        bound.apply_defaults()
+        _check_kd_weights(bound.arguments["alpha"], bound.arguments["temperature"])
+        # A single-logit head has no class distribution to distill: the KD
+        # step would refuse it at generation 1, after generation 0 trained.
+        width = getattr(getattr(model.net, "params", None), "output_dim", None)
+        if width is None and isinstance(model.net, torch.nn.Sequential) and len(model.net):
+            # A registered or runtime Sequential: its last layer is the head
+            # (registration order is data flow only there).
+            head = model.net[-1]
+            width = head.out_features if isinstance(head, torch.nn.Linear) else None
+        if getattr(model.params, "net", None) is Nets.TRANSFORMER:
+            # The KD step scores (rows, classes) logits: it would refuse a
+            # sequence model's output at generation 1, after generation 0 trained.
+            raise ValueError(
+                "born_again_train distills generations 1+ over (rows, classes) logits, but a TransformerNN "
+                "outputs a sequence; use generations=1"
+            )
+        if width == 1 and bound.arguments["alpha"] > 0:
+            raise ValueError(
+                "born_again_train distills generations 1+ over class logits, but the head has a single output; "
+                "use a 2-class head or generations=1"
+            )
     runs: list[NNRun] = []
     teacher: NNModel | None = None
     initial_state = copy.deepcopy(model.net.state_dict())

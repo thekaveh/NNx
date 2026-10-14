@@ -11,6 +11,7 @@ fields; and a ``sample`` preview never perturbs the objective's generator.
 from __future__ import annotations
 
 import copy
+import math
 import os
 
 import pytest
@@ -463,3 +464,78 @@ def test_noise_of_another_dtype_is_named():
     )
     with pytest.raises(ValueError, match="typed like x_0"):
         double(ctx)
+
+
+def test_the_imperative_step_splits_batches_through_the_models_adapter():
+    """diffusion_train_step_factory reads its one input as the objective
+    does: the model's adapter (it failed on dict batches before)."""
+    from nnx import NNModelParams as Params
+    from nnx.diffusion import diffusion_train_step_factory
+    from nnx.models import KeywordInputs, PositionalInputs
+
+    set_seed(0)
+    keyword = NNModel(
+        module=DiffusionMLP(input_dim=2, hidden_dims=[16], time_embed_dim=8),
+        params=Params(loss=Losses.MEAN_SQUARED_ERROR),
+        batch_adapter=KeywordInputs(["x"], target=None),
+    )
+    run = keyword.train(
+        _params([{"x": _points(4)}, {"x": _points(3, seed=2)}]), train_step_fn=diffusion_train_step_factory(SCHEDULE)
+    )
+    assert all(idp.train_edp.loss is not None for idp in run.idps)
+
+    two = NNModel(
+        module=DiffusionMLP(input_dim=2, hidden_dims=[16], time_embed_dim=8),
+        params=Params(loss=Losses.MEAN_SQUARED_ERROR),
+        batch_adapter=PositionalInputs(2),
+    )
+    with pytest.raises(ValueError, match="exactly one input"):
+        two.train(
+            _params([(_points(2), _points(2), torch.zeros(2))]), train_step_fn=diffusion_train_step_factory(SCHEDULE)
+        )
+
+
+def test_a_denoiser_of_the_wrong_output_shape_is_refused():
+    """(B,) noise for a (B, 1) input broadcast to (B, B) and trained on a
+    wrong loss silently."""
+    from nnx import NNModelParams as Params
+
+    class Squeezed(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.linear = torch.nn.Linear(1, 1)
+
+        def forward(self, x, t):
+            return self.linear(x).squeeze(-1)
+
+    from nnx.diffusion import diffusion_train_step_factory
+
+    for how in (
+        {"objective": diffusion_objective(SCHEDULE)},
+        {"train_step_fn": diffusion_train_step_factory(SCHEDULE)},
+    ):
+        model = NNModel(module=Squeezed(), params=Params(loss=Losses.MEAN_SQUARED_ERROR))
+        with pytest.raises(ValueError, match="noise of the input's shape"):
+            model.train(_params([_points(4)[:, :1]]), **how)
+
+
+@pytest.mark.parametrize("path", ["step", "objective"])
+def test_a_bf16_denoiser_trains_in_its_own_dtype(path):
+    from nnx import NNModelParams as Params
+    from nnx.diffusion import diffusion_train_step_factory
+
+    set_seed(0)
+    model = NNModel(
+        module=DiffusionMLP(input_dim=2, hidden_dims=[8], time_embed_dim=4).to(torch.bfloat16),
+        params=Params(loss=Losses.MEAN_SQUARED_ERROR),
+    )
+    how = (
+        {"train_step_fn": diffusion_train_step_factory(SCHEDULE)}
+        if path == "step"
+        else {"objective": diffusion_objective(SCHEDULE)}
+    )
+    before = [p.detach().clone() for p in model.net.parameters()]
+    run = model.train(_params([_points(4).to(torch.bfloat16)]), **how)
+    assert all(idp.train_edp.loss is not None and math.isfinite(idp.train_edp.loss) for idp in run.idps)
+    assert all(p.dtype is torch.bfloat16 for p in model.net.parameters())
+    assert any(not torch.equal(p, b) for p, b in zip(model.net.parameters(), before, strict=True))

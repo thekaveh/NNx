@@ -36,6 +36,7 @@ from nnx.decisions import (  # noqa: E402
     UnsupportedCapability,
 )
 from nnx.decisions import jev as jev_module  # noqa: E402
+from tests._repo_files import repo_file  # noqa: E402
 
 TOPIC = Choice("Topic?", (("t-sport", "sports"), ("t-econ", "the economy"), ("t-tech", "technology")))
 SPAM = Boolean("Is this spam?")
@@ -167,7 +168,8 @@ def test_confidence_stays_provider_confidence_and_boolean_gets_none():
     assert urgency[0].raw["provider_confidence"] == 0.55
     assert "provider_confidence" not in spam[0].raw
     # Confidence is metadata, never a probability of the answer being right.
-    assert topic[0].probabilities()["t-tech"] == 0.6 and topic[0].raw["provider_confidence"] != 0.6
+    assert topic[0].top == "t-tech" and topic[0].probabilities()["t-tech"] == 0.6
+    assert topic[0].probabilities()[topic[0].top] != topic[0].raw["provider_confidence"]
 
 
 def test_serialised_metadata_holds_only_plain_reported_fields():
@@ -322,8 +324,11 @@ def test_a_sync_only_injection_is_sync_only_and_a_job_runs_it_one_call_at_a_time
     provider = JevProvider(client)
     assert provider.adecide is None and provider.adecide_many is None  # no async path to race on
     asks = {f"q{i}": DecisionJob.ask(Boolean(f"Question {i}?"), id=f"q{i}") for i in range(4)}
-    result = asyncio.run(DecisionJob.collect(asks).arun(provider, state=["y"], limits=Limits(max_concurrency=4)))
+    result = asyncio.run(
+        DecisionJob.collect(asks).arun(provider, state=["y"], limits=Limits(max_concurrency=4, max_questions=1))
+    )
     assert {outcome.kind for outcome in result.outcomes.values()} == {"answered"}
+    assert len(client.calls) == 4  # four separate calls could overlap under max_concurrency=4
     assert peak[0] == 1  # the caller's client is never called from two threads at once
     assert built == [] and client.closed == 0
 
@@ -477,9 +482,8 @@ def test_the_live_smoke_is_opt_in_and_pins_a_version(monkeypatch, capsys):
     """CI has no credentials: without a key the live smoke refuses before
     building a client, and it pins a model version, never an alias."""
     import importlib.util
-    from pathlib import Path
 
-    path = Path(__file__).resolve().parents[1] / "scripts" / "smoke_jev_live.py"
+    path = repo_file("scripts", "smoke_jev_live.py")
     spec = importlib.util.spec_from_file_location("smoke_jev_live", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -492,9 +496,8 @@ def test_the_live_smoke_is_opt_in_and_pins_a_version(monkeypatch, capsys):
 
 def test_the_live_smoke_refuses_an_alias(monkeypatch, capsys):
     import importlib.util
-    from pathlib import Path
 
-    path = Path(__file__).resolve().parents[1] / "scripts" / "smoke_jev_live.py"
+    path = repo_file("scripts", "smoke_jev_live.py")
     spec = importlib.util.spec_from_file_location("smoke_jev_live", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -572,3 +575,66 @@ def test_decide_result_returns_aligned_jev_results():
     rows = result.unwrap()
     assert len(rows) == 2 and all(isinstance(row, ChoiceResult) for row in rows)
     assert all([option for option, _ in row.distribution] == list(TOPIC.option_ids) for row in rows)
+
+
+def test_an_async_only_injection_is_refused_before_a_synchronous_job_calls(built):
+    from nnx.decisions import InvalidJob
+
+    client = AsyncRecorder()
+    provider = JevProvider(async_client=client)
+    with pytest.raises(InvalidJob, match="only an async client"):
+        DecisionJob.ask(SPAM, id="q").run(provider, state=["x"])
+    assert client.calls == [] and built == []
+
+
+def test_an_async_only_injection_is_refused_before_a_synchronous_job_calls_inside_an_event_loop(built):
+    # A notebook cell runs inside an event loop; the job is still synchronous.
+    from nnx.decisions import InvalidJob
+
+    client = AsyncRecorder()
+    provider = JevProvider(async_client=client)
+
+    async def cell():
+        with pytest.raises(InvalidJob, match="only an async client"):
+            DecisionJob.ask(SPAM, id="q").run(provider, state=["x"])
+
+    asyncio.run(cell())
+    assert client.calls == [] and built == []
+
+
+def test_a_benchmark_inside_an_event_loop_spends_no_budget_on_an_async_only_provider(built):
+    from nnx.decisions.benchmark import Budget, Sample, collect
+
+    client = AsyncRecorder()
+    samples = [Sample(f"s{i}", SPAM, f"text {i}", label=True) for i in range(2)]
+
+    async def cell():
+        return collect(JevProvider(async_client=client), samples, provider_id="jev", budget=Budget(max_calls=5))
+
+    collection = asyncio.run(cell())
+    assert collection.calls == 0 and {record.status for record in collection.records} == {"unsupported"}
+    assert client.calls == []
+
+
+def test_a_sync_wrapper_that_runs_its_own_loop_serves_an_async_only_provider(built):
+    # The synchronous mark covers the entry point's own loop, not a loop the
+    # provider starts itself.
+    from nnx.decisions.benchmark import Budget, Sample, collect
+
+    client = AsyncRecorder()
+    jev = JevProvider(async_client=client)
+
+    class SyncWrapper:
+        name = "wrapped-jev"
+
+        def capabilities(self):
+            return jev.capabilities()
+
+        def decide(self, question, inputs):
+            return asyncio.run(jev.adecide(question, inputs))
+
+    result = DecisionJob.ask(SPAM, id="q").run(SyncWrapper(), state=["x"])
+    assert result.outcomes["q"].kind == "answered"
+    samples = [Sample("s0", SPAM, "text 0", label=True)]
+    collection = collect(SyncWrapper(), samples, provider_id="wrapped", budget=Budget(max_calls=2))
+    assert {record.status for record in collection.records} == {"answered"}

@@ -12,6 +12,7 @@ already rely on.
 
 from __future__ import annotations
 
+import itertools
 from typing import TYPE_CHECKING, Any, Union
 
 import torch
@@ -42,7 +43,7 @@ def summary(
             dict of keyword inputs. Useful when the model takes multiple positional
             arguments or a non-tensor input (graphs, dicts) that `input_size` can't describe.
         batch: A training batch, split into the forward's inputs by the model's batch
-            adapter (FEAT-006: an `NNModel`'s adapter, else the module's `unpack_batch`,
+            adapter (an `NNModel`'s adapter, else the module's `unpack_batch`,
             else one positional input). Mutually exclusive with `input_size` / `input_data`.
         depth: Maximum module-nesting depth to expand in the table.
         col_names: Which torchinfo columns to include. Defaults to the three most
@@ -66,7 +67,7 @@ def summary(
         from torchinfo import summary as _ti_summary
     except ImportError as e:
         raise ImportError(
-            "nnx.viz.summary requires torchinfo — install via `pip install thekaveh-nnx[viz]` or `pip install torchinfo>=1.8.0`."
+            "nnx.viz.summary requires torchinfo — install via `pip install thekaveh-nnx[viz]` or `pip install 'torchinfo>=1.8.0'`."
         ) from e
     # Accept NNModel directly — unwrap to .net so callers don't have to.
     # Local import to avoid a circular import at package init time.
@@ -126,15 +127,21 @@ def _run_summary(
     # incidental draw whose values never affect the statistics, but
     # which silently shifts any seeded pipeline probing a summary
     # mid-run (the concepts.md idiom). Snapshot/restore RNG around it.
-    # Device mirrors torchinfo's own inference: the model's parameter
-    # device, else CUDA when available.
-    param = next(model.parameters(), None)
-    if param is not None:
-        dev = param.device
-    elif torch.cuda.is_available():
-        dev = torch.device("cuda")
-    else:
-        dev = torch.device("cpu")
+    # The dummy is built on the model's own device, passed explicitly:
+    # torchinfo's own inference keeps only a CUDA parameter's device and
+    # would otherwise move an MPS (or, on a CUDA host, a CPU) model.
+    # The dummy also takes the model's floating dtype (a .double() model).
+    tensor = next(itertools.chain(model.parameters(), model.buffers()), None)
+    dev = tensor.device if tensor is not None else torch.device("cpu")
+    floating = next(
+        (t.dtype for t in itertools.chain(model.parameters(), model.buffers()) if t.is_floating_point()), None
+    )
+    dtypes = None
+    if floating is not None and input_size is not None:
+        several = (
+            isinstance(input_size, (list, tuple)) and len(input_size) > 0 and isinstance(input_size[0], (list, tuple))
+        )
+        dtypes = [floating] * (len(input_size) if several else 1)
     cpu_rng_state = torch.get_rng_state()
     device_rng_state = None
     if dev.type == "cuda":
@@ -149,6 +156,8 @@ def _run_summary(
             depth=depth,
             col_names=col_names,
             verbose=0,
+            device=dev,
+            dtypes=dtypes,
         )
     finally:
         torch.set_rng_state(cpu_rng_state)

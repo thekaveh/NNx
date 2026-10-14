@@ -1,4 +1,4 @@
-"""Abstention policies and risk-coverage evaluation (FEAT-008).
+"""Abstention policies and risk-coverage evaluation.
 
 A classifier that must answer every row cannot decline an uncertain one.
 An :class:`AbstentionPolicy` accepts a row only when its score reaches a

@@ -49,6 +49,9 @@ def _import_faiss():
     return faiss
 
 
+_INDEX_TYPES = ("IndexFlatIP", "IndexFlatL2", "IndexHNSWFlat")
+
+
 def _build_index(faiss_mod: Any, dim: int, index_type: str) -> Any:
     """Construct a FAISS index of the requested type and dimension.
 
@@ -118,8 +121,9 @@ def export_to_faiss(
             insertion. ``None`` (the default) auto-selects: True for
             ``IndexFlatIP`` (cosine via IP), False for everything else.
             Pass an explicit bool to override.
-        device: target device for the encode pass. ``None`` infers
-            from the backbone.
+        device: passed to :func:`embed_texts`, which encodes where the
+            backbone lives; the embeddings are moved to the CPU for the
+            index, so this argument has no effect on the result.
 
     Returns:
         The string path written. Same value as ``str(out_path)`` —
@@ -134,6 +138,8 @@ def export_to_faiss(
         raise ValueError("corpus is empty — FAISS rejects zero-row adds")
 
     faiss = _import_faiss()
+    if index_type not in _INDEX_TYPES:  # before the corpus is embedded
+        raise ValueError(f"unsupported index_type {index_type!r}. Pass one of {', '.join(map(repr, _INDEX_TYPES))}.")
 
     if normalize is None:
         # Cosine-via-IP is the default reason callers pick IndexFlatIP,

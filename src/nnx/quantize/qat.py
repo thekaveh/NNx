@@ -62,7 +62,7 @@ def _build_quantizer(qat_config: str, *, groupsize: int = 32):
     with a pointer to the pip extra when torchao isn't installed and
     ValueError when the recipe name isn't recognized.
     """
-    if groupsize <= 0:
+    if isinstance(groupsize, bool) or not isinstance(groupsize, int) or groupsize <= 0:
         # Fail fast: groupsize is the int4 weight grouping width. A negative
         # value builds a silently mis-quantized model (the quantizer accepts
         # it), and 0 surfaces only as a cryptic ZeroDivisionError deep inside
@@ -195,7 +195,14 @@ class QATLifecycleCallback(Callback):
         # back-to-back ``model.train()`` calls would.
         if self.is_prepared:
             return
+        before = [type(module) for module in ctx.model.net.modules()]
         self.quantizer.prepare(ctx.model.net)
+        if [type(module) for module in ctx.model.net.modules()] == before:
+            # No Linear was swapped: a "QAT" run would silently train plain FP32.
+            raise ValueError(
+                f"QAT prepared nothing: no child nn.Linear of this net was eligible (groupsize={self.groupsize} "
+                "must divide its in_features, and a net that is itself one nn.Linear has no child to swap)"
+            )
         self.is_prepared = True
 
     def on_train_end(self, ctx: _CallbackContext) -> None:

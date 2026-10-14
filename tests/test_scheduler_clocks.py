@@ -250,7 +250,9 @@ def test_a_skipped_amp_step_is_not_a_committed_update(fused):
         if committed[-1]:
             clock.committed()
     assert committed == [True, False, True]
-    assert clock.count == 2
+    # The scaler saw all three steps, but the learning rate decayed only for the two committed ones.
+    assert scaler.steps == 3
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.1 * 0.1**2)
 
 
 def test_the_default_step_reports_each_committed_update_once():
@@ -461,7 +463,13 @@ def test_a_split_run_reproduces_the_remaining_lr_sequence():
         data_id="split",
         resume_from_run_id=parent.id,
     )
-    assert first_half.update_history + second_half.update_history == pytest.approx(whole.update_history)
+    # pytest.approx over (index, lr) tuples silently compares exactly: the
+    # update indices are compared exactly and the LRs, recomputed from the
+    # restored step count, within float rounding.
+    split = first_half.update_history + second_half.update_history
+    assert len(split) == 12
+    assert [index for index, _ in split] == [index for index, _ in whole.update_history]
+    assert [lr for _, lr in split] == pytest.approx([lr for _, lr in whole.update_history], rel=1e-12, abs=0.0)
 
 
 def test_a_resume_refuses_a_mismatched_clock_or_horizon():

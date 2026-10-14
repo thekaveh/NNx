@@ -294,3 +294,54 @@ def test_training_cadence_follows_the_resolved_train_loader(tmp_path, monkeypatc
     assert ds.batch_sizes[0] == 10 and len(ds.train_loader) == 1 and len(run.idps) == 2
     ds, run = _train((3, None, None), "mini")
     assert ds.batch_sizes[0] == 3 and len(ds.train_loader) == 4 and len(run.idps) == 8
+
+
+@pytest.mark.parametrize("bad", [1.9, True, -1, 2**40])
+def test_a_split_seed_outside_the_generator_domain_is_refused(bad):
+    """The split seed is an integer in [0, 2**32), like NNTrainParams.seed:
+    1.9 or True no longer silently alias seed 1."""
+    from nnx.models import ModelSpec
+
+    with pytest.raises(ValueError, match="seed"):
+        NNTabularDataset(**_TABULAR, seed=bad)
+    with pytest.raises(ValueError, match="seed"):
+        ModelSpec("some-factory", seed=bad)
+    assert NNTabularDataset(**_TABULAR, seed=np.int64(3)).seed == 3
+
+
+def test_a_preference_pad_id_is_checked_against_the_full_tokenizer_length():
+    class _Added:
+        """A Hugging Face-style tokenizer: vocab_size excludes an added [PAD]."""
+
+        vocab_size = 4
+
+        def __len__(self):
+            return 5
+
+        def encode(self, text):
+            return [0, 1]
+
+    kwargs = dict(prompts=["p"] * 10, chosen=["c"] * 10, rejected=["r"] * 10, tokenizer=_Added(), seed=0)
+    added = NNPreferenceDataset(**kwargs, pad_token_id=4)  # the added pad: inside len(tokenizer)
+    assert added.input_dim == added.output_dim == 5  # an embedding sized from it covers the pad
+    with pytest.raises(ValueError, match="outside the vocabulary"):
+        NNPreferenceDataset(**kwargs, pad_token_id=5)
+
+    class _VocabSize:  # no __len__: vocab_size decides
+        vocab_size = 4
+
+        def encode(self, text):
+            return [0, 1]
+
+    class _Raw:  # a raw tokenizers.Tokenizer: get_vocab_size() decides
+        def get_vocab_size(self):
+            return 4
+
+        def encode(self, text):
+            return [0, 1]
+
+    for tokenizer in (_VocabSize(), _Raw()):
+        kwargs["tokenizer"] = tokenizer
+        NNPreferenceDataset(**kwargs, pad_token_id=3)
+        with pytest.raises(ValueError, match="outside the vocabulary"):
+            NNPreferenceDataset(**kwargs, pad_token_id=4)

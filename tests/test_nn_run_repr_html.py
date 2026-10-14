@@ -184,7 +184,22 @@ def test_str_and_repr_html_name_a_registered_factory_without_running_it():
     # The config is the factory's own; no fabricated `momentum=` / `name=` field.
     assert ", momentum=" not in text and "name=" not in text
     html = run._repr_html_()
-    assert "registered factory tests.display_only@v3 {'momentum': 0.9} (max_lr=0.05)" in html
+    # Escaped like every cell: the config is user data.
+    assert "registered factory tests.display_only@v3 {&#x27;momentum&#x27;: 0.9} (max_lr=0.05)" in html
+
+
+def test_repr_html_escapes_a_factory_config_as_data():
+    """A shared run.yaml's factory config renders as text, never markup."""
+    from nnx import NNOptimFactoryParams, NNRun, OptimizerFactorySpec
+
+    spec = OptimizerFactorySpec(id="tests.markup", version=1, config={"note": "<img src=x onerror=alert(1)>"})
+    run = NNRun(
+        net=NNParams(input_dim=4, output_dim=3, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        model=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        train=NNTrainParams(n_epochs=1, optim=NNOptimFactoryParams(factory=spec, max_lr=0.05)),
+    )
+    html = run._repr_html_()
+    assert "<img" not in html and "&lt;img src=x onerror=alert(1)&gt;" in html
 
 
 def test_str_and_repr_html_name_adamw():

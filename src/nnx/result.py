@@ -1,4 +1,4 @@
-"""An opt-in ``Result`` at fallible boundaries (FEAT-025).
+"""An opt-in ``Result`` at fallible boundaries.
 
 NNx reports failures by raising. This module adds a small alternative for
 the places where a caller would rather branch on a value than wrap a call in
@@ -228,6 +228,10 @@ def validate_decision_request_result(
     elif kind == "score":
         state["levels"] = options
     try:
+        if kind == "boolean" and options is not None:
+            # A Boolean has no options: dropping them would answer a
+            # different question from the one meant.
+            raise InvalidDecisionRequest("a Boolean question takes no options")
         return Ok(question_from_state(state))
     except InvalidDecisionRequest as error:
         return Err(
@@ -250,7 +254,8 @@ def decide_result(
 ) -> Result[tuple[Any, ...], BoundaryError]:
     """Ask ``provider`` ``question`` for ``inputs``.
 
-    ``Ok`` holds the results, one per input — or, with an abstention
+    ``Ok`` holds the results, one per input (an answer of another count,
+    question, kind or option order is an ``"invalid_decision_response"``) — or, with an abstention
     ``policy`` (and the ``model_id`` it was tuned for), each row's
     ``SelectiveDecision``: an abstention is a success whose probabilities
     and reason are kept. Only the provider's own failures are errors:
@@ -259,7 +264,9 @@ def decide_result(
     (an outage, a timeout, a refused credential) ``"provider_failure"``, and
     ``UnsupportedCapability`` ``"unsupported"``; the first two keep the
     error's ``request_id`` in ``context``. The codes follow the exception
-    type, not whether a retry would help. Anything else propagates.
+    type, not whether a retry would help. Anything else propagates. A
+    ``policy`` that does not fit the question (a ``Boolean``, other labels,
+    another ``model_id``) raises before the provider is called.
     """
     from .decisions.schema import InvalidDecisionResponse, ProviderFailure, UnsupportedCapability
 
@@ -267,9 +274,34 @@ def decide_result(
         raise TypeError(
             f"decide_result(policy=...) needs the model_id (a str) the policy was tuned for, got {model_id!r}"
         )
+    if policy is not None:
+        # The checks abstention.decide makes on each answer, made before the
+        # provider is called (each input may be a billed request), as
+        # DecisionJob.ask does.
+        from .abstention import AbstentionPolicy
+        from .decisions.schema import Boolean
+
+        if not isinstance(policy, AbstentionPolicy):
+            raise TypeError(
+                f"decide_result(policy=...) needs an AbstentionPolicy, got {type(policy).__name__} "
+                "(a ThresholdSelection's is selection.require())"
+            )
+        if isinstance(question, Boolean):
+            raise TypeError(
+                "decide_result(policy=...): an abstention policy applies to a Choice or Score, not a Boolean"
+            )
+        policy._check(tuple(question.option_ids), cast(str, model_id), "probabilities", None)
     context = {"question": question.digest(), "provider": type(provider).__name__}
+    from .decisions.jobs import _check_results, _modality
+
     try:
-        results = tuple(provider.decide(question, inputs))
+        rows: Optional[int] = _modality(inputs)[1]
+    except UnsupportedCapability:  # a provider-specific input: its row count is the provider's to check
+        rows = None
+    try:
+        # Checked as DecisionJob checks an answer: one result of this
+        # question per input row.
+        results = _check_results(question, provider.decide(question, inputs), rows, "provider.decide")
     except UnsupportedCapability as error:
         return Err(BoundaryError("unsupported", where="provider.decide", context=context, cause=error))
     except InvalidDecisionResponse as error:  # before ProviderFailure: a malformed Jev answer is both

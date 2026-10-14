@@ -30,7 +30,8 @@ import torch
 from torch import nn
 from torch.nn.utils import skip_init
 
-from ._utils import copy_param_roles
+from .._validation import require_count
+from ._utils import copy_param_roles, refuse_parametrized, stock_forward
 
 _SUPPORTED_METHODS = ("svd",)
 
@@ -60,17 +61,24 @@ def low_rank_factorize(
         Linear carries the original bias verbatim.
 
     Raises:
-        TypeError: if ``linear`` is not :class:`nn.Linear`.
-        ValueError: if ``rank`` is out of range, or ``method`` unknown.
+        TypeError: if ``linear`` is not :class:`nn.Linear` (or a subclass
+            with its own ``forward``).
+        ValueError: if ``rank`` is out of range, ``method`` unknown, or
+            ``linear`` carries a parametrization, a legacy ``weight_norm`` /
+            ``spectral_norm`` hook or an unbaked prune mask.
     """
-    if not isinstance(linear, nn.Linear):
+    if not stock_forward(linear, nn.Linear):  # a subclass's own forward would be dropped
         raise TypeError(f"low_rank_factorize requires an nn.Linear, got {type(linear).__name__}")
+    refuse_parametrized(linear, "low_rank_factorize's Linear")
     if method not in _SUPPORTED_METHODS:
         raise ValueError(f"unsupported method {method!r}; supported: {_SUPPORTED_METHODS}")
 
     out_features = linear.out_features
     in_features = linear.in_features
     max_rank = min(out_features, in_features)
+    rank = require_count(
+        rank, "rank", owner="low_rank_factorize", minimum=0
+    )  # the range message below names the bounds
     if not (1 <= rank <= max_rank):
         raise ValueError(f"rank must be in [1, min(out_features, in_features) = {max_rank}]; got {rank}")
 
@@ -79,7 +87,10 @@ def low_rank_factorize(
     # Linears are downcast back to the original dtype before return.
     W = linear.weight.data
     orig_dtype = W.dtype
-    U, S, Vh = torch.linalg.svd(W.to(torch.float64), full_matrices=False)
+    # MPS has no float64: decompose a CPU copy there (copy_ moves the
+    # factors back onto the layer's device).
+    work = W.detach().to("cpu") if W.device.type == "mps" else W
+    U, S, Vh = torch.linalg.svd(work.to(torch.float64), full_matrices=False)
     U_k = U[:, :rank]  # (out, k)
     S_k = S[:rank]  # (k,)
     Vh_k = Vh[:rank, :]  # (k, in)

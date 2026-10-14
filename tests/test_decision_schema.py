@@ -147,7 +147,7 @@ def test_digest_changes_on_option_order_or_description_changes():
     assert Score(SEVERITY.prompt, tuple(reversed(SEVERITY.levels))).digest() != SEVERITY.digest()
     assert Boolean("a?").digest() != Boolean("b?").digest()
     # A result is bound to the digest of the exact question it answers.
-    assert validate_response(reordered, {"red": 0.2, "green": 0.3, "blue": 0.5}).question_digest != COLORS.digest()
+    assert validate_response(reordered, {"red": 0.2, "green": 0.3, "blue": 0.5}).question_digest == reordered.digest()
 
 
 def test_bookkeeping_ids_never_reach_the_model_facing_text():
@@ -246,3 +246,23 @@ def test_a_number_too_large_for_a_float_is_an_invalid_response():
         BooleanResult(rain.digest(), 10**400)
     with pytest.raises(InvalidDecisionResponse, match="vendor_score .*too large for a float"):
         validate_response(SEVERITY, {"high": 0.1, "low": 0.6, "mid": 0.3}, vendor_score=10**400)
+
+
+def test_a_vendor_score_for_a_choice_or_boolean_is_refused_not_dropped():
+    from nnx.decisions import Boolean, Choice, InvalidDecisionResponse, validate_response
+
+    choice = Choice("Which?", (("a", "A"), ("b", "B")))
+    with pytest.raises(InvalidDecisionResponse, match="vendor_score"):
+        validate_response(choice, {"a": 0.5, "b": 0.5}, vendor_score=3.0)
+    with pytest.raises(InvalidDecisionResponse, match="vendor_score"):
+        validate_response(Boolean("x?"), 0.4, vendor_score=float("nan"))
+
+
+@pytest.mark.parametrize(
+    "distribution", [{"ab": 0.5, "cd": 0.5}, [0.5, 0.5], ("ab", "cd"), [("a", 0.5, 1), ("b", 0.5)], "ab"]
+)
+def test_a_result_distribution_must_be_id_probability_pairs(distribution):
+    from nnx.decisions import ChoiceResult, InvalidDecisionResponse
+
+    with pytest.raises(InvalidDecisionResponse, match="pairs"):
+        ChoiceResult("digest", distribution)

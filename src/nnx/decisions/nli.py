@@ -1,5 +1,5 @@
 """A local label-conditioned baseline: decisions from a caller-supplied
-natural-language-inference (NLI) model (FEAT-011).
+natural-language-inference (NLI) model.
 
 A fixed-head classifier knows only the labels it was trained on. An NLI
 cross-encoder scores whether a *premise* (the input text) entails a
@@ -218,6 +218,9 @@ class NLIProvider:
             raise InvalidDecisionRequest(f"model must be a torch.nn.Module, got {type(self.model).__name__}")
         if not callable(self.tokenizer):
             raise InvalidDecisionRequest(f"tokenizer must be callable, got {type(self.tokenizer).__name__}")
+        from .providers import _check_name
+
+        _check_name(self.name)
         n_labels, names = _label_space(self.model)
         self.entailment_id = _class_id(self.entailment_id, "entailment_id", n_labels, names)
         self.contradiction_id = _class_id(self.contradiction_id, "contradiction_id", n_labels, names)
@@ -295,18 +298,32 @@ class NLIProvider:
             return [self.boolean_template.format(question.prompt)]
         raise UnsupportedCapability(f"an NLI provider answers choice and boolean questions, not {question.kind!r}")
 
-    def decide(self, question: Question, inputs: Any) -> list[DecisionResult]:
-        """Answer ``question`` for every text in ``inputs``."""
+    def check(self, question: Question, inputs: Any) -> None:
+        """Every check :meth:`decide` makes before calling the model — the
+        question, the texts (non-empty strings), the capabilities and the
+        tokenizer-only length check of each pair — so a caller (a decision
+        job, the benchmark) can refuse a request without spending a call."""
+        self._checked(question, inputs)
+
+    def _checked(self, question: Question, inputs: Any) -> tuple[list[str], list[str], list[str], list[bool]]:
+        """``(texts, premises, pair hypotheses, truncated)`` once the request
+        passes every pre-model check; no model is called."""
         if not isinstance(question, (Choice, Boolean, Score)):
             raise InvalidDecisionRequest(f"not a decision question: {type(question).__name__}")
         texts = _texts(inputs)
         self.capabilities().check(question, modality="text", batch_size=len(texts))
         hypotheses = self.hypotheses(question)
-        if not texts:
-            return []
         premises = [text for text in texts for _ in hypotheses]
         pair_hypotheses = hypotheses * len(texts)
-        truncated = self._truncation_report(premises, pair_hypotheses)
+        truncated = self._truncation_report(premises, pair_hypotheses) if texts else []
+        return texts, premises, pair_hypotheses, truncated
+
+    def decide(self, question: Question, inputs: Any) -> list[DecisionResult]:
+        """Answer ``question`` for every text in ``inputs``."""
+        texts, premises, pair_hypotheses, truncated = self._checked(question, inputs)
+        if not texts:
+            return []
+        hypotheses = self.hypotheses(question)
         logits = self._pair_logits(premises, pair_hypotheses)
         per_input = len(hypotheses)
         record = self.record()
@@ -385,7 +402,7 @@ class NLIProvider:
                     encoded = {key: value.to(device) for key, value in dict(encoded).items()}
                     output = self.model(**encoded)
                     logits = getattr(output, "logits", output)
-                    chunks.append(np.asarray(logits.detach().to("cpu", torch.float64)))
+                    chunks.append(np.asarray(logits.detach().cpu().to(torch.float64)))
         except Exception as error:  # the backend failed on a valid, supported request
             raise ProviderFailure(f"{self.name}: the NLI model failed: {error}") from error
         finally:

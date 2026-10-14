@@ -1,4 +1,4 @@
-"""Opt-in ``torch.compile`` for the built-in FP32 training forward (FEAT-029).
+"""Opt-in ``torch.compile`` for the built-in FP32 training forward.
 
 ``model.train(params, compile=CompileSpec())`` compiles the forward pass the
 built-in step runs (and validation inside the fit), and nothing else:
@@ -282,12 +282,16 @@ class _Snapshot:
         self.cuda = (
             torch.cuda.get_rng_state_all() if torch.cuda.is_available() and torch.cuda.is_initialized() else None
         )
+        # MPS draws (dropout on an MPS net) come from their own generator.
+        self.mps = torch.mps.get_rng_state() if torch.backends.mps.is_available() else None
         self.buffers = [(buffer, buffer.detach().clone()) for buffer in net.buffers()]
 
     def restore(self) -> None:
         torch.set_rng_state(self.cpu)
         if self.cuda is not None:
             torch.cuda.set_rng_state_all(self.cuda)
+        if self.mps is not None:
+            torch.mps.set_rng_state(self.mps)
         with torch.no_grad():
             for buffer, saved in self.buffers:
                 buffer.copy_(saved)
@@ -339,7 +343,11 @@ class _CompileSession:
             # dynamo: an eager re-run (from the same RNG and buffers) tells
             # the two apart, and its own error is the one that propagates.
             snapshot.restore()
-            eager_output = self._net(*args, **kwargs)
+            try:
+                eager_output = self._net(*args, **kwargs)
+            except BaseException:
+                snapshot.restore()  # the user's own error: leave the model as the call found it
+                raise
             restart = self._fail(error, stage="forward")
             if self.spec.on_failure == "error":
                 snapshot.restore()  # leave the model as the failed call found it
@@ -362,6 +370,7 @@ class _CompileSession:
             )
             restart = self._fail(skipped, stage="forward")
             if self.spec.on_failure == "error":
+                snapshot.restore()  # as the other failure path: the model as the failed call found it
                 self.record = replace(self.record, effective="failed", restart=restart)
                 raise CompileFailed(
                     f"torch.compile (backend {self.spec.backend!r}) failed: {restart['message']}", self.record

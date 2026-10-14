@@ -33,6 +33,16 @@ _Slot = tuple[int, str]
 _MAX_LISTED_PATHS = 10
 
 
+# Parents that read a child Linear's weight directly (MultiheadAttention's
+# out_proj; the Transformer layers' eval fast path over linear1 / linear2):
+# a wrapped or factorized child breaks them.
+WEIGHT_READING_PARENTS: tuple[type[nn.Module], ...] = (
+    nn.MultiheadAttention,
+    nn.TransformerEncoderLayer,
+    nn.TransformerDecoderLayer,
+)
+
+
 def _registrations(root: nn.Module) -> Iterator[tuple[str, nn.Module, str, nn.Module]]:
     """Yield ``(path, parent, attr, child)`` for every registration path.
 
@@ -69,13 +79,14 @@ def select_linear_slots(
     name_patterns: tuple[str, ...],
     *,
     skip_inside: type[nn.Module] | tuple[type[nn.Module], ...],
+    refuse_inside: tuple[type[nn.Module], ...] = (),
     helper: str,
 ) -> list[tuple[nn.Module, str]]:
     """Return the ``(parent, attr)`` slots of the ``nn.Linear`` layers to wrap.
 
     A slot is selected when any of its dotted paths matches any fnmatch
-    glob in ``name_patterns`` and its parent is not already a wrapper of
-    type ``skip_inside`` (so re-applying never wraps an existing ``.base``).
+    glob in ``name_patterns`` and no wrapper of a ``skip_inside`` type sits
+    on its ``.base`` chain (so re-applying never wraps an existing ``.base``).
     The root module itself is never a slot. Raises ``ValueError`` — before
     any mutation — when ``name_patterns`` is empty or a selected layer is
     registered in more than one slot.
@@ -95,12 +106,54 @@ def select_linear_slots(
             layer_slots.setdefault(id(child), []).append(slot)
         slots[slot][1].append(path)
 
-    selected = [
+    matched = [
         slot
         for slot, (parent, paths) in slots.items()
-        if not isinstance(parent, skip_inside)
-        and any(fnmatch.fnmatchcase(path, pattern) for path in paths for pattern in name_patterns)
+        if any(fnmatch.fnmatchcase(path, pattern) for path in paths for pattern in name_patterns)
     ]
+
+    def inside_skip(path: str) -> bool:
+        """Whether a ``skip_inside`` wrapper sits anywhere in the chain of
+        ``.base`` wrappers above this Linear (a LoRA over an IA3 over the
+        Linear is already adapted, not only its immediate parent)."""
+        while path == "base" or path.endswith(".base"):
+            path = path[: -len("base")].rstrip(".")
+            owner = module.get_submodule(path) if path else module
+            if isinstance(owner, skip_inside):
+                return True
+        return False
+
+    # Already-adapted layers are skipped first: a re-application wraps
+    # nothing, so it cannot trip the refusal below.
+    matched = [
+        slot
+        for slot in matched
+        if not isinstance(slots[slot][0], skip_inside) and not any(inside_skip(path) for path in slots[slot][1])
+    ]
+    # A wrapper in ``refuse_inside`` reads its .base as an nn.Linear
+    # (weight / bias) in forward: wrapping that base would break it.
+    # torch's MultiheadAttention (out_proj) and Transformer layers' eval fast
+    # path (linear1 / linear2) read a child Linear's weight directly as well.
+    read_directly = [
+        f"{path} (read by its parent {type(slots[slot][0]).__name__})"
+        for slot in matched
+        if isinstance(slots[slot][0], WEIGHT_READING_PARENTS)
+        for path in slots[slot][1]
+    ]
+    if read_directly:
+        raise ValueError(
+            f"{helper}: {', '.join(read_directly)}: a parent that reads its Linear's weight directly would break "
+            "if it were wrapped; select other projections. Nothing was modified."
+        )
+    refused = tuple(refuse_inside)
+    foreign = [path for slot in matched if isinstance(slots[slot][0], refused) for path in slots[slot][1]]
+    if foreign:
+        wrapper = type(slots[next(s for s in matched if isinstance(slots[s][0], refused))][0]).__name__
+        raise ValueError(
+            f"{helper}: {_listed(foreign)} are the base of a {wrapper}, which reads its base's weight "
+            "directly; wrapping it would break that layer. Nothing was modified."
+        )
+    selected = matched
 
     aliased: dict[int, list[str]] = {}
     for slot in selected:
@@ -125,6 +178,7 @@ def wrap_selected_linears(
     name_patterns: tuple[str, ...],
     *,
     skip_inside: type[nn.Module] | tuple[type[nn.Module], ...],
+    refuse_inside: tuple[type[nn.Module], ...] = (),
     helper: str,
     wrap: Callable[[nn.Linear], nn.Module],
 ) -> int:
@@ -133,8 +187,24 @@ def wrap_selected_linears(
 
     Building a wrapper already freezes its base, so nothing is constructed
     until the whole matched set has passed :func:`select_linear_slots`.
+    Every wrapper is built before any slot is replaced; a wrapper that
+    fails to build (a quantized weight DoRA cannot norm, say) restores the
+    bases' trainability and leaves every slot as it was.
     """
-    targets = select_linear_slots(module, name_patterns, skip_inside=skip_inside, helper=helper)
-    for parent, attr in targets:
-        setattr(parent, attr, wrap(getattr(parent, attr)))
+    targets = select_linear_slots(
+        module, name_patterns, skip_inside=skip_inside, refuse_inside=refuse_inside, helper=helper
+    )
+    bases = [getattr(parent, attr) for parent, attr in targets]
+    flags = [(p, p.requires_grad) for base in bases for p in base.parameters()]
+    modes = [(m, m.training) for base in bases for m in base.modules()]
+    try:
+        wrappers = [wrap(base) for base in bases]
+    except BaseException:
+        for parameter, flag in flags:
+            parameter.requires_grad_(flag)
+        for submodule, training in modes:
+            submodule.training = training
+        raise
+    for (parent, attr), wrapper in zip(targets, wrappers, strict=True):
+        setattr(parent, attr, wrapper)
     return len(targets)

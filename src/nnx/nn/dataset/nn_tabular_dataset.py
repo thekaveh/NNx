@@ -39,7 +39,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Subset, TensorDataset, random_split
 
-from ..._validation import require_batch_sizes
+from ..._validation import require_batch_sizes, require_count
 from ...data_splits import SplitIndices, SplitManifest
 from ...preprocessing import PreprocessingError, Standardizer, check_frame, dtype_name
 from ...provenance import IdentityRef
@@ -108,8 +108,9 @@ class NNTabularDataset(NNDatasetBase):
     strings and anything but a 3-tuple are rejected with the
     ``batch_sizes[i] (split)`` slot named before any tensor conversion or
     split. Zero never disables a split: `val_proportion=0.0` /
-    `test_proportion=0.0` do, and that split's loader is then ``None`` with
-    a placeholder ``1`` in the resolved ``batch_sizes``.
+    `test_proportion=0.0` do, and that split's loader is then ``None``. Its
+    resolved ``batch_sizes`` slot is a placeholder ``1`` when it was
+    requested as ``None``; an explicit size is kept.
 
     Admission: only the selected feature and target columns are inspected.
     NaN in any of them, ``±inf`` in a feature (checked in source precision,
@@ -124,7 +125,7 @@ class NNTabularDataset(NNDatasetBase):
     overflows ``feature_dtype`` can only be detected after the split, once
     the training statistics exist).
 
-    Explicit membership (FEAT-017): ``split=`` takes a ``SplitManifest``
+    Explicit membership: ``split=`` takes a ``SplitManifest``
     (``nnx.data_splits``) instead of the seeded ``random_split``. Rows are
     matched to the plan by the sample ids in the ``id_col`` column (required;
     never inferred from the index), so reordered rows keep their split; a
@@ -140,7 +141,7 @@ class NNTabularDataset(NNDatasetBase):
     test follow the manifest's order. ``state()`` gains ``split`` (the
     manifest digest) only then.
 
-    Train-only standardization (FEAT-018): ``standardize=True`` fits a
+    Train-only standardization: ``standardize=True`` fits a
     ``nnx.preprocessing.Standardizer`` on the training split's rows of the
     feature columns only — after the split, so validation and test values
     never reach the statistics — and applies those frozen statistics to
@@ -197,6 +198,10 @@ class NNTabularDataset(NNDatasetBase):
     standardizer: Optional[Standardizer] = field(init=False, default=None)
 
     def __post_init__(self):
+        if self.seed is not None:  # the split generator's seed domain
+            object.__setattr__(
+                self, "seed", require_count(self.seed, "seed", owner="NNTabularDataset", minimum=0, maximum=2**32 - 1)
+            )
         if not 0.0 <= self.val_proportion < 1.0:
             raise ValueError(f"val_proportion must be in [0, 1), got {self.val_proportion}")
         if not 0.0 <= self.test_proportion < 1.0:

@@ -1,5 +1,4 @@
-"""Typed decision questions, validated results and the response validator
-(FEAT-009). See :mod:`nnx.decisions` for the overview."""
+"""Typed decision questions, validated results and the response validator. See :mod:`nnx.decisions` for the overview."""
 
 from __future__ import annotations
 
@@ -232,6 +231,9 @@ def question_from_state(state: Mapping[str, Any]) -> Union[Choice, Boolean, Scor
     missing = [key for key in required if key not in state]
     if missing:
         raise InvalidDecisionRequest(f"{kind} state is missing {missing}")
+    extra = sorted(str(key) for key in state if key != "kind" and key not in required)
+    if extra:  # dropping them would answer a different question from the one meant
+        raise InvalidDecisionRequest(f"{kind} state has keys a {kind} question does not take: {extra}")
     if kind == Choice.kind:
         return Choice(state["prompt"], state["options"])
     if kind == Boolean.kind:
@@ -254,19 +256,50 @@ def _probability(value: Any, *, what: str) -> float:
     return probability
 
 
-def _check_distribution(pairs: tuple[tuple[str, float], ...], *, owner: str) -> tuple[tuple[str, float], ...]:
+def _check_distribution(distribution: Any, *, owner: str) -> tuple[tuple[str, float], ...]:
+    # (id, p) pairs only: a mapping would iterate its keys, and a string
+    # id would unpack character by character.
+    if isinstance(distribution, (Mapping, str, bytes)) or not isinstance(distribution, Iterable):
+        raise InvalidDecisionResponse(f"{owner} distribution must be (id, p) pairs, got {type(distribution).__name__}")
+    pairs = tuple(distribution)
+    malformed = [
+        entry
+        for entry in pairs
+        if isinstance(entry, (str, bytes)) or not isinstance(entry, Sequence) or len(entry) != 2
+    ]
+    if malformed:
+        raise InvalidDecisionResponse(f"{owner} distribution entries must be (id, p) pairs, got {malformed[:3]!r}")
     if len(pairs) < 2:
         raise InvalidDecisionResponse(f"{owner} needs a distribution over at least 2 ids, got {len(pairs)}")
     ids = [option_id for option_id, _ in pairs]
+    wrong = [option_id for option_id in ids if not isinstance(option_id, str) or not option_id]
+    if wrong:
+        raise InvalidDecisionResponse(f"{owner} distribution ids must be non-empty strings, got {wrong!r}")
     if len(set(ids)) != len(ids):
         raise InvalidDecisionResponse(f"{owner} distribution repeats ids: {ids}")
-    checked = tuple((option_id, _probability(p, what=f"{owner} p[{option_id!r}]")) for option_id, p in pairs)
+    # str(): a NumPy string id passes isinstance(str) but is not YAML-safe.
+    checked = tuple((str(option_id), _probability(p, what=f"{owner} p[{option_id!r}]")) for option_id, p in pairs)
     total = math.fsum(p for _, p in checked)
     if abs(total - 1.0) > PROBABILITY_TOLERANCE:
         raise InvalidDecisionResponse(
             f"{owner} distribution sums to {total!r}, not 1 within {PROBABILITY_TOLERANCE}; it is never renormalized"
         )
     return checked
+
+
+def _check_vendor_score(vendor_score: Any) -> Optional[float]:
+    """A Score provider's own number: ``None`` or a finite real, as a float."""
+    if vendor_score is None:
+        return None
+    if isinstance(vendor_score, bool) or not isinstance(vendor_score, numbers.Real):
+        raise InvalidDecisionResponse(f"vendor_score must be a finite number, got {vendor_score!r}")
+    try:
+        score = float(vendor_score)
+    except OverflowError as error:  # an integer too large for a float
+        raise InvalidDecisionResponse("vendor_score must be a finite number, got one too large for a float") from error
+    if not math.isfinite(score):
+        raise InvalidDecisionResponse(f"vendor_score must be a finite number, got {vendor_score!r}")
+    return score
 
 
 @dataclass(frozen=True)
@@ -282,7 +315,7 @@ class ChoiceResult:
     kind: ClassVar[str] = "choice"
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "distribution", _check_distribution(tuple(self.distribution), owner="ChoiceResult"))
+        object.__setattr__(self, "distribution", _check_distribution(self.distribution, owner="ChoiceResult"))
 
     def probabilities(self) -> dict[str, float]:
         return dict(self.distribution)
@@ -332,7 +365,8 @@ class ScoreResult:
     kind: ClassVar[str] = "score"
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "distribution", _check_distribution(tuple(self.distribution), owner="ScoreResult"))
+        object.__setattr__(self, "distribution", _check_distribution(self.distribution, owner="ScoreResult"))
+        object.__setattr__(self, "vendor_score", _check_vendor_score(self.vendor_score))
 
     def probabilities(self) -> dict[str, float]:
         return dict(self.distribution)
@@ -384,8 +418,13 @@ def validate_response(
     never renormalized. For a :class:`Boolean`, ``response`` is ``p_true``
     or ``{"true": p, "false": 1 - p}``. ``raw`` (the provider's own output)
     and ``vendor_score`` (a :class:`Score` provider's own number) are kept
-    apart from the normalized fields.
+    apart from the normalized fields; a ``vendor_score`` for another kind
+    of question raises :class:`InvalidDecisionResponse`.
     """
+    if not isinstance(question, (Choice, Boolean, Score)):  # before digest(): any object would AttributeError
+        raise InvalidDecisionRequest(f"not a decision question: {type(question).__name__}")
+    if vendor_score is not None and not isinstance(question, Score):  # never dropped silently
+        raise InvalidDecisionResponse(f"vendor_score is a Score provider's own number; a {question.kind} has none")
     digest = question.digest()
     if isinstance(question, Boolean):
         if isinstance(response, Mapping):
@@ -403,8 +442,6 @@ def validate_response(
         else:
             p_true = _probability(response, what="p_true")
         return BooleanResult(digest, p_true, provider=provider, raw=raw)
-    if not isinstance(question, (Choice, Score)):
-        raise InvalidDecisionRequest(f"not a decision question: {type(question).__name__}")
 
     expected = question.option_ids
     seen: dict[str, float] = {}
@@ -422,16 +459,4 @@ def validate_response(
     ordered = tuple((option_id, seen[option_id]) for option_id in expected)
     if isinstance(question, Choice):
         return ChoiceResult(digest, ordered, provider=provider, raw=raw)
-    score = None
-    if vendor_score is not None:
-        if isinstance(vendor_score, bool) or not isinstance(vendor_score, numbers.Real):
-            raise InvalidDecisionResponse(f"vendor_score must be a finite number, got {vendor_score!r}")
-        try:
-            score = float(vendor_score)
-        except OverflowError as error:  # an integer too large for a float
-            raise InvalidDecisionResponse(
-                "vendor_score must be a finite number, got one too large for a float"
-            ) from error
-        if not math.isfinite(score):
-            raise InvalidDecisionResponse(f"vendor_score must be a finite number, got {vendor_score!r}")
-    return ScoreResult(digest, ordered, provider=provider, vendor_score=score, raw=raw)
+    return ScoreResult(digest, ordered, provider=provider, vendor_score=vendor_score, raw=raw)

@@ -98,8 +98,10 @@ def finalize_step(
     each loss component, cycling zero_grad/step boundaries), which is
     out of scope for the v1 paradigm factories.
 
-    **CPU caveat**: the AMP rejection only fires when ``ctx.scaler`` is
-    non-None, which on CPU it never is — :meth:`NNModel._build_grad_scaler`
+    **CPU caveat** (the legacy ``mixed_precision`` flag; an explicit
+    reduced ``precision=`` is refused on every device): the legacy flag's
+    AMP rejection only fires when ``ctx.scaler`` is non-None, which on CPU
+    it never is — :meth:`NNModel._build_grad_scaler`
     returns None whenever ``device.type != "cuda"`` regardless of
     ``NNModelParams.mixed_precision``. A CPU user setting
     ``mixed_precision=True`` therefore gets the same silent no-op as
@@ -168,6 +170,26 @@ def finalize_step(
     return loss_val
 
 
+def require_row_logits(logits: torch.Tensor, paradigm: str) -> None:
+    """The classification paradigm steps score ``(rows, classes)`` logits;
+    a sequence model's ``(batch, time, vocab)`` output needs the causal-LM
+    task, whose loss and metrics flatten the time axis."""
+    if logits.ndim > 2:
+        raise ValueError(
+            f"the {paradigm} step scores (rows, classes) logits, got shape {tuple(logits.shape)}: train a "
+            "sequence model with nnx.lm_tasks.CausalLMTask"
+        )
+
+
+def predicted_labels(loss_fn: Any, logits: torch.Tensor) -> torch.Tensor:
+    """Hard predictions as the default step makes them: a non-negative logit
+    for a ``BCEWithLogitsLoss`` head (an argmax over one logit is always 0),
+    otherwise the last-axis argmax."""
+    if isinstance(loss_fn, torch.nn.BCEWithLogitsLoss):
+        return (logits >= 0).to(dtype=torch.long)
+    return logits.argmax(dim=-1)
+
+
 def softened_kl(
     student_logits: torch.Tensor,
     teacher_logits: torch.Tensor,
@@ -184,6 +206,21 @@ def softened_kl(
     distillation and feature-KD factories so the direction of the KL
     and the ``T²`` scaling can't drift between them.
     """
+    if student_logits.shape != teacher_logits.shape:  # a broadcast would distill a wrong target silently
+        raise ValueError(
+            f"distillation needs teacher logits of the student's shape {tuple(student_logits.shape)}, got "
+            f"{tuple(teacher_logits.shape)}"
+        )
+    if student_logits.ndim != 2:  # a (N,) single-logit head would be softmaxed across the batch's rows
+        raise ValueError(
+            f"distillation needs (rows, classes) logits, got shape {tuple(student_logits.shape)}; a single-logit "
+            "(binary) head has no class distribution to soften"
+        )
+    if student_logits.shape[-1] < 2:  # a softmax over one logit is always 1: the soft loss is 0
+        raise ValueError(
+            "distillation needs at least 2 class logits per row; a single-logit (binary) head has no class "
+            "distribution to soften"
+        )
     return F.kl_div(
         F.log_softmax(student_logits / temperature, dim=-1),
         F.softmax(teacher_logits / temperature, dim=-1),

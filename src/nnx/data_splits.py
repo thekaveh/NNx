@@ -1,4 +1,4 @@
-"""Reproducible group, time and stratified splits (FEAT-017).
+"""Reproducible group, time and stratified splits.
 
 ``plan_split`` assigns sample ids to train / validation / test and returns a
 :class:`SplitManifest`: the memberships, the strategy, its parameters and

@@ -3,7 +3,7 @@ name: Release Please
 # release-please watches main for Conventional Commits and maintains a
 # long-lived "release PR" that bumps the version + updates CHANGELOG.md
 # according to what's accumulated since the last tag. Merging that PR
-# creates a vX.Y.Z release, then explicitly dispatches the top-level release
+# creates a draft vX.Y.Z release and its tag, then explicitly dispatches the top-level release
 # workflow. Trusted PyPI publishing cannot run from a reusable workflow because
 # its OIDC and attestation identities would name different workflow files.
 on:
@@ -30,8 +30,7 @@ jobs:
     steps:
       - name: Release Please
         id: release
-        # googleapis/release-please-action@v5.0.0
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
@@ -58,8 +57,7 @@ jobs:
         # The push being handled (github.sha), whose CHANGELOG holds the
         # released version's section: no ref taken from an action output.
         if: steps.release.outputs.release_created == 'true'
-        # actions/checkout@v7.0.1
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 

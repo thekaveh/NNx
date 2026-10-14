@@ -1,4 +1,4 @@
-"""An opt-in Result at two fallible boundaries, next to try/except (FEAT-025).
+"""An opt-in Result at two fallible boundaries, next to try/except.
 
 ``nnx.result`` adds ``Ok`` / ``Err`` and three boundary wrappers; every
 existing exception API is unchanged. This example writes each flow both
@@ -13,8 +13,8 @@ ways so the difference in branching is visible:
      cause — and the provider is never called for them (zero calls).
   2. **A run bundle someone handed over.** A missing directory, a
      malformed one and a valid bundle are inspected. With exceptions the
-     caller distinguishes ``FileNotFoundError`` from ``BundleError`` in two
-     ``except`` clauses; with ``inspect_bundle_result(...)`` the code
+     caller must check the path itself, because ``inspect_bundle`` raises
+     ``BundleError`` for a missing path and for a malformed one; with ``inspect_bundle_result(...)`` the code
      (``artifact_missing`` / ``bundle_invalid``) is data, and
      ``.map(...)`` / ``.recover(...)`` compose a summary. Inspection reads
      the manifest and JSON records only — it never unpickles a checkpoint.
@@ -123,7 +123,7 @@ def bundle_summaries(paths: list[str]) -> tuple[list[str], list[str]]:
     with_exceptions = []
     for path in paths:
         try:
-            if not os.path.exists(path):
+            if not os.path.exists(path):  # inspect_bundle raises BundleError for a missing path too
                 raise FileNotFoundError(path)
             with_exceptions.append(f"capability {inspect_bundle(path).capability}")
         except FileNotFoundError:

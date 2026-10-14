@@ -1,10 +1,10 @@
 # 7. Language modeling (decoder-only)
 
 NNx ships a TinyStories-class decoder-only Transformer alongside the GNN and
-FeedFwd architectures. Use it for small autoregressive experiments: byte-pair
-encoded tokenization, RoPE positional encoding, SwiGLU FFN, RMSNorm,
-tied input/output embeddings, and an autoregressive `generate()` with the
-standard sampling knobs.
+FeedFwd architectures. Use it for small autoregressive experiments. It
+provides byte-pair encoded tokenization, RoPE positional encoding, SwiGLU FFN,
+RMSNorm, tied input/output embeddings, and an autoregressive `generate()` with
+the standard sampling knobs.
 
 This is intentionally **not** a production LLM stack — there's no
 FlashAttention v3, no tensor parallelism, no multi-GPU sharding. The path
@@ -18,7 +18,7 @@ training is out of scope.
 |---|---|
 | `nnx.Nets.TRANSFORMER` | Enum variant; dispatches to `TransformerNN` via `NNModelParams.net`. |
 | `nnx.TransformerNN` | `nn.Module` — decoder-only stack: token embed + N blocks + final RMSNorm + tied LM head. |
-| `nnx.NNTransformerParams` | Frozen dataclass (subclass of `NNParams`) — `vocab_size`, `n_layers`, `n_heads`, `d_model`, `ffn_mult`, `max_seq_len`, `rope_base`, `tie_embeddings`, `attn_dropout`, `resid_dropout`. Every optional field omits itself from `state()` when at default (the omit-when-default invariant). `vocab_size`, `n_layers`, `n_heads`, `d_model`, `ffn_mult` and `max_seq_len` are positive integer counts — NumPy integers are normalized to `int`; floats, booleans and strings raise `ValueError` at construction — with `d_model % n_heads == 0` and an even head width (`d_model / n_heads`, required by RoPE). |
+| `nnx.NNTransformerParams` | Frozen dataclass (subclass of `NNParams`) — `vocab_size`, `n_layers`, `n_heads`, `d_model`, `ffn_mult`, `max_seq_len`, `rope_base`, `tie_embeddings`, `attn_dropout`, `resid_dropout`. Every optional field omits itself from `state()` when at its default. Construction validates the integer counts and head width; see the rules in [§3](#3-quickstart). |
 | `nnx.NNTokenizerParams` | Wraps `tokenizers.Tokenizer`; `state()` returns `{"path": "<tokenizer.json>"}`. Available when `thekaveh-nnx[lm]` is installed. |
 | `nnx.train_bpe(...)` | Quick BPE training helper (Whitespace pre-tokenizer + BPE + BpeTrainer). |
 | `nnx.GenerativeNNModel` | `NNModel` subclass adding `generate(prompt, max_new_tokens, temperature, top_k, top_p, repetition_penalty, stop, seed, use_cache, logits_chain, on_token, logits_pipeline)`. |
@@ -26,7 +26,7 @@ training is out of scope.
 | `nnx.NNTransformerParamsBuilder` | Fluent variant-gated builder for `NNTransformerParams` — hides the dead parent-NNParams kwargs (`hidden_dims` / `activation` / `dropout_prob`); reach via `NNTransformerParams.builder()`. |
 | `nnx.LogitsChain` | Frozen-dataclass wrapper around `list[LogitsProcessor]` with `.apply(logits, token_history) -> Tensor`. Pass via `GenerativeNNModel.generate(logits_chain=...)`. |
 | `nnx.LogitsChainBuilder` | Fluent builder for `LogitsChain` — accepts processor calls in any order, sorts standard processors into NNx's canonical order at `.build()`. Reach via `LogitsChain.builder()`. |
-| `nnx.OrderedLogitsPipeline` | Immutable stages (`LogitsStage` specs, `CustomStage` callables) run in exactly their declared order; `append` / `prepend` return new pipelines; versioned `state()` / `from_state()` (custom stages via a registered `LogitsStageCodec`). Pass via `generate(logits_pipeline=...)` — see §5.1. |
+| `nnx.OrderedLogitsPipeline` | Immutable stages (`LogitsStage` specs, `CustomStage` callables) run in exactly their declared order. `append` / `prepend` return new pipelines; versioned `state()` / `from_state()` (custom stages via a registered `LogitsStageCodec`). Pass via `generate(logits_pipeline=...)` — see §5.1. |
 
 ## 2. Install
 
@@ -47,10 +47,11 @@ import torch
 from torch.utils.data import DataLoader
 
 from nnx import (
-    Devices, Losses, Nets, NNModelParams, NNOptimParams,
-    NNSchedulerParams, NNTrainParams, NNTransformerParams,
-    NNTokenizerParams, GenerativeNNModel, Optims, set_seed, train_bpe,
+    Devices, Losses, Nets, NNModelParams, NNOptimParams, NNTrainParams,
+    NNTransformerParams, NNTokenizerParams, GenerativeNNModel, set_seed, train_bpe,
 )
+
+set_seed(0)
 
 # 1. Train a tiny BPE tokenizer.
 corpus = ["the quick brown fox", "the lazy dog", "once upon a time"]
@@ -80,9 +81,16 @@ from torch.utils.data import TensorDataset
 from nnx.lm_tasks import CausalLMTask
 
 ids = [i for text in corpus for i in tk.encode(text).ids]
-windows = torch.tensor([ids[i : i + 5] for i in range(len(ids) - 4)])
-train_loader = DataLoader(TensorDataset(windows[:, :-1], windows[:, 1:]), batch_size=4, shuffle=True)
-val_loader = DataLoader(TensorDataset(windows[:, :-1], windows[:, 1:]), batch_size=4)
+cut = len(ids) - max(6, len(ids) // 5)  # split the token stream first: no shared tokens
+
+
+def windows(stream):
+    return torch.tensor([stream[i : i + 5] for i in range(len(stream) - 4)])
+
+
+train, val = windows(ids[:cut]), windows(ids[cut:])
+train_loader = DataLoader(TensorDataset(train[:, :-1], train[:, 1:]), batch_size=4, shuffle=True)
+val_loader = DataLoader(TensorDataset(val[:, :-1], val[:, 1:]), batch_size=4)
 
 task = CausalLMTask(vocab_size=tokenizer.vocab_size, alignment="pre_shifted")
 run = model.train(
@@ -105,14 +113,19 @@ print(out)
 
 **Alternative: variant-aware Builder**
 
-Same config via `NNTransformerParams.builder()` — the dead parent
-fields (`hidden_dims`, `activation`, `dropout_prob`) are hidden, and
+Same config via `NNTransformerParams.builder()`. The dead parent
+fields (`hidden_dims`, `activation`, `dropout_prob`) are hidden.
 `.layers(...)` validates at call-time rather than waiting for
-`__post_init__`: `n`, `heads` and `d_model` must be positive integers
-(NumPy integers are normalized to `int`; `128.0`, booleans and strings
-are rejected before any arithmetic), `d_model % heads == 0`, and the head
-width `d_model / heads` must be even because RoPE rotates channel pairs —
-the same rules the direct constructor applies:
+`__post_init__`, with the same rules the direct constructor applies:
+
+- `n`, `heads` and `d_model` must be positive integers. NumPy integers are
+  normalized to `int`; `128.0`, booleans and strings are rejected before any
+  arithmetic.
+- `d_model % heads == 0` is required.
+- The head width `d_model / heads` must be even because RoPE rotates channel
+  pairs.
+- `vocab_size`, `ffn_mult` and `max_seq_len` are positive integer counts too,
+  with the same rules, checked by the constructor.
 
 ```python
 net_params = (
@@ -127,16 +140,17 @@ net_params = (
 Both paths produce identical `NNTransformerParams` instances and
 round-trip through `state()` / `from_state()` interchangeably.
 
-To vary an existing config — say a longer context for a second run —
+To vary an existing config, such as a longer context for a second run,
 rebuild a builder from it instead of retyping the chain:
 `NNTransformerParamsBuilder.from_params(net_params).context(max_seq_len=256, rope_base=net_params.rope_base).build()`.
 `from_params` carries every field, including inherited `NNParams`
-fields no setter exposes, and `.copy()` branches a builder in progress
+fields no setter exposes. `.copy()` branches a builder in progress
 (see [Concepts §2.4](concepts.md#24-variant-gated-construction-via-builder)).
-Setters keep their last-call-wins rules on a rebuilt builder:
-`.context()` sets `max_seq_len` *and* `rope_base` (an omitted
-`rope_base` resets it to 10000.0) and `.dropout()` sets both rates, so
-pass a carried value again to keep it.
+
+Setters keep their last-call-wins rules on a rebuilt builder.
+`.context()` sets `max_seq_len` *and* `rope_base`; an omitted
+`rope_base` resets it to 10000.0. `.dropout()` sets both rates. Pass a
+carried value again to keep it.
 
 ## 4. When to use what
 
@@ -212,15 +226,16 @@ The callback receives integer token IDs, not decoded text. Prompt tokens are
 excluded, and cached and full-recompute decoding invoke the callback at the same
 point. It fires immediately after a generated token is appended and before stop
 string detection, so it also observes the token that completes a stop string.
+
 Exceptions raised by the callback propagate to the caller; model training mode
 is still restored by `generate()`'s cleanup path. Decode accumulated IDs with
 the configured tokenizer when a text stream is required.
 
 ## 5. Power-user decoding: `LogitsChain`
 
-For decoding setups that need custom logit processors — e.g., a
-logit-bias for forbidden tokens, a forced-decoder pattern, or a
-domain-specific transformation — build a `LogitsChain` and pass it
+Some decoding setups need custom logit processors, such as a logit-bias
+for forbidden tokens, a forced-decoder pattern, or a domain-specific
+transformation. For these, build a `LogitsChain` and pass it
 via `generate(logits_chain=...)`. The chain bypasses the inline
 construction `generate()` does from the `temperature` / `top_k` /
 `top_p` / `repetition_penalty` kwargs.
@@ -241,19 +256,18 @@ text = model.generate(prompt="Once upon", max_new_tokens=64, logits_chain=chain)
 
 The Builder enforces NNx's canonical order (`RepetitionPenalty →
 TopKFilter → TopPFilter → TemperatureScaling`) regardless of call
-order; custom processors added via `.custom(proc)` append after the
+order. Custom processors added via `.custom(proc)` append after the
 canonical group in the order they were added.
 
-When `logits_chain=None` (the default), `generate()` constructs the
-chain from the kwargs exactly as it did before — the new path is
-purely opt-in.
+When `logits_chain=None` (the default), `generate()` builds the chain
+from the `temperature`, `top_k`, `top_p` and `repetition_penalty` kwargs.
 
 ### 5.1. Ordered pipelines: `OrderedLogitsPipeline`
 
 `LogitsChain` (through its builder) **sorts** the standard processors into
-the canonical order. When the order is the point — temperature before the
-nucleus cut, a stage applied twice, a custom stage between two built-ins —
-use an `OrderedLogitsPipeline` (FEAT-037), which runs its stages **exactly
+the canonical order. Sometimes the order is the point: temperature before the
+nucleus cut, a stage applied twice, or a custom stage between two built-ins.
+Then use an `OrderedLogitsPipeline`. It runs its stages **exactly
 in declared order** and is immutable data:
 
 ```python
@@ -277,23 +291,24 @@ top-p 0.8 keeps one finite logit, top-p 0.8 then temperature 0.5 keeps two.
 - **Precedence.** `generate()` uses `logits_pipeline` or `logits_chain`
   instead of the inline kwargs; passing both raises `ValueError` before the
   model is touched. The pipeline is compiled into fresh processors once
-  per call, on the cached and uncached paths alike, and token history,
+  per call, on the cached and uncached paths alike. Token history,
   `on_token`, `stop` and `max_new_tokens` behave as with the equivalent
   explicit processor list.
 - **Validation.** Every stage value is checked (finite, in its domain)
-  when the stage is made. A zero-temperature stage is greedy — it emits
-  `±inf` argmax markers — so it is **terminal**: appending after it, or
+  when the stage is made. A zero-temperature stage is greedy: it emits
+  `±inf` argmax markers. It is therefore **terminal**. Appending after it, or
   prepending it before other stages, raises; nothing is reordered.
 - **Immutability.** `append` / `prepend` return new pipelines. A built-in
   processor passed in (its exact type) is copied into a `LogitsStage` spec
-  by value, so mutating it later changes nothing; a nested pipeline is
+  by value, so mutating it later changes nothing. A nested pipeline is
   flattened into its stages.
-- **Custom stages.** `CustomStage(fn, tag=...)` (or any callable, including
-  a subclass of a built-in processor, which keeps its own `__call__`) runs
-  at its declared position; its state is the caller's — the pipeline keeps
-  the reference — and it is opaque to the terminal rule. It serializes only through a `LogitsStageCodec` registered for
-  its tag with `register_logits_stage_codec`; data never names code to
-  import, and a pipeline is never part of a checkpoint or a run identity.
+- **Custom stages.** `CustomStage(fn, tag=...)` runs at its declared
+  position. So does any callable, including a subclass of a built-in
+  processor, which keeps its own `__call__`. Its state is the caller's (the
+  pipeline keeps the reference), and it is opaque to the terminal rule. It
+  serializes only through a `LogitsStageCodec` registered for its tag with
+  `register_logits_stage_codec`. Data never names code to import, and a
+  pipeline is never part of a checkpoint or a run identity.
 
 [`examples/ordered_logits_pipeline.py`](https://github.com/thekaveh/NNx/blob/main/examples/ordered_logits_pipeline.py)
 runs the order oracle, a round trip and a tiny local-tokenizer generation
@@ -302,55 +317,75 @@ offline.
 ## 6. How it composes with the rest of NNx
 
 - **The causal-LM task (`nnx.lm_tasks.CausalLMTask`)** — the built-in
-  next-token path (FEAT-034). It declares the **alignment**
-  (`"shift_inputs"`: batches of token ids, shifted once; `"pre_shifted"`:
-  `(inputs, targets)` windows, never shifted again), the vocabulary size
-  (the logits' last axis), the **ignore** id (`-100`), an optional
-  **padding** id, an optional per-position **loss mask** (never an attention
-  mask), label **smoothing** for the objective and its **version**; bad
-  shapes, dtypes, lengths and out-of-range non-ignored ids are rejected
-  before any forward pass.
-  - The ignore id, the padding id and the loss mask select **one set of
-    valid positions** for the objective's denominator, the NLL and the
-    token accuracy.
-  - `task.objective()` (a FEAT-004 objective) sums the cross-entropy over
-    valid positions with the valid count as its denominator, so gradient
-    accumulation normalizes by the window's **valid tokens**, not by the
-    batch count. An all-masked microbatch contributes nothing; an
-    all-masked window takes no optimizer or scaler step and its gradients
-    are cleared. Schedulers still advance once per epoch; a plateau
-    scheduler skips an epoch whose validation record is unavailable, and
-    such an epoch is never elected BEST in place of a training loss.
-  - `task.eval_step()` reports the epoch's **unsmoothed** NLL — total
-    valid-token NLL over the valid-token count, independent of batching and
-    padding — as the record's `loss` and `metrics["nll"]`, plus
-    `metrics["perplexity"]` (`exp(NLL)`, `+inf` on overflow, never a
-    clipped value) and `metrics["token_accuracy"]`. An all-masked epoch is
-    reported unavailable. No classification field is fabricated, and
-    `MonitorSpec("nll")` (with `MetricSpec("nll")` declared) selects BEST on
-    validation NLL.
-  - The task configuration (and an optional declared tokenizer identity)
-    is checkpointed component state `"lm.causal_task"` with the valid
-    tokens the run's objective scored (from 0 for each fresh run; a window
-    the engine then skips is still counted); a resume with another
-    configuration is refused before the first resumed update.
-  - Batches: `"shift_inputs"` reads token ids, `(ids, loss_mask)` with a
-    **boolean** mask (an integer second part is refused: it could be
-    targets) or a mapping `{"input_ids", "labels"?, "loss_mask"?}` whose
-    HuggingFace-style `labels` (unshifted, `-100` where not scored) shift
-    with the ids; `"pre_shifted"` reads `(inputs, targets[, loss_mask])` or
-    `{"inputs", "targets", "loss_mask"?}`. A mapping's `attention_mask` is
-    never a loss mask, but a padded position it marks that would still be
-    scored is refused (declare `pad_id`, use `labels=-100` or a
-    `loss_mask`). `extra_metrics` do not apply to the task and are refused.
-    Half-precision logits are widened to float32 for the reported NLL.
-    A run with no monitor elects BEST from the validation NLL; an epoch
-    whose validation is unavailable never replaces an earlier BEST, though
-    an unavailable first epoch stands in until one has a value — declare
-    `MonitorSpec("nll")` to elect only epochs with a value.
+  next-token path. It declares these settings:
+    - The **alignment**: `"shift_inputs"` takes batches of token ids, shifted
+      once; `"pre_shifted"` takes `(inputs, targets)` windows, never shifted
+      again.
+    - The vocabulary size (the logits' last axis), the **ignore** id (`-100`)
+      and an optional **padding** id.
+    - Label **smoothing** for the objective, and its **version**.
 
-  A custom `train_step_fn` still works for anything else (diffusion / KD /
-  SimCLR / Mixup / CutMix follow that pattern).
+    Each batch may also carry an optional per-position **loss mask** (never an
+    attention mask).
+
+    Bad shapes, dtypes, lengths and out-of-range non-ignored ids are rejected
+    before any forward pass.
+
+    - The ignore id, the padding id and the loss mask select **one set of
+      valid positions**. The objective's denominator, the NLL and the token
+      accuracy all use that set.
+    - `task.objective()` is an objective that sums the cross-entropy over
+      valid positions, with the valid count as its denominator. Gradient
+      accumulation therefore normalizes by the window's **valid tokens**, not
+      by the batch count. An all-masked microbatch contributes nothing. An
+      all-masked window takes no optimizer or scaler step, and its gradients
+      are cleared.
+    - Schedulers still advance once per epoch on the default epoch clock (or
+      once per committed update on the `optimizer_update` clock). A plateau scheduler skips an
+      epoch whose validation record is unavailable. Such an epoch is never
+      elected BEST in place of a training loss.
+    - `task.eval_step()` reports the epoch's **unsmoothed** NLL as the
+      record's `loss` and `metrics["nll"]`. This NLL is the total valid-token
+      NLL over the valid-token count, independent of batching and right
+      padding. It also reports
+      `metrics["perplexity"]` (`exp(NLL)`, `+inf` on overflow, never a
+      clipped value) and `metrics["token_accuracy"]`. An all-masked epoch is
+      reported unavailable. No classification field is fabricated, and
+      `MonitorSpec("nll")` (with `MetricSpec("nll")` declared) selects BEST on
+      validation NLL.
+    - The model never receives the attention mask. A mapping batch whose
+      `attention_mask` has padding before a real token (left padding) is
+      refused. `pad_id` alone does not detect left padding, and a batch
+      without an attention mask cannot show it, so right-pad the batch.
+    - The task configuration (and an optional declared tokenizer identity)
+      is checkpointed component state `"lm.causal_task"`. It is stored with
+      the valid tokens the run's objective scored. The count starts from 0
+      for each fresh run, and a window the engine then skips is still
+      counted. A resume with another configuration is refused before the
+      first resumed update.
+    - Batches for `"shift_inputs"`: token ids; `(ids, loss_mask)` with a
+      **boolean** mask (an integer second part is refused: it could be
+      targets); or a mapping `{"input_ids", "labels"?, "loss_mask"?}`. The
+      mapping's HuggingFace-style `labels` (unshifted, `-100` where not
+      scored) shift with the ids.
+    - Batches for `"pre_shifted"`: `(inputs, targets[, loss_mask])` or
+      `{"inputs", "targets", "loss_mask"?}`.
+    - A mapping's `attention_mask` is never a loss mask. Like a loss mask,
+      it covers the ids (`"shift_inputs"`) or the targets (`"pre_shifted"`).
+      A padded position it marks that would still be scored is refused
+      (declare `pad_id`, use `labels=-100` or a `loss_mask`). `extra_metrics` do not
+      apply to the task and are refused. Half-precision logits are widened to
+      float32 for the reported NLL.
+    - A run with no monitor elects BEST from the validation NLL. An epoch
+      whose validation is unavailable never replaces an earlier BEST. An
+      unavailable first epoch, though, stands in until one has a value.
+      Declare `MonitorSpec("nll")` with `metrics=[MetricSpec("nll")]` to
+      elect only epochs with a value.
+
+    A custom `train_step_fn` still works for anything else. The built-in KD /
+    Mixup / CutMix / MoE steps score `(rows, classes)` logits and refuse a
+    sequence model's output.
+
 - **`NNRun` content-addressed persistence** — TRANSFORMER runs hash the
   same way as any other run. The `omit-when-default` invariant on
   `NNTransformerParams` is what keeps existing TRANSFORMER `run.id`
@@ -359,58 +394,74 @@ offline.
   `TransformerNN`'s `nn.Linear` projections (the fused `w_qkv`, `w_o`,
   and the SwiGLU `w1`/`w2`/`w3`). Test before publishing weights:
   pattern-match against every registration path of your config
-  (`named_modules(remove_duplicate=False)`). With tied embeddings the
-  output head's weight *is* the token embedding, so `"*"` (which also
-  wraps `lm_head`) freezes the embedding too; target the attention / MLP
-  projections by name to keep training it. A `Linear` registered under
-  two names is rejected before anything is wrapped. Each wrapper inherits the train/eval mode of the projection it wraps,
-  so injecting a dropout-bearing adapter into an `eval()` model keeps
-  `generate()` deterministic; modes are runtime state and never
-  serialized (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)).
+  (`named_modules(remove_duplicate=False)`).
+
+    With tied embeddings the output head's weight *is* the token embedding.
+    `"*"` also wraps `lm_head`, so it freezes the embedding too; target the
+    attention / MLP projections by name to keep training it. A `Linear`
+    registered under two names is rejected before anything is wrapped.
+
+    Each wrapper inherits the train/eval mode of the projection it wraps.
+    Injecting a dropout-bearing adapter into an `eval()` model therefore keeps
+    `generate()` deterministic. Modes are runtime state and never
+    serialized (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)).
+
 - **Callbacks** — `EarlyStopping`, `ModelCheckpoint`,
   `TensorBoardCallback`, `WandbCallback` all work unchanged. Logging
   `train_loss` for an LM is the standard signal. Perplexity is
   `exp(NLL)` of the **unsmoothed** valid-token NLL — the task's
   `metrics["perplexity"]` — not `exp` of a smoothed or batch-averaged loss.
 - **Attention dropout and reduced precision** — with `attn_dropout=0` (or in
-  eval mode) attention runs through `torch.nn.functional.scaled_dot_product_attention`;
-  a nonzero `attn_dropout` in train mode takes the manual, seed-deterministic
-  path. That path accumulates the scaled scores, additive mask, softmax and
-  dropout in FP32 for FP16/BF16 layers (FP32 and FP64 keep their own dtype)
-  and casts the attention result back to the value dtype before the output
-  projection, so a half or bf16 model trains with dropout and returns logits
-  in its own dtype. The same rule covers the rectangular prefix/cache masks
-  built by `PrefixTuner` and cached decoding. CPU FP16/BF16/FP32/FP64 and CPU
-  bf16 autocast are the lanes exercised by the test suite; other
-  backend/dtype combinations are not claimed until run on that hardware.
-- **RMSNorm precision** — every `RMSNorm` (each block's `norm1` / `norm2` and
-  the final `norm_out`) computes the mean of squares in at least FP32:
-  FP16/BF16 inputs are promoted to FP32, and FP32 and FP64 keep their own
-  dtype (the same rule as the manual attention path above), so the norms of
-  a `.double()` model keep FP64 range and precision (a `1e30` activation
-  normalises to unit RMS instead of collapsing to zero). The normalised
-  value is cast back to the input dtype before the weight multiply, so the
-  output dtype still follows the input/weight promotion; parameters, `eps`
-  (the `1e-6` the GGUF writer exports) and checkpoint keys are unchanged.
-  Double attention is covered too: for FP64 queries the dropout-free SDPA
-  path upcasts the FP32 additive causal mask (and `PrefixTuner`'s
-  prefix/cache mask) to FP64, because CPU `scaled_dot_product_attention`
-  silently mis-applies an FP32 mask to FP64 queries once the sequence
-  reaches the kernel's vector width (8 tokens on AVX2, 16 on AVX512).
-  FP16/BF16/FP32 queries are unaffected and receive the mask unchanged.
-  The RoPE cos/sin tables are still computed in FP32 at construction and
-  only cast by `.double()`, so a double model's rotations carry FP32-level
-  rounding. `from_checkpoint` rebuilds the net in the default dtype, so
-  call `.double()` and reload the FP64 `net_state` to restore a double
-  model exactly.
+  eval mode), attention runs through `torch.nn.functional.scaled_dot_product_attention`.
+  A nonzero `attn_dropout` in train mode takes the manual, seed-deterministic
+  path.
+
+    For FP16/BF16 layers, that path accumulates the scaled scores, additive
+    mask, softmax and dropout in FP32; FP32 and FP64 keep their own dtype. It
+    casts the attention result back to the value dtype before the output
+    projection. A half or bf16 model therefore trains with dropout and returns
+    logits in its own dtype.
+
+    The same rule covers the rectangular prefix/cache masks
+    built by `PrefixTuner` and cached decoding. CPU FP16/BF16/FP32/FP64 and CPU
+    bf16 autocast are the lanes exercised by the test suite; other
+    backend/dtype combinations are not claimed until run on that hardware.
+
+- **RMSNorm precision** — every `RMSNorm` computes the mean of squares in
+  at least FP32. This covers each block's `norm1` / `norm2` and the final
+  `norm_out`. FP16/BF16 inputs are promoted to FP32, and FP32 and FP64 keep
+  their own dtype (the same rule as the manual attention path above).
+
+    The norms of a `.double()` model therefore keep FP64 range and precision:
+    a `1e30` activation normalises to unit RMS instead of collapsing to zero.
+    The normalised value is cast back to the input dtype before the weight
+    multiply. The output dtype therefore still follows the input/weight
+    promotion. Parameters, `eps` (the `1e-6` the GGUF writer exports) and
+    checkpoint keys are unchanged.
+
+    Double attention is covered too. For FP64 queries, the dropout-free SDPA
+    path upcasts the FP32 additive causal mask (and `PrefixTuner`'s
+    prefix/cache mask) to FP64. CPU `scaled_dot_product_attention` silently
+    mis-applies an FP32 mask to FP64 queries once the sequence reaches the
+    kernel's vector width (8 tokens on AVX2, 16 on AVX512). FP16/BF16/FP32
+    queries are unaffected and receive the mask unchanged.
+
+    The RoPE cos/sin tables are computed in FP32 at construction and only
+    cast by `.double()`, so a double model's rotations carry FP32-level
+    rounding. `from_checkpoint` rebuilds the net in the default dtype. Call
+    `.double()` and reload the FP64 `net_state` to restore a double model
+    exactly.
+
 - **KV cache** — `TransformerBlock` exposes a `use_cache` kwarg whose
   off-path returns `None` for the new kv tuple. `GenerativeNNModel.generate`
-  defaults `use_cache=True` and runs a single prefill pass through
-  `forward_with_cache` followed by incremental token-by-token decoding,
-  with a fixed 256-token CPU regression threshold of at least 1.2× over
-  full recomputation. Results on other workloads and hardware vary. Once
-  generation slides past the window, the cache is rebuilt each step for
-  RoPE-position correctness and the cost converges to the full-recompute path.
+  defaults `use_cache=True`. It runs a single prefill pass through
+  `forward_with_cache`, followed by incremental token-by-token decoding.
+  A fixed 256-token CPU regression threshold requires at least 1.2× over
+  full recomputation. Results on other workloads and hardware vary.
+
+    Once
+    generation slides past the window, the cache is rebuilt each step for
+    RoPE-position correctness and the cost converges to the full-recompute path.
 
 ## 7. Scope explicit
 
@@ -424,11 +475,11 @@ The decoder-only LM path covers:
 - KV-cache acceleration on by default, with a fixed 256-token CPU regression
   test requiring at least a 1.2× speedup over full recomputation.
 - CPU-friendly TinyStories-class training (sub-30-min runs).
-- Onward integrations shipped post-LM: `Prefix-Tuner` / `Prompt-Tuner`
-  PEFT for frozen `TransformerNN` (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)),
-  `dpo_train_step_factory` preference fine-tuning (see [`docs/dpo.md`](dpo.md)),
-  and experimental NNx-tagged GGUF export for inspection or patched runtimes (see
-  [`docs/gguf.md`](gguf.md)).
+- Integrations built on the LM path:
+    - `PrefixTuner` / `PromptTuner` PEFT for frozen `TransformerNN` (see [Concepts §11](concepts.md#11-parameter-efficient-fine-tuning-lora-dora-ia3-prefix-prompt-adapters)).
+    - `dpo_train_step_factory` preference fine-tuning (see [`docs/dpo.md`](dpo.md)).
+    - Experimental NNx-tagged GGUF export for inspection or patched runtimes (see
+      [`docs/gguf.md`](gguf.md)).
 
 Out of scope:
 

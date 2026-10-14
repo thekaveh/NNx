@@ -229,13 +229,10 @@ def test_moe_step_factory_no_moe_layers_acts_supervised(tmp_path, monkeypatch):
     assert all(torch.isfinite(torch.tensor(lo)).item() for lo in losses)
 
 
-def test_moe_step_factory_aux_weight_zero_drops_aux_gradient(tmp_path, monkeypatch):
-    """``aux_loss_weight=0.0`` should still train (collapses to plain
-    supervised), and the router should NOT receive any aux-loss-driven
-    gradient signal — it can still move from supervised gradients
-    flowing through the gating weights, but the load-balancing pressure
-    is disabled.
-    """
+def test_moe_step_factory_aux_weight_zero_trains(tmp_path, monkeypatch):
+    """``aux_loss_weight=0.0`` still trains. That it then equals the plain
+    supervised loss is pinned numerically by
+    ``test_moe_supervised_term_uses_normalized_nll``."""
     monkeypatch.chdir(tmp_path)
     set_seed(0)
 

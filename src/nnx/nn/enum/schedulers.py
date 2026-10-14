@@ -8,7 +8,7 @@ carries variant-specific config like T_max, step_size, max_lr).
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from torch.optim import Optimizer, lr_scheduler
 
@@ -80,7 +80,24 @@ class Schedulers(Enum):
                     eta_min=params.min_lr,
                 )
             case Schedulers.ONE_CYCLE:
-                max_lr = params.max_lr if params.max_lr is not None else optimizer.param_groups[0]["lr"]
+                # One peak per param group: each group's own LR, or an
+                # explicit max_lr scaled by the group's LR relative to the
+                # optimizer's base LR (the default group, which NNParamGroupSpec
+                # multipliers are relative to), so the default group peaks at
+                # exactly max_lr and spec order never changes a peak.
+                group_lrs = [float(group["lr"]) for group in optimizer.param_groups]
+                # build_optimizer records the config's max_lr; a hand-built
+                # optimizer falls back to its own default LR.
+                base_lr = float(getattr(optimizer, "_nnx_base_lr", optimizer.defaults.get("lr", group_lrs[0])))
+                if params.max_lr is None:
+                    max_lr: Any = group_lrs if len(group_lrs) > 1 else group_lrs[0]
+                elif base_lr > 0:
+                    # Also for one group: a Trainer's strict G.* x0.1 group
+                    # peaks at 0.1 * max_lr whether or not a sibling exists.
+                    scaled = [params.max_lr * lr / base_lr for lr in group_lrs]
+                    max_lr = scaled if len(scaled) > 1 else scaled[0]
+                else:
+                    max_lr = params.max_lr
                 total_steps = budget(params.total_steps, "total_steps")
                 _reject_short_total_steps(total_steps, horizon, updates=updates)
                 return lr_scheduler.OneCycleLR(
@@ -97,6 +114,13 @@ class Schedulers(Enum):
                 default_warmup = max(1, (total_steps if updates else n_epochs) // 10)
                 warmup_steps = params.warmup_steps if params.warmup_steps is not None else default_warmup
                 _reject_short_total_steps(total_steps, horizon, updates=updates)
+                if warmup_steps > total_steps:
+                    # Checked against the resolved budget (a default one
+                    # too): the schedule would never reach the optimizer's
+                    # LR, nor decay.
+                    raise ValueError(
+                        f"warmup_steps ({warmup_steps}) must be <= the schedule's total_steps ({total_steps})"
+                    )
 
                 def _lr_lambda(step: int) -> float:
                     if step < warmup_steps:

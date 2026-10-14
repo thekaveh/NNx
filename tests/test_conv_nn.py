@@ -250,3 +250,19 @@ def test_checkpoint_round_trip(tmp_path, monkeypatch):
     reloaded = NNModel.from_checkpoint(ckpt)
     assert isinstance(reloaded.net, ConvNN)
     assert set(reloaded.net.state_dict().keys()) == set(ckpt.net_state.keys())
+
+
+def test_conv_and_feedfwd_nets_take_non_contiguous_inputs():
+    from nnx import Activations, Nets
+
+    net = ConvNN(_conv_params(in_channels=3, input_dim=3 * 28 * 28))
+    nhwc = torch.randn(2, 28, 28, 3)
+    channels_first = nhwc.permute(0, 3, 1, 2)  # non-contiguous
+    assert torch.allclose(net(channels_first), net(channels_first.contiguous()))
+    net.to(memory_format=torch.channels_last)
+    assert net(channels_first).shape[0] == 2
+    feed = Nets.FEED_FWD(
+        NNParams(input_dim=6, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU)
+    )
+    transposed = torch.randn(2, 3, 2).transpose(1, 2)
+    assert torch.allclose(feed(transposed), feed(transposed.contiguous()))

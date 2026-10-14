@@ -275,3 +275,13 @@ def test_ia3_collision_name_is_not_ownership(tmp_path):
     assert set(k for k in root.state_dict()) == {"base.weight", "base.bias", "scaling"}
     assert load_ia3_weights(root, {"scaling": torch.full((4,), 2.0), "base.weight": torch.zeros(4, 4)}) == 1
     assert torch.all(root.scaling == 2.0) and not torch.all(root.base.weight == 0)
+
+
+def test_a_refused_ia3_load_leaves_every_adapter_untouched():
+    net = _TinyNet()
+    apply_ia3_to(net, "layers.*")
+    before = {k: v.clone() for k, v in net.state_dict().items()}
+    source = {"layers.0.scaling": torch.full((16,), 7.0), "layers.1.scaling": torch.zeros(3)}
+    with pytest.raises(RuntimeError, match="nothing was loaded"):
+        load_ia3_weights(net, source)
+    assert all(torch.equal(v, before[k]) for k, v in net.state_dict().items())

@@ -786,12 +786,10 @@ def test_the_legacy_trainer_warning_points_at_the_caller():
     )
     model.device = torch.device("cuda")  # where the legacy flag would apply; nothing runs on it
 
-    def train(model):  # stands in for Trainer.train, which resolves the run's precision first
-        return trainer_module._trainer_precision(model, supervised_objective())
-
+    # Attributed to the first frame outside nnx: here, as Trainer.train's caller would be.
     with pytest.warns(RuntimeWarning, match=r"set NNModelParams.precision=PrecisionPolicy\('fp16'\)") as caught:
         line = inspect.currentframe().f_lineno + 1  # type: ignore[union-attr]
-        train(model)
+        trainer_module._trainer_precision(model, supervised_objective())
     assert (caught[0].filename, caught[0].lineno) == (__file__, line)
 
 

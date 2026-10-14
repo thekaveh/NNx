@@ -9,9 +9,9 @@ drop-in `train_step_fn=` for the standard `NNModel.train(...)` call.
 
 ## 1. What DPO does
 
-Given a frozen **reference policy** `π_ref` (typically the SFT
+DPO uses a frozen **reference policy** `π_ref` (typically the SFT
 checkpoint the model was warm-started from) and a trainable **policy**
-`π_θ`, DPO directly fits the policy to a dataset of
+`π_θ`. It directly fits the policy to a dataset of
 `(prompt, chosen_response, rejected_response)` triples by minimising:
 
 ```
@@ -27,8 +27,8 @@ RL loop; the standard `NNModel.train()` machinery just runs.
 
 SFT (supervised fine-tuning on `(prompt, good_response)` pairs)
 maximises the likelihood of "good" responses but says nothing about
-what's *worse*. When you have explicit preference data —
-`A > B` for the same prompt — DPO can improve the target preference
+what's *worse*. Explicit preference data says
+`A > B` for the same prompt. With such data, DPO can improve the target preference
 metric beyond an SFT baseline because it directly optimises the *gap*
 between chosen and rejected. The result depends on preference-label
 quality, reference-policy quality, hyperparameters, and evaluation design;
@@ -141,9 +141,9 @@ preference accuracy and held-out generation quality.
 - **Lower β** (e.g. 0.01): weaker reference adherence and more aggressive
   preference learning. This can increase drift or collapse risk.
 
-If training diverges or the model collapses (output goes to gibberish
-or to a single fixed answer), increase `beta` and reduce the learning rate,
-then inspect the preference pairs and reward metrics. See the
+Training can diverge, or the model can collapse (output goes to gibberish
+or to a single fixed answer). If so, increase `beta` and reduce the learning
+rate. Then inspect the preference pairs and reward metrics. See the
 [TRL DPO parameter reference](https://huggingface.co/docs/trl/dpo_trainer)
 for the same higher-beta/less-deviation convention.
 
@@ -156,16 +156,35 @@ fill from the `datasets` library:
 from datasets import load_dataset
 
 ds = load_dataset("Anthropic/hh-rlhf", split="train[:1000]")
+# HH-RLHF rows are whole dialogues: chosen and rejected share every turn
+# except the final assistant reply, so split at the LAST assistant turn
+# and keep the "Assistant:" cue in the prompt.
+marker = "\n\nAssistant:"
+max_prompt_len = 256
+triples = [
+    (row["chosen"].rsplit(marker, 1)[0] + marker,
+     row["chosen"].rsplit(marker, 1)[1],
+     row["rejected"].rsplit(marker, 1)[1])
+    for row in ds
+]
+# NNPreferenceDataset right-truncates prompts, so a long dialogue would
+# lose its final "Assistant:" cue. Drop the prompts that do not fit.
+triples = [t for t in triples if len(tokenizer.encode(t[0])) <= max_prompt_len]
 preferences = NNPreferenceDataset(
-    prompts=[row["chosen"].split("Assistant:", 1)[0] for row in ds],
-    chosen=[row["chosen"].split("Assistant:", 1)[1] for row in ds],
-    rejected=[row["rejected"].split("Assistant:", 1)[1] for row in ds],
+    prompts=[p for p, _, _ in triples],
+    chosen=[c for _, c, _ in triples],
+    rejected=[r for _, _, r in triples],
     tokenizer=tokenizer,
-    max_prompt_len=256,
+    max_prompt_len=max_prompt_len,
     max_response_len=256,
     pad_token_id=1,
 )
 ```
+
+The DPO step joins each padded prompt and response, so
+`max_prompt_len + max_response_len` must not exceed the policy's
+`max_seq_len`. This recipe needs a policy with `max_seq_len >= 512`; the §3
+policy (128) takes lengths such as 64 + 64.
 
 The convention `(prompt, chosen, rejected)` matches the published
 datasets directly — most HF Hub preference corpora ship in this shape
@@ -181,12 +200,11 @@ Specifically:
 
 - The training step does two forward passes through the policy and
   two through the reference, per row. For a `~7B` parameter model on
-  a single GPU this dominates memory and time; production stacks
+  a single GPU, this dominates memory and time. Production stacks
   cache reference log-probs offline or share the reference with the
   policy via LoRA.
 - There's no IPO / cDPO / RPO variant, no offline reference log-prob
-  cache, no PEFT integration (LoRA-DPO is the obvious next step but
-  isn't wired in for v1).
+  cache and no PEFT integration (no LoRA-DPO).
 - Mixed precision and gradient accumulation are explicitly **not**
   supported by the DPO step (the
   [paradigm finalize_step](https://github.com/thekaveh/NNx/blob/main/src/nnx/_step_helpers.py)
@@ -194,7 +212,7 @@ Specifically:
 - No multi-GPU / multi-node sharding.
 
 For production-scale preference tuning, use a dedicated stack
-(`trl`, `axolotl`, `OpenRLHF`, etc.) and treat NNx's DPO as the
+(`trl`, `axolotl`, `OpenRLHF`, etc.). Treat NNx's DPO as the
 "how does this objective behave on my small LM?" experimentation
 path. The implementation is intentionally direct and readable, so it can also
 serve as a reference for understanding the DPO loss before scaling up. The
@@ -214,12 +232,15 @@ and experimental context.
   `TensorBoardCallback`, `WandbCallback` all work unchanged on the
   policy. The DPO step reports `loss` (the DPO loss) and `error`
   (negated chosen−rejected log-prob gap, so lower is better — same
-  monotone direction as `loss`). It also stores three values in
-  `idp.train_edp.extra`: `reward_chosen` and `reward_rejected` are the
-  batch-mean implicit rewards `beta * (policy_logp - reference_logp)`, and
-  `reward_accuracy` is the fraction of pairs where the chosen reward exceeds
-  the rejected reward (range 0–1, higher is better). Track the reward margin
-  alongside accuracy; accuracy alone can hide collapsing reward magnitudes.
+  monotone direction as `loss`).
+
+    It also stores three values in `idp.train_edp.extra`. `reward_chosen`
+    and `reward_rejected` are the batch-mean implicit rewards
+    `beta * (policy_logp - reference_logp)`. `reward_accuracy` is the
+    fraction of pairs where the chosen reward exceeds the rejected reward
+    (range 0–1, higher is better). Track the reward margin alongside
+    accuracy; accuracy alone can hide collapsing reward magnitudes.
+
 - **Generation** — after training, `policy.generate(prompt=..., ...)`
   produces text from the tuned policy with the standard sampling
   knobs (top-k, top-p, repetition penalty, seed).

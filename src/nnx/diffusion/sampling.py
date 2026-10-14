@@ -59,7 +59,10 @@ def sample(
     model.net.eval()
 
     try:
-        x = torch.randn(*shape, device=device, generator=generator)
+        # Draw the noise in the net's floating dtype (float32 for a net
+        # without floating parameters).
+        dtype = next((p.dtype for p in model.net.parameters() if p.is_floating_point()), torch.float32)
+        x = torch.randn(*shape, device=device, generator=generator, dtype=dtype)
 
         for t_int in reversed(range(sched.T)):
             # Batch-broadcast the timestep so the network's t-conditioning

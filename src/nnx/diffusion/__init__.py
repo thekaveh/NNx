@@ -1,7 +1,7 @@
 """Diffusion (DDPM-style) training and sampling.
 
-Public surface (all reachable via ``nnx.diffusion.<name>``; the first
-five are also re-exported at top-level ``nnx``):
+Public surface (all reachable via ``nnx.diffusion.<name>``; all but
+:func:`sinusoidal_time_embed` are also re-exported at top-level ``nnx``):
 
   - :class:`NoiseSchedulers` — enum-as-factory for LINEAR and COSINE
     variance schedules.
@@ -13,7 +13,7 @@ five are also re-exported at top-level ``nnx``):
     :class:`nnx.TrainStepFn` for use with :meth:`NNModel.train`.
   - :func:`sample` — reverse-diffusion sampler.
   - :func:`diffusion_objective` / :class:`DiffusionObjective` — DDPM noise
-    prediction as an objective (FEAT-040): the shared update engine owns
+    prediction as an objective: the shared update engine owns
     the update (accumulation, mixed precision, clipping), and the
     timesteps and noise come from the objective's own checkpointed
     generator.

@@ -46,6 +46,7 @@ from typing import Any, Optional, Union, cast
 import torch
 from torch import nn
 
+from .._validation import require_count
 from ..nn.net.transformer_layers import (
     MultiHeadCausalAttention,
     apply_rotary,
@@ -54,7 +55,7 @@ from ..nn.net.transformer_layers import (
 )
 from ..nn.net.transformer_nn import TransformerNN
 from ._mode import inherit_training_mode
-from ._source import _resolve_source_to_state_dict
+from ._source import _refuse_shape_mismatch, _resolve_source_to_state_dict
 from .ia3 import IA3Linear
 from .lora import LoRALinear
 
@@ -112,14 +113,24 @@ class PrefixTuner(nn.Module):
         super().__init__()
         if not isinstance(model, TransformerNN):
             raise TypeError(f"PrefixTuner requires a TransformerNN, got {type(model).__name__}")
-        if n_prefix <= 0:
-            raise ValueError(f"n_prefix must be positive, got {n_prefix}")
+        n_prefix = require_count(
+            n_prefix,
+            "n_prefix",
+            owner="PrefixTuner",
+            minimum=1,
+            domain_message=f"n_prefix must be positive, got {n_prefix}",
+        )
 
         total_blocks = len(model.blocks)
         if n_layers is None:
             n_layers = total_blocks
-        if n_layers <= 0:
-            raise ValueError(f"n_layers must be positive, got {n_layers}")
+        n_layers = require_count(
+            n_layers,
+            "n_layers",
+            owner="PrefixTuner",
+            minimum=1,
+            domain_message=f"n_layers must be positive, got {n_layers}",
+        )
         if n_layers > total_blocks:
             raise ValueError(f"n_layers={n_layers} exceeds model depth ({total_blocks} blocks)")
         if any(hasattr(block.attn, "_nnx_prefix_tuner") for block in model.blocks):
@@ -127,17 +138,12 @@ class PrefixTuner(nn.Module):
                 "PrefixTuner: this TransformerNN is already prefix-tuned. A second "
                 "tuner would silently hijack the patched attention forwards (the "
                 "first tuner's parameters would stop receiving gradients while its "
-                "forward injects the new tuner's prefixes). Wrap a fresh model, or "
-                "copy.deepcopy the tuned one first."
+                "forward injects the new tuner's prefixes). Wrap a fresh, untuned "
+                "TransformerNN (deep-copy the model before tuning it to keep both)."
             )
 
         self.model = model
         self.n_prefix = n_prefix
-
-        # Freeze every parameter of the wrapped TransformerNN — the
-        # prefix tensors are the only trainable bit going forward.
-        for p in self.model.parameters():
-            p.requires_grad = False
 
         # Allocate (n_prefix, n_heads, head_dim) K and V per targeted
         # block. We store them as a ParameterList so they live in
@@ -162,11 +168,24 @@ class PrefixTuner(nn.Module):
             proj = cast(Any, model.blocks[i]).attn.w_qkv
             while isinstance(proj, (LoRALinear, IA3Linear)):
                 proj = proj.base
-            weight = proj.weight
-            return nn.Parameter(torch.empty(n_prefix, n_heads, head_dim, dtype=weight.dtype, device=weight.device))
+            # The first floating tensor gives the placement: a factorized
+            # projection (low_rank: a Sequential) has no `.weight` of its own,
+            # and a converted QAT layer's weight is an integer buffer.
+            floating = [t for t in (*proj.parameters(), *proj.buffers()) if t.is_floating_point()]
+            if not floating:
+                raise TypeError(f"PrefixTuner: block {i}'s w_qkv has no floating weight to place a prefix by")
+            placement = floating[0]
+            return nn.Parameter(
+                torch.empty(n_prefix, n_heads, head_dim, dtype=placement.dtype, device=placement.device)
+            )
 
         self.prefix_keys = nn.ParameterList([_prefix(i) for i in range(n_layers)])
         self.prefix_values = nn.ParameterList([_prefix(i) for i in range(n_layers)])
+        # Freeze every parameter of the wrapped TransformerNN — the prefix
+        # tensors are the only trainable bit going forward. After the
+        # allocation, so a refused construction leaves the model trainable.
+        for p in self.model.parameters():
+            p.requires_grad = False
         # Init with small Gaussian noise — matches the original
         # prefix-tuning paper's "random init" baseline.
         for p in self.prefix_keys:
@@ -282,6 +301,7 @@ def load_prefix_weights(tuner: PrefixTuner, source: Union[str, Path, dict]) -> i
     # overwrite the frozen base.
     owned = tuner._owned_keys()
     sd = {k: v for k, v in sd.items() if k in owned}
+    _refuse_shape_mismatch(tuner, sd, "load_prefix_weights")
     result = tuner.load_state_dict(sd, strict=False)
     # strict=False silently drops keys that don't exist on the tuner —
     # subtract them so the return value counts tensors that landed.

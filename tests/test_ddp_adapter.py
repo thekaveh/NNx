@@ -360,6 +360,20 @@ def test_shutdown_without_a_process_group_is_a_no_op():
             nnx_dist.shutdown(timeout_seconds=bad)  # type: ignore[arg-type]
 
 
+def test_init_process_group_checks_its_timeout_before_the_environment(monkeypatch):
+    """The same timeout domain as shutdown(), checked first: a bool or a
+    non-finite value never reaches the process group."""
+    from nnx import distributed as nnx_dist
+
+    for name in ("RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
+        monkeypatch.delenv(name, raising=False)
+    for bad in (0, -1.0, float("inf"), float("nan"), True, "5"):
+        with pytest.raises(ValueError, match="timeout_seconds"):
+            nnx_dist.init_process_group(timeout_seconds=bad)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="no torchrun environment"):
+        nnx_dist.init_process_group(timeout_seconds=5)
+
+
 def test_shutdown_leaves_the_group_together_and_a_second_call_is_a_no_op(tmp_path):
     out = tmp_path / "shutdown"
     launch("shutdown", out)
@@ -387,13 +401,13 @@ def test_shutdown_is_bounded_when_a_rank_never_arrives(tmp_path):
 
 
 def test_single_process_entry_points_refuse_a_multi_rank_group(tmp_path):
-    """FIX-028: ``ExperimentPlan.fit`` and ``nnx.search.search`` train in one
-    process; under a two-rank torchrun both refuse on every rank before any
-    factory call, study or run exists."""
+    """FIX-028: ``ExperimentPlan.fit``, ``nnx.search.search`` and
+    ``Trainer.train`` train in one process; under a two-rank torchrun each
+    refuses on every rank before any factory call, study or run exists."""
     out = tmp_path / "entries"
     launch("single_process_entries", out)
     for result in results(out):
-        for entry in ("fit", "search"):
+        for entry in ("fit", "search", "trainer", "plain"):
             assert result["errors"][entry].startswith("RuntimeError: "), result["errors"]
             assert "single process" in result["errors"][entry] and "world size 2" in result["errors"][entry]
         assert result["factory_calls"] == 0 and not result["study_written"] and result["runs"] == []
@@ -407,6 +421,8 @@ def test_single_process_entry_points_run_in_a_one_rank_group(tmp_path):
     launch("single_process_entries", out, nproc=1)
     (result,) = results(out, nproc=1)
     assert result["errors"]["fit"] is None and result["fit_run"] in result["runs"]
+    assert result["errors"]["trainer"] is None and result["trainer_run"] in result["runs"]
+    assert result["errors"]["plain"] is None and result["plain_run"] in result["runs"]
     if importlib.util.find_spec("optuna") is not None:
         assert result["errors"]["search"] is None and result["search_states"] == ["completed"]
         assert result["study_written"]
@@ -429,3 +445,13 @@ def test_a_hung_scenario_reports_where_each_rank_was(tmp_path, monkeypatch):
     assert "timed out after 30 s" in message and "rank stacks:" in message
     assert "_parked_for_diagnostics" in message  # the parked rank's own frame
     assert message.count("joined the group: parked") == 2  # each rank's last phase
+
+
+def test_a_batch_one_rank_cannot_score_stops_every_rank(tmp_path):
+    out = tmp_path / "unscorable"
+    launch("unscorable", out)
+    errors = results(out)
+    assert [rank["error"] for rank in errors] == ["ValueError", "ValueError"]
+    messages = [rank["message"] for rank in errors]
+    assert any("default steps score classification" in message for message in messages)  # the refusing rank
+    assert any("cannot score their batch's targets" in message for message in messages)  # the other rank

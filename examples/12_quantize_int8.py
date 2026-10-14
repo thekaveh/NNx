@@ -2,15 +2,17 @@
 
 Flow:
 
-  1. Build a small classifier (FeedFwdNN with three Linear layers).
-  2. Train on a 3-class Gaussian-mixture toy task.
-  3. Snapshot FP32 validation accuracy.
-  4. Quantize the trained model via ``nnx.quantize_int8`` — one call,
+  1. Build a small classifier (FeedFwdNN with four Linear layers) and
+     train it on a 3-class Gaussian-mixture toy task.
+  2. Snapshot FP32 validation accuracy and state-dict size.
+  3. Quantize the trained model via ``nnx.quantize_int8`` — one call,
      no calibration data, no retraining.
-  5. Compare:
+  4. Compare:
 
      - Size of the pickled state-dict before vs. after.
      - Validation accuracy before vs. after.
+
+  5. Export the quantized model to ONNX as a sanity check.
 
 The accuracy delta is typically a fraction of a percentage point for
 networks this small; at production scale (transformer / ResNet) the
@@ -19,7 +21,7 @@ classification tasks. The example demonstrates the *mechanism*; the
 real-world tradeoff is task-dependent.
 
 Requires the ``quantize`` extra (for ``torchao``) and the ``onnx`` extra
-(the Phase-5 sanity check calls ``NNModel.to_onnx`` on the quantized
+(the step-5 sanity check calls ``NNModel.to_onnx`` on the quantized
 model — the legacy TorchScript exporter still needs the ``onnx`` PyPI
 package, even though the ``quantize`` extra alone covers steps 1-4):
 
@@ -63,7 +65,7 @@ from nnx import (
 
 
 def _make_classifier() -> NNModel:
-    """Three hidden layers of width 128. Wide enough that the per-channel
+    """Hidden layers of width 128, 128 and 64. Wide enough that the per-channel
     int8 layout's metadata is dominated by the weight bytes, so the
     quantized state-dict is meaningfully smaller than the FP32 one."""
     return NNModel(

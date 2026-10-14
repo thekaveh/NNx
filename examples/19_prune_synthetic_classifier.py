@@ -1,10 +1,10 @@
-"""Magnitude pruning demo — sparsify a tiny classifier, verify accuracy holds.
+"""Magnitude pruning demo — sparsify a tiny classifier and measure the accuracy cost.
 
 Pipeline:
 
   1. Build a small FeedFwdNN classifier on a synthetic 3-class dataset
      (no real MNIST download; keeps the example CPU-runnable + offline).
-  2. Train to convergence.
+  2. Train for five epochs.
   3. Snapshot the FP32 val accuracy.
   4. Apply `nnx.prune.magnitude_prune(net, sparsity=0.5)`. With
      `bake=True` (default), the state_dict keys stay identical to the
@@ -19,9 +19,9 @@ Pipeline:
      an iterative prune→tune schedule would use `bake=False` masks.
 
 Magnitude pruning sets the smallest-magnitude weight entries to zero
-based on their L1 norm. At 50% sparsity on a small classifier this is
-typically nondestructive; the tune→re-prune step recovers most of any
-drop while keeping the final network genuinely 50% sparse.
+based on their L1 norm. At 50% sparsity this small classifier loses a
+few points of accuracy; the tune→re-prune step recovers part of the drop
+while keeping the final network genuinely 50% sparse.
 
 Run:
     pip install thekaveh-nnx
@@ -56,7 +56,7 @@ def _make_data(n_samples: int = 1024, n_features: int = 16) -> tuple[DataLoader,
     # silently override the caller's seed (the same bug PR #31's review
     # originally caught in this very file).
     X = torch.randn(n_samples, n_features)
-    # Three Gaussian-mixture classes separated by a learned random projection.
+    # Three classes from the argmax of a fixed random projection of isotropic Gaussian inputs.
     proj = torch.randn(n_features, 3)
     y = (X @ proj).argmax(dim=1)
     n_train = int(0.8 * n_samples)

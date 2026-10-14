@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Optional
 
-from ..._validation import require_count, require_finite_real
+from ..._validation import plain_real, require_count, require_finite_real
 from ..enum.schedulers import Schedulers
 
 if TYPE_CHECKING:
@@ -15,6 +15,10 @@ SCHEDULER_CLOCKS: tuple[str, ...] = ("epoch", "optimizer_update")
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNSchedulerParams:
+    """A learning-rate scheduler: its kind (``ReduceLROnPlateau`` when
+    ``kind`` is ``None``), the plateau fields, the kind-specific horizons and
+    the clock that one step counts (an epoch or an optimizer update)."""
+
     min_lr: float
     factor: float
     patience: int
@@ -40,6 +44,8 @@ class NNSchedulerParams:
     clock: SchedulerClockUnit = "epoch"
 
     def __post_init__(self):
+        if self.kind is not None and not isinstance(self.kind, Schedulers):  # a string failed only in state()
+            raise TypeError(f"NNSchedulerParams kind must be a Schedulers member or None, got {self.kind!r}")
         if self.clock not in SCHEDULER_CLOCKS:
             raise ValueError(f"NNSchedulerParams clock must be 'epoch' or 'optimizer_update', got {self.clock!r}")
         if self.clock == "optimizer_update" and self.kind in (None, Schedulers.REDUCE_LR_ON_PLATEAU):
@@ -50,13 +56,15 @@ class NNSchedulerParams:
         # Fail-fast on out-of-range numeric fields. None of these are emitted
         # into state() when at their defaults, so validation never shifts a
         # run.id — same [[params-boundary-validation]] contract as the other
-        # params dataclasses. `factor` is the LR multiplier (the torch
-        # ReduceLROnPlateau ctor additionally requires factor < 1, which it
-        # enforces itself for that variant); `patience`/`cooldown` are epoch
+        # params dataclasses. `factor` is the LR multiplier (a plateau
+        # scheduler reduces the LR, so it also needs factor < 1, checked here
+        # rather than by torch at the first fit); `patience`/`cooldown` are epoch
         # counts; `min_lr`/`threshold` are non-negative bounds. Present
         # (non-None) variant knobs are positive step/length counts.
         # Real-valued fields: finite first, then the domain (FIX-020).
         require_finite_real(self.factor, "factor", owner="NNSchedulerParams", minimum=0.0, exclusive_min=True)
+        if self.kind in (None, Schedulers.REDUCE_LR_ON_PLATEAU) and not self.factor < 1:
+            raise ValueError(f"NNSchedulerParams requires factor < 1 for a plateau scheduler, got {self.factor!r}")
         require_finite_real(self.min_lr, "min_lr", owner="NNSchedulerParams", minimum=0.0)
         require_finite_real(self.threshold, "threshold", owner="NNSchedulerParams", minimum=0.0)
         if self.max_lr is not None:
@@ -68,6 +76,10 @@ class NNSchedulerParams:
                 exclusive_min=True,
                 domain_message=f"NNSchedulerParams requires max_lr > 0 when set, got {self.max_lr}",
             )
+        # NumPy scalars become plain floats, so state() serializes (run.yaml).
+        for name in ("factor", "min_lr", "threshold", "max_lr"):
+            if getattr(self, name) is not None:
+                object.__setattr__(self, name, plain_real(getattr(self, name)))
         # Epoch counts: nonnegative integers, normalized to plain `int`
         # (FIX-021); zero is a valid "react immediately" setting for both.
         for name in ("patience", "cooldown"):
@@ -91,9 +103,16 @@ class NNSchedulerParams:
                         domain_message=f"NNSchedulerParams requires {name} > 0 when set, got {value}",
                     ),
                 )
+        # A warm-up longer than the schedule never reaches the optimizer's LR
+        # and never decays (total_steps - warmup_steps is negative). A
+        # default total_steps is checked when the scheduler is built.
+        if self.warmup_steps is not None and self.total_steps is not None and self.warmup_steps > self.total_steps:
+            raise ValueError(
+                f"NNSchedulerParams requires warmup_steps <= total_steps, got {self.warmup_steps} > {self.total_steps}"
+            )
 
     def __str__(self) -> str:
-        if self.kind is None:
+        if self.kind is None or self.kind == Schedulers.REDUCE_LR_ON_PLATEAU:
             return (
                 f"[plateau, patience={self.patience}, cooldown={self.cooldown}, "
                 f"factor={self.factor:1.0e}, threshold={self.threshold:1.0e}, "

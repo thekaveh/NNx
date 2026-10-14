@@ -148,22 +148,16 @@ def test_hub_save_pretrained_overwrite(tmp_path):
 
 
 def test_hub_export_rejects_non_tensor_extra_state_clearly(tmp_path):
-    class ExtraStateNet(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.linear = torch.nn.Linear(4, 2)
+    model = _tiny_model()
 
-        def forward(self, x):
-            return self.linear(x)
-
+    class ExtraStateNet(type(model.net)):  # same topology, plus non-tensor extra state
         def get_extra_state(self):
             return {"labels": ["class-a"]}
 
         def set_extra_state(self, state):
             self.extra_state = state
 
-    model = _tiny_model()
-    model.net = ExtraStateNet()
+    model.net.__class__ = ExtraStateNet
 
     with pytest.raises(TypeError, match="Hugging Face Hub export.*non-tensor state_dict"):
         model.save_pretrained(str(tmp_path))
@@ -446,6 +440,28 @@ def test_save_pretrained_refuses_a_recipe_model_its_recipe_cannot_rebuild(tmp_pa
     assert not target.exists()
 
 
+@pytest.mark.parametrize("surgery", ["lora", "ia3", "widen"])
+def test_save_pretrained_refuses_unrecorded_surgery_without_a_recipe(tmp_path, surgery):
+    """A model with no recipe whose topology no longer matches its params (a
+    LoRA / IA3 wrap, a widen) is refused before anything is written —
+    the artifact would only fail when loaded."""
+    from nnx.peft import apply_ia3_to, apply_lora_to
+    from nnx.surgery import widen
+
+    model = _tiny_model()
+    if surgery == "lora":
+        apply_lora_to(model.net, "*")
+    elif surgery == "ia3":
+        apply_ia3_to(model.net, "*")
+    else:
+        first = next(name for name, module in model.net.named_modules() if type(module) is torch.nn.Linear)
+        model.net = widen(model.net, layer_name=first, new_width=32)
+    target = tmp_path / "artifact"
+    with pytest.raises(ValueError, match="save_pretrained refused before writing anything"):
+        model.save_pretrained(str(target))
+    assert not target.exists()
+
+
 def test_hub_loading_re_resolves_the_precision_policy_on_the_destination_device(tmp_path):
     """FEAT-028: the saved policy is re-resolved on ``map_location`` — never
     taken from saved metadata — and ``precision=`` replaces it."""
@@ -475,3 +491,33 @@ def test_hub_loading_re_resolves_the_precision_policy_on_the_destination_device(
     # ... unless the caller replaces the policy.
     replaced = NNModel.from_pretrained(str(tmp_path), map_location="cpu", precision=PrecisionPolicy("fp32"))
     assert replaced.resolved_precision.effective == "fp32"
+
+
+@pytest.mark.parametrize(
+    "filename", ["../tokenizer.json", "/abs/tokenizer.json", "sub/tokenizer.json", "a\\\\b.json", "..", ""]
+)
+def test_a_downloaded_config_cannot_point_the_tokenizer_outside_the_artifact(filename, tmp_path):
+    from nnx.nn.generative_nn_model import GenerativeNNModel
+
+    with pytest.raises(ValueError, match="plain file name"):
+        GenerativeNNModel._hub_reconstruction_kwargs({"tokenizer": {"filename": filename}}, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "key, override",
+    [
+        ("params", "object"),
+        ("net_params", "object"),
+        ("tokenizer", "object"),
+        ("params", {"loss": "mean_squared_error"}),
+        ("net_params", {"input_dim": 99}),
+        ("transforms", [{"name": "lora"}]),
+    ],
+)
+def test_hub_from_pretrained_refuses_an_explicit_override_instead_of_dropping_it(tmp_path, key, override):
+    m = _tiny_model()
+    m.save_pretrained(str(tmp_path))
+    if override == "object":
+        override = {"params": m.params, "net_params": m.net_params, "tokenizer": object()}[key]
+    with pytest.raises(TypeError, match=f"from_pretrained got {key}"):
+        NNModel.from_pretrained(str(tmp_path), **{key: override})

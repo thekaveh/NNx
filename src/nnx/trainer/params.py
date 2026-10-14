@@ -25,7 +25,7 @@ from .._validation import require_count
 from ..monitors import MetricSpec, MonitorSpec
 from ..nn.params.nn_optim_params import NNOptimParams
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
-from ..nn.params.nn_train_params import _validate_monitoring, _validate_resume_mode
+from ..nn.params.nn_train_params import _checkpoint_tag, _validate_monitoring, _validate_resume_mode
 
 if TYPE_CHECKING:
     from ..optimizers import NNOptimFactoryParams
@@ -100,7 +100,8 @@ class NNTrainerParams:
     `val_loader` mirror NNTrainParams (`extra_metrics` are
     ``callable(y_true, y_pred)``; Trainer's validation calls them on the
     aggregate). The custom `trainer_step_fn` owns every optimizer update;
-    by default Trainer steps every scheduler once after each epoch — set
+    by default Trainer steps every scheduler once after each epoch (an
+    ``optimizer_update``-clock scheduler after each reported update) — set
     `auto_step_schedulers=False` when the custom step function owns
     scheduler timing too.
 
@@ -152,6 +153,26 @@ class NNTrainerParams:
         # must never change this frozen configuration (FIX-010). Values
         # are shared by reference on purpose: params dataclasses are
         # immutable and metric callables are runtime-only objects.
+        from ..optimizers import NNOptimFactoryParams
+
+        # Container shapes fail here, naming the field, not as an
+        # AttributeError in state() or Trainer.train.
+        for name, kinds in (
+            ("optims", (NNOptimParams, NNOptimFactoryParams)),
+            ("schedulers", (NNSchedulerParams,)),
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, Mapping):
+                raise ValueError(f"NNTrainerParams.{name} must be a mapping of name -> params, got {value!r}")
+            bad_keys = [key for key in value if not isinstance(key, str) or not key]
+            if bad_keys:  # names are sorted, serialized and used in component names
+                raise ValueError(f"NNTrainerParams.{name} names must be non-empty strings, got {bad_keys!r}")
+            wrong = sorted(str(key) for key, item in value.items() if not isinstance(item, kinds))
+            if wrong:
+                expected = " / ".join(kind.__name__ for kind in kinds)
+                raise ValueError(f"NNTrainerParams.{name} entries {wrong} must be {expected}")
+        if self.extra_metrics is not None and not isinstance(self.extra_metrics, Mapping):
+            raise ValueError("NNTrainerParams.extra_metrics must be a mapping of name -> callable or None")
         for name in ("optims", "schedulers", "extra_metrics"):
             value = getattr(self, name)
             if value is not None and not isinstance(value, _FrozenMapping):
@@ -171,8 +192,24 @@ class NNTrainerParams:
                 domain_message=f"NNTrainerParams requires n_epochs >= 1, got {self.n_epochs}",
             ),
         )
-        if self.data_id is not None and not self.data_id.strip():
-            raise ValueError("NNTrainerParams.data_id must be non-empty when provided")
+        if self.seed is not None:
+            object.__setattr__(
+                self, "seed", require_count(self.seed, "seed", owner="NNTrainerParams", minimum=0, maximum=2**32 - 1)
+            )
+        if self.data_id is not None and (not isinstance(self.data_id, str) or not self.data_id.strip()):
+            raise ValueError(f"NNTrainerParams.data_id must be a non-empty string when provided, got {self.data_id!r}")
+        # Flags are real bools: a truthy string would act as True while
+        # run.yaml recorded the string (and shifted the run id).
+        for flag in ("save_phase_checkpoints", "auto_step_schedulers", "overwrite_existing"):
+            if not isinstance(getattr(self, flag), bool):
+                raise ValueError(f"NNTrainerParams.{flag} must be a bool, got {getattr(self, flag)!r}")
+        object.__setattr__(
+            self,
+            "resume_from_checkpoint",
+            _checkpoint_tag(
+                self.resume_from_checkpoint, "NNTrainerParams", resuming=self.resume_from_run_id is not None
+            ),
+        )
         if self.parent_run_id is not None and self.resume_from_run_id is not None:
             raise ValueError("set resume_from_run_id or parent_run_id, not both")
         _validate_resume_mode(self.resume_mode, "NNTrainerParams")

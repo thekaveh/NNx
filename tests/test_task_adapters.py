@@ -471,3 +471,55 @@ def test_a_non_elementwise_loss_cannot_be_masked_but_scores_complete_batches():
     assert float(display) == pytest.approx(float(RowNorm()(output, _fixed([[0, 1], [4, 5]]))))
     with pytest.raises(TaskValidationError, match="cannot be masked"):
         adapter.loss_terms(RowNorm(), *adapter.prepare(output, _fixed([[0, math.nan], [4, 5]])))
+
+
+@pytest.mark.parametrize("target_dtype", [torch.bfloat16, torch.int64])
+def test_a_bfloat16_multilabel_batch_is_recorded(target_dtype):
+    """NumPy has no bfloat16: a bf16 output (and a bf16 or integer target
+    cast to it) is recorded instead of failing after the update."""
+    from nnx.tasks import task_adapter
+
+    output = torch.tensor([[2.0, -2.0, 1.0], [-1.0, 3.0, -3.0]]).bfloat16()
+    target = torch.tensor([[1, 0, 1], [0, 1, 1]]).to(target_dtype)
+    record = task_adapter(TaskSpec.multilabel(3)).record(output, target, loss=0.1)
+    assert record.accuracy == pytest.approx(0.5)  # exact-match rows: the first row only
+
+
+def test_a_task_state_without_its_kind_is_a_task_error():
+    from nnx.tasks import TaskValidationError
+
+    with pytest.raises(TaskValidationError, match="'kind'"):
+        TaskSpec.from_state({"version": 1})
+
+
+@pytest.mark.parametrize(
+    ("spec", "target"),
+    [
+        (TaskSpec.categorical(3, ignore_index=-100), torch.tensor([-100, -100])),
+        (TaskSpec.regression(3), torch.full((2, 3), float("nan"))),
+    ],
+    ids=["categorical", "regression"],
+)
+def test_a_fully_masked_batch_with_infinite_outputs_adds_an_exact_zero(spec, target):
+    """A -inf class mask in the outputs must not turn the all-masked batch's
+    zero numerator into NaN (it would poison the evaluated loss sum)."""
+    adapter = task_adapter(spec)
+    output = torch.tensor([[0.0, 1.0, -float("inf")], [1.0, 0.0, -float("inf")]], requires_grad=True)
+    loss_fn = torch.nn.CrossEntropyLoss() if spec.kind == "categorical" else torch.nn.MSELoss()
+    prepared = adapter.prepare(output, target)
+    _, numerator, weight = adapter.loss_terms(loss_fn, *prepared)
+    assert weight == 0.0 and float(numerator) == 0.0
+    numerator.backward()
+    assert torch.isfinite(output.grad).all()
+
+
+def test_the_default_loss_terms_of_an_all_ignored_batch_are_an_exact_zero():
+    """Without a task, an all-ignored CE batch with a -inf logit contributes
+    an exact, graph-connected zero (logits.sum() * 0.0 was NaN)."""
+    from nnx.nn.nn_model import _loss_terms
+
+    logits = torch.tensor([[0.0, 1.0, -float("inf")]], requires_grad=True)
+    _, numerator, weight = _loss_terms(torch.nn.CrossEntropyLoss(ignore_index=-100), logits, torch.tensor([-100]))
+    assert weight == 0.0 and float(numerator) == 0.0
+    numerator.backward()
+    assert torch.isfinite(logits.grad).all()

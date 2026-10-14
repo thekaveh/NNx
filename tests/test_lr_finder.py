@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 
 import numpy as np
@@ -124,10 +125,21 @@ def test_lr_finder_restores_python_and_numpy_rng():
     expected_python = random.random()
     expected_numpy = np.random.random()
 
+    draws: list[int] = []
+
+    def rng_consuming_loss(logits, targets):
+        # Advance BOTH host streams inside the sweep, so the test fails
+        # unless lr_finder really restores them afterwards.
+        random.random()
+        np.random.random()
+        draws.append(1)
+        return nn.functional.cross_entropy(logits, targets)
+
     random.seed(17)
     np.random.seed(23)
-    lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=2)
+    lr_finder(model, loader, loss_fn=rng_consuming_loss, num_iter=2)
 
+    assert draws, "the sweep never called loss_fn, so no RNG stream advanced"
     assert random.random() == expected_python
     assert np.random.random() == expected_numpy
 
@@ -374,7 +386,7 @@ def test_suggest_lr_monotonically_increasing_loss():
 def test_lr_finder_early_exits_on_divergence():
     """When `loss_fn` diverges (returns escalating values), the sweep
     stops before exhausting `num_iter`. Verifies the EMA-smoothed
-    divergence guard (`smoothed_loss > diverge_threshold * smoothed_min`)
+    divergence guard (`smoothed_loss - smoothed_min > (diverge_threshold - 1) * |smoothed_min|`)
     at the top of the loop actually fires.
     """
     model, loader = _tiny_model_and_loader()
@@ -404,6 +416,21 @@ def test_lr_finder_early_exits_on_divergence():
     # Sweep should have early-exited well before num_iter=100.
     assert len(result.lrs) < 100
     assert len(result.lrs) >= 1
+
+
+def test_lr_finder_stops_at_a_non_finite_loss():
+    """A NaN loss compares False to any threshold: the sweep still stops,
+    and no NaN reaches the recorded losses."""
+    model, loader = _tiny_model_and_loader()
+    counter = {"n": 0}
+
+    def nan_after_three(y_hat: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        counter["n"] += 1
+        return (y_hat * 0).sum() + (1.0 if counter["n"] <= 3 else float("nan"))
+
+    result = lr_finder(model, loader, loss_fn=nan_after_three, start_lr=1e-6, end_lr=1.0, num_iter=50)
+    assert len(result.lrs) == 3 and counter["n"] == 4
+    assert all(math.isfinite(loss) for loss in result.losses)
 
 
 @pytest.mark.parametrize(
@@ -581,3 +608,37 @@ def test_lr_finder_rejects_live_persistent_worker_iterator_before_mutation():
     assert model.training is False
     for name, value in model.state_dict().items():
         assert torch.equal(value, before[name])
+
+
+def test_a_negative_loss_sweeps_like_a_positive_one():
+    """Divergence is measured from the minimum: a constant shift of the
+    loss (a negative NLL, say) records the same number of points."""
+    counts = []
+    for shift in (0.0, -10.0):
+        model, loader = _tiny_model_and_loader()
+        result = lr_finder(
+            model,
+            loader,
+            loss_fn=lambda out, y, s=shift: nn.functional.cross_entropy(out, y) + s,
+            start_lr=1e-6,
+            end_lr=1e-2,
+            num_iter=12,
+        )
+        counts.append(len(result.lrs))
+    assert counts[1] == counts[0] > 1
+
+
+@pytest.mark.parametrize(
+    "bad", [{"end_lr": math.inf}, {"start_lr": math.nan}, {"diverge_threshold": math.nan}], ids=str
+)
+def test_non_finite_sweep_arguments_are_refused(bad):
+    model, loader = _tiny_model_and_loader()
+    with pytest.raises(ValueError, match="finite"):
+        lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=5, **bad)
+
+
+@pytest.mark.parametrize("num_iter", [3.0, 2.9, True])
+def test_a_non_integer_num_iter_is_a_value_error_before_the_sweep(num_iter):
+    model, loader = _tiny_model_and_loader()
+    with pytest.raises(ValueError, match="num_iter"):
+        lr_finder(model, loader, loss_fn=nn.functional.cross_entropy, num_iter=num_iter)

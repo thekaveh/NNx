@@ -6,6 +6,7 @@ import argparse
 import importlib
 import inspect
 import re
+import sys
 from enum import Enum
 from pathlib import Path
 from typing import Any, get_origin
@@ -13,7 +14,31 @@ from typing import Any, get_origin
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG = ROOT / "scripts" / "docs" / "api_reference_catalog.txt"
 OUTPUT = ROOT / "docs" / "api.md"
-ENTRY = re.compile(r"^@api\s+(\S+?)(?:\s+members=([A-Za-z0-9_,]+))?\s*$")
+ENTRY = re.compile(r"^@api\s+(\S+?)(?:\s+members=([A-Za-z0-9_,]*))?\s*$")
+
+
+def _doc_origin(value: Any) -> str | None:
+    """The module of the class whose docstring ``inspect.getdoc`` would
+    inherit for ``value``; ``None`` when ``value`` has its own."""
+    if inspect.isclass(value):
+        if value.__dict__.get("__doc__"):
+            return None
+        return next((base.__module__ for base in value.__mro__[1:] if base.__dict__.get("__doc__")), None)
+    if getattr(value, "__doc__", None) and not isinstance(value, property):
+        return None
+    if isinstance(value, property):
+        return None
+    *owner_path, name = getattr(value, "__qualname__", "").split(".")
+    owner: Any = sys.modules.get(getattr(value, "__module__", "") or "")
+    for part in owner_path:
+        owner = getattr(owner, part, None)
+    if not inspect.isclass(owner):
+        return None
+    for base in owner.__mro__[1:]:
+        attr = base.__dict__.get(name)
+        if attr is not None and getattr(attr, "__doc__", None):
+            return base.__module__
+    return None
 
 
 def _documentation(value: Any) -> tuple[str, str]:
@@ -33,7 +58,9 @@ def _documentation(value: Any) -> tuple[str, str]:
         return summary, details
     if not callable(value) and not inspect.ismodule(value) and not isinstance(value, property):
         return "Exported value.", ""
-    doc = inspect.getdoc(value) or "No public description is currently available."
+    origin = _doc_origin(value)
+    inherited_elsewhere = origin is not None and origin.split(".")[0] != "nnx"  # torch's nn.Module text, say
+    doc = (None if inherited_elsewhere else inspect.getdoc(value)) or "No public description is currently available."
     paragraphs = re.split(r"\n\s*\n", doc, maxsplit=1)
     summary = " ".join(line.strip() for line in paragraphs[0].splitlines())
     details = paragraphs[1].strip() if len(paragraphs) == 2 else ""
@@ -105,23 +132,59 @@ def _locate(path: str) -> Any | None:
     return None
 
 
-def _class_members(value: type) -> list[tuple[str, Any]]:
+def _class_members(value: type, documented: frozenset[type] = frozenset()) -> list[tuple[str, Any]]:
     members: list[tuple[str, Any]] = []
     enum_member_names: set[str] = set()
     if issubclass(value, Enum):
         enum_member_names = set(value.__members__)
         members.extend((name, member) for name, member in value.__members__.items())
-    for name, descriptor in value.__dict__.items():
-        if name.startswith("_") or name in enum_member_names:
+    # Public members an undocumented nnx base contributes (JsonArtifact.save,
+    # _Counted.coverage) are part of the class's API, so they render too; a
+    # base with its own catalog entry (NNModel, Question) documents them there.
+    # A documented base documents its own ancestry, so that part of the MRO is
+    # skipped; an undocumented mixin beside it still renders. An optional-extra
+    # stub (no huggingface_hub) never renders, so the output is the same either way.
+    covered = {ancestor for base in value.__mro__[1:] if base in documented for ancestor in base.__mro__}
+    owners = [value]
+    for base in value.__mro__[1:]:
+        if base in covered:
             continue
-        member = getattr(value, name)
-        if callable(member) or isinstance(descriptor, property):
-            members.append((name, descriptor if isinstance(descriptor, property) else member))
+        if base.__module__.split(".")[0] == "nnx" and not base.__dict__.get("_optional_stub", False):
+            owners.append(base)
+    seen: set[str] = set()
+    for owner in owners:
+        for name, descriptor in owner.__dict__.items():
+            if name.startswith("_") or name in enum_member_names or name in seen:
+                continue
+            seen.add(name)
+            member = getattr(value, name)
+            if callable(member) or isinstance(descriptor, property):
+                members.append((name, descriptor if isinstance(descriptor, property) else member))
     return members
+
+
+_ROLE = re.compile(r":[a-z]+:`(~?)([^`]+)`")
+
+
+def _plain_roles(text: str) -> str:
+    """Sphinx roles as Markdown code spans: ``:func:`nnx.lr_finder``` reads
+    as `nnx.lr_finder` (and ``:class:`~nnx.models.ModelSpec``` as
+    `ModelSpec`) on GitHub, the site and the wiki, which render no roles.
+    An explicit title (``:meth:`title <target>```) keeps only the title."""
+
+    def code(match: re.Match[str]) -> str:
+        target = match.group(2)
+        titled = re.fullmatch(r"(.*?)\s*<([^>]+)>", target)
+        if titled:
+            return f"`{titled.group(1)}`"
+        return f"`{target.rsplit('.', 1)[-1] if match.group(1) else target}`"
+
+    return _ROLE.sub(code, text)
 
 
 def _render_entry(path: str, value: Any, *, heading_level: int = 4) -> list[str]:
     summary, details = _documentation(value)
+    summary = _plain_roles(summary)  # the details are a literal text block
     rendered = [
         f"{'#' * heading_level} `{path}`",
         "",
@@ -139,13 +202,20 @@ def _render_entry(path: str, value: Any, *, heading_level: int = 4) -> list[str]
 
 def render() -> str:
     rendered: list[str] = []
-    for line in CATALOG.read_text(encoding="utf-8").splitlines():
+    lines = CATALOG.read_text(encoding="utf-8").splitlines()
+    documented = frozenset(
+        value
+        for value in (_locate(match.group(1)) for match in map(ENTRY.fullmatch, lines) if match is not None)
+        if inspect.isclass(value)
+    )
+    for line in lines:
         match = ENTRY.fullmatch(line)
         if match is None:
             rendered.append(line)
             continue
         path = match.group(1)
-        explicit_members = match.group(2).split(",") if match.group(2) else None
+        # "members=" with no names renders the entry alone (its members are documented elsewhere).
+        explicit_members = None if match.group(2) is None else [name for name in match.group(2).split(",") if name]
         value = _locate(path)
         if value is None:
             raise ValueError(f"cannot resolve API catalog entry: {path}")
@@ -153,7 +223,7 @@ def render() -> str:
         if explicit_members is not None:
             members = [(name, getattr(value, name)) for name in explicit_members]
         elif inspect.isclass(value):
-            members = _class_members(value)
+            members = _class_members(value, documented)
         else:
             members = []
         for name, member in members:

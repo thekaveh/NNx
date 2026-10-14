@@ -1,4 +1,4 @@
-"""Arbitrary modules and registered model factories (FEAT-006).
+"""Arbitrary modules and registered model factories.
 
 ``NNModel`` builds its network from one of three **descriptors**, stored in
 ``NNModelParams.net``:
@@ -13,7 +13,7 @@
       from nnx.models import ModelSpec, register_model_factory
 
       register_model_factory("my.encoder", 1, lambda config: Encoder(**config))
-      model = NNModel(params=NNModelParams(net=ModelSpec("my.encoder", 1, {"width": 16}), loss=Losses.MSE))
+      model = NNModel(params=NNModelParams(net=ModelSpec("my.encoder", 1, {"width": 16}), loss=Losses.MEAN_SQUARED_ERROR))
 
   Construction runs under ``torch.manual_seed(spec.seed)`` with the ambient
   RNG state captured and restored, so the same spec always initializes the
@@ -135,7 +135,7 @@ class ModelSpec:
         if not isinstance(config, Mapping):
             raise TypeError(f"ModelSpec config must be a str-keyed mapping, got {type(config).__name__}")
         object.__setattr__(self, "config", _freeze_config(config, "", owner=owner))
-        object.__setattr__(self, "seed", require_count(seed, "seed", owner=owner, minimum=0))
+        object.__setattr__(self, "seed", require_count(seed, "seed", owner=owner, minimum=0, maximum=2**32 - 1))
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(f"ModelSpec is immutable; cannot set {name!r}")

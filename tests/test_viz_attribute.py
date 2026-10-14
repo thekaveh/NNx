@@ -7,7 +7,8 @@ Five contracts:
   return contract for the gradient-family methods).
 - Saliency works through the same call site (no baseline required).
 - Missing-captum path raises a clear ImportError pointing the user at
-  `pip install captum`.
+  `pip install thekaveh-nnx[viz]` first, then the quoted fallback
+  `pip install 'captum>=0.7.0'` (a shell never reads `>` as a redirect).
 - All six supported method strings are individually callable end-to-end
   (parametrized to lock the public method list down).
 """
@@ -92,7 +93,7 @@ def test_attribute_missing_captum_raises_importerror(tiny_model, tiny_input, mon
     # without uninstalling the package from the test environment.
     monkeypatch.setitem(sys.modules, "captum", None)
     monkeypatch.setitem(sys.modules, "captum.attr", None)
-    with pytest.raises(ImportError, match="pip install captum"):
+    with pytest.raises(ImportError, match=r"thekaveh-nnx\[viz\].*pip install 'captum"):
         attribute(tiny_model, tiny_input, method="saliency", target=0)
 
 
@@ -107,3 +108,13 @@ def test_attribute_each_supported_method_callable(method, tiny_model, tiny_input
     assert isinstance(attr, torch.Tensor)
     assert isinstance(fig, go.Figure)
     assert attr.shape == tiny_input.shape
+
+
+def test_a_three_dimensional_attribution_renders_its_first_sample():
+    """A 3-D attribution is batched (B, H, W): the figure shows sample 0,
+    never the mean over the batch."""
+    from nnx.viz.attribute import _attribution_to_figure
+
+    attr = torch.stack([torch.zeros(2, 3), torch.ones(2, 3)])
+    fig = _attribution_to_figure(attr, attr)
+    assert torch.equal(torch.tensor(fig.data[0].z), torch.zeros(2, 3, dtype=torch.float64))

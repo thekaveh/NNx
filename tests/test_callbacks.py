@@ -152,6 +152,16 @@ def test_early_stopping_max_mode():
     es.on_epoch_end(ctx)
     assert ctx.should_stop
 
+    # A rising value is an improvement in max mode (a falling one is not).
+    rising = EarlyStopping(monitor="val_edp.error", patience=1, mode="max")
+    for epoch, value in enumerate((0.5, 0.6, 0.7)):
+        ctx = _make_ctx(epoch=epoch, val_error=value)
+        rising.on_epoch_end(ctx)
+        assert not ctx.should_stop, epoch
+    ctx = _make_ctx(epoch=3, val_error=0.6)
+    rising.on_epoch_end(ctx)
+    assert ctx.should_stop
+
 
 def test_early_stopping_invalid_mode():
     import pytest
@@ -732,8 +742,8 @@ def test_regression_task_records_reach_tensorboard_and_wandb_without_classificat
 
 
 def _assert_same_records(loaded, expected):
-    """Reloaded idps.csv records equal the originals up to pandas' float
-    parsing (the CSV reader is not bit-exact for every double)."""
+    """Reloaded idps.csv records equal the originals bit for bit: the
+    loader parses floats round-trip, so no tolerance is needed."""
     assert len(loaded) == len(expected)
     for got, want in zip(loaded, expected, strict=True):
         for edp_got, edp_want in ((got.train_edp, want.train_edp), (got.val_edp, want.val_edp)):
@@ -743,12 +753,7 @@ def _assert_same_records(loaded, expected):
             state_got, state_want = edp_got.state(), edp_want.state()
             assert state_got.keys() == state_want.keys()
             for key, value in state_want.items():
-                if isinstance(value, float):
-                    assert state_got[key] == pytest.approx(value, rel=1e-12), key
-                elif isinstance(value, dict):
-                    assert state_got[key] == pytest.approx(value, rel=1e-12), key
-                else:
-                    assert state_got[key] == value, key
+                assert state_got[key] == value, key
 
 
 # --- FEAT-005: ModelCheckpoint files declare weights-only capability --------

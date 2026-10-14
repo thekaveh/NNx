@@ -1,9 +1,11 @@
-"""Transfer learning via layer freezing.
+"""Transfer-learning mechanics via layer freezing.
 
-Trains a small classifier from scratch on synthetic distribution A,
-exports its weights, then loads them into a fresh model with the
-backbone frozen and fine-tunes only the head on distribution B. Shows
-the standard "freeze backbone, train head" recipe.
+Trains a small classifier from scratch on one random-label draw
+("distribution A"), exports its weights, then loads them into a fresh
+model with the backbone frozen and fine-tunes only the head on a second
+draw ("distribution B"). The labels are random, so nothing transfers:
+the example shows the standard "freeze backbone, train head" recipe and
+checks that only the head changes, not a learning gain.
 
 The same pattern works against any external weights — torchvision
 checkpoints, HuggingFace state-dicts, weights from a colleague. The
@@ -44,10 +46,9 @@ def _make_loaders(n: int = 256, d: int = 8, n_classes: int = 3):
     """Random-feature / random-label dataset drawn from the CURRENT RNG
     state — the caller seeds via `nnx.set_seed(...)` in `main()` before
     each phase. Two phases use different seeds so the pretrain and
-    fine-tune draw distinct samples — sufficient for showing that loss
-    decreases on the new distribution while the backbone stays frozen
-    and only the head trains. (A class-conditional Gaussian setup would
-    make the demo more informative; kept simple to minimize dependencies.)
+    fine-tune draw distinct samples. The labels are random, so nothing is
+    learnable: the demo shows the mechanics (the backbone stays frozen and
+    only the head trains), not a loss improvement.
     """
     # No torch.manual_seed here — the caller does set_seed(...) in main()
     # (convention: helpers consume the current RNG state; main() owns it).
@@ -127,13 +128,17 @@ def main():
 
     set_seed(42)  # distribution B uses a different seed
     loader_b = _make_loaders()
+    before = {name: p.detach().clone() for name, p in fine.net.named_parameters()}
     run_b = fine.train(
         params=train_params_template(lr=1e-3).with_train_loader(loader_b),
     )
     last_loss = run_b.idps[-1].train_edp.loss
     first_loss = run_b.idps[0].train_edp.loss
-    print(f"\nFine-tune loss: {first_loss:.4f} → {last_loss:.4f}")
-    print(f"  trained {len(run_b.idps)} iterations on the head only")
+    # First and last minibatch; random labels, so no learning is expected.
+    print(f"\nFine-tune loss (first → last minibatch): {first_loss:.4f} → {last_loss:.4f}")
+    changed = sorted(name for name, p in fine.net.named_parameters() if not torch.equal(p, before[name]))
+    assert changed and all(name.startswith("layers.2.") for name in changed), changed
+    print(f"  trained {len(run_b.idps)} iterations; changed parameters: {changed} (the head only)")
 
 
 if __name__ == "__main__":

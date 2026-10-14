@@ -33,6 +33,7 @@ import urllib.request
 import pytest
 
 import nnx
+from tests._repo_files import repo_file
 
 try:
     import tomllib
@@ -40,19 +41,21 @@ except ModuleNotFoundError:  # Python 3.10
     import tomli as tomllib
 
 _PYPROJECT = pathlib.Path(__file__).parent.parent / "pyproject.toml"
-_LOCKFILE = _PYPROJECT.parent / "uv.lock"
-_RELEASE_WORKFLOW = _PYPROJECT.parent / ".github" / "workflows" / "release.yml"
-_WORKFLOW_DIRECTORY = _RELEASE_WORKFLOW.parent
-_RELEASE_PLEASE_WORKFLOW = _PYPROJECT.parent / ".github" / "workflows" / "release-please.yml"
-_RELEASE_PLEASE_CONFIG = _PYPROJECT.parent / "release-please-config.json"
-_PRE_COMMIT_CONFIG = _PYPROJECT.parent / ".pre-commit-config.yaml"
+# Repository-only (the sdist does not ship them): each test that reads one
+# resolves it through repo_file(), which skips that test in an sdist.
+_LOCKFILE = ("uv.lock",)
+_WORKFLOW_DIRECTORY = (".github", "workflows")
+_RELEASE_WORKFLOW = (*_WORKFLOW_DIRECTORY, "release.yml")
+_RELEASE_PLEASE_WORKFLOW = (*_WORKFLOW_DIRECTORY, "release-please.yml")
+_RELEASE_PLEASE_CONFIG = ("release-please-config.json",)
+_PRE_COMMIT_CONFIG = (".pre-commit-config.yaml",)
 _PYPI_README = _PYPROJECT.parent / "PYPI_README.md"
 _PYPI_TIMEOUT_SEC = 5.0
 _STUDIO_REQUIRED_APIS = ("NNMoEParams", "NNConvParams", "FeedFwdMoENN", "ConvNN")
 
 
 def test_draft_release_please_forces_tag_creation():
-    config = json.loads(_RELEASE_PLEASE_CONFIG.read_text(encoding="utf-8"))
+    config = json.loads(repo_file(*_RELEASE_PLEASE_CONFIG).read_text(encoding="utf-8"))
     assert config["draft"] is True
     assert config["force-tag-creation"] is True
 
@@ -60,13 +63,13 @@ def test_draft_release_please_forces_tag_creation():
 def test_privileged_release_please_job_installs_no_tools():
     """FIX-033: the write-privileged job no longer refreshes the lock, so it
     installs nothing (release-please bumps uv.lock's version itself)."""
-    workflow = _RELEASE_PLEASE_WORKFLOW.read_text(encoding="utf-8")
+    workflow = repo_file(*_RELEASE_PLEASE_WORKFLOW).read_text(encoding="utf-8")
     assert "setup-uv" not in workflow
     assert "pip install" not in workflow
 
 
 def test_all_workflows_use_pinned_uv_action_and_no_unlocked_tool_install():
-    workflows = list(_WORKFLOW_DIRECTORY.glob("*.yml"))
+    workflows = list(repo_file(*_WORKFLOW_DIRECTORY).glob("*.yml"))
     assert workflows
     for path in workflows:
         workflow = path.read_text(encoding="utf-8")
@@ -76,20 +79,24 @@ def test_all_workflows_use_pinned_uv_action_and_no_unlocked_tool_install():
 
 
 def test_security_runs_for_pushes_and_pull_requests_on_gitflow_branches():
-    workflow = (_WORKFLOW_DIRECTORY / "security.yml").read_text(encoding="utf-8")
+    workflow = repo_file(*_WORKFLOW_DIRECTORY, "security.yml").read_text(encoding="utf-8")
 
     assert "  push:\n    branches: [main, develop]\n" in workflow
     assert "  pull_request:\n    branches: [main, develop]\n" in workflow
 
 
 def test_release_build_and_audit_tools_are_resolved_from_uv_lock():
-    workflow = _RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    workflow = repo_file(*_RELEASE_WORKFLOW).read_text(encoding="utf-8")
     pyproject = _PYPROJECT.read_text(encoding="utf-8")
 
     assert "uv run --frozen --no-sync twine check" in workflow
     assert "uv run --frozen python -m pip_audit" in workflow
-    assert '"pip-audit==2.10.1"' in pyproject
-    assert '"twine==7.0.0"' in pyproject
+    # Exact pins, and the ones the lock resolved (a Dependabot bump moves both).
+    lock = (_PYPROJECT.parent / "uv.lock").read_text(encoding="utf-8")
+    for tool in ("pip-audit", "twine"):
+        locked = re.search(rf'\[\[package\]\]\nname = "{tool}"\nversion = "([^"]+)"', lock)
+        assert locked is not None, tool
+        assert f'"{tool}=={locked.group(1)}"' in pyproject, tool
     assert workflow.count("uv build --no-build-isolation --python .venv/bin/python") == 2
     assert "uv export --frozen --all-extras --all-groups" in workflow
     assert "uv sync --frozen --only-group release --no-install-project --no-build" in workflow
@@ -98,11 +105,11 @@ def test_release_build_and_audit_tools_are_resolved_from_uv_lock():
 
 
 def test_pre_commit_ruff_version_matches_frozen_ci_version():
-    locked = tomllib.loads(_LOCKFILE.read_text(encoding="utf-8"))
+    locked = tomllib.loads(repo_file(*_LOCKFILE).read_text(encoding="utf-8"))
     ruff_packages = [package for package in locked["package"] if package["name"] == "ruff"]
     assert len(ruff_packages) == 1
 
-    config = _PRE_COMMIT_CONFIG.read_text(encoding="utf-8")
+    config = repo_file(*_PRE_COMMIT_CONFIG).read_text(encoding="utf-8")
     match = re.search(
         r"repo: https://github.com/astral-sh/ruff-pre-commit\s+rev: v([^\s]+)",
         config,
@@ -112,6 +119,7 @@ def test_pre_commit_ruff_version_matches_frozen_ci_version():
 
 
 def test_package_uses_fresh_absolute_link_pypi_readme():
+    repo_file("scripts", "docs", "build_pypi_readme.py")
     from scripts.docs.build_pypi_readme import render
 
     pyproject = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
@@ -130,7 +138,7 @@ def test_package_uses_fresh_absolute_link_pypi_readme():
 
 
 def test_privileged_wiki_publication_uses_locked_nonbuilding_tool_group():
-    workflow = (_WORKFLOW_DIRECTORY / "docs.yml").read_text(encoding="utf-8")
+    workflow = repo_file(*_WORKFLOW_DIRECTORY, "docs.yml").read_text(encoding="utf-8")
 
     assert "uv sync --frozen --only-group docs-publish --no-install-project --no-build" in workflow
     assert workflow.count("uv run --frozen --no-sync python -m scripts.docs") >= 2
@@ -170,7 +178,7 @@ def test_pyproject_version_matches_dunder_version():
 
 def test_uv_lock_root_package_version_matches_pyproject():
     """Release version bumps must refresh the editable root lock entry."""
-    locked = tomllib.loads(_LOCKFILE.read_text(encoding="utf-8"))
+    locked = tomllib.loads(repo_file(*_LOCKFILE).read_text(encoding="utf-8"))
     dist_name = _read_pyproject_field("name")
     root_packages = [
         package
@@ -212,7 +220,7 @@ def test_importlib_metadata_lookup_uses_current_dist_name():
 
 def test_post_publish_smoke_imports_studio_required_apis():
     """The clean-environment PyPI smoke must cover Studio's minimum API set."""
-    workflow = _RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    workflow = repo_file(*_RELEASE_WORKFLOW).read_text(encoding="utf-8")
 
     for symbol in _STUDIO_REQUIRED_APIS:
         assert f"from nnx import {symbol}" in workflow, (
@@ -223,8 +231,8 @@ def test_post_publish_smoke_imports_studio_required_apis():
 
 def test_trusted_publishing_runs_in_the_top_level_release_workflow():
     """PyPI OIDC and attestation identities must name the same workflow."""
-    workflow = _RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    release_please = _RELEASE_PLEASE_WORKFLOW.read_text(encoding="utf-8")
+    workflow = repo_file(*_RELEASE_WORKFLOW).read_text(encoding="utf-8")
+    release_please = repo_file(*_RELEASE_PLEASE_WORKFLOW).read_text(encoding="utf-8")
 
     assert "workflow_call:" not in workflow
     assert "workflow_dispatch:" in workflow
@@ -232,15 +240,17 @@ def test_trusted_publishing_runs_in_the_top_level_release_workflow():
     assert "uses: ./.github/workflows/release.yml" not in release_please
     assert '-f "release_ref=$RELEASE_REF"' in release_please
     assert '-f "tag_name=$RELEASE_TAG"' in release_please
-    assert workflow.count("inputs.tag_name != ''") == 4, (
-        "release.yml must use the supplied tag_name input to enable tag/version "
+    assert workflow.count("inputs.tag_name != ''") == 5, (
+        "release.yml must use the supplied tag_name input to enable tag/version and tag/commit "
         "validation, PyPI publication, post-publish verification, and GitHub release publication"
     )
+    # The tag must name the release commit before the irreversible upload.
+    assert workflow.index("Assert the tag identifies the release commit") < workflow.index("publish-pypi:")
 
 
 def test_release_publication_has_one_managed_entry_point():
-    workflow = _RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    release_please = _RELEASE_PLEASE_WORKFLOW.read_text(encoding="utf-8")
+    workflow = repo_file(*_RELEASE_WORKFLOW).read_text(encoding="utf-8")
+    release_please = repo_file(*_RELEASE_PLEASE_WORKFLOW).read_text(encoding="utf-8")
 
     assert "tags:" not in workflow
     assert "startsWith(github.ref, 'refs/tags/v')" not in workflow
@@ -288,11 +298,9 @@ def test_pypi_lists_the_current_distribution_name():
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            pytest.skip(
-                f"{dist_name!r} not yet published to PyPI (404 at {url}). "
-                f"This test will start passing once the first release "
-                f"lands via .github/workflows/release.yml."
-            )
+            # Releases exist (0.4.0 onward): a 404 means the distribution
+            # name in pyproject.toml no longer matches the published project.
+            pytest.fail(f"{dist_name!r} is not on PyPI (404 at {url}): has [project] name drifted?")
         raise
     except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
         pytest.skip(f"network unreachable for PyPI verification: {e}")
@@ -303,3 +311,15 @@ def test_pypi_lists_the_current_distribution_name():
         f"but pyproject [project] name is {dist_name!r}. URL was built "
         f"correctly but PyPI is returning a different project."
     )
+
+
+def test_the_build_backend_pin_matches_the_release_groups():
+    """The release builds without isolation, with the release group's
+    setuptools; CI's isolated builds use [build-system]. One bump of only
+    one of them would ship a wheel built by an untested backend."""
+    pyproject = _PYPROJECT.read_text(encoding="utf-8")
+    build_system = re.search(r'requires = \["setuptools==([^"]+)"\]', pyproject)
+    release_block = re.search(r"^release = \[(.*?)^\]", pyproject, flags=re.M | re.S)
+    assert build_system is not None and release_block is not None
+    # Exactly one exact pin inside the release group, equal to the backend's.
+    assert re.findall(r'"setuptools([^"]*)"', release_block.group(1)) == [f"=={build_system.group(1)}"]

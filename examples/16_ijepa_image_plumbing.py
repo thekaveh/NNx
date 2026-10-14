@@ -2,7 +2,7 @@
 
 Demonstrates:
 
-  1. Building a small ViT-S through ``Nets.VIT`` and :class:`NNViTParams`
+  1. Building a small ViT through ``Nets.VIT`` and :class:`NNViTParams`
      (32x32 inputs, 4x4 patches → 64 tokens per image, 4 layers, 4 heads).
   2. Constructing the EMA target encoder via
      :func:`build_target_encoder` and the predictor via
@@ -19,11 +19,11 @@ hyperparameters that this short demo does not tune. The example
 runs on **synthetic 32x32 noise** by default so it stays a fast
 verify-the-plumbing exercise rather than masquerading as a SOTA
 reproduction. Pass ``--cifar`` to download the real CIFAR-10
-training set (requires ``torchvision``) — the loss will still
+training set (requires ``pip install "thekaveh-nnx[vision]"``) — the loss will still
 decrease, but don't expect linear-probe accuracy on the order
 of the I-JEPA paper.
 
-**Objective mode (FEAT-040).** ``jepa_objective(target, predictor,
+**Objective mode.** ``jepa_objective(target, predictor,
 mask_fn)`` describes the same latent-prediction loss as an objective: NNx's
 shared update engine then owns backward, gradient accumulation (exact for
 uneven microbatches and target masks), clipping and the optimizer step, and
@@ -288,6 +288,8 @@ def main():
                 cooldown=1,
                 threshold=1e-3,
             ),
+            # The data flags change the data, not the configuration: each source gets its own run id.
+            data_id=f"{'cifar10-train' if args.cifar else 'synthetic-noise'}-b{args.batch_size}",
         ),
         train_step_fn=step_fn,
         objective=objective,
@@ -301,9 +303,9 @@ def main():
     print(f"first-step loss: {first_loss:.4f}")
     print(f"last-step  loss: {last_loss:.4f}")
     print(f"steps run      : {len(losses)}")
-    # Quick sanity check — on synthetic noise the loss is small from the
-    # start (the predictor learns a near-zero mapping); the assertion is
-    # for the verify-the-plumbing demo to flag if something goes wrong.
+    # The latent MSE starts near 1 (the targets are unit-RMS, RMSNorm-ed
+    # encoder outputs) and decreases; the assertion only guards against a
+    # non-finite loss in this verify-the-plumbing demo.
     assert all(torch.isfinite(torch.tensor(lo)).item() for lo in losses), "non-finite loss"
 
 

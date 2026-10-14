@@ -159,6 +159,16 @@ def test_train_end_to_end_produces_run_and_checkpoints(tmp_path, monkeypatch):
     # runs/best symlink points at this run (no prior runs in tmp_path).
     assert os.path.islink(tmp_path / "runs" / "best")
 
+    # Reloading the run reconstructs every idp, val metrics included.
+    reloaded = NNRun.load(id=run.id)
+    assert len(reloaded.idps) == 8
+    for ridp, oidp in zip(reloaded.idps, run.idps, strict=True):
+        assert (ridp.iter_idx, ridp.epoch_idx, ridp.batch_idx) == (oidp.iter_idx, oidp.epoch_idx, oidp.batch_idx)
+        assert ridp.train_edp.loss == pytest.approx(oidp.train_edp.loss, abs=1e-9)
+        assert (ridp.val_edp is None) == (oidp.val_edp is None)
+        if oidp.val_edp is not None:
+            assert ridp.val_edp.loss == pytest.approx(oidp.val_edp.loss, abs=1e-9)
+
 
 def test_run_save_load_round_trip(tmp_path, monkeypatch):
     """NNRun.load(run.id) returns an NNRun whose idps/state match the saved one."""
@@ -962,6 +972,58 @@ def test_finite_horizon_scheduler_resume_requires_explicit_total_steps(tmp_path,
 
     with pytest.raises(ValueError, match="requires scheduler.total_steps"):
         NNModel(net_params=net_params, params=model_params).train(params=params)
+
+
+def test_warmup_decay_resume_on_the_epoch_clock_requires_explicit_warmup_steps(tmp_path, monkeypatch):
+    """The default warm-up is a tenth of each session's n_epochs and is not
+    in the restored scheduler state, so a resume must name it explicitly."""
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+
+    def params(warmup_steps):
+        return NNTrainParams(
+            n_epochs=1,
+            train_loader=train_loader,
+            resume_from_run_id="prior-run",
+            optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+            scheduler=NNSchedulerParams(
+                kind=Schedulers.LINEAR_WARMUP_DECAY,
+                total_steps=40,
+                warmup_steps=warmup_steps,
+                min_lr=0.0,
+                factor=0.5,
+                patience=0,
+                cooldown=0,
+                threshold=0.0,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="requires scheduler.warmup_steps"):
+        NNModel(net_params=net_params, params=model_params).train(params=params(None))
+    # Past the warm-up check: the source run does not exist.
+    with pytest.raises(ValueError, match="not found on disk") as other:
+        NNModel(net_params=net_params, params=model_params).train(params=params(3))
+    assert "warmup_steps" not in str(other.value)
+
+
+def test_a_planned_warmup_decay_resume_keeps_the_default_warmup():
+    """A planned resume passes the whole plan's n_epochs, so the default
+    warm-up equals the original session's: no explicit warmup_steps needed."""
+    from nnx.nn.nn_model import _check_resume_horizon
+
+    scheduler = NNSchedulerParams(
+        kind=Schedulers.LINEAR_WARMUP_DECAY,
+        total_steps=40,
+        min_lr=0.0,
+        factor=0.5,
+        patience=0,
+        cooldown=0,
+        threshold=0.0,
+    )
+    _check_resume_horizon(scheduler, n_epochs=20, start_epoch=10, planned=True)
+    with pytest.raises(ValueError, match="requires scheduler.warmup_steps"):
+        _check_resume_horizon(scheduler, n_epochs=10, start_epoch=10)
 
 
 def test_finite_horizon_resume_rejects_insufficient_explicit_horizon(tmp_path, monkeypatch):
@@ -2353,3 +2415,64 @@ def test_fp16_scaler_state_round_trips_a_resume(tmp_path, monkeypatch):
     resume = replace(_train_params(train_loader, None, 1), resume_from_run_id=parent.id)
     NNModel(net_params=net_params, params=fp16_params).train(params=resume)
     assert _CpuScaler.loaded == [{"scale": saved_scale}]  # the scaler continues from the checkpoint
+
+
+def test_default_step_refuses_a_regression_loss_without_a_task(tmp_path, monkeypatch):
+    """The default step scores classification; an MSE model without a task
+    fails on its first batch with a hint (not inside scikit-learn's
+    metrics), leaves no run behind, and with a regression task trains."""
+    from dataclasses import replace
+
+    from nnx import TaskSpec
+
+    monkeypatch.chdir(tmp_path)
+    net_params, model_params = _make_params(output_dim=1)
+    mse = replace(model_params, loss=Losses.MEAN_SQUARED_ERROR)
+    X, y = torch.randn(16, 8), torch.randn(16, 1)
+    params = NNTrainParams(
+        n_epochs=1,
+        train_loader=[(X, y)],
+        optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+    )
+    refused = NNModel(net_params=net_params, params=mse)
+    before = {k: v.clone() for k, v in refused.net.state_dict().items()}
+    with pytest.raises(ValueError, match="TaskSpec.regression"):
+        refused.train(params=params)
+    # checked before the backward: the refused batch updated nothing
+    assert all(torch.equal(before[k], v) for k, v in refused.net.state_dict().items())
+    with pytest.raises(ValueError, match="TaskSpec.regression"):
+        refused.evaluate([(X, y)])
+    runs = tmp_path / "runs"
+    assert not runs.exists() or not [entry for entry in os.listdir(runs) if not entry.startswith(".")]
+    with_task = replace(mse, task=TaskSpec.regression(1))
+    run = NNModel(net_params=net_params, params=with_task).train(params=params)
+    assert run.idps[-1].train_edp.loss is not None
+
+
+def test_a_damaged_best_incumbent_does_not_fail_a_later_run(tmp_path, monkeypatch):
+    """runs/best points at a run whose BEST checkpoint is truncated: a later,
+    unrelated train() completes, and the pointer is re-elected among
+    eligible runs instead of raising at the very end."""
+    from nnx.nn.params.nn_run import _read_best_pointer
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, val_loader = _make_tiny_loaders()
+    net_params, model_params = _make_params()
+
+    def fit(seed):
+        return NNModel(net_params=net_params, params=model_params).train(
+            params=NNTrainParams(
+                n_epochs=1,
+                seed=seed,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                optim=NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0),
+            )
+        )
+
+    first = fit(0)
+    assert _read_best_pointer(os.path.join("runs", "best")) == first.id
+    best = tmp_path / "runs" / first.id / "checkpoints" / "best.pt"
+    best.write_bytes(best.read_bytes()[: best.stat().st_size // 2])
+    second = fit(1)  # used to raise PytorchStreamReader failed reading zip archive
+    assert _read_best_pointer(os.path.join("runs", "best")) == second.id

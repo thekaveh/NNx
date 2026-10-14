@@ -1,5 +1,5 @@
 """Full-graph training with an empty validation split — ``NNGraphDataset``
-optional loaders (FIX-019).
+optional loaders.
 
 Demonstrates:
 

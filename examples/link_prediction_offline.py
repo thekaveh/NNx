@@ -1,4 +1,4 @@
-"""Leakage-aware link prediction on a static graph (FEAT-027).
+"""Leakage-aware link prediction on a static graph.
 
 Node masks cannot hold out edges; a held-out edge left in the graph the
 model passes messages over is a leaked answer. This script splits edges,
@@ -61,6 +61,8 @@ def link_prediction_workflow(epochs: int = 6) -> dict:
     assert split.replay(edge_index) == split  # the manifest reproduces its membership
     task = LinkTask(split, train_negatives=1)
 
+    # The task's objective supplies the training loss; NNModelParams.loss is
+    # recorded with the run but not used by it.
     model = NNModel(
         params=NNModelParams(net=link_predictor_spec(input_dim=2, hidden_dims=[16]), loss=Losses.MEAN_SQUARED_ERROR)
     )

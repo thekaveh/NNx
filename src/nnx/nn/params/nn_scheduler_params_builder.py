@@ -72,7 +72,7 @@ class NNSchedulerParamsBuilder:
         `from_params(params).build()` equals `params`, with the same
         `state()` (key order and omitted defaults included). A variant
         call afterwards replaces the whole configuration, as usual,
-        except the clock (FEAT-014), which it keeps.
+        except the clock, which it keeps.
 
         Raises:
             TypeError: if `params` is not exactly an `NNSchedulerParams`.
@@ -94,7 +94,7 @@ class NNSchedulerParamsBuilder:
             self._fields["clock"] = clock
 
     def clock(self, clock: str) -> NNSchedulerParamsBuilder:
-        """What one scheduler step counts (FEAT-014): ``"epoch"`` (the
+        """What one scheduler step counts: ``"epoch"`` (the
         default) or ``"optimizer_update"`` — once per committed update of
         the scheduler's optimizer, with horizons counted in updates. Call
         before or after the variant method; a variant call keeps the clock
@@ -113,7 +113,8 @@ class NNSchedulerParamsBuilder:
     ) -> NNSchedulerParamsBuilder:
         """ReduceLROnPlateau — the default scheduler.
 
-        Sets the five plateau fields. `kind` is left at None (the
+        Sets the five plateau fields (``factor`` in ``(0, 1)``: it reduces
+        the LR). `kind` is left at None (the
         dataclass default), which preserves the omit-when-default
         state() invariant for callers who used the original pre-enum
         config.
@@ -223,7 +224,7 @@ class NNSchedulerParamsBuilder:
         cooldown: int,
         threshold: float,
     ) -> NNSchedulerParamsBuilder:
-        """Linear warm-up to `max_lr` over `warmup_steps`, linear decay
+        """Linear warm-up to the optimizer's LR over `warmup_steps`, linear decay
         to 0 over the remaining `total_steps - warmup_steps`. Used by
         most transformer training recipes.
         """

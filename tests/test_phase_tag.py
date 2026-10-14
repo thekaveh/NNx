@@ -39,9 +39,9 @@ def test_phase_tag_canonical_quartiles_at_n_epochs_8():
         assert phase_tag(idx, 8) is None
 
 
-@pytest.mark.parametrize("n_epochs", [10, 12, 16, 20, 100])
-def test_phase_tag_quartiles_fire_for_n_epochs_at_least_6(n_epochs):
-    """For `n_epochs >= 6` every quartile is reachable: the Q1 index
+@pytest.mark.parametrize("n_epochs", [8, 9, 10, 12, 16, 20, 100])
+def test_phase_tag_quartiles_fire_for_n_epochs_at_least_8(n_epochs):
+    """For `n_epochs >= 8` every quartile is reachable: the Q1 index
     (int(n/4)-1) is at least 1, which doesn't collide with FIRST (0)."""
     seen = set()
     for idx in range(n_epochs):
@@ -51,22 +51,14 @@ def test_phase_tag_quartiles_fire_for_n_epochs_at_least_6(n_epochs):
     assert seen == {Checkpoints.FIRST, Checkpoints.Q1, Checkpoints.Q2, Checkpoints.Q3}
 
 
-@pytest.mark.parametrize("n_epochs", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("n_epochs", [1, 2, 3, 4, 5, 6, 7])
 def test_phase_tag_small_n_epochs_drops_q1_intentionally(n_epochs):
-    """Small-`n_epochs` caveat (documented in the helper's docstring):
-    Q1 collides with FIRST when `int(n_epochs / 4) - 1 == 0`, which
-    happens for n_epochs in [4, 5, 6, 7] — wait, that's not the bug.
-
-    The actual collision: `int(n_epochs * 1/4) - 1 == 0` when
-    `n_epochs in [4, 5, 6, 7]` (int(1)-1, int(1.25)-1, int(1.5)-1,
-    int(1.75)-1 all equal 0). For n_epochs <= 3 the Q1 index is
-    negative and just never fires. Either way, Q1 is silently dropped.
-
-    This test locks the trade-off in: changing the math to make Q1
-    fire would shift run.id-relevant trajectories for callers already
-    relying on the current schedule. The contract is "best-effort
-    quartile coverage for n_epochs >= 6; FIRST + LAST are guaranteed."
-    """
+    """Small-`n_epochs` caveat (documented in the helper's docstring): the
+    Q1 index `int(n_epochs / 4) - 1` is 0 for n_epochs 4-7 (it collides
+    with FIRST) and negative below 4, so Q1 is never written. Q2 is also
+    missing for n_epochs <= 3 and Q3 for n_epochs <= 2. FIRST and LAST
+    are guaranteed; every quartile needs n_epochs >= 8. Changing the math
+    would shift run-id-relevant trajectories, so the trade-off is pinned."""
     seen = set()
     for idx in range(n_epochs):
         tag = phase_tag(idx, n_epochs)
@@ -77,6 +69,8 @@ def test_phase_tag_small_n_epochs_drops_q1_intentionally(n_epochs):
     # Q1 never fires in this range (collides with FIRST or has a
     # negative target index that no real `idx_epoch` reaches).
     assert Checkpoints.Q1 not in seen
+    assert (Checkpoints.Q2 in seen) == (n_epochs >= 4)
+    assert (Checkpoints.Q3 in seen) == (n_epochs >= 3)
 
 
 def test_phase_tag_returns_none_for_non_boundary_epochs():

@@ -6,10 +6,9 @@ Pipeline:
   2. Synthesize 64 (prompt, chosen, rejected) triples where the
      "chosen" continuation contains a specific token sequence and the
      "rejected" one doesn't.
-  3. Wrap the pretrained model as the frozen reference policy.
+  3. Copy the initial (untrained) model as the frozen reference policy.
   4. Run `dpo_train_step_factory(ref_model=...)` for a handful of epochs.
-  5. Check that the model's log-prob ratio for the preferred sequence
-     vs the rejected sequence has increased.
+  5. Print the chosen-minus-rejected log-prob gap before and after DPO.
 
 Key API notes:
   - `dpo_train_step_factory` expects a frozen `NNModel` (or subclass)
@@ -64,24 +63,28 @@ from nnx import (
 )
 
 
-def _avg_seq_logprob(net: torch.nn.Module, tokens: torch.Tensor) -> float:
-    """Average per-token log-probability of the given token sequence.
+def _response_logprob(net: torch.nn.Module, prompt: torch.Tensor, response: torch.Tensor) -> float:
+    """Summed log-probability of ``response`` given ``prompt``: the quantity
+    DPO compares. Every response token is scored, the first one included
+    (where "good" and "bad" differ), conditioned on the prompt.
 
     Args:
         net: A TransformerNN (or compatible) module that accepts ``(B, T)``
              long tensors and returns ``(B, T, vocab)`` logits.
-        tokens: ``(1, T)`` long tensor of token ids.
-
-    Returns:
-        Mean log-probability over positions 1..T (next-token prediction).
+        prompt: ``(1, P)`` long tensor of prompt token ids.
+        response: ``(1, R)`` long tensor of response token ids.
     """
+    modes = net.training
     net.eval()
-    with torch.no_grad():
-        logits = net(tokens[:, :-1])  # (1, T-1, V): next-token prediction
-        log_probs = torch.log_softmax(logits, dim=-1)
-        targets = tokens[:, 1:]  # (1, T-1)
-        gathered = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)  # (1, T-1)
-    return gathered.mean().item()
+    try:
+        with torch.no_grad():
+            full = torch.cat([prompt, response], dim=1)
+            log_probs = torch.log_softmax(net(full[:, :-1]), dim=-1)  # position t predicts token t + 1
+            targets = full[:, 1:]
+            picked = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+            return float(picked[:, prompt.shape[1] - 1 :].sum())  # the response tokens only
+    finally:
+        net.train(modes)
 
 
 def _encode_to_tensor(tokenizer: NNTokenizerParams, text: str, max_len: int = 16) -> torch.Tensor:
@@ -226,20 +229,21 @@ def main() -> None:
         for p in ref_model.net.parameters():
             p.requires_grad = False
 
-        # pad_token_id: exclude the dataset's right-padding from the
-        # response log-prob sums (NNPreferenceDataset pads with id 0 by
-        # default).
+        # pad_token_id: exclude the dataset's right-padding (id 1 here, set
+        # on the dataset above) from the response log-prob sums.
         dpo_step = dpo_train_step_factory(ref_model=ref_model, beta=0.1, pad_token_id=pref_ds.pad_token_id)
 
         # Snapshot log-probs BEFORE DPO (use a deep-copy so training
         # doesn't touch these weights).
         pre_net = copy.deepcopy(model.net)
+        prompt_tokens = _encode_to_tensor(tokenizer, "story ")
         chosen_tokens = _encode_to_tensor(tokenizer, "good story end ")
         rejected_tokens = _encode_to_tensor(tokenizer, "bad story end ")
-        pre_chosen_lp = _avg_seq_logprob(pre_net, chosen_tokens)
-        pre_rejected_lp = _avg_seq_logprob(pre_net, rejected_tokens)
+        pre_chosen_lp = _response_logprob(pre_net, prompt_tokens, chosen_tokens)
+        pre_rejected_lp = _response_logprob(pre_net, prompt_tokens, rejected_tokens)
 
         # ─── Phase 5: DPO training ───
+        before = {name: p.detach().clone() for name, p in model.net.named_parameters()}
         model.train(
             params=NNTrainParams(
                 n_epochs=3,
@@ -262,18 +266,19 @@ def main() -> None:
         )
 
         # ─── Phase 5 verification: before-vs-after log-prob comparison ───
-        post_chosen_lp = _avg_seq_logprob(model.net, chosen_tokens)
-        post_rejected_lp = _avg_seq_logprob(model.net, rejected_tokens)
+        post_chosen_lp = _response_logprob(model.net, prompt_tokens, chosen_tokens)
+        post_rejected_lp = _response_logprob(model.net, prompt_tokens, rejected_tokens)
 
         pre_gap = pre_chosen_lp - pre_rejected_lp
         post_gap = post_chosen_lp - post_rejected_lp
         delta = post_gap - pre_gap
 
     frozen_count = sum(not p.requires_grad for p in ref_model.net.parameters())
-    trained_count = sum(p.requires_grad for p in model.net.parameters())
-    print("DPO training complete on 64 synthetic preference triples.")
+    trained_count = sum(not torch.equal(p, before[name]) for name, p in model.net.named_parameters())
+    assert trained_count > 0, "DPO changed no policy parameter"
+    print(f"DPO training complete on {len(pref_ds.train_loader.dataset)} of 64 synthetic preference triples.")
     print(f"Reference policy: frozen ({frozen_count} param tensors).")
-    print(f"Trained policy:   updated ({trained_count} param tensors).")
+    print(f"Trained policy:   updated ({trained_count} param tensors changed).")
     print(f"Chosen   log-prob — before DPO: {pre_chosen_lp:+.3f},  after DPO: {post_chosen_lp:+.3f}")
     print(f"Rejected log-prob — before DPO: {pre_rejected_lp:+.3f},  after DPO: {post_rejected_lp:+.3f}")
     sign = "+" if delta >= 0 else ""

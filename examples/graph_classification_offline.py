@@ -1,4 +1,4 @@
-"""Graph-level classification with explicit pooling and graph ids (FEAT-026).
+"""Graph-level classification with explicit pooling and graph ids.
 
 NNx's built-in graph nets classify the *nodes* of one graph. This script
 classifies *whole graphs* — one prediction row per graph — through the

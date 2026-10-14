@@ -331,6 +331,17 @@ def test_nn_trainer_params_round_trip():
     )
     rt = NNTrainerParams.from_state(obj.state())
     assert rt == obj
+    assert obj.state()["seed"] == 42
+
+    # Defaults: no schedulers and no seed are omitted from state() and
+    # come back as an empty mapping and None.
+    bare = NNTrainerParams(n_epochs=4, optims={"G": obj.optims["G"]})
+    bare_state = bare.state()
+    assert "seed" not in bare_state
+    assert "schedulers" not in bare_state
+    bare_rt = NNTrainerParams.from_state(bare_state)
+    assert bare_rt == bare
+    assert bare_rt.seed is None and dict(bare_rt.schedulers) == {}
 
 
 def test_nn_model_params_state_omits_mixed_precision_when_false():

@@ -11,6 +11,8 @@ import re
 from collections.abc import Iterator, Mapping
 from typing import Any
 
+import numpy as np
+
 # Identifier of a registered object (optimizer factory, metric) and of the
 # names specs report under: letters, digits, '_', '.', '-'; starts with a
 # letter or digit.
@@ -51,8 +53,12 @@ def _freeze_config(value: Any, path: str, owner: str = "OptimizerFactorySpec") -
     every other object are rejected, so a spec always serializes to plain
     YAML and never smuggles executable state into ``run.yaml``.
     """
-    if value is None or isinstance(value, (bool, str)):
+    if value is None or isinstance(value, bool):
         return value
+    if isinstance(value, str):
+        return str(value)  # a NumPy string is a str subclass, not YAML-safe
+    if isinstance(value, np.bool_):
+        return bool(value)
     # NumPy / other numeric scalars are normalized to plain int / float so
     # state() stays YAML-portable (same convention as the params counts).
     if isinstance(value, numbers.Integral):
@@ -69,7 +75,7 @@ def _freeze_config(value: Any, path: str, owner: str = "OptimizerFactorySpec") -
         for key in sorted(value, key=lambda k: str(k)):
             if not isinstance(key, str):
                 raise TypeError(f"{owner} config{path} keys must be strings, got {key!r}")
-            frozen[key] = _freeze_config(value[key], f"{path}[{key!r}]", owner)
+            frozen[str(key)] = _freeze_config(value[key], f"{path}[{key!r}]", owner)
         return _FrozenConfig(frozen)
     kind = "a callable" if callable(value) else f"a {type(value).__name__}"
     raise TypeError(

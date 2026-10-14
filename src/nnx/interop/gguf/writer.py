@@ -177,11 +177,18 @@ def write_gguf(
         ImportError: when ``gguf`` is not installed, or when a
             quantization is requested that requires ``llama-quantize``.
         ValueError: when an unknown quantization label is passed.
+        TypeError: when the network carries a PEFT adapter (LoRA / DoRA /
+            IA3 / prefix tuning), or a projection (``w_qkv`` / ``w_o`` /
+            ``w1``–``w3`` / ``lm_head``) is not a plain ``nn.Linear`` (a
+            low-rank factorized one): GGUF stores plain weights. Nothing is
+            written.
     """
     import torch
 
-    gguf = _require_gguf()
+    # The label first: a misspelled or sub-F16 quantization gets its own
+    # message (ValueError / the llama-quantize guidance) even without gguf.
     _validate_quantization(quantization)
+    gguf = _require_gguf()
 
     # Local import — avoids importing torch / numpy at module top so
     # ``import nnx.interop`` is cheap even when the writer isn't used.

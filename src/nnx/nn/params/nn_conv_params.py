@@ -1,4 +1,4 @@
-"""Convolutional (LeNet-style) params (#89).
+"""Convolutional (LeNet-style) params.
 
 ``NNConvParams`` subclasses ``NNParams`` — the same lift-via-subclassing
 pattern ``NNTransformerParams``/``NNMoEParams`` use. It adds the conv-stack
@@ -24,8 +24,7 @@ v1 targets small SQUARE images: the spatial side is derived as
 ``sqrt(input_dim / in_channels)`` (MNIST: 784/1 → 28), so the base
 ``input_dim`` keeps its meaning and no extra height/width fields are needed.
 
-Every count above is validated as a non-boolean integer at construction
-(FIX-021): Python and NumPy integers are accepted and normalized to plain
+Every count above is validated as a non-boolean integer at construction: Python and NumPy integers are accepted and normalized to plain
 ``int`` before the immutable-list capture, the square-image arithmetic and
 ``state()``; fractional, boolean or string values raise ``ValueError``
 naming the field. ``padding`` is the one count that accepts zero.
@@ -124,7 +123,7 @@ class NNConvParams(NNParams):
         ``padding``, ``pool_size``, ``conv_channels``) is validated at
         construction as a non-boolean integer — NumPy integers accepted and
         normalized — so a fractional or boolean knob raises ``ValueError``
-        naming the field before any shape helper or layer runs (FIX-021).
+        naming the field before any shape helper or layer runs.
         """
         return math.isqrt(self.input_dim // self.in_channels)
 

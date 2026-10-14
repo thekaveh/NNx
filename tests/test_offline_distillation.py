@@ -204,8 +204,7 @@ def test_missing_candidate(monkeypatch):
     ]
     for record, candidates, message in cases:
         with pytest.raises(TeacherRecordError, match=message):  # the dataset fails first: no optimizer is built
-            data = TeacherDataset([record], _inputs(1), candidates=candidates, schema_digest=SCHEMA)
-            _model().train(_params(data.loader(batch_size=1)), objective=data.objective(alpha=1.0))
+            TeacherDataset([record], _inputs(1), candidates=candidates, schema_digest=SCHEMA)
     with pytest.raises(TeacherRecordError, match="duplicate candidate"):
         _record("s0", (0.5, 0.5), candidates=("cat", "cat"))
     with pytest.raises(TeacherRecordError, match="duplicate sample"):
@@ -508,3 +507,41 @@ def test_a_number_too_large_for_a_float_is_a_record_error(tmp_path):
         read_teacher_records(path)
     with pytest.raises(TeacherRecordError, match="alpha"):
         _dataset().objective(alpha=10**400)
+
+
+def test_an_fp64_student_scores_in_its_own_dtype():
+    """The dataset casts inputs to the default dtype; an fp64 student crashed
+    (Float vs Double) and its loss was taken in fp32."""
+    import nnx.paradigms.offline_distillation as offline
+
+    model = _model()
+    model.net.double()
+    seen = []
+    original = offline.F.log_softmax
+
+    def spy(tensor, *args, **kwargs):
+        seen.append(tensor.dtype)
+        return original(tensor, *args, **kwargs)
+
+    offline.F.log_softmax = spy
+    try:
+        report = evaluate_offline(model, _dataset())
+    finally:
+        offline.F.log_softmax = original
+    assert report.agreement is not None and seen and set(seen) == {torch.float64}
+
+
+def test_a_teacher_dataset_takes_read_only_and_reversed_numpy_inputs():
+    import warnings
+
+    import numpy as np
+
+    teacher = [(0.75, 0.25), (0.2, 0.8)]
+    records = [_record(f"s{i}", teacher[i], label="cat") for i in range(2)]
+    read_only = np.array([1.0, 2.0])
+    read_only.flags.writeable = False  # pandas' .to_numpy()
+    inputs = {"s0": read_only, "s1": np.arange(2.0)[::-1]}  # a negative-stride view
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        dataset = TeacherDataset(records, inputs, candidates=CANDIDATES, schema_digest=SCHEMA)
+    assert len(dataset) == 2

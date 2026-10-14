@@ -14,6 +14,10 @@ class DatasetProtocol(Protocol):
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNDatasetBase(ABC):
+    """Base of the NNx datasets: a name, the input and output sizes and the
+    train / validation / test loaders, all set by the subclass at
+    construction."""
+
     name: str = field(init=False)
 
     input_dim: int = field(init=False)

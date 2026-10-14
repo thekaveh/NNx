@@ -19,7 +19,7 @@ class NNIterationDataPoint:
     epoch_idx and take the row with val_edp set for per-epoch validation
     metrics.
 
-    **Epoch summary (FEAT-003).** A run that declares metrics or a monitor
+    **Epoch summary.** A run that declares metrics or a monitor
     also records, on the same last idp of each epoch, `train_summary` —
     the whole-epoch training record (loss and error averaged with every
     batch's own denominator, declared metrics over the full sample) — and
@@ -27,7 +27,7 @@ class NNIterationDataPoint:
     value, status and whether the epoch improved). Both are omitted from
     `state()` otherwise, so legacy history is unchanged.
 
-    **Update counter (FEAT-004).** Objective runs also record
+    **Update counter.** Objective runs also record
     `update_count` — the committed optimizer updates so far — distinct from
     the microbatch counter `iter_idx` and the epoch `epoch_idx`; omitted
     otherwise.
@@ -108,12 +108,13 @@ class NNIterationDataPoint:
             edp_state["metrics"] = _collect(prefix, "metrics")
             return edp_state
 
-        # A validation record is present when any of its scalars is — an
-        # all-masked task record (FEAT-002) has no loss but still has its
-        # kind, count and status.
+        # A validation record is present when any of its scalars, metrics or
+        # custom extra values is — an all-masked task record (FEAT-002) has
+        # no loss but still has its kind, count and status, and a custom
+        # eval step may report only extra values.
         def _optional_edp(prefix: str) -> Optional[NNEvaluationDataPoint]:
             edp_state = _edp_state(prefix)
-            if any(edp_state[name] is not None for name in _EDP_SCALARS) or edp_state["metrics"]:
+            if any(edp_state[name] is not None for name in _EDP_SCALARS) or edp_state["metrics"] or edp_state["extra"]:
                 return NNEvaluationDataPoint.from_state(edp_state)
             return None
 

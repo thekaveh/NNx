@@ -50,6 +50,11 @@ def set_seed(seed: int, strict: bool = False) -> None:
 def _set_seed(seed: int, strict: bool = False, *, scoped: bool = False) -> None:
     """:func:`set_seed`; ``scoped=True`` seeds only the streams
     :func:`_seed_scope` restores (see :func:`_seed_streams`)."""
+    from ._validation import require_count
+
+    # Checked first: NumPy would refuse it only after PYTHONHASHSEED and the
+    # Python stream had already been set from it.
+    seed = require_count(seed, "seed", owner="set_seed", minimum=0, maximum=2**32 - 1)
     # PYTHONHASHSEED governs hash randomization in spawned subprocesses.
     # The current interpreter's hash state was fixed at startup and is
     # NOT affected by this assignment — but DataLoader workers using the

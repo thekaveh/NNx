@@ -26,7 +26,7 @@ Saves NNRun + per-tag NNCheckpoint artifacts the same way
 NNModel.train() does, with an extra `trainer` block in run.yaml
 capturing the multi-optim config. Every checkpoint's training-state
 sidecar carries each named optimizer's and scheduler's state, the RNG and
-every registered component (FEAT-005), so
+every registered component, so
 ``NNTrainerParams(resume_from_run_id=...)`` (or
 ``NNTrainerParams.builder().resume_from(...)``) warm-resumes a
 multi-optimizer run where it stopped.
@@ -35,7 +35,6 @@ multi-optimizer run where it stopped.
 from __future__ import annotations
 
 import os
-import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Optional
@@ -50,9 +49,10 @@ from .._scheduler_clock import (
     SchedulerClock,
     component_name,
     planned_updates,
+    step_scheduler,
     uses_update_clock,
 )
-from .._update_engine import check_scaler_ownership
+from .._update_engine import check_scaler_ownership, warn_unowned_trainables
 from ..components import ComponentRegistry, ResumeStatus
 from ..history import HistoryJournal, _check_history, _dispatch_epoch_end, _training_history
 from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
@@ -201,12 +201,12 @@ def _warn_full_precision_objective(model: Any) -> None:
     otherwise. Say so when the flag asks for mixed precision where it would
     apply."""
     if getattr(model.params, "mixed_precision", False) and model.device.type == "cuda":
-        warnings.warn(
+        from ..nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             "Trainer.train(objective=...) runs in full precision: Trainer never applies the legacy "
             "mixed_precision=True (NNModel.train(objective=...) does); set "
             "NNModelParams.precision=PrecisionPolicy('fp16') to train the objective in fp16",
-            RuntimeWarning,
-            stacklevel=4,  # Trainer.train -> _trainer_precision -> here
         )
 
 
@@ -279,7 +279,24 @@ def _step_schedulers(scheds, val_edp, train_edp, *, epoch_idx: int, record: Opti
             if plateau_metric is not None:
                 sched.step(plateau_metric)
         else:
-            sched.step()
+            step_scheduler(sched)
+
+
+def _refuse_update_listeners(ctx: Any) -> None:
+    """Update-boundary listeners and ``ctx.stop_at_update`` are an
+    NNModel.train feature; under Trainer.train they would silently never
+    fire. Checked after each callback dispatch, so a late registration is
+    refused too."""
+    if ctx.stop_at_update:
+        raise ValueError(
+            "a callback set ctx.stop_at_update, which Trainer.train does not deliver: Trainer has no "
+            "update-boundary stop; set ctx.should_stop in on_epoch_end, or train with NNModel.train"
+        )
+    if ctx.update_listeners:
+        raise ValueError(
+            "a callback registered ctx.update_listeners, which Trainer.train does not deliver: use "
+            "Callback.on_optimizer_update, or train with NNModel.train"
+        )
 
 
 class Trainer:
@@ -317,24 +334,27 @@ class Trainer:
             params: NNTrainerParams — train_loader + n_epochs + optims dict +
                 (optional) schedulers dict + (optional) val_loader, seed,
                 save_phase_checkpoints, extra_metrics. Schedulers step once
-                per epoch by default; set auto_step_schedulers=False when the
+                per epoch by default (an ``optimizer_update``-clock scheduler
+                after each reported update); set auto_step_schedulers=False when the
                 custom step function owns scheduler timing.
             trainer_step_fn: `Callable[[TrainerStepContext],
                 NNEvaluationDataPoint]`. The function owns the entire per-batch
                 update — including which optimizers to step, in what order, and
                 with what loss(es). There is no supervised fallback: pass it or
                 ``objective``.
-            objective: an objective (FEAT-004, ``nnx.objectives``) in place of
+            objective: an objective (``nnx.objectives``) in place of
                 ``trainer_step_fn``: the shared update engine accumulates its
                 loss terms over each window (the optimizers'
                 ``accumulate_grad_batches``, which must agree), clips each
                 optimizer's parameters with its own ``grad_clip_norm`` and
-                steps every named optimizer once per committed update,
-                announcing each to ``Callback.on_optimizer_update``.
-            provenance: an optional ``nnx.provenance.ExperimentManifest``
-                (FEAT-019): the declared intent, recorded with a fresh
+                steps every named optimizer that holds gradients once per
+                committed update (an optimizer without gradients is not
+                stepped but still counts), announcing each to
+                ``Callback.on_optimizer_update``.
+            provenance: an optional ``nnx.provenance.ExperimentManifest``:
+                the declared intent, recorded with a fresh
                 attempt exactly as ``NNModel.train`` records it.
-            history: an optional ``nnx.history.HistoryJournal`` (FEAT-036):
+            history: an optional ``nnx.history.HistoryJournal``:
                 a bounded in-memory window and an append journal instead of
                 the eager list and ``idps.csv``, exactly as in
                 ``NNModel.train``.
@@ -347,7 +367,7 @@ class Trainer:
                 (model, net, train) configs run as distinct experiments
                 without altering modeled params. ``None`` (the default)
                 preserves existing run.id hashes exactly.
-            components: extra checkpointable components (FEAT-005);
+            components: extra checkpointable components;
                 callbacks and a step function that implement
                 :class:`~nnx.StatefulComponent` register automatically.
 
@@ -359,12 +379,29 @@ class Trainer:
 
         Raises:
             ValueError: when params is None, params.train_loader is None,
-                neither or both of trainer_step_fn and objective are given, or
-                any optim's NNOptimParams.is_valid() returns False.
+                neither or both of trainer_step_fn and objective are given,
+                any optim's NNOptimParams.is_valid() returns False, a
+                trainer_step_fn run sets grad_clip_norm or
+                accumulate_grad_batches, an objective run's optimizers share
+                a parameter, an objective run sets
+                auto_step_schedulers=False, or a callback registers update
+                listeners or sets ctx.stop_at_update.
+            RuntimeError: in a process group of more than one rank.
         """
-        # One owner per optimizer update, decided before anything else.
+        from ..distributed import _refuse_multi_rank
+
+        # The Trainer has no DDP path: under torchrun every rank would train
+        # its own copy into the same run directory.
+        _refuse_multi_rank("Trainer.train()")
+        # One owner per optimizer update, decided before anything else (so
+        # before any callback factory runs).
         _check_update_owner(trainer_step_fn, objective, step_name="trainer_step_fn")
         _check_provenance(provenance)
+        from ..nn.nn_model import _writer_owned_callbacks
+
+        # Without DDP, writer_only() callbacks are built now, so the history
+        # and monitor preflights see (and bind) the real callbacks.
+        callbacks = _writer_owned_callbacks(callbacks)
         _check_history(history, callbacks)
         if _recipe_transforms(self.model._topology_transforms):
             # FEAT-016: a recipe model's topology must be its base plus its
@@ -381,6 +418,28 @@ class Trainer:
                 "trainer_step_fn is required (or pass an objective) — Trainer has no default "
                 "supervised step because multi-optim updates are inherently "
                 "scenario-specific."
+            )
+        if trainer_step_fn is not None:
+            # A step function owns its updates: TrainerStepContext carries no
+            # clip norm or accumulation, so these knobs would silently do
+            # nothing (finalize_step refuses knobs it cannot apply the same way).
+            ignored = sorted(
+                name
+                for name, opt_params in params.optims.items()
+                if opt_params.grad_clip_norm is not None or opt_params.accumulate_grad_batches != 1
+            )
+            if ignored:
+                raise ValueError(
+                    f"optimizers {ignored} set grad_clip_norm or accumulate_grad_batches, which a trainer_step_fn "
+                    "never applies: clip / accumulate inside the step function, or train with an objective"
+                )
+        if objective is not None and not params.auto_step_schedulers:
+            # No step function exists to take the timing over: the schedules
+            # (every optimizer's default plateau scheduler included) would
+            # silently never step.
+            raise ValueError(
+                "auto_step_schedulers=False hands scheduler timing to a trainer_step_fn; an objective run has "
+                "none, so its schedulers would never step"
             )
         objective_window = _objective_window(params) if objective is not None else 1
         for name, opt_params in params.optims.items():
@@ -449,6 +508,10 @@ class Trainer:
             _check_objective_run(objective, self.model, optimizers=optimizers, callbacks=callbacks)
         if precision.uses_scaler:  # only an objective runs a reduced policy here
             check_scaler_ownership(optimizers)  # a shared parameter would be unscaled twice
+        elif objective is not None:
+            # Every committed window steps every optimizer: a shared
+            # parameter would take two updates per window.
+            check_scaler_ownership(optimizers, consequence="which each committed update would step twice")
         # The fp16 loss scaler, through the model's hook as NNModel.train builds
         # it, checked against the policy before any run is reserved.
         scaler = self.model._build_grad_scaler() if precision.uses_scaler else None
@@ -588,7 +651,12 @@ class Trainer:
         ctx.optimizers = optimizers
         ctx.trainer = self
         if engine is not None:
-            engine.listeners.append(lambda event: _dispatch_update(normalized_callbacks, ctx, event))
+
+            def _dispatch_and_refuse(event: Any) -> None:
+                _dispatch_update(normalized_callbacks, ctx, event)
+                _refuse_update_listeners(ctx)  # a stop or listener set at an update is refused there
+
+            engine.listeners.append(_dispatch_and_refuse)
             # After the callbacks, which see the learning rate the update was
             # taken with; each optimizer's clock then steps its schedule.
             engine.listeners.append(
@@ -632,7 +700,13 @@ class Trainer:
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
             _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
         ):
-            callback_lifecycle.start()
+            try:
+                callback_lifecycle.start()
+                _refuse_update_listeners(ctx)
+            except BaseException:
+                if rollback is not None:  # a resume loaded state: hand it back unchanged
+                    rollback()
+                raise
             # FEAT-005: reset hooks have run once; restore the validated
             # component states (all-or-nothing) before the first resumed epoch.
             if component_plan is not None:
@@ -649,12 +723,24 @@ class Trainer:
             ctx.run = run
             pre_transform_net_state: Optional[dict[str, Any]] = None
             pre_transform_rng_state: Optional[dict[str, Any]] = None
+            pre_transform_topologies: Optional[dict[str, Any]] = None
+            unowned_warned: set[str] = set()
             for local_epoch in range(params.n_epochs):
                 idx_epoch = start_epoch + local_epoch
                 ctx.epoch = idx_epoch
-                _set_loader_epoch(params.train_loader, idx_epoch)
-                for cb in normalized_callbacks:
-                    cb.on_epoch_begin(ctx)
+                try:
+                    _set_loader_epoch(params.train_loader, idx_epoch)
+                    for cb in normalized_callbacks:
+                        cb.on_epoch_begin(ctx)
+                    _refuse_update_listeners(ctx)
+                    warn_unowned_trainables(self.model.net, optimizers.values(), unowned_warned)
+                except BaseException:
+                    # Before the first batch nothing has trained: a resume's
+                    # loaded state goes back as it was (a warning raised as an
+                    # error included).
+                    if local_epoch == 0 and rollback is not None:
+                        rollback()
+                    raise
 
                 records.begin_epoch()
                 for clock in clocks.values():
@@ -772,13 +858,14 @@ class Trainer:
                     if clock.attached and clock.count == updates_before_epoch[name]
                 ]
                 if silent and engine is None:
-                    warnings.warn(
+                    from ..nn.callbacks import _warn_at_user_frame
+
+                    _warn_at_user_frame(
                         f"epoch {idx_epoch}: the step function reported no update for {silent}, whose "
                         "optimizer_update-clock schedulers therefore did not step; call ctx.report_update(name) "
                         "after each optimizer.step() the step function takes (no report is due for an epoch whose "
                         "updates were all skipped)",
                         UserWarning,
-                        stacklevel=4,
                     )
                 primary_clock = clocks.get(primary)
                 ctx.update_lrs = list(primary_clock.trace) if primary_clock is not None else []
@@ -788,6 +875,7 @@ class Trainer:
                 # ctx.idps: the running list, or the journal's window (the whole
                 # history, read back, for a callback declaring history_access="full").
                 _dispatch_epoch_end(normalized_callbacks, ctx, records)
+                _refuse_update_listeners(ctx)
 
                 # Prepare history (idps.csv, or the journal) before the
                 # checkpoint commit marker so a completed checkpoint can never
@@ -837,6 +925,11 @@ class Trainer:
             # convert modules as the finalizer exits), like NNModel.train.
             pre_transform_net_state = _snapshot_state_dict(self.model.net.state_dict())
             pre_transform_rng_state = _capture_rng_state(train_loader)
+            # The parameter names a resumed optimizer must match: before any
+            # train-end conversion renames them (NNModel.train does the same).
+            pre_transform_topologies = {
+                name: _optimizer_topology(opt, self.model.net) for name, opt in optimizers.items()
+            }
 
         # on_train_end callbacks run as the finalizer exits above and may
         # mutate the net (for example, by converting modules). Refresh LAST
@@ -857,7 +950,10 @@ class Trainer:
                 # FEAT-005: the final post-callback LAST generation keeps every
                 # named optimizer / scheduler and component, so a completed run
                 # resumes the continuous states.
-                **_named_training_state(self.model.net, optimizers, schedulers, optimizer_factories),
+                **{
+                    **_named_training_state(self.model.net, optimizers, schedulers, optimizer_factories),
+                    **({} if pre_transform_topologies is None else {"optimizer_topologies": pre_transform_topologies}),
+                },
                 rng_state=pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader),
                 completed_epoch=records.last.epoch_idx,
                 resume_net_state=pre_transform_net_state if keeps_pre_transform else None,
@@ -953,23 +1049,30 @@ class Trainer:
         net = self.model.net
         training_state = source.training_state
         if training_state is None:
-            _restore_weights_only(
+            loaded_from = _restore_weights_only(
                 net,
                 source,
                 train_loader,
                 params.resume_mode,
                 fresh="optimizer, scheduler, RNG and component state",
-                stacklevel=4,
             )
-            status = ResumeStatus(
-                mode="weights_only",
-                source_run_id=params.resume_from_run_id,
-                source_checkpoint=source.label,
-                source_epoch=source.checkpoint.idp.epoch_idx,
-                fresh_components=registry.names,
-                **_manifest_lineage(source.manifest),
-            )
-            return source.checkpoint.idp.epoch_idx + 1, None, status, None
+
+            def rollback_weights() -> None:
+                _rollback_resume(net, loaded_from[0], loaded_from[1], train_loader)
+
+            try:
+                status = ResumeStatus(
+                    mode="weights_only",
+                    source_run_id=params.resume_from_run_id,
+                    source_checkpoint=source.label,
+                    source_epoch=source.checkpoint.idp.epoch_idx,
+                    fresh_components=registry.names,
+                    **_manifest_lineage(source.manifest),
+                )
+            except BaseException:
+                rollback_weights()
+                raise
+            return source.checkpoint.idp.epoch_idx + 1, None, status, rollback_weights
 
         saved_optimizers = training_state["optimizers"]
         saved_schedulers = training_state.get("schedulers") or {}
@@ -1035,23 +1138,27 @@ class Trainer:
             net.load_state_dict(previous_net_state)
             _restore_rng_state(previous_rng_state, train_loader)
             raise
-        if warn_worker_rng:
-            warnings.warn(
-                "exact warm-resume continuity requires train_loader.num_workers=0; "
-                "worker-local RNG state cannot be reconstructed",
-                RuntimeWarning,
-                stacklevel=4,
-            )
 
         def rollback() -> None:
             _rollback_resume(net, previous_net_state, previous_rng_state, train_loader)
 
-        status = ResumeStatus(
-            mode="stateful",
-            source_run_id=params.resume_from_run_id,
-            source_checkpoint=source.label,
-            source_epoch=source.checkpoint.idp.epoch_idx,
-            fresh_components=tuple(component_plan.fresh),
-            **_manifest_lineage(source.manifest),
-        )
+        try:  # a warnings-as-errors filter raises here: hand the model back unchanged
+            if warn_worker_rng:
+                from ..nn.callbacks import _warn_at_user_frame
+
+                _warn_at_user_frame(
+                    "exact warm-resume continuity requires train_loader.num_workers=0; "
+                    "worker-local RNG state cannot be reconstructed",
+                )
+            status = ResumeStatus(
+                mode="stateful",
+                source_run_id=params.resume_from_run_id,
+                source_checkpoint=source.label,
+                source_epoch=source.checkpoint.idp.epoch_idx,
+                fresh_components=tuple(component_plan.fresh),
+                **_manifest_lineage(source.manifest),
+            )
+        except BaseException:
+            rollback()
+            raise
         return start_epoch, component_plan, status, rollback

@@ -1,10 +1,13 @@
 """Tests for GenerativeNNModel.generate() — greedy + sampling LM decoding.
 
 Covers:
-  * Deterministic greedy decoding matches a manually-computed continuation.
-  * Same-seed sampling reproducibility.
   * Logits processors (temperature, top-k, top-p, repetition penalty)
-    compose correctly.
+    against hand-computed logits, and their composition order.
+  * Greedy reproducibility, and KV-cache vs full-recompute parity of
+    outputs and per-step logits, including sliding-window overflow.
+  * Same-seed sampling reproducibility.
+  * ``stop`` strings, the ``max_new_tokens`` cap, the ``on_token``
+    callback, and training-mode restoration.
 """
 
 from __future__ import annotations
@@ -59,6 +62,24 @@ def _make_model(tokenizer: NNTokenizerParams) -> GenerativeNNModel:
     )
     model_params = NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
     return GenerativeNNModel(net_params=net_params, params=model_params, tokenizer=tokenizer)
+
+
+def _pick_stop_string(free_run: str, prompt: str = "the") -> str:
+    """Pick a stop string from an unconstrained greedy run so that it
+    first appears strictly before the run's last emitted word.
+
+    A ``stop=`` run that honours the string then decodes strictly fewer
+    tokens than the free run, which is what a stop test must observe.
+    A word that first appears after the first one is preferred, so the
+    incremental decode loop (not only the cached prefill step) is the
+    step that halts.
+    """
+    words = free_run[len(prompt) :].split()
+    assert len(words) > 1, f"fixture degenerate: free run {free_run!r} is too short to stop early"
+    for i in range(1, len(words) - 1):
+        if words[i] not in " ".join(words[:i]):
+            return words[i]
+    return words[0]
 
 
 # ---------------- LogitsProcessor unit tests ----------------
@@ -542,19 +563,16 @@ def test_generate_stop_string_halts_decoding(tmp_path):
     model = _make_model(tokenizer)
 
     free_run = model.generate(prompt="the", max_new_tokens=16, temperature=0.0)
-    continuation = free_run[len("the") :].strip()
-    assert continuation, "model emitted nothing; fixture is broken"
-    # Use the continuation's first token-ish chunk as the stop string.
-    stop_str = continuation.split()[0] if continuation.split() else continuation[:2]
+    stop_str = _pick_stop_string(free_run)
 
     for use_cache in (True, False):
         out = model.generate(prompt="the", max_new_tokens=16, temperature=0.0, stop=[stop_str], use_cache=use_cache)
-        assert stop_str in out
-        # Halted at (or before) the point the stop string appeared, so
-        # the stopped output is a prefix of the unconstrained run and
-        # strictly shorter than it whenever the stop fired early.
-        assert len(out) <= len(free_run)
+        # Halted on the token that completed the stop string: the
+        # output is a strict prefix of the unconstrained run, and the
+        # stop string occurs exactly once in the continuation.
         assert free_run.startswith(out)
+        assert len(out) < len(free_run), f"stop={stop_str!r} did not halt decoding (use_cache={use_cache})"
+        assert out[len("the") :].count(stop_str) == 1
 
 
 def test_kv_cache_speedup_at_long_context(tmp_path):
@@ -766,9 +784,7 @@ def test_generate_on_token_callback_fires_before_stop_halts(tmp_path):
     model = _make_model(tokenizer)
 
     free_run = model.generate(prompt="the", max_new_tokens=16, temperature=0.0)
-    continuation = free_run[len("the") :].strip()
-    assert continuation, "model emitted nothing; fixture is broken"
-    stop_str = continuation.split()[0] if continuation.split() else continuation[:2]
+    stop_str = _pick_stop_string(free_run)
 
     seen: list[int] = []
     model.generate(
@@ -778,11 +794,13 @@ def test_generate_on_token_callback_fires_before_stop_halts(tmp_path):
         stop=[stop_str],
         on_token=seen.append,
     )
-    # The callback saw at least one token, and decoding the captured
-    # tokens yields the continuation — which must contain the stop
+    # The callback saw at least one token but fewer than the cap (the
+    # stop halted decoding), and decoding the captured tokens yields
+    # the continuation — which must contain the stop
     # string, proving the triggering token was delivered to the
     # callback before the stop check halted decoding.
     assert seen, "callback never fired"
+    assert len(seen) < 16, f"stop={stop_str!r} did not halt decoding; on_token saw all {len(seen)} tokens"
     assert stop_str in tokenizer.decode(seen), (
         f"stop string {stop_str!r} not in decoded callback tokens; the triggering token was not delivered to on_token"
     )
@@ -861,7 +879,7 @@ def test_quantized_generative_model_can_generate(tmp_path):
     """FIX-017: quantizing a GenerativeNNModel must keep it a
     GenerativeNNModel — tokenizer shared, `generate` callable — with
     deterministic greedy output on both the cached and full-recompute
-    paths, at most `max_new_tokens` token callbacks, training mode
+    paths, exactly `max_new_tokens` token callbacks, training mode
     restored, and the FP32 source still generating independently."""
     pytest.importorskip("torchao")
     from nnx import quantize_int8
@@ -882,7 +900,7 @@ def test_quantized_generative_model_can_generate(tmp_path):
     quantized.net.train()
     cached = quantized.generate(prompt="the", max_new_tokens=3, temperature=0.0, on_token=emitted.append)
     assert quantized.net.training  # mode restored by the non-destructive helper
-    assert 1 <= len(emitted) <= 3
+    assert len(emitted) == 3  # no stop= and no EOS stopping: exactly max_new_tokens
     assert quantized.generate(prompt="the", max_new_tokens=3, temperature=0.0) == cached
     full = quantized.generate(prompt="the", max_new_tokens=3, temperature=0.0, use_cache=False)
     assert isinstance(full, str) and full == cached

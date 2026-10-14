@@ -311,6 +311,29 @@ def test_a_scaler_skipped_step_fires_no_success_hook():
         assert torch.equal(value, before[key]), key
 
 
+def test_every_named_optimizer_counts_a_committed_window():
+    """A committed window advances every optimizer's update count — one
+    whose parameters got no gradient (frozen) is not stepped, but its
+    update clock stays aligned with the others."""
+    model = _linear()
+    weight, bias = model.net.layers[0].weight, model.net.layers[0].bias
+    bias.requires_grad_(False)  # frozen for this window
+    before = bias.detach().clone()
+    events = []
+    bias_optimizer = torch.optim.SGD([bias], lr=0.1)
+    bias_steps = []
+    bias_optimizer.register_step_post_hook(lambda optimizer, args, kwargs: bias_steps.append(1))
+    engine = UpdateEngine(
+        optimizers={"weight": torch.optim.SGD([weight], lr=0.1), "bias": bias_optimizer},
+        listeners=[events.append],
+    )
+    _run_window(engine, supervised_objective(), model)
+    assert sorted(event.optimizer for event in events) == ["bias", "weight"]
+    assert engine.update_counts == {"weight": 1, "bias": 1} and engine.commits == 1
+    assert torch.equal(bias.detach(), before)  # counted, not changed
+    assert bias_steps == []  # not stepped: its step hooks never fire
+
+
 def _nan_objective(ctx):
     term = supervised_objective()(ctx).terms[0]
     return ObjectiveResult((LossTerm("loss", term.numerator * math.nan, term.denominator),))
@@ -723,3 +746,220 @@ def warnings_as_errors():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         yield
+
+
+def test_a_frozen_optimizers_schedule_advances_without_a_torch_warning():
+    """An optimizer frozen in its first window is not stepped, but its
+    schedule advances with the committed window: torch's "scheduler before
+    optimizer" warning would be misleading, so it is not shown."""
+    import warnings
+
+    from nnx._scheduler_clock import step_scheduler
+
+    model = _linear()
+    weight, bias = model.net.layers[0].weight, model.net.layers[0].bias
+    bias.requires_grad_(False)
+    bias_optimizer = torch.optim.SGD([bias], lr=0.1)
+    schedule = torch.optim.lr_scheduler.StepLR(bias_optimizer, step_size=1, gamma=0.5)
+    engine = UpdateEngine(
+        optimizers={"weight": torch.optim.SGD([weight], lr=0.1), "bias": bias_optimizer},
+        listeners=[lambda event: step_scheduler(schedule) if event.optimizer == "bias" else None],
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _run_window(engine, supervised_objective(), model)
+    assert bias_optimizer.param_groups[0]["lr"] == pytest.approx(0.05)
+
+
+def test_a_skipped_nonfinite_window_never_reaches_the_epoch_training_loss(tmp_path, monkeypatch):
+    """nonfinite="skip" drops a window from the update; the whole-epoch
+    training loss drops it too (it was NaN for the whole epoch)."""
+    from nnx.monitors import MonitorSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    calls = iter(range(100))
+
+    class SkipSecond:
+        nonfinite = "skip"
+
+        def __call__(self, ctx):
+            result = supervised_objective()(ctx)
+            return _nan_objective(ctx) if next(calls) == 1 else result
+
+    batches = [(X[:1], Y[:1]), (X[1:2], Y[1:2]), (X[2:], Y[2:])]
+    run = _linear().train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=batches,
+            optim=_sgd(1),
+            save_phase_checkpoints=False,
+            monitor=MonitorSpec(metric="loss", split="train", mode="min"),
+            data_id="skip-summary",
+        ),
+        objective=SkipSecond(),
+    )
+    summary = run.idps[-1].train_summary
+    assert summary is not None and summary.loss is not None and math.isfinite(summary.loss)
+
+
+def test_an_epoch_whose_every_window_is_dropped_has_a_nonfinite_loss(tmp_path, monkeypatch):
+    """Under "skip", an epoch that drops every window has a non-finite
+    whole-epoch loss (the monitor sees "nonfinite" and EarlyStopping counts
+    it), never a missing one that a diverged run trains through."""
+    from nnx.monitors import MonitorSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    class AllNaN:
+        nonfinite = "skip"
+
+        def __call__(self, ctx):
+            return _nan_objective(ctx)
+
+    run = _linear().train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=[(X, Y)],
+            optim=_sgd(1),
+            save_phase_checkpoints=False,
+            monitor=MonitorSpec(metric="loss", split="train", mode="min"),
+            data_id="all-dropped",
+        ),
+        objective=AllNaN(),
+    )
+    summary = run.idps[-1].train_summary
+    assert summary is not None and summary.loss is not None and math.isnan(summary.loss)
+    assert run.idps[-1].selection.status == "nonfinite"
+
+
+def test_a_finite_microbatch_in_a_dropped_window_is_left_out_of_the_epoch_loss(tmp_path, monkeypatch):
+    """The rule is per window: a finite microbatch sharing a window with a
+    non-finite one is dropped with it (it never reaches an update)."""
+    import torch.nn.functional as F
+
+    from nnx.monitors import MonitorSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    xs, ys = torch.tensor([[1.0], [2.0], [4.0], [1.0]]), torch.tensor([0, 1, 1, 0])
+    calls = iter(range(100))
+
+    class NaNSecond:
+        nonfinite = "skip"
+
+        def __call__(self, ctx):
+            result = supervised_objective()(ctx)
+            return _nan_objective(ctx) if next(calls) == 1 else result
+
+    model = _linear()
+    with torch.no_grad():  # window 1 is dropped, so window 2 sees the initial weights
+        expected = F.cross_entropy(model.net(xs[2:]), ys[2:]).item()
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=[(xs[i : i + 1], ys[i : i + 1]) for i in range(4)],
+            optim=_sgd(2),
+            save_phase_checkpoints=False,
+            monitor=MonitorSpec(metric="loss", split="train", mode="min"),
+            data_id="window-rule",
+        ),
+        objective=NaNSecond(),
+    )
+    assert run.idps[-1].train_summary.loss == pytest.approx(expected)
+
+
+def test_an_objective_whose_every_term_is_detached_is_refused(tmp_path, monkeypatch):
+    """A detached numerator trained nothing, yet the window counted as a
+    committed update (clocks, schedulers, listeners): refuse it."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def detached(ctx):
+        term = supervised_objective()(ctx).terms[0]
+        return ObjectiveResult((LossTerm("loss", term.numerator.detach(), term.denominator),))
+
+    with pytest.raises(ValueError, match="carry no gradient"):
+        _linear().train(
+            params=NNTrainParams(n_epochs=1, train_loader=[(X, Y)], optim=_sgd(1), save_phase_checkpoints=False),
+            objective=detached,
+        )
+
+
+def test_a_window_dropped_for_non_finite_gradients_is_left_out_of_the_epoch_loss(tmp_path, monkeypatch):
+    """Finite terms, non-finite gradients: the engine drops the window, and
+    so does the whole-epoch loss (the pre-commit term flag missed it)."""
+    import torch.nn.functional as F
+
+    from nnx.monitors import MonitorSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    xs, ys = torch.tensor([[1.0], [2.0]]), torch.tensor([0, 1])
+    calls = iter(range(100))
+
+    class InfGradFirst:
+        nonfinite = "skip"
+
+        def __call__(self, ctx):
+            return _inf_gradient_objective(ctx) if next(calls) == 0 else supervised_objective()(ctx)
+
+    model = _linear()
+    with torch.no_grad():  # window 1 is dropped, so window 2 sees the initial weights
+        expected = F.cross_entropy(model.net(xs[1:]), ys[1:]).item()
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=[(xs[i : i + 1], ys[i : i + 1]) for i in range(2)],
+            optim=_sgd(1),
+            save_phase_checkpoints=False,
+            monitor=MonitorSpec(metric="loss", split="train", mode="min"),
+            data_id="gradient-drop",
+        ),
+        objective=InfGradFirst(),
+    )
+    assert run.idps[-1].train_summary.loss == pytest.approx(expected)
+
+
+def test_trainer_refuses_a_stop_requested_at_an_update(tmp_path, monkeypatch):
+    """stop_at_update set in on_optimizer_update was ignored for the whole
+    epoch, then refused with advice to use the hook already in use."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    class StopAtUpdate(Callback):
+        calls = 0
+
+        def on_optimizer_update(self, ctx, event):
+            StopAtUpdate.calls += 1
+            ctx.stop_at_update = True
+
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(2)
+        .train_loader([(X[:1], Y[:1]), (X[1:2], Y[1:2]), (X[2:], Y[2:])])
+        .optimizer(
+            "weight",
+            NNOptimParams.builder()
+            .sgd(max_lr=0.1, momentum=0.0)
+            .param_groups([NNParamGroupSpec(name_pattern="layers.0.weight")])
+            .build(),
+        )
+        .optimizer(
+            "bias",
+            NNOptimParams.builder()
+            .sgd(max_lr=0.1, momentum=0.0)
+            .param_groups([NNParamGroupSpec(name_pattern="layers.0.bias")])
+            .build(),
+        )
+        .save_phase_checkpoints(False)
+        .build()
+    )
+    model = _linear()
+    before = model.net.layers[0].weight.detach().clone()
+    with pytest.raises(ValueError, match="should_stop in on_epoch_end"):
+        Trainer(model).train(params=params, objective=supervised_objective(), callbacks=[StopAtUpdate()])
+    # Refused at the first update event, not after the whole epoch.
+    assert StopAtUpdate.calls == 1
+    assert not torch.equal(model.net.layers[0].weight, before)

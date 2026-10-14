@@ -26,10 +26,10 @@ from .build_wiki import (
     _markdown_unescape,
     _parse_target,
     _split_destination,
+    block_reference_definitions,
     html_target_destinations,
     iter_html_targets,
     iter_inline_links,
-    iter_reference_definitions,
     iter_reference_usages,
     markdown_blocks,
     rewrite_markdown,
@@ -381,12 +381,13 @@ def validate_links(root: Path, surface: str) -> None:
         blocks = markdown_blocks(source_text)
         definitions: set[str] = set()
         definitions_by_block: dict[int, list] = {}
+        line_definitions = block_reference_definitions(blocks)
         for block_index, block in enumerate(blocks):
             if block.html_processable:
                 validate_html(source, block.text)
             if block.suppressed:
                 continue
-            block_definitions = list(iter_reference_definitions(block.text))
+            block_definitions = line_definitions.get(block_index, [])
             definitions_by_block[block_index] = block_definitions
             for definition in block_definitions:
                 if not definition.target:
@@ -466,6 +467,7 @@ def validate_repository_sources(root: Path, sources: list[Path], tracked_paths: 
         blocks = markdown_blocks(text)
         definitions: set[str] = set()
         definitions_by_block: dict[int, list] = {}
+        line_definitions = block_reference_definitions(blocks)
         for block_index, block in enumerate(blocks):
             if block.html_processable:
                 for target in iter_html_targets(block.text):
@@ -473,7 +475,7 @@ def validate_repository_sources(root: Path, sources: list[Path], tracked_paths: 
                         validate_destination(source, destination)
             if block.suppressed:
                 continue
-            block_definitions = list(iter_reference_definitions(block.text))
+            block_definitions = line_definitions.get(block_index, [])
             definitions_by_block[block_index] = block_definitions
             for definition in block_definitions:
                 if definition.target:
@@ -517,6 +519,65 @@ def validate_repository_docs() -> None:
         raise ValueError(f"tracked files in ignored documentation paths: {', '.join(sorted(tracked_ignored))}")
     sources = [page.source for page in _pages() if page.source.suffix == ".md" or page.source.name == "LICENSE"]
     validate_repository_sources(ROOT, sources, tracked)
+    for source in sources:
+        if source.suffix == ".md":
+            validate_list_markup(source, source.read_text(encoding="utf-8"))
+
+
+_LIST_ITEM = re.compile(r"^( *)(?:[-*+]|\d+[.)]) +\S")
+_FENCE = re.compile(r"^\s*(?:```|~~~)")
+
+
+def validate_list_markup(source: Path, text: str) -> None:
+    """Refuse list markup that GitHub renders as a list but the site's
+    Python-Markdown does not: a list started directly under a paragraph line
+    (it joins the paragraph), a nested item indented two or three spaces
+    (it flattens into its parent list), and a paragraph or fenced code block
+    after a blank line inside a list indented one to three spaces (it ends
+    the list, so later four-space items render as code)."""
+    problems: list[str] = []
+    block_start: int | None = None
+    fenced = False
+    in_list = False
+    after_blank = False
+    lines = text.splitlines()
+    for number, line in enumerate(lines, start=1):
+        indent = len(line) - len(line.lstrip(" "))
+        if _FENCE.match(line):
+            if not fenced and in_list and after_blank:
+                if indent == 0:
+                    in_list = False
+                elif indent < 4:
+                    problems.append(f"{source}:{number}: indent fenced code inside a list item four spaces")
+            fenced, block_start, after_blank = not fenced, None, False
+            continue
+        if fenced:
+            continue
+        if not line.strip():
+            block_start, after_blank = None, True
+            continue
+        item = _LIST_ITEM.match(line)
+        if in_list and after_blank and item is None:
+            if indent == 0:
+                in_list = False
+            elif indent < 4:
+                problems.append(f"{source}:{number}: indent a paragraph inside a list item four spaces")
+        after_blank = False
+        if block_start is None:
+            block_start = number
+        if item is None:
+            continue
+        in_list = True
+        first = lines[block_start - 1]
+        if number > block_start and not _LIST_ITEM.match(first) and not first.lstrip().startswith(("#", "|", "<", ">")):
+            problems.append(
+                f"{source}:{number}: a list item directly under a paragraph line needs a blank line before it"
+            )
+            block_start = number
+        if len(item.group(1)) in (2, 3):
+            problems.append(f"{source}:{number}: indent a nested list item four spaces")
+    if problems:
+        raise ValueError("list markup the site renders differently from GitHub:\n" + "\n".join(problems))
 
 
 class _EmbeddedCssParser(HTMLParser):
@@ -793,7 +854,8 @@ def _github_heading_slug(heading: str) -> str:
     kept = "".join(
         character for character in visible if character.isalnum() or character in "_- " or character.isspace()
     )
-    return re.sub(r"\s+", "-", kept)
+    # GitHub turns each space into a hyphen (no collapsing): "A & B" -> "a--b".
+    return re.sub(r"\s", "-", kept)
 
 
 def _anchors(source: Path, surface: str) -> set[str]:
@@ -812,12 +874,12 @@ def _anchors(source: Path, surface: str) -> set[str]:
 
     def add_heading(heading: str) -> None:
         slug = _github_heading_slug(heading)
-        duplicate_separator = "-" if surface == "wiki" else "_"
+        # GitHub (repository and wiki) numbers repeated headings "-1", "-2".
         suffix = counts.get(slug, 0)
-        candidate = slug if suffix == 0 else f"{slug}{duplicate_separator}{suffix}"
+        candidate = slug if suffix == 0 else f"{slug}-{suffix}"
         while candidate in generated_anchors:
             suffix += 1
-            candidate = f"{slug}{duplicate_separator}{suffix}"
+            candidate = f"{slug}-{suffix}"
         counts[slug] = suffix + 1
         generated_anchors.add(candidate)
         anchors.add(candidate)

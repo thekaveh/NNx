@@ -103,12 +103,13 @@ pip install "thekaveh-nnx[onnx-runtime]"        # ONNX Runtime CPU execution: nn
 pip install "thekaveh-nnx[quantize]"            # nnx.quantize_int8 (torchao PTQ INT8)
 pip install "thekaveh-nnx[hub]"                 # safetensors checkpoints + HuggingFace Hub publish/load
 pip install "thekaveh-nnx[embeddings]"          # nnx.embeddings: FAISS export + sentence-transformers
-pip install "thekaveh-nnx[lm]"                  # TransformerNN + HF tokenizer + generate()
+pip install "thekaveh-nnx[lm]"                  # HF BPE tokenizer (train_bpe, NNTokenizerParams) + datasets
 pip install "thekaveh-nnx[gguf-write]"          # experimental NNx GGUF writer
-pip install "thekaveh-nnx[viz]"                 # nnx.viz: summary + weight_histogram + activation_map + attribute + gradient_flow + netron_export
+pip install "thekaveh-nnx[viz]"                 # nnx.viz: summary + weight_histogram + activation_map + attribute + gradient_flow + netron_export (netron_export also needs [onnx])
 pip install "thekaveh-nnx[viz-interactive]"     # adds Netron browser viewer for nnx.viz.netron_export(launch=True)
 pip install "thekaveh-nnx[jev]"                 # nnx.decisions.JevProvider (hosted Jev models)
 pip install "thekaveh-nnx[optuna]"              # nnx.search: budgeted experiment search
+pip install "thekaveh-nnx[notebook]"            # IPython clear_output for legacy function callbacks in notebooks
 pip install "thekaveh-nnx[docs]"                # local documentation build toolchain
 ```
 
@@ -240,9 +241,10 @@ NNTrainParams(
 # Available on idp.train_edp.extra / idp.val_edp.extra and survives NNRun.load.
 
 # Declared metrics (labels / probabilities / continuous inputs, full-sample values)
-# and one monitor for BEST, ReduceLROnPlateau and EarlyStopping:
+# and one monitor for BEST, ReduceLROnPlateau and an EarlyStopping given it:
 monitor = MonitorSpec(metric="nll", min_delta=0.01)
 NNTrainParams(..., metrics=[MetricSpec("nll"), MetricSpec("brier")], monitor=monitor)
+# ... model.train(params, callbacks=[EarlyStopping(monitor=monitor, patience=5)])
 ```
 
 See [Concepts §6.4](https://github.com/thekaveh/NNx/blob/main/docs/concepts.md#64-named-metrics-and-monitors): custom metrics register with `nnx.register_metric`, training records carry a whole-epoch `train_summary` and the epoch's monitor `selection`, and named-monitor runs never claim `runs/best`.
@@ -308,7 +310,7 @@ The architecture separates user-facing orchestration, per-batch extension hooks,
 **Reading the diagram top-to-bottom (summary):**
 
 1. **User code** instantiates **`NNModel`** (supervised) or **`Trainer`** (multi-optimizer for GAN / actor-critic).
-2. The **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** hooks are the training extension bus. `diffusion`, `paradigms`, `quantize`, and `embeddings` provide hook-compatible factories that share one step-finalization helper. The other specialization packages compose around the loop without hooks: model transforms (`finetune`, `peft`, `prune`, `surgery`), exchange formats (`interop`), inference utilities (`generation`) and diagnostics (`viz`).
+2. The **`train_step_fn` / `eval_step_fn` / `trainer_step_fn`** hooks are the training extension bus. `diffusion`, `paradigms`, `quantize`, and `embeddings` provide hook-compatible factories; the diffusion, paradigm and embeddings steps share one step-finalization helper. The other specialization packages compose around the loop without hooks: model transforms (`finetune`, `peft`, `prune`, `surgery`), exchange formats (`interop`), inference utilities (`generation`) and diagnostics (`viz`).
 3. The **training-loop internals** run the per-batch step hook inside the data loop and save checkpoints once per completed epoch. Each scheduler steps once per completed epoch by default (`clock="epoch"`), or once per committed optimizer update with `NNSchedulerParams(clock="optimizer_update")`. Paradigm and diffusion step factories also apply a NaN guard and gradient clipping.
 4. The **Callback bus** fires `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end` to every registered listener (`EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`).
 5. After `on_epoch_end`, **`NNRun`** and **`NNCheckpoint`** commit durable state in order: history → LAST → phase/BEST → deferred callback checkpoints.

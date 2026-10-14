@@ -305,8 +305,8 @@ def optim_params_from_state(state: Mapping[str, Any]) -> AnyOptimParams:
 
     A ``factory`` entry is the discriminator for
     :class:`NNOptimFactoryParams`; anything else is a built-in
-    :class:`NNOptimParams` (every config written before factories
-    existed). Decoding never resolves or runs a factory.
+    :class:`NNOptimParams` (every config without a ``factory``
+    entry). Decoding never resolves or runs a factory.
     """
     if "factory" in state:
         return NNOptimFactoryParams.from_state(state)
@@ -395,7 +395,7 @@ def build_optimizer(
     if net is None:
         raise ValueError("net must not be None")
     if isinstance(params, NNOptimParams):
-        return params.name(
+        optimizer = params.name(
             net=net,
             lr_start=params.max_lr,
             momentum=params.momentum,
@@ -404,6 +404,7 @@ def build_optimizer(
             strict_param_groups=strict_param_groups,
             eps=params.eps,
         )
+        return _with_base_lr(optimizer, params.max_lr)
     if not isinstance(params, NNOptimFactoryParams):
         raise TypeError(f"expected NNOptimParams or NNOptimFactoryParams, got {type(params).__name__}")
     factory = resolve_optimizer_factory(params.factory)
@@ -414,7 +415,18 @@ def build_optimizer(
     # it may consume or mutate freely.
     expected = {id(param) for group in groups for param in group["params"]}
     result = factory(groups, params.factory.config)
-    return _check_factory_result(result, expected, net, params.factory)
+    return _with_base_lr(_check_factory_result(result, expected, net, params.factory), params.max_lr)
+
+
+BASE_LR_ATTRIBUTE = "_nnx_base_lr"
+
+
+def _with_base_lr(optimizer: torch.optim.Optimizer, max_lr: float) -> torch.optim.Optimizer:
+    """Record the config's base LR (``max_lr``, the default group's rate
+    that ``NNParamGroupSpec`` multipliers are relative to) on the optimizer:
+    a factory's ``defaults["lr"]`` is its class default, not the run's."""
+    setattr(optimizer, BASE_LR_ATTRIBUTE, float(max_lr))
+    return optimizer
 
 
 def optimizer_factory_state(params: AnyOptimParams) -> Optional[dict[str, Any]]:

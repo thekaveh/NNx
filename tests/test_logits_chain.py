@@ -7,6 +7,7 @@ test_generative_nn_model.py (which gates on the `lm` extra).
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from nnx.generation.logits_chain import LogitsChain
@@ -126,3 +127,31 @@ def test_chain_apply_passes_token_history_to_custom_processor():
     assert rec.seen_histories == [history], (
         f"Expected custom processor to receive token_history={history!r}, got {rec.seen_histories!r}"
     )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_non_finite_decoding_settings_are_refused(value):
+    """NaN compares False to every bound: without an explicit check a NaN
+    penalty made the most-penalized token win every draw."""
+    from nnx.generation.logits_processors import RepetitionPenalty, TemperatureScaling
+
+    with pytest.raises(ValueError, match="finite"):
+        TemperatureScaling(value)
+    with pytest.raises(ValueError, match="finite"):
+        RepetitionPenalty(value)
+
+
+def test_greedy_refuses_custom_processors_it_would_corrupt():
+    """temperature(0.0) turns logits into ±inf argmax markers: a later
+    token ban would leave all -inf (an arbitrary token) and a bias would be
+    ignored, so build() refuses the pair."""
+    from nnx.generation.logits_chain import LogitsChainBuilder
+
+    def ban(logits, history):
+        out = logits.clone()
+        out[..., 2] = -float("inf")
+        return out
+
+    with pytest.raises(ValueError, match="OrderedLogitsPipeline"):
+        LogitsChainBuilder().temperature(0.0).custom(ban).build()
+    LogitsChainBuilder().temperature(0.7).custom(ban).build()  # sampling keeps custom stages

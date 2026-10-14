@@ -1,4 +1,4 @@
-"""Immutable fluent experiment plans (FEAT-012).
+"""Immutable fluent experiment plans.
 
 An :class:`ExperimentPlan` holds one experiment's configuration — the
 network parameters (``NNParams``), the model parameters (``NNModelParams``),
@@ -155,9 +155,9 @@ class SplitMetrics:
     ``loss`` / ``error`` / classification fields, the declared ``metrics``
     and the ``extra_metrics`` as ``extra/<name>``, skipping any that were
     not recorded (a non-finite value is kept). A declared metric named like
-    a classification field (``f1``, ``accuracy``, ...) holds that name — the
-    value a monitor on it compares, and the one the logging callbacks write
-    last; the record's own field stays on ``run.idps``. A whole-epoch training
+    a classification field (``f1``, ``accuracy``, ...) appears as
+    ``metrics/<name>`` beside the record's own field, as the loggers write
+    it; a monitor on that name compares the declared value. A whole-epoch training
     summary carries the declared metrics but not the extra metrics, which
     the loop computes per batch (``run.idps`` has them).
     """
@@ -598,15 +598,22 @@ class ExperimentPlan:
             report("train", f"must be NNTrainParams, got {type(self.train).__name__}")
             return None
         train = self.train
-        from .optimizers import NNOptimFactoryParams
+        from .optimizers import NNOptimFactoryParams, resolve_optimizer_factory
 
         if not isinstance(train.optim, (NNOptimParams, NNOptimFactoryParams)) or not train.optim.is_valid():
             report(
                 "train.optim",
                 f"is not a valid optimizer configuration (NNOptimParams or NNOptimFactoryParams): {train.optim!r}",
             )
+        elif isinstance(train.optim, NNOptimFactoryParams):
+            try:  # a registry lookup, as train() makes before reserving a run
+                resolve_optimizer_factory(train.optim.factory)
+            except (KeyError, ValueError) as exc:
+                report("train.optim", str(exc))
         if not isinstance(train.scheduler, NNSchedulerParams):
             report("train.scheduler", f"must be NNSchedulerParams, got {type(train.scheduler).__name__}")
+        else:
+            self._check_update_budget(train.scheduler, report)
         if train.overwrite_existing:
             report(
                 "train.overwrite_existing",
@@ -919,11 +926,24 @@ class ExperimentPlan:
             and isinstance(self.model.loss, Losses)
         )
 
+    def _check_update_budget(self, scheduler: NNSchedulerParams, report: Callable[[str, str], None]) -> None:
+        """train()'s refusal of an optimizer_update-clock scheduler without
+        its budget: NNx plans the updates only when it owns the update
+        windows over a loader with a length. A data factory's loader is
+        checked when fit() calls it."""
+        source = self._sources(self.train)[0]
+        loader = _UNKNOWN_LOADER if source is None or _is_factory(source) else source
+        problem = _update_budget_problem(scheduler, self.train_step_fn, loader)
+        if problem is not None:
+            report("train.scheduler", problem)
+
     @property
     def _default_step(self) -> bool:
         """Whether NNx's default training step runs (no step function or
         objective of the plan's own)."""
-        return self.train_step_fn is None and self.objective is None
+        from .nn.nn_model import default_train_step
+
+        return self.objective is None and self.train_step_fn in (None, default_train_step)
 
     def _seed(self) -> Optional[int]:
         if self.seed is not None:
@@ -969,8 +989,8 @@ class ExperimentPlan:
 
     def probe(self, example_batch: Any) -> ProbeResult:
         """Build a temporary model and run one forward pass on
-        ``example_batch`` under ``torch.no_grad()`` in eval mode, plus the
-        loss when the batch has a target (``None`` for an all-masked task
+        ``example_batch`` under ``torch.no_grad()`` in eval mode, plus a
+        train-mode pass for the loss when the batch has a target (``None`` for an all-masked task
         batch, which the default step records no loss for either).
 
         Effectful but restored: the plan's seed is applied first, and
@@ -1093,6 +1113,10 @@ class ExperimentPlan:
         _check_made(sources, loaders, made)
         made_found: list[Diagnostic] = []
         assert isinstance(self.train, NNTrainParams)
+        if _is_factory(sources[0]):  # the update budget a factory's loader decides
+            problem = _update_budget_problem(self.train.scheduler, self.train_step_fn, loaders[0])
+            if problem is not None:
+                made_found.append(Diagnostic("train.scheduler", problem))
         self._check_callback_monitors(
             lambda path, message: made_found.append(Diagnostic(path, message)),
             self.train,
@@ -1183,6 +1207,37 @@ def _is_callback(value: Any) -> bool:
     if isinstance(value, functools.partial) and isinstance(value.func, type):
         return False  # functools.partial(EarlyStopping, ...) builds a callback: a factory
     return _binds(value, object(), unknown=True) and not _takes_no_arguments(value)  # it needs the history
+
+
+_UNKNOWN_LOADER = object()
+
+
+def _update_budget_problem(scheduler: Any, train_step_fn: Any, loader: Any) -> Optional[str]:
+    """Why train() would refuse ``scheduler``'s missing update budget, if it would."""
+    from ._scheduler_clock import uses_update_clock
+    from .nn.enum.schedulers import Schedulers
+    from .nn.nn_model import default_train_step
+
+    if not isinstance(scheduler, NNSchedulerParams) or not uses_update_clock(scheduler) or scheduler.kind is None:
+        return None
+    field = {
+        Schedulers.STEP: "step_size",
+        Schedulers.COSINE_ANNEALING: "T_max",
+        Schedulers.ONE_CYCLE: "total_steps",
+        Schedulers.LINEAR_WARMUP_DECAY: "total_steps",
+    }.get(scheduler.kind)
+    if field is None or getattr(scheduler, field) is not None:
+        return None
+    needs = f"an optimizer_update-clock {scheduler.kind} scheduler needs an explicit {field}"
+    if train_step_fn not in (None, default_train_step):
+        return f"{needs}: NNx plans the updates only when it owns the update windows (the default step or an objective)"
+    if loader is _UNKNOWN_LOADER:
+        return None
+    try:
+        len(loader)
+    except TypeError:
+        return f"{needs}: NNx plans the updates only over a training loader with a length"
+    return None
 
 
 def _check_made(sources: tuple[Any, Any], loaders: list[Any], callbacks: list[Any]) -> None:

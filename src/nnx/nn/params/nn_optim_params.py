@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import ast
+import numbers
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Union
 
-from ..._validation import require_count, require_finite_real
+from ..._validation import plain_real, require_count, require_finite_real
 from ..enum.optims import Optims
 from .nn_params import _ImmutableList
 
@@ -91,6 +92,10 @@ def _validate_optim_scalars(obj: Any, owner: str) -> None:
         minimum=0.0,
         domain_message=f"weight_decay must be non-negative, got {weight_decay} (use 0 to disable).",
     )
+    # NumPy scalars become plain floats, so state() serializes (run.yaml).
+    for name in ("max_lr", "weight_decay", "grad_clip_norm"):
+        if getattr(obj, name) is not None:
+            object.__setattr__(obj, name, plain_real(getattr(obj, name)))
 
 
 def _validate_optim_param_groups(obj: Any) -> None:
@@ -144,8 +149,10 @@ class NNOptimParams:
     transformers, 5.0 for RNNs.
 
     `accumulate_grad_batches` enables gradient accumulation — the effective
-    batch size becomes batch_size * accumulate_grad_batches. The loss is
-    scaled by 1/N so the accumulated gradient is the mean across N batches.
+    batch size becomes batch_size * accumulate_grad_batches. Each update
+    averages the loss over every valid sample in the window (sum of
+    numerators over sum of denominators), so uneven or partial windows give
+    the full-batch gradient.
     Default 1 (back-compat: step every batch).
 
     `param_groups` enables per-layer-group LR / weight_decay overrides — the
@@ -167,6 +174,8 @@ class NNOptimParams:
     eps: float = _ADAM_EPS_DEFAULT
 
     def __post_init__(self):
+        if not isinstance(self.name, Optims):  # a string failed only when the optimizer was built
+            raise TypeError(f"NNOptimParams.name must be an Optims member, got {self.name!r}")
         _validate_optim_scalars(self, "NNOptimParams")
         # Adam betas in [0, 1); SGD momentum >= 0 (FIX-020).
         if isinstance(self.momentum, tuple):
@@ -180,6 +189,15 @@ class NNOptimParams:
                 )
         else:
             require_finite_real(self.momentum, "momentum", owner="NNOptimParams", minimum=0.0)
+            if self.name is Optims.SGD_NESTEROV and not self.momentum > 0:
+                # torch refuses Nesterov without momentum, but only when train() builds it.
+                raise ValueError(f"NNOptimParams SGD_NESTEROV requires momentum > 0, got {self.momentum!r}")
+        momentum = self.momentum
+        object.__setattr__(
+            self,
+            "momentum",
+            tuple(plain_real(beta) for beta in momentum) if isinstance(momentum, tuple) else plain_real(momentum),
+        )
         # eps is the Adam-family denominator term: finite and > 0, and
         # rejected on SGD variants rather than silently ignored.
         eps = require_finite_real(self.eps, "eps", owner="NNOptimParams", minimum=0.0, exclusive_min=True)
@@ -243,14 +261,15 @@ class NNOptimParams:
         )
 
     def is_valid(self) -> bool:
+        # Any real number (an int 0 included) that __post_init__ accepted;
+        # the stored value is kept as given so run ids never shift.
+        def real(x: object) -> bool:
+            return isinstance(x, numbers.Real) and not isinstance(x, bool)
+
         if self.name in _SGD_FAMILY:
-            return isinstance(self.momentum, float)
+            return real(self.momentum)
         if self.name in _ADAM_FAMILY:
-            return (
-                isinstance(self.momentum, tuple)
-                and len(self.momentum) == 2
-                and all(isinstance(x, float) for x in self.momentum)
-            )
+            return isinstance(self.momentum, tuple) and len(self.momentum) == 2 and all(real(x) for x in self.momentum)
         # Unknown enum variant — refuse rather than implicitly returning None
         # (which would short-circuit `not params.optim.is_valid()` in train()).
         return False

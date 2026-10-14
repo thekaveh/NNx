@@ -119,7 +119,7 @@ def _net_rows(net: Optional[NNParams], descriptor: object) -> list[tuple[str, st
             ("dropout", str(net.dropout_prob)),
             ("activation", str(net.activation)),
         ]
-    return [(key, html.escape(value)) for key, value in _descriptor_fields(descriptor)]
+    return list(_descriptor_fields(descriptor))  # escaped with every row
 
 
 def _descriptor_fields(descriptor: object) -> list[tuple[str, str]]:
@@ -130,7 +130,11 @@ def _descriptor_fields(descriptor: object) -> list[tuple[str, str]]:
     kind = str(fields.pop("kind", ""))
     rows = [("kind", kind)]
     if kind == "registered":
-        rows += [("config", json.dumps(fields.get("config", {}), sort_keys=True)), ("seed", str(fields.get("seed")))]
+        rows += [
+            ("factory", f"{fields.get('id')}@v{fields.get('version')}"),  # what selects the architecture
+            ("config", json.dumps(fields.get("config", {}), sort_keys=True)),
+            ("seed", str(fields.get("seed"))),
+        ]
     else:
         rows += [("module", str(fields.get("module"))), ("reconstructible", "False")]
     return rows
@@ -264,7 +268,9 @@ def _release_empty_reservation(run_path: str) -> None:
         return
     # Provenance files (FEAT-019) are reservation bookkeeping too: an attempt
     # that failed before its first committed epoch leaves nothing behind.
-    bookkeeping = (_HISTORY_PROTOCOL_FILE, _PROVENANCE_MANIFEST_FILE, _PROVENANCE_ATTEMPT_FILE)
+    bookkeeping = (_HISTORY_PROTOCOL_FILE, _PROVENANCE_MANIFEST_FILE, _PROVENANCE_ATTEMPT_FILE, ".run.lock")
+    # ".run.lock" is NNRun.save's lock: a first save that failed before
+    # writing any run file leaves only it behind.
     temps = tuple(f".{name}." for name in bookkeeping)
     entries = os.listdir(run_path)
     # A history journal (FEAT-036) written before the first run.yaml holds no
@@ -345,9 +351,11 @@ def _committed_epoch(run_id: str, run_path: str, root: Optional[str]) -> Optiona
 
 def _read_idps_csv(csv_path: str, *, exact: bool = True) -> list[NNIterationDataPoint]:
     """Every record of an ``idps.csv``, its floats parsed round-trip, so a
-    loaded run's history equals the trained run's bit for bit (``to_csv``
-    writes each float's shortest round-trip repr; pandas' default parser
-    misreads about one in five by one ULP). ``exact=False`` is that default
+    loaded run's finite values equal the trained run's bit for bit
+    (``to_csv`` writes each float's shortest round-trip repr; pandas'
+    default parser misreads about one in five by one ULP). A NaN cell reads
+    back as absent: ``None``, a dropped ``extra`` / ``metrics`` key, or no
+    record when every value was NaN. ``exact=False`` is that default
     parser."""
     try:
         # "round_trip" is accepted by every supported pandas, though pandas 2.x
@@ -598,6 +606,10 @@ def _load_precision(metadata: Optional[Mapping[str, Any]]) -> Optional[ResolvedP
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNRun:
+    """A training run: its network, training and model parameters, its id
+    and its persisted history and checkpoints under ``runs/<id>/``. Load
+    one with `NNRun.load`."""
+
     # Built-in nets only; ``None`` for a registered or runtime module
     # (FEAT-006), whose descriptor is ``model.net``.
     net: Optional[NNParams]
@@ -738,7 +750,7 @@ class NNRun:
         """HTML table of the canonical run config (subset of state())."""
         rows = [
             ("run.id", self.id),
-            ("net", html.escape(str(self.model.net))),
+            ("net", str(self.model.net)),
             ("device", str(self.model.device)),
             ("loss", str(self.model.loss)),
             *([("task", str(self.model.task))] if self.model.task is not None else []),
@@ -747,9 +759,11 @@ class NNRun:
             ("optim", f"{_optim_label(self.train.optim)} (max_lr={self.train.optim.max_lr})"),
             *self._monitoring_rows(),
         ]
+        # Every value is escaped: a registered factory's config or a
+        # descriptor is user data, never markup.
         rows_html = "".join(
-            f'<tr><td style="padding:2px 8px;font-weight:600;">{k}</td>'
-            f'<td style="padding:2px 8px;font-family:monospace;">{v}</td></tr>'
+            f'<tr><td style="padding:2px 8px;font-weight:600;">{html.escape(k)}</td>'
+            f'<td style="padding:2px 8px;font-family:monospace;">{html.escape(v)}</td></tr>'
             for k, v in rows
         )
         return f'<table style="border-collapse:collapse;border:1px solid #ddd;margin-bottom:8px;">{rows_html}</table>'
@@ -945,10 +959,9 @@ class NNRun:
         never written — e.g. runs trained with
         ``save_phase_checkpoints=False`` write only LAST and BEST.
 
-        BEST is deliberately excluded: it duplicates whichever phase
-        checkpoint won, so including it would double-count. Load it
-        directly via ``NNCheckpoint.load(run=run.id,
-        type=Checkpoints.BEST)``.
+        BEST is not a cadence checkpoint, so it is not in this list (its
+        epoch is often none of the phase epochs). Load it directly via
+        ``NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)``.
         """
         return [
             NNCheckpoint.load(run=self.id, type=Checkpoints.FIRST, root=root),
@@ -1061,14 +1074,18 @@ class NNRun:
                 if winner != current:
                     _publish_best(runs_root, best_run_path, winner)
                 return
-            best_ckpt = NNCheckpoint.load(run=current, type=Checkpoints.BEST, root=root)
-            if _best_err(mine) < _best_err(best_ckpt):
+            # The incumbent's files may be damaged: an ineligible incumbent
+            # is skipped as the election skips it, never fatal to this run.
+            best_ckpt = _committed_best_checkpoint(runs_root, current, root)
+            if best_ckpt is None:
+                _publish_best(runs_root, best_run_path, _elect_best(runs_root, root, prefer=self.id))
+            elif _best_err(mine) < _best_err(best_ckpt):
                 _point_best(best_run_path, run_path)
 
     @staticmethod
     def load(id: str, root: Optional[str] = None) -> NNRun:
         """Load a saved run. Its history is ``idps.csv`` read whole — or, for
-        a run with a history journal (FEAT-036), the journal's committed tail:
+        a run with a history journal, the journal's committed tail:
         the last ``retention`` records, from the chunks that hold them. Either
         way records past the LAST checkpoint's epoch are left out."""
         return NNRun._load(id, root)

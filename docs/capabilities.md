@@ -1,4 +1,4 @@
-# 26. Capability reference
+# 17. Capability reference
 
 This page lists the main capabilities of NNx, grouped by task. Each entry names
 its entry points and links to the guide or example that shows it. It describes
@@ -22,7 +22,7 @@ first trained model, see the [README](../README.md#2-install) and the
 - **Metrics and monitors.** `NNTrainParams.extra_metrics` accepts any
   `callable(y_true, y_pred) -> float`. Declared metrics (`MetricSpec`) and one
   named monitor (`MonitorSpec`) drive BEST selection, plateau scheduling and
-  early stopping together.
+  an `EarlyStopping` given the same monitor.
 - **Objectives.** `LossTerm`s with explicit denominators run over one shared
   update engine, which gives accumulation, clipping and the precision policy to
   `NNModel` and `Trainer` alike. Built-in objectives: `supervised_objective`,
@@ -74,8 +74,9 @@ first trained model, see the [README](../README.md#2-install) and the
   `runs/<id>/history/`, with lazy tail reads and CSV export.
 - **Experiment plans.** An immutable `ExperimentPlan` branches a configuration
   (`with_epochs`, `with_seed`, `with_data`, ...). `validate()` reports every
-  problem without reading data, `probe(batch)` runs one forward pass and
-  restores the ambient state, and `fit()` trains a distinct attempt. See
+  problem without reading data. `probe(batch)` runs an eval-mode no-grad
+  forward pass, plus a train-mode loss pass when the batch has a target. It
+  then restores the ambient state. `fit()` trains a distinct attempt. See
   `examples/experiment_plan.py`.
 - **Budgeted search** (`optuna` extra). `nnx.search.search(plan, space, ...)`
   runs a sequential Optuna study over an experiment plan; each trial fits a new
@@ -144,14 +145,15 @@ clipping.
   rates through `NNOptimParams.param_groups`.
 - **Parameter-efficient fine-tuning.** `nnx.peft` provides LoRA, DoRA, IA3,
   prefix tuning, prompt tuning and adapter layers. Each `save_*_weights`
-  function saves only the trainable delta. LoRA starts from the pretrained
+  function saves only the trainable delta (DoRA's `magnitude` needs the full
+  `state_dict()`). LoRA starts from the pretrained
   behavior because its second factor is zero-initialized.
 - **Quantization** (`quantize` extra). `nnx.quantize.quantize_int8(model)`
   applies torchao INT8 weight-only post-training quantization without
   calibration data and returns the same model class. QAT 8da4w uses
   `qat_train_step_factory` with `QATLifecycleCallback`.
-- **Pruning.** `nnx.prune.magnitude_prune` applies checkpoint-safe
-  unstructured masks; `semi_structured_24` applies 2:4 sparsity through
+- **Pruning.** `nnx.prune.magnitude_prune` applies unstructured masks,
+  baked into checkpoint-safe weights by default; `semi_structured_24` applies 2:4 sparsity through
   torchao.
 - **Model surgery.** `nnx.surgery` provides `widen` and `deepen`
   (function-preserving Net2Net edits on validated topologies), `drop_layer`,
@@ -170,10 +172,11 @@ clipping.
   next-token objective and evaluation for a `TransformerNN`, reporting token
   NLL, perplexity and accuracy. See
   [Quickstart §3.6](quickstart.md#36-causal-language-models).
-- **Language modeling** (`lm` extra). `TransformerNN` is a decoder-only model
-  with RMSNorm, RoPE, SwiGLU, tied embeddings and a KV cache.
+- **Language modeling.** `TransformerNN` is a decoder-only model with
+  RMSNorm, RoPE, SwiGLU, tied embeddings and a KV cache.
   `GenerativeNNModel.generate()` supports greedy, top-k, top-p and
-  repetition-penalty sampling. See [Language modeling](lm.md).
+  repetition-penalty sampling. The `lm` extra adds the BPE tokenizer. See
+  [Language modeling](lm.md).
 - **KV-cache scope.** A CPU regression test requires cached decoding to be at
   least 1.2× faster than full recomputation for its fixed 256-token workload.
   Results on other hardware and workloads vary. Past `max_seq_len`, the cache
@@ -245,9 +248,9 @@ clipping.
 - **Learning-rate finder** (`plots` extra). `nnx.lr_finder` runs an
   exponential sweep, suggests a one-cycle `max_lr` and restores the model and
   RNG state afterwards.
-- **Run plots** (`plots` extra). `VisUtils` returns Plotly figures: confusion
-  matrix, classification report, line and scatter plots, and t-SNE of
-  checkpoint logits.
+- **Run plots** (`plots` extra). `VisUtils` returns Plotly figures (confusion
+  matrix, line and scatter plots, t-SNE of checkpoint logits) and a
+  classification-report DataFrame.
 - **Model internals** (`viz` extra). `nnx.viz` provides `summary`,
   `weight_histogram`, `activation_map`, `attribute` (Captum), `gradient_flow`
   and `netron_export`, which also needs the `onnx` extra.

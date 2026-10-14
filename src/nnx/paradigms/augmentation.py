@@ -19,11 +19,19 @@ Requires 4D ``(B, C, H, W)`` image tensors; raises on lower-rank input.
 
 from __future__ import annotations
 
-import numpy as np
+import math
+
 import torch
 
-from .._step_helpers import finalize_step
-from ..nn.nn_model import TrainStepContext, TrainStepFn, _loss_input, _single_input_batch
+from .._step_helpers import finalize_step, imperative_step, predicted_labels, require_row_logits
+from ..nn.nn_model import (
+    TrainStepContext,
+    TrainStepFn,
+    _check_scorable_target,
+    _classification_metric_tensors,
+    _loss_input,
+    _single_input_batch,
+)
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
 
@@ -41,11 +49,21 @@ def _unpack_supervised(ctx: TrainStepContext) -> tuple[torch.Tensor, torch.Tenso
     return _single_input_batch(ctx.model, ctx.batch, who="mixup / cutmix")
 
 
-def _weighted_acc(Y_hat: torch.Tensor, Y_a: torch.Tensor, Y_b: torch.Tensor, lam: float) -> float:
+def _weighted_acc(
+    loss_fn: torch.nn.Module, Y_hat: torch.Tensor, Y_a: torch.Tensor, Y_b: torch.Tensor, lam: float
+) -> float:
     """Lam-weighted accuracy — Mixup's standard "fractional correctness"
     metric. Useful as an ``error`` signal even though it's not a
-    standard top-1 accuracy."""
-    return float(lam * (Y_hat == Y_a).float().mean().item() + (1.0 - lam) * (Y_hat == Y_b).float().mean().item())
+    standard top-1 accuracy. Targets are read as the default step reads
+    them (probability / soft targets, ignored rows)."""
+
+    def accuracy(target: torch.Tensor) -> float:
+        scored_target, scored_prediction = _classification_metric_tensors(loss_fn, target, Y_hat)
+        if scored_target.numel() == 0:
+            return 0.0
+        return float((scored_prediction == scored_target).float().mean().item())
+
+    return lam * accuracy(Y_a) + (1.0 - lam) * accuracy(Y_b)
 
 
 def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
@@ -67,13 +85,13 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
     Raises:
         ValueError: if ``alpha`` <= 0.
     """
-    if alpha <= 0:
-        raise ValueError(f"alpha must be positive, got {alpha}")
-    # Seed from the torch RNG so set_seed(...) controls the lambda draws
-    # (and CutMix boxes): a bare default_rng() self-seeds from OS entropy
-    # and ignores the run's reproducibility contract. Drawing the seed
-    # through torch also keeps two factories' streams distinct.
-    rng = np.random.default_rng(int(torch.randint(0, 2**31 - 1, (1,)).item()))
+    if not math.isfinite(alpha) or alpha <= 0:
+        raise ValueError(f"alpha must be positive and finite, got {alpha}")
+    # Lambda (and the CutMix box) come from torch's global RNG at step time,
+    # like the batch permutation: NNTrainParams.seed controls them, and a
+    # stateful resume restores that stream, so a split run continues the
+    # uninterrupted one.
+    beta = torch.distributions.Beta(torch.tensor(float(alpha)), torch.tensor(float(alpha)))
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
@@ -83,19 +101,21 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
         X, Y = _unpack_supervised(ctx)
         B = X.shape[0]
 
-        lam = float(rng.beta(alpha, alpha))
+        lam = float(beta.sample())
         perm = torch.randperm(B, device=m.device)
         X_mixed = lam * X + (1.0 - lam) * X[perm]
         Y_a = Y
         Y_b = Y[perm]
 
         Y_hat_logits = m._net_forward((X_mixed,), {})
+        require_row_logits(Y_hat_logits, "mixup")
         loss_input = _loss_input(m.loss_fn, Y_hat_logits)
         loss = lam * m.loss_fn(loss_input, Y_a) + (1.0 - lam) * m.loss_fn(loss_input, Y_b)
+        _check_scorable_target(m.loss_fn, Y, paradigm="mixup")  # before the update
         loss_val = finalize_step(loss, ctx, paradigm="mixup")
 
-        Y_hat = Y_hat_logits.argmax(dim=-1)
-        acc = _weighted_acc(Y_hat, Y_a, Y_b, lam)
+        Y_hat = predicted_labels(m.loss_fn, Y_hat_logits)
+        acc = _weighted_acc(m.loss_fn, Y_hat, Y_a, Y_b, lam)
         return NNEvaluationDataPoint(
             f1=0.0,
             recall=0.0,
@@ -105,7 +125,7 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
             error=float(1.0 - acc),
         )
 
-    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
+    return full_precision_only(imperative_step(step, paradigm="mixup"))  # finalize_step: full precision
 
 
 def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
@@ -125,13 +145,13 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
     Raises:
         ValueError: if ``alpha`` <= 0.
     """
-    if alpha <= 0:
-        raise ValueError(f"alpha must be positive, got {alpha}")
-    # Seed from the torch RNG so set_seed(...) controls the lambda draws
-    # (and CutMix boxes): a bare default_rng() self-seeds from OS entropy
-    # and ignores the run's reproducibility contract. Drawing the seed
-    # through torch also keeps two factories' streams distinct.
-    rng = np.random.default_rng(int(torch.randint(0, 2**31 - 1, (1,)).item()))
+    if not math.isfinite(alpha) or alpha <= 0:
+        raise ValueError(f"alpha must be positive and finite, got {alpha}")
+    # Lambda (and the CutMix box) come from torch's global RNG at step time,
+    # like the batch permutation: NNTrainParams.seed controls them, and a
+    # stateful resume restores that stream, so a split run continues the
+    # uninterrupted one.
+    beta = torch.distributions.Beta(torch.tensor(float(alpha)), torch.tensor(float(alpha)))
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
@@ -146,14 +166,14 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
             )
         B, _, H, W = X.shape
 
-        lam = float(rng.beta(alpha, alpha))
+        lam = float(beta.sample())
         # Box dimensions: side lengths scale with √(1−λ) so the area
         # ratio is (1−λ). cx, cy are the box center, sampled uniformly.
         cut_ratio = (1.0 - lam) ** 0.5
         cut_w = int(W * cut_ratio)
         cut_h = int(H * cut_ratio)
-        cx = int(rng.integers(0, W))
-        cy = int(rng.integers(0, H))
+        cx = int(torch.randint(0, W, (1,)).item())
+        cy = int(torch.randint(0, H, (1,)).item())
         x1 = max(cx - cut_w // 2, 0)
         x2 = min(cx + cut_w // 2, W)
         y1 = max(cy - cut_h // 2, 0)
@@ -169,12 +189,14 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
         Y_b = Y[perm]
 
         Y_hat_logits = m._net_forward((X_cut,), {})
+        require_row_logits(Y_hat_logits, "cutmix")
         loss_input = _loss_input(m.loss_fn, Y_hat_logits)
         loss = lam * m.loss_fn(loss_input, Y_a) + (1.0 - lam) * m.loss_fn(loss_input, Y_b)
+        _check_scorable_target(m.loss_fn, Y, paradigm="cutmix")  # before the update
         loss_val = finalize_step(loss, ctx, paradigm="cutmix")
 
-        Y_hat = Y_hat_logits.argmax(dim=-1)
-        acc = _weighted_acc(Y_hat, Y_a, Y_b, lam)
+        Y_hat = predicted_labels(m.loss_fn, Y_hat_logits)
+        acc = _weighted_acc(m.loss_fn, Y_hat, Y_a, Y_b, lam)
         return NNEvaluationDataPoint(
             f1=0.0,
             recall=0.0,
@@ -184,4 +206,4 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
             error=float(1.0 - acc),
         )
 
-    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
+    return full_precision_only(imperative_step(step, paradigm="cutmix"))  # finalize_step: full precision

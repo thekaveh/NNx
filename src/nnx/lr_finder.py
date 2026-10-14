@@ -28,6 +28,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from ._optional import require
+from ._validation import require_count, require_finite_real
 from .nn.params.nn_checkpoint import _snapshot_state_dict
 from .utils import _capture_training_modes, _restore_training_modes
 
@@ -94,8 +95,9 @@ def lr_finder(
         end_lr: high end of the sweep range. Must be > start_lr.
         num_iter: number of training iterations to run. Must be >= 2.
         diverge_threshold: stop the sweep early when the EMA-smoothed
-            loss exceeds ``diverge_threshold * smoothed_min`` (the
-            minimum EMA-smoothed loss observed so far). Default 4. The
+            loss rises more than ``(diverge_threshold - 1) * |smoothed_min|``
+            above ``smoothed_min`` (the minimum EMA-smoothed loss observed so
+            far; for a positive loss, past ``diverge_threshold * smoothed_min``). Default 4. The
             smoothed check matches fastai's lr_find heuristic — using
             the raw ``min(losses)`` would let a single anomalous low
             first-batch loss pull the threshold too tight and abort
@@ -113,14 +115,19 @@ def lr_finder(
         ImportError: Plotly (the ``plots`` extra, ``pip install
             "thekaveh-nnx[plots]"``) is not installed — raised before any
             data, model or RNG state is touched.
-        ValueError: on invalid arguments (``num_iter < 2``,
-            ``start_lr <= 0``, ``end_lr <= start_lr``).
+        ValueError: on invalid arguments (``num_iter`` not an integer >= 2, a non-finite
+            ``start_lr`` / ``end_lr`` / ``diverge_threshold``,
+            ``start_lr <= 0``, ``end_lr <= start_lr``,
+            ``diverge_threshold <= 1``, ``ema_alpha`` outside ``(0, 1)``), a
+            ``train_loader`` with a live persistent-worker iterator, or a
+            loader that yields no batch.
     """
     # The plot is the finder's output: without the plots extra, fail before
     # any data, model or RNG state is touched (FEAT-031).
     require("plotly.graph_objects", "nnx.lr_finder")
-    if num_iter < 2:
-        raise ValueError(f"lr_finder num_iter must be >= 2, got {num_iter}")
+    num_iter = require_count(num_iter, "num_iter", owner="lr_finder", minimum=2)
+    for name, value in (("start_lr", start_lr), ("end_lr", end_lr), ("diverge_threshold", diverge_threshold)):
+        require_finite_real(value, name, owner="lr_finder")
     if start_lr <= 0:
         raise ValueError(f"lr_finder start_lr must be > 0, got {start_lr}")
     if end_lr <= start_lr:
@@ -228,6 +235,8 @@ def lr_finder(
             y_hat = model(X)
             loss = loss_fn(y_hat, Y)
             loss_val = float(loss.item())
+            if not math.isfinite(loss_val):
+                break  # a NaN / inf loss has diverged (and NaN compares False to any threshold)
 
             smoothed_loss = (
                 loss_val if smoothed_loss is None else ema_alpha * loss_val + (1 - ema_alpha) * smoothed_loss
@@ -239,7 +248,9 @@ def lr_finder(
             # the backward+step keeps the diverging gradients out of the
             # parameter trajectory (which we restore anyway, but cheaper to
             # skip when we can).
-            if smoothed_min is not None and smoothed_loss > diverge_threshold * smoothed_min:
+            # Measured from the minimum, so a negative loss (a Gaussian NLL,
+            # a shifted objective) diverges by the same rule as a positive one.
+            if smoothed_min is not None and smoothed_loss - smoothed_min > (diverge_threshold - 1) * abs(smoothed_min):
                 break
 
             loss.backward()

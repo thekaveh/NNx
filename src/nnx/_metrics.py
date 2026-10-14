@@ -1,15 +1,12 @@
 """Tiny internal helpers shared across training-step code paths.
 
 `_resolve_metric` walks `(val_edp, train_edp)` taking `.error` first then
-`.loss`, returning the first *finite* float. Used by both
-:class:`nnx.nn.nn_model.NNModel` (in `_step_scheduler` /
-`_update_tqdm_postfix`), :class:`nnx.trainer.trainer.Trainer` (same
-two roles) and `nnx.nn.params.nn_run._best_err` (per-run and cross-run
-BEST comparison) — without a shared helper, the same six-line block was
-copy-pasted four times and was prone to drift when the fallback order
-changed. `_resolve_metric_with_provenance` is the same walk, additionally
-reporting which field was selected and which non-finite candidates were
-rejected, so scheduler callers can warn with context.
+`.loss`, returning the first *finite* float; `nnx.nn.params.nn_run._best_err`
+uses it for per-run and cross-run BEST comparison.
+`_resolve_metric_with_provenance` is the same walk, additionally reporting
+which field was selected and which non-finite candidates were rejected: the
+progress bar labels its value with it, and `_resolve_scheduler_metric`
+feeds the plateau schedulers with context for their warnings.
 
 `classification_edp` is the shared classification step epilogue
 (`NNEvaluationDataPoint.of` + loss + top-1 error) used by
@@ -23,7 +20,6 @@ Internal; not part of the public API.
 from __future__ import annotations
 
 import math
-import warnings
 from collections.abc import Callable, Mapping
 from typing import Optional
 
@@ -115,33 +111,33 @@ def _resolve_scheduler_metric(
     value, source, rejected = _resolve_metric_with_provenance(val_edp, train_edp)
     if value is not None:
         if rejected:
-            warnings.warn(
+            from .nn.callbacks import _warn_at_user_frame
+
+            _warn_at_user_frame(
                 f"epoch {epoch_idx}: ignoring non-finite metric(s) {', '.join(rejected)}; "
                 f"using {source}={value} for ReduceLROnPlateau",
-                RuntimeWarning,
-                stacklevel=3,
             )
         return value
     if "val_edp=unavailable" in rejected:
-        warnings.warn(
+        from .nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"epoch {epoch_idx}: skipping ReduceLROnPlateau step: the validation record is unavailable "
             "(every target was masked, or it holds no error or loss)",
-            RuntimeWarning,
-            stacklevel=3,
         )
     elif rejected:
-        warnings.warn(
+        from .nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"epoch {epoch_idx}: skipping ReduceLROnPlateau step: every candidate metric is "
             f"non-finite ({', '.join(rejected)})",
-            RuntimeWarning,
-            stacklevel=3,
         )
     else:
-        warnings.warn(
+        from .nn.callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
             f"epoch {epoch_idx}: skipping ReduceLROnPlateau step: no metric available "
             "(error and loss are absent on both the validation and training data points)",
-            RuntimeWarning,
-            stacklevel=3,
         )
     return None
 

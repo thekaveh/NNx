@@ -1,7 +1,7 @@
 """Warm-resume training from a prior run.
 
-Round 1 trains for 3 epochs; round 2 picks up from the LAST checkpoint
-of round 1 and trains another 4 epochs, with Adam momentum / first /
+Round 1 trains for 4 epochs; round 2 picks up from the LAST checkpoint
+of round 1 and trains another 3 epochs, with Adam momentum / first /
 second-moment buffers, scheduler, scaler, epoch progress, and RNG state
 preserved across the boundary. Resume lineage participates in the new run's
 content-addressed identity, so the original run remains intact.
@@ -32,7 +32,7 @@ rides along in the training-state sidecar. ``amp_resume_compatibility``
 below fits and resumes with AMP requested on CPU (no scaler is built or
 saved) and, only on a CUDA host, with AMP actually enabled.
 
-Component state resumes too (FEAT-005): callbacks such as ``EarlyStopping``
+Component state resumes too: callbacks such as ``EarlyStopping``
 save their patience with every checkpoint and get it back on a stateful
 resume *after* ``on_train_begin`` resets them, so a split run stops at the
 same epoch an uninterrupted one would. The returned run's
@@ -41,7 +41,7 @@ stateful or weights-only and which components were restored;
 ``resume_mode="weights_only"`` warm-starts from the weights alone.
 ``callback_continuation`` below demonstrates both.
 
-Provenance is opt-in (FEAT-019): ``train(..., provenance=manifest)`` records
+Provenance is opt-in: ``train(..., provenance=manifest)`` records
 the declared experiment intent (``runs/<id>/provenance.json`` with its
 fingerprint) and a fresh attempt per fit (``attempt.json``). A resume is a
 new attempt of the same plan: it keeps the fingerprint, links the parent
@@ -324,7 +324,7 @@ def amp_resume_compatibility() -> dict:
 
     ``NNModelParams(mixed_precision=True)`` only activates autocast + a
     ``torch.amp.GradScaler("cuda")`` on CUDA — the scaler factory needs
-    PyTorch >= 2.3, NNx's declared floor. Everywhere else the same
+    PyTorch >= 2.3; NNx's declared floor is 2.4. Everywhere else the same
     configuration trains scaler-free: the training-state sidecar records
     ``scaler=None`` and a resume restores nothing for it. On a CUDA host
     the helper additionally fits one epoch with AMP enabled, resumes for
@@ -422,7 +422,7 @@ def callback_continuation() -> dict:
         eval_step_fn=eval_step,
         callbacks=[EarlyStopping(monitor="val_edp.error", patience=2)],
     )
-    set_seed(4)
+    set_seed(3)  # the same seed regenerates the parent's rows: a resume continues on its data
     model, loader = _make_model_and_loader()
     stopper = EarlyStopping(monitor="val_edp.error", patience=2)
     resumed = model.train(
@@ -479,7 +479,10 @@ def provenance_mode() -> dict:
     with open(manifest_path, "rb") as handle:
         parent_manifest = handle.read()
 
-    set_seed(12)
+    # The same seed regenerates the parent's rows, so the child trains on
+    # exactly the data whose digest the plan records (a fresh model; the
+    # resume restores its state).
+    set_seed(11)
     model, loader = _make_model_and_loader()
     child = model.train(params=params(1, loader, resume_from_run_id=parent.id), provenance=plan)
     with open(manifest_path, "rb") as handle:
@@ -519,8 +522,9 @@ def main():
     print(f"\nRound 1 done. run.id = {run_a.id}, {len(run_a.idps)} iterations")
 
     # Round 2: build a NEW model (random weights) and resume from round 1's LAST.
-    # Re-seeding is harmless but not required for continuity: loading the
-    # training-state bundle restores the RNG after model construction.
+    # Re-seeding is required: _make_model_and_loader draws the data from the
+    # global RNG, so seed 7 regenerates round 1's rows. Loading the
+    # training-state bundle then restores the RNG after model construction.
     set_seed(7)
     model_b, loader2 = _make_model_and_loader()
     run_b = model_b.train(

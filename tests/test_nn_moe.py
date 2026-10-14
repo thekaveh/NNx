@@ -276,3 +276,11 @@ def test_moe_linear_accepts_1d_input():
     assert out.shape == (6,)
     out_2d = layer(x.unsqueeze(0))
     assert torch.allclose(out, out_2d.squeeze(0), atol=1e-6)
+
+
+@pytest.mark.parametrize("value", ["a", None, 2.5, True])
+def test_moe_linear_names_a_malformed_count_with_a_value_error(value):
+    from nnx.nn.moe import MoELinear
+
+    with pytest.raises(ValueError, match="in_features"):
+        MoELinear(value, 3, num_experts=2)

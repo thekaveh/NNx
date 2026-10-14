@@ -14,6 +14,7 @@ from typing import Any, Optional, cast
 
 import torch
 
+from .._validation import require_count
 from ..generation.logits_chain import LogitsChain
 from ..generation.logits_processors import (
     LogitsProcessor,
@@ -69,6 +70,10 @@ class GenerativeNNModel(NNModel):
         if not isinstance(tokenizer_config, Mapping) or not isinstance(tokenizer_config.get("filename"), str):
             return {}
         filename = cast(str, tokenizer_config["filename"])
+        # The config comes with a downloaded artifact: a plain file name only,
+        # so it cannot point outside the artifact's directory.
+        if not filename or filename in (".", "..") or Path(filename).name != filename or "\\" in filename:
+            raise ValueError(f"the artifact's tokenizer filename must be a plain file name, got {filename!r}")
         return {"tokenizer": NNTokenizerParams.from_state({"path": str(Path(config_directory) / filename)})}
 
     # ---------- generate ----------
@@ -94,9 +99,10 @@ class GenerativeNNModel(NNModel):
         Args:
             prompt: input text. Encoded via ``self.tokenizer``.
             max_new_tokens: hard cap on new tokens emitted. Generation
-                also stops if the context window (max_seq_len) would be
-                exceeded and the model can't shrink the window further,
-                or if a ``stop`` string is decoded.
+                also stops when a ``stop`` string is decoded. It does not
+                stop on an end-of-sequence token, and a prompt longer than
+                the context window (max_seq_len) slides the window rather
+                than stopping.
             temperature: 0 means greedy (argmax). Higher values produce
                 more diverse output. Routes through TemperatureScaling.
             top_k: keep only the top-k logits. None disables.
@@ -109,7 +115,9 @@ class GenerativeNNModel(NNModel):
                 string doesn't halt generation immediately; a stop
                 string straddling the prompt/continuation boundary is
                 likewise not detected — matching the generated-text-only
-                convention HF uses).
+                convention HF uses). The continuation is decoded without
+                special tokens, so a special token such as ``"<eos>"``
+                never matches a stop string.
             seed: when set, sampling is reproducible — two calls with
                 the same seed + prompt + model produce identical output.
             use_cache: when True (default), uses an incremental KV
@@ -126,8 +134,8 @@ class GenerativeNNModel(NNModel):
                 Power-user path for custom logit processors (e.g.,
                 logit-bias for forbidden tokens). When ``None`` (the
                 default), behavior is unchanged.
-            logits_pipeline: optional :class:`~nnx.generation.OrderedLogitsPipeline`
-                (FEAT-037): its stages run exactly in declared order,
+            logits_pipeline: optional :class:`~nnx.generation.OrderedLogitsPipeline`:
+                its stages run exactly in declared order,
                 compiled once per call into fresh processors; like
                 ``logits_chain`` it replaces the inline kwargs. Passing
                 both ``logits_chain`` and ``logits_pipeline`` raises
@@ -154,6 +162,15 @@ class GenerativeNNModel(NNModel):
         ``nnx.diffusion.sample``, ``nnx.embeddings.embed_texts``,
         ``nnx.viz.activation_map``, and ``nnx.lr_finder``.
         """
+        # A count: a negative value returned the prompt silently, a float failed late in range().
+        max_new_tokens = require_count(max_new_tokens, "max_new_tokens", owner="GenerativeNNModel.generate", minimum=0)
+        if seed is not None:  # a float or bool seed was truncated / accepted silently
+            seed = require_count(seed, "seed", owner="GenerativeNNModel.generate", minimum=0, maximum=2**64 - 1)
+        if stop is not None:
+            # A bare string would be read character by character; an empty
+            # stop string matches at once.
+            if isinstance(stop, (str, bytes)) or not all(isinstance(s, str) and s for s in stop):
+                raise ValueError(f"GenerativeNNModel.generate stop must be a list of non-empty strings, got {stop!r}")
         if logits_chain is not None and logits_pipeline is not None:
             raise ValueError(
                 "pass either logits_chain (a LogitsChain) or logits_pipeline (an OrderedLogitsPipeline), not both"

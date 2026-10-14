@@ -21,15 +21,15 @@ sections:
       - {number: "14", title: Export conformance, source: docs/export-conformance.md}
       - {number: "15", title: Framework comparison, source: docs/comparison.md}
       - {number: "16", title: Architecture, source: docs/architecture.md}
+      - {number: "17", title: Capability reference, source: docs/capabilities.md}
   - title: Project
     children:
-      - {number: "17", title: Repository overview, source: README.md, slug: Repository-Overview, numbered_h1: false}
-      - {number: "18", title: Examples, source: examples/README.md}
-      - {number: "19", title: Contributing, source: CONTRIBUTING.md}
-      - {number: "20", title: Security policy, source: SECURITY.md, slug: Security-Policy}
-      - {number: "21", title: Test import boundaries, source: tests/README.md, slug: Test-Import-Boundaries}
-      - {number: "22", title: Changelog, source: CHANGELOG.md}
-      - {number: "23", title: License, source: LICENSE}
-      - {number: "24", title: Decision-model pilot, source: docs/decision-model-pilot.md}
-      - {number: "25", title: Feature composition, source: docs/feature-composition.md}
-      - {number: "26", title: Capability reference, source: docs/capabilities.md}
+      - {number: "18", title: Repository overview, source: README.md, slug: Repository-Overview, numbered_h1: false}
+      - {number: "19", title: Examples, source: examples/README.md}
+      - {number: "20", title: Contributing, source: CONTRIBUTING.md}
+      - {number: "21", title: Security policy, source: SECURITY.md, slug: Security-Policy}
+      - {number: "22", title: Test import boundaries, source: tests/README.md, slug: Test-Import-Boundaries}
+      - {number: "23", title: Changelog, source: CHANGELOG.md}
+      - {number: "24", title: License, source: LICENSE}
+      - {number: "25", title: Decision-model pilot, source: docs/decision-model-pilot.md}
+      - {number: "26", title: Feature composition, source: docs/feature-composition.md}

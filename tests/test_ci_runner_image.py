@@ -15,8 +15,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests._repo_files import repo_file
+
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.y*ml"))
+WORKFLOWS = sorted(repo_file(".github", "workflows").glob("*.y*ml"))
 RUNNER = "ubuntu-26.04"
 # FEAT-043: the one job that needs hardware no hosted image has (CUDA); it
 # runs only on a registered self-hosted GPU runner, opted in by a variable.
@@ -52,7 +54,9 @@ def test_the_self_hosted_jobs_exist_and_are_opt_in():
     jobs = {(workflow, name): job for workflow, name, job in _jobs()}
     for key in SELF_HOSTED:
         assert key in jobs, f"{key} is listed as self-hosted but does not exist"
-        assert jobs[key]["if"] == "vars.NNX_GPU_RUNNER == 'true'"  # skipped unless a GPU runner is registered
+        # skipped unless a GPU runner is registered, and never for a fork's pull request
+        assert jobs[key]["if"].startswith("vars.NNX_GPU_RUNNER == 'true' && ")
+        assert "head.repo.full_name == github.repository" in jobs[key]["if"]
 
 
 def test_every_apt_step_has_its_own_short_timeout():

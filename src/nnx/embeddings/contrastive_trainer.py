@@ -33,6 +33,8 @@ The two public entry points are:
 
 from __future__ import annotations
 
+import math
+import numbers
 from collections.abc import Iterable
 from typing import Any, Optional, Union
 
@@ -40,7 +42,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from .._step_helpers import finalize_step
+from .._step_helpers import finalize_step, imperative_step
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..paradigms.contrastive import nt_xent_loss
@@ -200,7 +202,8 @@ def embed_texts(
             placeholder — the embedding dim isn't known until the
             first forward).
         batch_size: how many texts per forward pass. Default 64.
-        device: target device. ``None`` uses the backbone's device
+        device: the device of the returned tensor (the backbone encodes
+            where it lives and is never moved). ``None`` uses the backbone's device
             (sentence-transformers exposes one; plain Modules don't, in
             which case we fall back to the first parameter's device,
             or CPU when the backbone has no parameters).
@@ -214,6 +217,11 @@ def embed_texts(
         A ``(N, D)`` ``torch.Tensor`` on ``device``. Detached from
         any autograd graph.
     """
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
+        raise ValueError(f"embed_texts batch_size must be an integer >= 1, got {batch_size!r}")
+    # Encode where the backbone lives (its weights are never moved) and hand
+    # the result over on ``device``.
+    native = _resolve_device(backbone, None)
     device = _resolve_device(backbone, device)
 
     if not texts:
@@ -232,10 +240,10 @@ def embed_texts(
         with torch.no_grad():
             for i in range(0, len(texts), batch_size):
                 chunk = texts[i : i + batch_size]
-                emb = _encode(backbone, chunk, device)
+                emb = _encode(backbone, chunk, native)
                 if normalize:
                     emb = F.normalize(emb, dim=-1)
-                chunks.append(emb.detach())
+                chunks.append(emb.detach().to(device))
     finally:
         _restore_training_modes(training_modes)
     return torch.cat(chunks, dim=0)
@@ -268,8 +276,8 @@ def text_contrastive_train_step_factory(*, temperature: float = 0.5) -> TrainSte
     Raises:
         ValueError: at factory-build time if ``temperature`` ≤ 0.
     """
-    if temperature <= 0:
-        raise ValueError(f"temperature must be positive, got {temperature}")
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError(f"temperature must be positive and finite, got {temperature}")
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
@@ -307,7 +315,7 @@ def text_contrastive_train_step_factory(*, temperature: float = 0.5) -> TrainSte
             error=loss_val,
         )
 
-    return full_precision_only(step)  # finalize_step runs in full precision (FEAT-028)
+    return full_precision_only(imperative_step(step, paradigm="text_contrastive"))  # finalize_step: full precision
 
 
 def train_contrastive(
@@ -376,7 +384,7 @@ def train_contrastive(
 
     Raises:
         ValueError: on a dataset of fewer than 2 pairs, batch_size < 2,
-            non-positive epochs, non-positive temperature, or a
+            non-positive epochs, non-positive temperature or ``lr``, or a
             non-positive ``grad_clip_norm`` — NT-Xent needs at least one
             negative, so both the dataset and every batch must carry
             >= 2 pairs.
@@ -390,15 +398,18 @@ def train_contrastive(
         # itself raises on B < 2 as the backstop; rejecting here gives
         # the error before any training work happens).
         raise ValueError(f"batch_size must be >= 2 for NT-Xent (got {batch_size}) — each batch needs a negative.")
-    if temperature <= 0:
-        raise ValueError(f"temperature must be positive, got {temperature}")
-    if grad_clip_norm is not None and grad_clip_norm <= 0:
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError(f"temperature must be positive and finite, got {temperature}")
+    if isinstance(lr, bool) or not isinstance(lr, numbers.Real) or not math.isfinite(lr) or lr <= 0:
+        # AdamW accepts lr=0.0: every epoch would run and leave the backbone untouched.
+        raise ValueError(f"lr must be positive and finite, got {lr!r}")
+    if grad_clip_norm is not None and (not math.isfinite(grad_clip_norm) or grad_clip_norm <= 0):
         # `None` disables clipping; a non-positive norm would otherwise slip
         # past the `is not None` guard below and clip_grad_norm_(..., 0.0)
         # scales every gradient by 0.0/total_norm == 0, silently zeroing all
         # grads so the backbone never learns. Same footgun NNOptimParams
         # guards against; fail fast here before any training work happens.
-        raise ValueError(f"grad_clip_norm must be positive or None to disable, got {grad_clip_norm}")
+        raise ValueError(f"grad_clip_norm must be positive and finite, or None to disable, got {grad_clip_norm}")
 
     if isinstance(dataset, list):
         dataset = ContrastiveTextDataset(dataset)
