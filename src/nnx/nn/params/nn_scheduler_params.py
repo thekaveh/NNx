@@ -15,6 +15,10 @@ SCHEDULER_CLOCKS: tuple[str, ...] = ("epoch", "optimizer_update")
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNSchedulerParams:
+    """A learning-rate scheduler: its kind (``ReduceLROnPlateau`` when
+    ``kind`` is ``None``), the plateau fields, the kind-specific horizons and
+    the clock that one step counts (an epoch or an optimizer update)."""
+
     min_lr: float
     factor: float
     patience: int

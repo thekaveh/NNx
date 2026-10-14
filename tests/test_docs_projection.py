@@ -1461,3 +1461,29 @@ def test_repository_docs_validation_reads_prose_after_a_code_span_as_prose(tmp_p
     source = tmp_path / "README.md"
     source.write_text("Use `x` [a]: foo for this.\n", encoding="utf-8")
     build_docs.validate_repository_sources(tmp_path, [source], {source.resolve()})  # no "invalid link title"
+
+
+@pytest.mark.parametrize("surface", ["site", "wiki"])
+def test_built_link_validation_reads_prose_after_a_code_span_as_prose(tmp_path: Path, surface: str):
+    (tmp_path / "Page.md").write_text("Use `x` [a]: foo for this.\n", encoding="utf-8")
+    validate_links(tmp_path, surface)  # no "invalid documentation link title"
+
+
+def test_api_docs_never_inherit_text_from_outside_nnx():
+    import torch
+
+    from scripts.docs.build_api_reference import _doc_origin, _documentation
+
+    class Plain(torch.nn.Module):  # no docstring of its own
+        def forward(self, x):
+            return x
+
+    assert _doc_origin(Plain) == "torch.nn.modules.module"
+    assert _documentation(Plain)[0] == "No public description is currently available."
+    from nnx.nn.net.feed_fwd_nn import FeedFwdNN
+
+    assert _doc_origin(FeedFwdNN.forward) == "torch.nn.modules.module"  # torch's "Define the computation..."
+    assert _documentation(FeedFwdNN.forward)[0] == "No public description is currently available."
+    from nnx.paradigms.jepa_objective import JEPAObjective
+
+    assert _doc_origin(JEPAObjective.check_run) is None or _doc_origin(JEPAObjective.check_run).startswith("nnx")

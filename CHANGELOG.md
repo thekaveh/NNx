@@ -154,8 +154,9 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - An explicit `default_train_step` also gets the checkpoint-reconstructibility guard and a search's `updates_per_trial` cap, as the implicit default step does.
     - `widen`, `low_rank_factorize` and `expand_embedding` refuse a `weight_norm` / `spectral_norm` module (parametrization or legacy hook) or an unbaked prune mask instead of silently dropping it, reading a stale weight and unfreezing it.
     - Surgery refuses a subclass of `nn.Linear` / `nn.Embedding` / `nn.ReLU` with its own `forward` (a fake-quantized QAT Linear, say) instead of rebuilding it as a plain module.
-    - A resume that fails after restoring its state (a warnings-as-errors filter, say) hands the model and RNG back unchanged in a single-process fit too.
+    - A resume that fails after restoring its state (a warnings-as-errors filter, say) hands the model and RNG back unchanged in a single-process fit too, through `NNModel.train` and `Trainer.train`.
     - `TopPFilter(1.0)` (and `generate(top_p=1.0)`) keeps every token; float32 rounding had dropped some.
+    - DoRA refuses an `nn.Linear` subclass with its own `forward` (a QAT fake-quantized layer), at wrap time and when QAT prepare swaps the base later, instead of bypassing it; a PEFT wrap that fails part-way leaves every layer and its trainability unchanged.
     - `benchmark_forward` / `compare_compile` no longer recurse without end on a tensor-subclass wrapper buffer; `random_block_mask` refuses a non-finite `block_aspect` with `ValueError`; the docs builders' link validators read prose after an inline code span as prose too.
     - A `Trainer` run whose callbacks convert modules at train end (QAT) resumes statefully from its final LAST: the checkpoint records the optimizer topology from before the conversion, as `NNModel.train` does.
     - `nnx.viz.summary(model, input_size=...)` builds its dummy input on the model's device instead of moving an MPS (or, on a CUDA host, a CPU) model; `validate_record` refuses a malformed `weights_sha256`.

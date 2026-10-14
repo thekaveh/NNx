@@ -282,7 +282,7 @@ It runs through the same inference path as `predict()`: the same inputs, graph s
 | `RuntimeModule` (filled in by `NNModel(module=...)`) | the caller's instance, as is | `None` | no — `reconstructible=False` |
 
 ```python
-from nnx import KeywordInputs, ModelSpec, NNModel, NNModelParams, register_model_factory
+from nnx import KeywordInputs, Losses, ModelSpec, NNModel, NNModelParams, register_model_factory
 
 register_model_factory("acme.encoder", 1, lambda config: Encoder(**config))   # factory(config) -> nn.Module
 model = NNModel(params=NNModelParams(net=ModelSpec("acme.encoder", 1, {"width": 64}, seed=0), loss=Losses.CROSS_ENTROPY))
@@ -1350,11 +1350,13 @@ CPU generator. The generator is seeded from `seed`, or from one draw of the
 global RNG at first use. Its state is checkpointed component state
 (`"diffusion.objective"`). So a stateful resume continues the stream, and a
 resume with another schedule is refused before anything is restored.
+`diffusion_objective(..., noise_fn=...)` takes
+`noise_fn(x_0, generator) -> (t, eps)` to supply the timesteps and noise
+yourself.
 
 A `sample(..., generator=...)` preview with its own generator (say, in a
 callback) never perturbs that stream. `sample` restores the net's
-train/eval modes. `noise_fn(x_0, generator) -> (t, eps)` supplies the
-timesteps and noise yourself.
+train/eval modes.
 
 ### 9.1. Noise schedules
 

@@ -668,8 +668,9 @@ class NNCheckpoint:
 
         When `optimizer_state` is supplied, a generation-addressed sibling
         file holds the training state, plus a fixed-name compatibility copy.
-        This sidecar is used by NNModel.train(resume_from=...) to warm-resume
-        with the prior optimizer momentum / Adam state.
+        This sidecar is used by NNModel.train when NNTrainParams'
+        resume_from_run_id / resume_from_checkpoint name this checkpoint, to
+        warm-resume with the prior optimizer momentum / Adam state.
 
         The immutable generation sidecar is committed first and the checkpoint
         second. The checkpoint names the sidecar it owns, so interruption

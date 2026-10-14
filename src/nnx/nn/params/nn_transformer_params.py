@@ -31,6 +31,9 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNTransformerParams(NNParams):
+    """Architecture of the decoder-only `TransformerNN`: vocabulary size,
+    depth, width, attention heads and the maximum sequence length."""
+
     # Required architectural knobs. There's no meaningful default for
     # "vocabulary size" or "depth", so these are required.
     vocab_size: int

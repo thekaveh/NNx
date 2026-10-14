@@ -72,6 +72,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 ### 2.6. Task adapters (`nnx.tasks`)
 
+@api nnx.tasks members=
+
 @api nnx.tasks.TaskSpec
 
 @api nnx.tasks.TaskAdapter
@@ -194,7 +196,11 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 
 @api nnx.decisions.FixedHeadProvider
 
+@api nnx.decisions.nli members=
+
 @api nnx.decisions.NLIProvider
+
+@api nnx.decisions.jev members=
 
 @api nnx.decisions.JevProvider
 
@@ -217,6 +223,8 @@ Generated from runtime signatures and source docstrings as portable Markdown so 
 @api nnx.decisions.JevRateLimited
 
 @api nnx.decisions.JevMalformedResponse
+
+@api nnx.decisions.jobs members=
 
 @api nnx.decisions.DecisionJob
 
@@ -358,6 +366,8 @@ Under torchrun; see Architecture §3.
 
 Through Optuna (extra `optuna`); see Concepts §29.
 
+@api nnx.search members=
+
 @api nnx.search.search
 
 @api nnx.search.SearchSpace
@@ -484,6 +494,8 @@ Through Optuna (extra `optuna`); see Concepts §29.
 
 ### 2.22. Experiment plans (`nnx.plans`)
 
+@api nnx.plans members=
+
 @api nnx.plans.ExperimentPlan
 
 @api nnx.plans.FitResult
@@ -499,6 +511,8 @@ Through Optuna (extra `optuna`); see Concepts §29.
 @api nnx.plans.PlanError
 
 ### 2.23. Streaming prediction and mergeable metrics (`nnx.streaming`)
+
+@api nnx.streaming members=
 
 @api nnx.streaming.PredictionStream
 
@@ -554,6 +568,8 @@ Through Optuna (extra `optuna`); see Concepts §29.
 
 ### 2.26. Execution precision (`nnx.precision`)
 
+@api nnx.precision members=
+
 @api nnx.precision.PrecisionPolicy
 
 @api nnx.precision.ResolvedPrecision
@@ -598,6 +614,8 @@ Through Optuna (extra `optuna`); see Concepts §29.
 
 ### 2.28. Causal language-model task (`nnx.lm_tasks`)
 
+@api nnx.lm_tasks members=
+
 @api nnx.lm_tasks.CausalLMTask
 
 @api nnx.lm_tasks.CausalLMObjective
@@ -609,6 +627,8 @@ Through Optuna (extra `optuna`); see Concepts §29.
 @api nnx.lm_tasks.LMTaskError
 
 ### 2.29. Query-grouped ranking (`nnx.ranking`)
+
+@api nnx.ranking members=
 
 @api nnx.ranking.RankingTask
 
@@ -645,6 +665,8 @@ Through Optuna (extra `optuna`); see Concepts §29.
 @api nnx.graph_tasks.GraphTaskError
 
 ### 2.31. Link and edge prediction (`nnx.link_tasks`)
+
+@api nnx.link_tasks members=
 
 @api nnx.link_tasks.split_links
 
@@ -810,7 +832,7 @@ Through Optuna (extra `optuna`); see Concepts §29.
 
 ## 9. Parameter-efficient fine-tuning (`nnx.peft`)
 
-LoRA + DoRA + IA3 + Prefix-Tuning + Prompt-Tuning + Adapters. All methods share the same in-place wrap + save/load idiom (per-method `save_*_weights` / `load_*_weights` persist only the trainable delta).
+LoRA + DoRA + IA3 + Prefix-Tuning + Prompt-Tuning + Adapters. The `apply_*_to` helpers wrap layers in place. LoRA, IA3, Prefix and Prompt ship `save_*_weights` / `load_*_weights`, which persist only the trainable delta. DoRA persists with the full `state_dict()` (the LoRA helpers omit `magnitude`), and `AdapterLayer` is inserted by hand.
 
 ### 9.1. LoRA
 
@@ -900,6 +922,8 @@ PTQ INT8 weight-only + QAT 8da4w via [`torchao`](https://github.com/pytorch/ao) 
 
 @api nnx.diffusion.training.diffusion_train_step_factory
 
+@api nnx.diffusion.objective members=
+
 @api nnx.diffusion.objective.diffusion_objective
 
 @api nnx.diffusion.objective.DiffusionObjective
@@ -917,6 +941,8 @@ Each factory returns a `TrainStepFn` for the `train_step_fn=` hook on `NNModel.t
 @api nnx.paradigms.distillation.feature_kd_train_step_factory
 
 @api nnx.paradigms.born_again.born_again_train
+
+@api nnx.paradigms.offline_distillation members=
 
 @api nnx.paradigms.offline_distillation.TeacherRecord
 
@@ -965,6 +991,8 @@ Walkthrough at [I-JEPA](jepa.md). The `ViTNN` encoder is documented in §4.
 @api nnx.paradigms.jepa.jepa_train_step_factory
 
 @api nnx.paradigms.jepa.JEPATrainStep
+
+@api nnx.paradigms.jepa_objective members=
 
 @api nnx.paradigms.jepa_objective.jepa_objective
 
@@ -1018,6 +1046,8 @@ Walkthrough and stock-runtime limitations at [Experimental GGUF export](gguf.md)
 
 Executable profiles that separate structural validity from numerical parity: `FeedFwdNN` 4-8-2 FP32 under both exporters, run in ONNX Runtime on CPU, with every stage's outcome and the evidence recorded. Walkthrough, failure classes and exit codes at [Export conformance](export-conformance.md). Opt-in via `pip install "thekaveh-nnx[onnx-runtime,onnx-dynamo]"`; `python scripts/check_export_conformance.py --output conformance.json` runs both profiles.
 
+@api nnx.export_conformance members=
+
 @api nnx.export_conformance.Profile
 
 @api nnx.export_conformance.run_profile
@@ -1045,7 +1075,7 @@ Executable profiles that separate structural validity from numerical parity: `Fe
 Opt-in via `pip install "thekaveh-nnx[hub]"`. Two integration surfaces:
 
 - **safetensors checkpoints** — `NNCheckpoint.to_file(..., format="safetensors")` writes the safetensors format alongside the default pickle path, and `NNCheckpoint.from_file(path)` reads either (detected from the file; see §3 `NNCheckpoint`). Loadable by outside-Python tools (ComfyUI, vLLM, AutoGPTQ).
-- **Hub publish / load** — `NNModel` mixes in `huggingface_hub.PyTorchModelHubMixin`, so `save_pretrained(local_dir)`, `push_to_hub(repo_id)`, and `NNModel.from_pretrained(repo_id)` work directly on a trained model. The mixin methods are inherited and live on `NNModel` itself — see §2.1.
+- **Hub publish / load** — `NNModel` mixes in `huggingface_hub.PyTorchModelHubMixin`, so `save_pretrained(local_dir)`, `push_to_hub(repo_id)`, and `NNModel.from_pretrained(repo_id)` work directly on a trained model. The mixin methods are inherited and live on `NNModel` itself. The NNx keywords of `from_pretrained` (`precision=`, `exclude_submodules=`, `map_location=`, `strict=`) are documented in [Hub](hub.md).
 
 Walkthrough at [HuggingFace Hub](hub.md).
 
@@ -1055,9 +1085,13 @@ Walkthrough at [HuggingFace Hub](hub.md).
 
 @api nnx.generation.LogitsProcessor
 
+@api nnx.generation.logits_chain members=
+
 @api nnx.generation.LogitsChain
 
 @api nnx.generation.LogitsChainBuilder
+
+@api nnx.generation.pipeline members=
 
 @api nnx.generation.OrderedLogitsPipeline
 

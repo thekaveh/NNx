@@ -1059,14 +1059,18 @@ class Trainer:
             def rollback_weights() -> None:
                 _rollback_resume(net, loaded_from[0], loaded_from[1], train_loader)
 
-            status = ResumeStatus(
-                mode="weights_only",
-                source_run_id=params.resume_from_run_id,
-                source_checkpoint=source.label,
-                source_epoch=source.checkpoint.idp.epoch_idx,
-                fresh_components=registry.names,
-                **_manifest_lineage(source.manifest),
-            )
+            try:
+                status = ResumeStatus(
+                    mode="weights_only",
+                    source_run_id=params.resume_from_run_id,
+                    source_checkpoint=source.label,
+                    source_epoch=source.checkpoint.idp.epoch_idx,
+                    fresh_components=registry.names,
+                    **_manifest_lineage(source.manifest),
+                )
+            except BaseException:
+                rollback_weights()
+                raise
             return source.checkpoint.idp.epoch_idx + 1, None, status, rollback_weights
 
         saved_optimizers = training_state["optimizers"]
@@ -1133,23 +1137,27 @@ class Trainer:
             net.load_state_dict(previous_net_state)
             _restore_rng_state(previous_rng_state, train_loader)
             raise
-        if warn_worker_rng:
-            from ..nn.callbacks import _warn_at_user_frame
-
-            _warn_at_user_frame(
-                "exact warm-resume continuity requires train_loader.num_workers=0; "
-                "worker-local RNG state cannot be reconstructed",
-            )
 
         def rollback() -> None:
             _rollback_resume(net, previous_net_state, previous_rng_state, train_loader)
 
-        status = ResumeStatus(
-            mode="stateful",
-            source_run_id=params.resume_from_run_id,
-            source_checkpoint=source.label,
-            source_epoch=source.checkpoint.idp.epoch_idx,
-            fresh_components=tuple(component_plan.fresh),
-            **_manifest_lineage(source.manifest),
-        )
+        try:  # a warnings-as-errors filter raises here: hand the model back unchanged
+            if warn_worker_rng:
+                from ..nn.callbacks import _warn_at_user_frame
+
+                _warn_at_user_frame(
+                    "exact warm-resume continuity requires train_loader.num_workers=0; "
+                    "worker-local RNG state cannot be reconstructed",
+                )
+            status = ResumeStatus(
+                mode="stateful",
+                source_run_id=params.resume_from_run_id,
+                source_checkpoint=source.label,
+                source_epoch=source.checkpoint.idp.epoch_idx,
+                fresh_components=tuple(component_plan.fresh),
+                **_manifest_lineage(source.manifest),
+            )
+        except BaseException:
+            rollback()
+            raise
         return start_epoch, component_plan, status, rollback

@@ -786,3 +786,13 @@ def test_a_definition_in_a_list_item_after_a_code_span_is_still_rewritten(tmp_pa
     source.write_text("", encoding="utf-8")
     rendered = rewrite_markdown(source, text, {source.resolve(): "Page.md"})
     assert "[a]: Page.md" in rendered
+
+
+def test_a_definition_after_an_html_rewrite_in_its_block_keeps_its_offsets(tmp_path: Path):
+    source = tmp_path / "page.md"
+    target = tmp_path / "page-two.md"
+    source.write_text("", encoding="utf-8")
+    target.write_text("", encoding="utf-8")
+    text = 'See <a href="page-two.md">P</a> here.\n[ref]: page-two.md\n'
+    rendered = rewrite_markdown(source, text, {target.resolve(): "Some-Long-Page-Name"})
+    assert rendered == 'See <a href="Some-Long-Page-Name">P</a> here.\n[ref]: Some-Long-Page-Name\n'

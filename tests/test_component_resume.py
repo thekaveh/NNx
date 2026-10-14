@@ -274,3 +274,29 @@ def test_a_failure_right_after_the_resume_restore_hands_the_model_back(tmp_path,
         model.train(params=_params(2, resume_from_run_id=first.id, resume_mode=mode))
     assert all(torch.equal(before[name], value) for name, value in model.net.state_dict().items())
     assert torch.equal(torch.get_rng_state(), rng_before)
+
+
+def test_a_sidecar_warning_raised_as_an_error_hands_the_model_back(tmp_path, monkeypatch):
+    import warnings
+
+    from nnx import Checkpoints, NNCheckpoint
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = _tiny_supervised().train(params=_params(1))
+    last = NNCheckpoint.load(run=first.id, type=Checkpoints.LAST)
+    assert last is not None
+    last.save(run=first.id, type=Checkpoints.LAST)  # no optimizer_state: weights only
+    model = _tiny_supervised()
+    with torch.no_grad():
+        for parameter in model.net.parameters():
+            parameter.add_(1.0)
+    before = {name: value.clone() for name, value in model.net.state_dict().items()}
+    torch.manual_seed(5)
+    rng_before = torch.get_rng_state()
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="checkpoint has no training-state sidecar")
+        with pytest.raises(Warning, match="training-state sidecar"):
+            model.train(params=_params(2, resume_from_run_id=first.id, resume_from_checkpoint="last"))
+    assert all(torch.equal(before[name], value) for name, value in model.net.state_dict().items())
+    assert torch.equal(torch.get_rng_state(), rng_before)

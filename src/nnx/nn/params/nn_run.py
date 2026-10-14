@@ -606,6 +606,10 @@ def _load_precision(metadata: Optional[Mapping[str, Any]]) -> Optional[ResolvedP
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNRun:
+    """A training run: its network, training and model parameters, its id
+    and its persisted history and checkpoints under ``runs/<id>/``. Load
+    one with `NNRun.load`."""
+
     # Built-in nets only; ``None`` for a registered or runtime module
     # (FEAT-006), whose descriptor is ``model.net``.
     net: Optional[NNParams]

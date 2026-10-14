@@ -61,6 +61,11 @@ def _per_layer_from_state(state: dict) -> tuple[Optional[list[Activations]], Opt
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNParams:
+    """Architecture of a built-in feed-forward network: input and output
+    sizes, hidden layer widths, activation and dropout (net-wide or per
+    layer). Subclasses add the convolutional, MoE, ViT and transformer
+    fields."""
+
     dropout_prob: float
     n_heads: Optional[int] = field(default=None)
     activation: Optional[Activations] = field(default=Activations.LEAKY_RELU)

@@ -87,6 +87,11 @@ class DoRALinear(LoRALinear):
         alpha: float = 16.0,
         dropout: float = 0.0,
     ):
+        if isinstance(base, nn.Linear) and type(base).forward is not nn.Linear.forward:  # DoRA recomputes the matmul
+            raise TypeError(
+                f"DoRA cannot wrap a {type(base).__name__}: it has its own forward (fake quantization, say), "
+                "which DoRA's recomposed matmul would bypass. Use LoRA, which calls the base layer."
+            )
         super().__init__(base, r=r, alpha=alpha, dropout=dropout)
         # Magnitude initialized from the per-output-row L2 norm of the
         # base weight. With ``B = 0`` (LoRA zero-init), the combined
@@ -98,6 +103,11 @@ class DoRALinear(LoRALinear):
         self.magnitude = nn.Parameter(init_mag.clone())
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if type(self.base).forward is not nn.Linear.forward:  # replaced later (QAT prepare, say)
+            raise TypeError(
+                f"DoRA's base is now a {type(self.base).__name__} with its own forward (QAT prepare, say), "
+                "which DoRA's recomposed matmul would bypass silently; use LoRA for a layer that QAT prepares"
+            )
         # Compose V = W_0 + (α/r) · BA. Note: LoRALinear stores
         # ``self.scaling = alpha / r``, used for the inherited LoRA
         # forward; we reuse it here for the DoRA recomposition.
@@ -173,6 +183,10 @@ def apply_dora_to(
             modified. A Linear inside a shared container is one slot and is
             wrapped once; tied tensors between distinct modules are outside
             this check (see :func:`nnx.peft.apply_lora_to`).
+        TypeError: if a selected Linear is a subclass with its own
+            ``forward`` (a QAT fake-quantized layer), which DoRA's recomposed
+            matmul would bypass. Every wrapper is built before any slot is
+            replaced, so a refused call modifies nothing.
     """
     # Same two-phase select/validate-then-mutate as apply_lora_to (FIX-014);
     # the LoRALinear skip covers DoRALinear by inheritance.

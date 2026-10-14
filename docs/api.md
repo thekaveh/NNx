@@ -1548,6 +1548,64 @@ entry). Decoding never resolves or runs a factory.
 
 ### 2.6. Task adapters (`nnx.tasks`)
 
+#### `nnx.tasks`
+
+```python
+module nnx.tasks
+```
+
+Task adapters: declare what a supervised model's outputs and targets mean.
+
+**Details**
+
+```text
+By default ``NNModel`` assumes categorical classification: the default
+training step, :meth:`NNModel.evaluate` and :meth:`NNModel.predict` decode
+by argmax (or the ``BCEWithLogitsLoss`` threshold) and every evaluation
+record carries accuracy / f1 / recall / precision. A :class:`TaskSpec` on
+``NNModelParams(task=...)`` opts a model into an explicit task instead::
+
+    params = NNModelParams(net=Nets.FEED_FWD, loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression(2))
+
+The task's adapter then owns, for the default step, ``evaluate()``,
+``predict()`` and ``predict_proba()``:
+
+* **validation** — each batch's outputs and targets are checked for the
+  declared shape, dtype and value range *before* any backward pass or
+  optimizer update (:class:`TaskValidationError`);
+* **masking** — categorical targets equal to ``ignore_index``, and NaN
+  multilabel / regression targets, are excluded from the loss and every
+  metric alike;
+* **loss units** — the loss is averaged over the valid targets, with the
+  same denominators the default step already uses for gradient
+  accumulation, so uneven batches and accumulated windows reduce exactly
+  like one full batch;
+* **decoding and metrics** — argmax and accuracy / macro f1 / recall /
+  precision (``categorical``), independent sigmoid probabilities with a
+  declared threshold plus subset and element accuracy (``multilabel``),
+  continuous values with MSE / MAE and no classification fields
+  (``regression``).
+
+Three kinds exist; the kind is always declared, never inferred:
+
+* ``"categorical"`` — mutually exclusive classes along axis 1 of the
+  output (``(N, C)`` or ``(N, C, ...)``); integer targets shaped like the
+  output without the class axis. Needs ``Losses.CROSS_ENTROPY`` or
+  ``Losses.NEGATIVE_LOG_LIKELIHOOD``.
+* ``"multilabel"`` — independent binary labels: ``(N, L)`` logits and
+  0/1 targets of the same shape (NaN = masked). Needs
+  ``Losses.BINARY_CROSS_ENTROPY`` (``BCEWithLogitsLoss``).
+* ``"regression"`` — continuous targets shaped like the output (a
+  ``(N,)`` target is accepted for an ``(N, 1)`` output; NaN = masked).
+  Needs a regression loss (``Losses.MEAN_SQUARED_ERROR``, or any
+  non-classification loss module assigned to ``model.loss_fn``).
+
+Language-model, ranking, link-prediction and structured-prediction tasks
+are out of scope; ``Nets.TRANSFORMER`` and ``Nets.VIT`` models are rejected. Models without
+a task keep the legacy classification behaviour and serialization.
+```
+
+
 #### `nnx.tasks.TaskSpec`
 
 ```python
@@ -3170,6 +3228,82 @@ nnx.decisions.FixedHeadProvider.decide(self, question: 'Question', inputs: 'Any'
 Answer ``question`` for every row of ``inputs`` (a tensor, an array or a tuple of them).
 
 
+#### `nnx.decisions.nli`
+
+```python
+module nnx.decisions.nli
+```
+
+A local label-conditioned baseline: decisions from a caller-supplied natural-language-inference (NLI) model.
+
+**Details**
+
+```text
+A fixed-head classifier knows only the labels it was trained on. An NLI
+cross-encoder scores whether a *premise* (the input text) entails a
+*hypothesis* (a sentence built from a candidate's description), so the
+candidates can be supplied at inference time — none of them needs to exist
+when the provider is built::
+
+    from nnx.decisions import Choice, NLIProvider
+
+    provider = NLIProvider(model, tokenizer, entailment_id="entailment", contradiction_id="contradiction",
+                           hypothesis_template="This text is about {}.", revision="abc123")
+    provider.decide(Choice("Topic?", (("t-sport", "sports"), ("t-econ", "the economy"))), texts)
+
+**Scoring (explicit, never calibrated).**
+
+- A :class:`Choice` scores every (input, candidate) pair and normalizes the
+  **entailment logits across the candidates** with a softmax
+  (``choice_scoring="entailment_softmax"``): logits ``log(3)`` and ``0``
+  give ``(0.75, 0.25)``. Results are keyed by the request's option ids, in
+  its order, whatever order the candidates arrive in. Only the candidates'
+  descriptions are scored: the Choice's prompt is not part of any
+  hypothesis (write it into ``hypothesis_template`` when it matters).
+- A :class:`Boolean` scores one pair per input — the prompt rendered by
+  ``boolean_template`` — and takes the softmax over that pair's
+  **contradiction and entailment** logits alone
+  (``boolean_scoring="entailment_vs_contradiction"``): contradiction ``0``,
+  entailment ``log(4)`` give ``p_true = 0.8``. Inputs are never normalized
+  together.
+- :class:`Score` is unsupported (an NLI model has no ordinal semantics) and
+  is rejected before any model call.
+
+These are zero-shot scores from a model trained for another task: they are
+**not calibrated** probabilities, and how well they transfer to a decision
+task stays an empirical question — measure it on labelled records (see
+``examples/decision_nli.py``).
+
+**The provider contract.** NNx imports no NLI library and downloads
+nothing: the caller passes a tokenizer and a ``torch.nn.Module`` already
+loaded (from a local path, a pinned ``revision`` or a test stub). The
+tokenizer is called HuggingFace-style — ``tokenizer(premises, hypotheses,
+truncation=..., max_length=..., padding=True, return_tensors="pt")``
+returning a mapping of tensors (and, to measure lengths first, with
+``truncation=False, padding=False`` and no ``return_tensors``, returning
+per-pair ``input_ids`` — or an ``attention_mask``, whose sums are used) —
+and the model as ``model(**encoded)``,
+returning the logits ``(pairs, classes)`` or an object with ``.logits``.
+Pairs are sent in chunks of ``pair_batch_size`` (the last chunk may be
+shorter), moved to the model's device; the model runs in eval mode under
+``no_grad`` and every submodule's training flag is restored afterwards, on
+success and on failure.
+
+**Truncation (explicit, reported).** Every pair is measured untruncated
+first. ``truncation="only_first"`` cuts the premise to fit ``max_length``
+and reports which pairs were cut in each result's ``raw["truncated"]``; a
+hypothesis that leaves no room for the premise (measured with an empty
+premise) rejects the request before any model call. ``truncation="error"`` rejects a request with an
+over-long pair before any model call.
+
+Each result's ``raw`` records the pair logits, the truncation report and
+the provider's :meth:`NLIProvider.record` — the NLI template, label ids,
+scoring methods, truncation policy and model ``revision`` — with
+``"calibrated": False``, so a replayed or benchmarked result keeps how it
+was scored.
+```
+
+
 #### `nnx.decisions.NLIProvider`
 
 ```python
@@ -3244,6 +3378,84 @@ nnx.decisions.NLIProvider.decide(self, question: 'Question', inputs: 'Any') -> '
 ```
 
 Answer ``question`` for every text in ``inputs``.
+
+
+#### `nnx.decisions.jev`
+
+```python
+module nnx.decisions.jev
+```
+
+Typed decisions on Jev models through the TypeSafe Python SDK.
+
+**Details**
+
+```text
+:class:`JevProvider` answers :class:`Choice`, :class:`Boolean` and
+:class:`Score` questions about text with one ``system_one`` call per input,
+through the ``typesafe-sdk`` client — NNx adds no second transport stack::
+
+    from nnx.decisions import Boolean, Choice, JevProvider
+
+    with JevProvider(model="jev-1.13.0") as provider:  # TYPESAFE_API_KEY from the environment
+        topic, spam = provider.decide_many(
+            [Choice("Topic?", (("t-sport", "sports"), ("t-econ", "the economy"))), Boolean("Is this spam?")],
+            texts,
+        )
+
+Install the extra first: ``pip install "thekaveh-nnx[jev]"`` (tested against
+``typesafe-sdk>=0.7,<0.8``). Importing :mod:`nnx` or :mod:`nnx.decisions`
+never imports the SDK; building a provider without an injected client does,
+and raises an :class:`ImportError` naming the extra when it is missing.
+
+**Translation.** A :class:`Choice` becomes a Jev ``choice`` keyed by its
+options' descriptions — the model-facing text, never the bookkeeping ids —
+a :class:`Score` a ``score`` whose criteria are its levels' descriptions in
+order (lowest first), a :class:`Boolean` a ``noul``; the prompt is the
+``instructions``. Every question of one :meth:`JevProvider.decide_many` goes
+into the same call, one call per input. Answers are realigned to each
+question's own option order and validated
+(:func:`~nnx.decisions.validate_response`); a Score's expected score stays
+in ``vendor_score``.
+
+**Confidence.** A Choice's or Score's ``confidence`` is Jev's own certainty
+in its selection, recorded as ``raw["provider_confidence"]`` — it is not a
+probability that the answer is correct. A Boolean has none.
+
+**Metadata.** Each result's ``raw`` is plain JSON: ``provider``, the
+``model`` the service resolved (even for an alias request), the
+``requested_model`` when one was set, the ``request_id`` and the reported
+``usage`` token counts. A field the service did not report is absent, and
+clients, headers and credentials are never recorded.
+
+**Retries and failures.** The SDK's :class:`~typesafe_sdk.RetryPolicy`
+owns retries (pass ``retry=`` when the provider builds its client); the
+adapter makes each request once. What still fails becomes a typed
+:class:`JevError` — :class:`JevTimeout`, :class:`JevAuthenticationError`,
+:class:`JevRateLimited` or :class:`JevMalformedResponse` — keeping the SDK
+error as ``__cause__`` and, when the service answered, its ``request_id``
+(a timeout or a lost connection has none).
+
+**Cost.** Every text is its own ``system_one`` request, so one provider
+call over ``n`` texts sends ``n`` requests: a benchmark ``Budget.max_calls``
+or a job's ``Limits.max_requests`` counts provider calls, not requests — set
+``max_batch`` to bound requests per call. A failure on one text stops the
+call; answers already received for earlier texts are not returned.
+
+**Lifecycle.** An injected ``client`` / ``async_client`` stays the
+caller's: the provider never closes it, and never builds a second client
+beside it — with only a sync client injected the provider is sync-only
+(``adecide`` / ``adecide_many`` are ``None``, so a decision job's ``arun``
+runs it in its own worker thread, one call at a time); with only an async
+one, the sync methods are refused. With no client injected the provider builds its own (lazily, from
+``api_key`` / ``base_url`` / ``timeout`` / ``retry`` or the SDK's
+environment variables): :meth:`JevProvider.close` (``with``) closes a built
+sync client, :meth:`JevProvider.aclose` (``async with``) both — after an
+error or a cancellation too. A built async client belongs to one event
+loop; a call (or :meth:`JevProvider.aclose`) from another loop drops it
+with a ``ResourceWarning`` — close it with ``async with`` inside each
+``asyncio.run``.
+```
 
 
 #### `nnx.decisions.JevProvider`
@@ -3440,6 +3652,84 @@ class nnx.decisions.JevMalformedResponse(message: 'str', *, request_id: 'Optiona
 ```
 
 The service answered with data that does not fit the request: a body the SDK cannot parse, a missing answer, or a distribution that does not fit the question.
+
+
+#### `nnx.decisions.jobs`
+
+```python
+module nnx.decisions.jobs
+```
+
+Deferred decision jobs: batch independent questions, chain dependent ones.
+
+**Details**
+
+```text
+A :class:`DecisionJob` is an **immutable description** of decision work —
+building one calls no provider, runs no callback and draws no RNG::
+
+    from nnx.decisions import DecisionJob as Job
+
+    triage = Job.collect({
+        "topic": Job.ask(topic_question, id="topic"),
+        "urgent": Job.ask(urgent_question, id="urgent"),
+    }).map(lambda answers: answers["topic"])
+    routed = Job.ask(topic_question, id="topic").then(
+        lambda answer: Follow(Job.ask(team_question, id="team"), state=route_state(answer))
+    )
+    result = triage.run(provider, state=texts, limits=Limits(max_questions=2))
+
+- :meth:`DecisionJob.ask` — one question over the run's (or a
+  continuation's) **state**: the inputs the provider reads. Its value is the
+  provider's results, one per input row (or, with an abstention ``policy``,
+  the selective decisions).
+- :meth:`DecisionJob.collect` — independent jobs, keyed; the value is a
+  mapping in the given key order.
+- :meth:`DecisionJob.map` — a pure function of a job's value.
+- :meth:`DecisionJob.then` — a **dependent** job: once its prerequisite
+  succeeds, ``fn(value)`` returns a :class:`Follow` — the next job and the
+  state it reads, mapped explicitly from the answer. It runs once, never
+  feeds a sibling question, and is bounded by ``Limits.max_depth``.
+
+:meth:`DecisionJob.run` and :meth:`DecisionJob.arun` are the only effect
+boundaries. They **borrow** the provider (never close it): independent
+questions over the same state are batched into the fewest calls —
+``ceil(count / cap)`` per state, in a stable order — where ``cap`` is the
+provider's ``max_questions`` (a provider answering one question per call,
+such as :class:`~nnx.decisions.FixedHeadProvider`, has cap 1) bounded by
+``Limits.max_questions``. Duplicate question ids, questions the provider
+cannot serve and a token cap the provider cannot enforce are rejected
+before any call.
+
+**Answers are checked.** Each call's answers must hold one result list per
+question, one result per input row, each a result of that question (its
+digest); anything else is an ``InvalidDecisionResponse`` failure.
+
+**Fail-fast.** A provider error stops scheduling: :class:`JobFailed` carries
+every outcome known so far (``outcomes``; the answered ones are
+``completed``), the failing questions and the skipped ones; nothing
+completed is re-run (the job never retries — retries belong to the
+provider). Request and depth limits raise :class:`JobLimitExceeded` (in
+``arun``, after the calls already in flight finish), the ``timeout``
+:class:`JobTimeout`, each with the outcomes so far; questions never sent
+are ``skipped``.
+
+**Async.** :meth:`DecisionJob.arun` runs up to ``Limits.max_concurrency``
+provider calls at once through a provider's ``adecide_many`` / ``adecide``.
+A provider with only synchronous methods is called in a worker thread,
+never alongside another call (its methods need not be thread-safe), and the
+run waits for a running thread before it returns — a cancellation that
+arrives meanwhile is delivered once the thread is done. Setting the
+``cancel`` event (an ``asyncio.Event``; set at any point, even if cleared
+again) stops scheduling — no continuation runs after it — and returns a
+``"cancelled"`` :class:`JobResult`; cancelling the task cleans up the job's own tasks and
+re-raises. A request whose call began is reported as ``sent`` — never as
+rolled back: whatever the provider did with it stays done.
+
+**What "independent" means.** Computational, not statistical: questions
+batched together share a call, nothing more. Their answers are separate
+marginals; the job never multiplies them into a joint probability.
+```
 
 
 #### `nnx.decisions.DecisionJob`
@@ -4715,6 +5005,71 @@ Raised on every rank when another rank failed (preflight, a non-finite loss, a s
 ### 2.16. Budgeted experiment search (`nnx.search`)
 
 Through Optuna (extra `optuna`); see Concepts §29.
+
+#### `nnx.search`
+
+```python
+module nnx.search
+```
+
+Budgeted experiment search through an optional Optuna adapter.
+
+**Details**
+
+```text
+``search(plan, space, apply=..., monitor=..., budget=..., study_name=...)``
+asks an Optuna study for parameter sets one at a time; ``apply(plan,
+params)`` turns each into a **fresh** :class:`~nnx.plans.ExperimentPlan`
+(the base plan is never changed), which is fitted — a new model, optimizer,
+loaders and callbacks per trial, its own attempt id and run directory — and
+scored by one declared **validation** monitor. Requires the ``optuna``
+extra (``pip install "thekaveh-nnx[optuna]"``); importing ``nnx`` never
+imports Optuna or creates a study.
+
+- **Validated first.** The space (bounds, steps, log scales, choices), the
+  budget, the monitor (a validation monitor with a direction, equal to the
+  plan's own ``NNTrainParams.monitor`` so the BEST checkpoint is chosen the
+  same way) and the plan (validation data, data and callbacks as factories)
+  are checked before any trial; reopening a stored study whose space,
+  monitor or plan identity differs is refused before any trial too.
+- **The budget counts every trial.** Completed, failed, pruned and orphaned
+  (left running by a crashed process) trials all count against
+  ``SearchBudget.trials``: a study holding two trials, searched with a
+  budget of 3, asks once.
+- **Per-trial caps.** ``updates_per_trial`` stops a trial right after that
+  many committed optimizer updates (a partial accumulation window is not an
+  update). ``deadline_seconds`` (measured on ``clock``, from the search's
+  start) starts no new trial once expired and stops a running one at its
+  next update or epoch boundary, recording the overrun. Neither is
+  preemptive: a long batch finishes first. A trial stopped mid-epoch keeps
+  only its committed epochs — LAST, its tensors and the history are those
+  of the last completed epoch (no LAST before a first completed one).
+- **Pruning** (Optuna's ``pruner``) sees only the monitor's validation
+  value of each completed epoch, reported at step = the epoch index
+  (strictly increasing). A missing or non-finite value fails the trial; it
+  is never a candidate. A trial's value is the run's own monitor decision:
+  the value of the epoch its BEST checkpoint holds (``min_delta`` included).
+- **Errors.** A fit that raises fails its trial (``TrialOutcome.error``
+  keeps the message) and the search continues; a configuration error —
+  ``apply`` raising or returning a plan the search cannot score — stops the
+  search. An exhausted sampler ends it (``stop_reason="exhausted"``).
+- **Outcomes.** Every trial's :class:`TrialOutcome` keeps its parameters,
+  state and terminal reason, resource counters (epochs, committed updates,
+  seconds), best monitor value, attempt id, run id and BEST checkpoint path.
+  :attr:`SearchResult.best` is the completed trial with the best finite
+  monitor value under the monitor's direction.
+- **Cancellation** (``KeyboardInterrupt``) runs the fit's callback cleanup,
+  releases its run lease, records the trial as failed and propagates.
+
+Trials run sequentially in this process, which is the study's only
+writer: inside a ``torch.distributed`` process group of more than one rank
+(a ``torchrun`` launch) ``search`` raises ``RuntimeError`` before loading or
+creating a study, rather than run one study per rank. NNx artifacts live
+under ``runs/`` and Optuna's in ``storage`` (an in-memory study when
+``None``). Samplers keep their own limits (a seeded
+``TPESampler`` is reproducible only sequentially).
+```
+
 
 #### `nnx.search.search`
 
@@ -6629,6 +6984,65 @@ A declared schema — labels, model id, probability field, calibrator or sample 
 
 ### 2.22. Experiment plans (`nnx.plans`)
 
+#### `nnx.plans`
+
+```python
+module nnx.plans
+```
+
+Immutable fluent experiment plans.
+
+**Details**
+
+```text
+An :class:`ExperimentPlan` holds one experiment's configuration — the
+network parameters (``NNParams``), the model parameters (``NNModelParams``),
+the training parameters (``NNTrainParams``), the data, the seed and the
+callbacks — and compiles it to the existing ``NNModel(...)`` +
+``NNModel.train(...)`` loop. Every ``with_*`` method returns a **new** plan
+and leaves the source unchanged, so branching a configuration is::
+
+    base = ExperimentPlan().with_net(net).with_model(model).with_train(train).with_data(loader)
+    small, large = base.with_epochs(2), base.with_epochs(8)  # base, small and large are all intact
+
+Three boundaries are kept apart:
+
+- :meth:`ExperimentPlan.validate` is pure. It aggregates every
+  configuration problem as a field-path :class:`Diagnostic`, and consumes
+  no loader, calls no factory, builds no model, reads no weights and writes
+  no directory.
+- :meth:`ExperimentPlan.probe` is effectful but leaves no trace (bar a
+  CUDA model's first CUDA use, below): on one
+  example batch it seeds, builds a temporary model and runs a forward pass
+  (and the loss when the batch has a target) under ``torch.no_grad()``. It
+  then restores the ambient RNG streams, the cuDNN / deterministic-algorithm
+  settings and the seeding environment variables, even when the forward
+  pass fails. It never touches a callback or a run directory.
+- :meth:`ExperimentPlan.fit` trains. It seeds, calls the loader and callback
+  factories once, builds a fresh model and calls ``NNModel.train``, the
+  same loop an imperative script calls. Each fit is a distinct **attempt**:
+  its id is folded into the run's ``salt``, so repeated fits of one plan
+  get distinct run ids and directories, and a plan never sets
+  ``overwrite_existing``. It returns a :class:`FitResult` ``(model, run,
+  metrics, attempt_id)``.
+
+**Ownership.** The plan's parameter objects are immutable and freely shared
+between branches. Everything else is **borrowed**: shared by every branch
+and every fit, never copied or cloned, and never reset by the plan.
+
+- Borrowed: loader instances passed to :meth:`~ExperimentPlan.with_data`,
+  callback instances passed to :meth:`~ExperimentPlan.with_callbacks`, the
+  ``extra_metrics`` callables, step functions, the objective, components
+  and the provenance manifest.
+- A stateful borrowed object carries its state from one fit to the next.
+  ``EarlyStopping`` resets itself; ``LRMonitor`` accumulates.
+- For fresh objects per fit, pass zero-argument **factories**: a callable
+  as ``with_data(train=...)`` / ``val=``, or
+  :meth:`~ExperimentPlan.with_callback_factories`.
+- Each fit builds a new model; ``FitResult.model`` is the trained one.
+```
+
+
 #### `nnx.plans.ExperimentPlan`
 
 ```python
@@ -7037,6 +7451,64 @@ catches it.
 
 
 ### 2.23. Streaming prediction and mergeable metrics (`nnx.streaming`)
+
+#### `nnx.streaming`
+
+```python
+module nnx.streaming
+```
+
+Streaming prediction and mergeable metrics.
+
+**Details**
+
+```text
+``NNModel.predict()`` and ``NNModel.evaluate()`` are eager: they return only
+after the whole loader has run, holding every batch's outputs until then.
+This module adds the bounded counterparts.
+
+**A prediction stream.** ``NNModel.iter_predict(loader)`` returns a
+:class:`PredictionStream` that yields one result per loader batch, in loader
+order, and holds nothing once a batch has been handed over::
+
+    with model.iter_predict(loader) as stream:
+        for batch in stream:              # PredictionBatch(logits, classes, sample_ids)
+            write(batch.sample_ids, batch.classes)
+
+Concatenating the batches gives exactly what the eager call returns:
+``predict(loader)``'s logits and classes, and ``predict_proba(loader)``'s
+sample ids — the same seed-row slicing for graph loaders and the same
+categorical / multilabel / continuous decoding. With a
+:class:`~nnx.prediction.ProbabilitySpec`, or ``rich=True`` for a model with a
+task, every batch is a :class:`~nnx.prediction.PredictionResult` instead.
+
+- Each batch runs in eval mode under ``no_grad``, and every submodule's
+  training mode is restored before the batch is yielded, so the network is in
+  its own mode between batches — also when the forward pass raises.
+- Closing the stream (leaving the ``with`` block, ``close()``, an exception)
+  drops its references to the loader's iterator and to the model. A closed or
+  consumed stream refuses to be iterated again. The loader stays the caller's:
+  it is never closed and can be iterated again.
+- The stream holds at most the batch in flight. What the consumer keeps is
+  the consumer's memory: store only what you need (for example the sample
+  ids and classes), not the batches.
+
+**Mergeable metrics.** :class:`StreamingMetrics` accumulates declared
+:class:`~nnx.MetricSpec` metrics over any number of batches with ``update``,
+combines two accumulations over disjoint samples with ``merge`` and returns a
+read-only :class:`MetricSnapshot` from ``finalize``. Built-in metrics keep
+sums and counts (``accuracy``, ``nll``, ``brier``, ``mae``, ``mse``) or
+confusion counts (``f1``), so memory never grows with the number of samples,
+and a merge adds them — the result does not depend on the order. A metric that
+needs every stored score (a rank metric such as AUROC is never additive) is
+rejected unless ``materialize=True`` asks for O(N) storage.
+
+**Bounded validation.** :func:`streaming_eval_step` is a ready-made
+``eval_step_fn`` for ``NNModel.train``: the default validation record from
+counts and sums instead of stored predictions. ``evaluate()`` itself is
+unchanged and eager.
+```
+
 
 #### `nnx.streaming.PredictionStream`
 
@@ -7641,6 +8113,50 @@ A recipe that does not fit a model, or a malformed operation. ``problems`` lists
 
 
 ### 2.26. Execution precision (`nnx.precision`)
+
+#### `nnx.precision`
+
+```python
+module nnx.precision
+```
+
+Explicit FP32 / FP16 / BF16 execution policy.
+
+**Details**
+
+```text
+``NNModelParams.precision`` takes a :class:`PrecisionPolicy`: the precision
+training, evaluation and prediction run in. A policy is *resolved* against
+the device it runs on — once per run, before the run is reserved — into a
+:class:`ResolvedPrecision`, which says what is requested, what runs, and
+why a fallback happened:
+
+========  ===========================================  ==================
+mode      runs as                                      where
+========  ===========================================  ==================
+``fp32``  full precision (no autocast, no scaler)      every device
+``fp16``  float16 autocast + a ``GradScaler``          CUDA
+``bf16``  bfloat16 autocast, no scaler                 CPU; CUDA devices
+                                                       with bf16 support
+========  ===========================================  ==================
+
+A request the device cannot run fails before any run is reserved, unless
+the policy names ``fallback="fp32"``: the run then trains in full precision
+and records why. The model's parameters stay float32 in every mode
+(autocast only — never ``model.half()``), the backward pass runs outside
+autocast, and the update keeps its unscale → normalize → finite-check →
+clip → step order.
+
+The legacy ``NNModelParams(mixed_precision=True)`` keeps its meaning — FP16
+autocast with a scaler on CUDA, silently full precision elsewhere — and its
+run id; combining it with a policy other than ``fp16`` is refused.
+
+The policy covers ``NNModel.train`` (the default step and objectives),
+``Trainer.train(objective=...)``, ``evaluate()`` and prediction. It does
+not cover :mod:`nnx.lr_finder`, :mod:`nnx.diffusion.sampling` or
+generation, and TF32 is reported (never set) as separate metadata.
+```
+
 
 #### `nnx.precision.PrecisionPolicy`
 
@@ -8281,6 +8797,60 @@ Observations that may not be pooled or paired: ``fields`` names what differs.
 
 ### 2.28. Causal language-model task (`nnx.lm_tasks`)
 
+#### `nnx.lm_tasks`
+
+```python
+module nnx.lm_tasks
+```
+
+A causal language-model task: declared alignment, masks and valid-token normalization.
+
+**Details**
+
+```text
+A next-token step written by hand flattens ``(B, T, V)`` logits before any
+mask exists, divides by the batch count when it accumulates and returns
+placeholder classification fields. :class:`CausalLMTask` declares instead:
+
+- **alignment** — ``"shift_inputs"``: a batch is token ids ``(B, T)`` (or
+  ``(ids, loss_mask)``) and the task shifts once, predicting token ``t + 1``
+  from tokens ``<= t``; ``"pre_shifted"``: a batch is ``(inputs, targets)``
+  (or ``(inputs, targets, loss_mask)``) already aligned, never shifted again;
+- the **vocabulary** size and axis (the logits' last axis), the **ignore**
+  id (``-100``) and an optional **padding** id, an optional per-position
+  **loss mask** (a loss mask is never an attention mask), label
+  **smoothing** for the objective, and the task **version**.
+
+The ignore id, the padding id and the loss mask select one set of **valid
+positions** — the objective's denominator, the NLL and the token accuracy
+all use exactly those. Shapes, dtypes, lengths and every non-ignored id are
+checked before any forward pass.
+
+- :meth:`CausalLMTask.objective` — an objective: one ``"token_ce"``
+  term per microbatch, the (smoothed) cross-entropy **sum** over valid
+  positions with the valid count as its denominator, so accumulation
+  windows normalize by the window's valid tokens. An all-masked microbatch
+  contributes nothing, and an all-masked window takes no optimizer or
+  scaler step (its gradients are cleared; schedulers still advance once per
+  epoch on the default epoch clock, or once per committed update on the
+  ``optimizer_update`` clock, and a plateau scheduler skips an epoch whose validation record is
+  unavailable). The task configuration is
+  checkpointed component state (``"lm.causal_task"``): a resume with another
+  configuration is refused before the first resumed update.
+- :meth:`CausalLMTask.eval_step` — an ``eval_step_fn``: the epoch's
+  **unsmoothed** NLL is the total valid-token negative log likelihood over
+  the valid-token count (independent of batching and right padding; the
+  model never receives the attention mask, so a mapping batch whose
+  ``attention_mask`` shows left padding is refused; ``pad_id`` alone does not
+  detect left padding, so right-pad the batch), perplexity is
+  ``exp(NLL)`` (``+inf`` when it overflows, never a clipped finite value) and
+  token accuracy is the top-1 rate. They are the record's ``loss`` and its
+  ``metrics`` ``nll`` / ``perplexity`` / ``token_accuracy``; an epoch whose
+  every position is masked is reported unavailable (no loss, no metrics).
+  No classification field is fabricated.
+```
+
+
 #### `nnx.lm_tasks.CausalLMTask`
 
 ```python
@@ -8462,6 +9032,60 @@ A task configuration or a batch the task rejects.
 
 
 ### 2.29. Query-grouped ranking (`nnx.ranking`)
+
+#### `nnx.ranking`
+
+```python
+module nnx.ranking
+```
+
+Query-grouped ranking and retrieval evaluation.
+
+**Details**
+
+```text
+A scorer ranks the **candidates of each query**; it is judged per query,
+never per batch. :class:`RankingTask` declares the relevance grades, the
+cutoffs ``k``, the relevance threshold, how the pairwise objective weights
+queries and pairs, the candidate-set kind and the buffer limit, and checks
+every batch — query ids, candidate ids, relevance grades and an optional
+mask — before any update.
+
+A batch is ``(features, query_ids, candidate_ids, relevance)`` or
+``(..., mask)`` (or a mapping with those keys): the scorer maps
+``features`` to one score per candidate row; ids are integer tensors or
+lists of strings; relevance grades are integers in ``0..max_relevance``.
+
+- :meth:`RankingTask.objective` — the **pairwise logistic** objective: for each query, every pair of its candidates with unequal
+  relevance contributes ``log(1 + exp(-(s_hi - s_lo)))``; equal-relevance
+  pairs (ties) contribute nothing and a query without such a pair is
+  skipped. ``weighting="query"`` averages each query's pairs and then the
+  queries (a query weighs the same however many pairs it has);
+  ``weighting="pair"`` weighs every pair equally. Pairs are formed within a
+  microbatch. Checkpointed as component ``"ranking.task"``.
+- :meth:`RankingTask.eval_step` — an ``eval_step_fn``: it buffers the whole
+  validation stream (at most ``max_buffered`` candidate rows), groups it by
+  query — so a query split across batches is joined, in any order — and
+  rejects a candidate seen twice for one query. Each query's candidates are
+  ranked by score, **ties broken by candidate id** (ascending); then
+  ``MRR@k`` (the reciprocal rank of the first relevant candidate in the top
+  ``k``, else 0), ``Recall@k`` (relevant candidates in the top ``k`` over
+  all relevant) and ``NDCG@k`` (gain ``2^rel - 1``, discount
+  ``log2(rank + 1)``) are averaged over queries. A candidate is relevant
+  when its grade is at least ``relevance_threshold``; a query with no
+  relevant candidate is **excluded** (and counted), never scored 0. ``k``
+  above a query's candidate count is rejected.
+
+The record (``kind="ranking"``) carries ``mrr_at_<k>``, ``recall_at_<k>``,
+``ndcg_at_<k>``, the counts of scored and excluded queries and candidates,
+and ``exhaustive_candidates`` (``1.0`` when every query's candidate set is
+its full corpus, ``0.0`` when it is sampled — then the metrics measure the
+candidate set, not full-corpus retrieval). :meth:`RankingTask.metric_specs`
+declares the metrics so a :class:`~nnx.MonitorSpec` can name them (for
+example ``MonitorSpec("ndcg_at_10")``) for BEST, early stopping and plateau
+scheduling.
+```
+
 
 #### `nnx.ranking.RankingTask`
 
@@ -8837,6 +9461,64 @@ A graph collection, batch or classifier setting NNx rejects.
 
 ### 2.31. Link and edge prediction (`nnx.link_tasks`)
 
+#### `nnx.link_tasks`
+
+```python
+module nnx.link_tasks
+```
+
+Leakage-aware link and edge prediction on a static homogeneous graph.
+
+**Details**
+
+```text
+Node masks cannot hold out edges: a held-out edge left in the message graph
+is a leaked answer. This module splits **edges**, keeps the graph the model
+passes messages over apart from the edges it is asked about, and checks
+every batch against that split before any forward pass.
+
+- :class:`LinkSplit` — a versioned manifest: the node count, canonical
+  positive edges per split (``train`` / ``val`` / ``test``; an undirected
+  edge is ``(min, max)``, so a duplicate, or in an undirected split a
+  reverse, can never sit in two splits), fixed ``val`` / ``test`` negatives, directedness, the self-loop
+  policy, the seed, and — for edge-label tasks — the categories, each
+  edge's category and whether labelled edges' **existence** is visible
+  context. :func:`split_links` derives one from an ``edge_index`` with a
+  local seeded generator (never the global RNG); :meth:`LinkSplit.replay`
+  re-derives it and refuses a mismatch.
+- **Topology.** :meth:`LinkSplit.message_edge_index` is the only graph
+  messages pass over: the training edges (and their reverses when
+  undirected) — for every split, so evaluation never sees held-out
+  positives. In edge-label mode with ``label_existence="visible"`` every
+  labelled edge's existence is context (their categories never are).
+- **Negatives** come from the static complement — never a positive of any
+  split, its reverse (in an undirected split), a duplicate or a barred
+  self-loop. A request beyond
+  the complement's capacity fails before anything is sampled; ``val`` /
+  ``test`` negatives are fixed in the manifest; training negatives are
+  re-drawn every pass from ``(seed, pass)``.
+- :class:`LinkTask` — ``"binary"`` (link existence: one logit per
+  candidate, targets 0/1) or ``"edge_label"`` (categories in their declared
+  order; no negatives, so a non-edge is never a category). ``loader()``
+  builds batches of candidates over the message graph; ``objective()``,
+  ``eval_step()`` and ``predict()`` check each batch against the split —
+  a message edge outside the training topology (a hidden positive) or a
+  candidate outside its split fails before any update. Evaluation
+  materialises every candidate (up to ``max_candidates``) for exact
+  AUROC / AP, scored from the float64 logits (a probability rounds to 0 or
+  1 for a confident model). For a one-class set, ``link_metrics`` reports
+  them unavailable with the reason, and the evaluator's record omits them.
+  The manifest is checkpointed component state ``"link.task"``: a resume
+  with another split fails before the first resumed update.
+- :func:`link_predictor_spec` — a registered recipe
+  (``ModelSpec("nnx.link_predictor", 1, config)``): a GCN / GraphSAGE /
+  GAT encoder and a ``"dot"`` or ``"mlp"`` edge decoder, rebuilt on reload.
+
+Homogeneous static graphs only: no temporal or heterogeneous graphs, and
+unobserved pairs are negatives only as the split declares them.
+```
+
+
 #### `nnx.link_tasks.split_links`
 
 ```python
@@ -9192,7 +9874,7 @@ A split, batch or setting that would leak or cannot be served.
 class nnx.nn.params.nn_params.NNParams(*, dropout_prob: 'float', n_heads: 'Optional[int]' = None, activation: 'Optional[Activations]' = leaky_relu, activations: 'Optional[list[Activations]]' = None, dropout_probs: 'Optional[list[float]]' = None, input_dim: 'int', output_dim: 'int', hidden_dims: 'Optional[list[int]]' = None) -> 'None'
 ```
 
-NNParams(*, dropout_prob: 'float', n_heads: 'Optional[int]' = None, activation: 'Optional[Activations]' = leaky_relu, activations: 'Optional[list[Activations]]' = None, dropout_probs: 'Optional[list[float]]' = None, input_dim: 'int', output_dim: 'int', hidden_dims: 'Optional[list[int]]' = None)
+Architecture of a built-in feed-forward network: input and output sizes, hidden layer widths, activation and dropout (net-wide or per layer). Subclasses add the convolutional, MoE, ViT and transformer fields.
 
 ##### `nnx.nn.params.nn_params.NNParams.dims`
 
@@ -9262,7 +9944,7 @@ different id, and net rebuilding crashes. Every loader
 class nnx.nn.params.nn_model_params.NNModelParams(*, net: 'Optional[Union[Nets, ModelSpec, RuntimeModule]]' = None, device: 'Devices' = cpu, loss: 'Losses' = cross_entropy, mixed_precision: 'bool' = False, task: 'Optional[TaskSpec]' = None, precision: 'Optional[PrecisionPolicy]' = None) -> 'None'
 ```
 
-NNModelParams(*, net: 'Optional[Union[Nets, ModelSpec, RuntimeModule]]' = None, device: 'Devices' = cpu, loss: 'Losses' = cross_entropy, mixed_precision: 'bool' = False, task: 'Optional[TaskSpec]' = None, precision: 'Optional[PrecisionPolicy]' = None)
+How an `NNModel` is built and run: the network (a `Nets` member, a registered `ModelSpec` or a runtime module), the device, the loss and the task.
 
 ##### `nnx.nn.params.nn_model_params.NNModelParams.is_valid`
 
@@ -9661,7 +10343,7 @@ No public description is currently available.
 class nnx.nn.params.nn_scheduler_params.NNSchedulerParams(*, min_lr: 'float', factor: 'float', patience: 'int', cooldown: 'int', threshold: 'float', kind: 'Optional[Schedulers]' = None, step_size: 'Optional[int]' = None, T_max: 'Optional[int]' = None, max_lr: 'Optional[float]' = None, total_steps: 'Optional[int]' = None, warmup_steps: 'Optional[int]' = None, clock: 'SchedulerClockUnit' = 'epoch') -> 'None'
 ```
 
-NNSchedulerParams(*, min_lr: 'float', factor: 'float', patience: 'int', cooldown: 'int', threshold: 'float', kind: 'Optional[Schedulers]' = None, step_size: 'Optional[int]' = None, T_max: 'Optional[int]' = None, max_lr: 'Optional[float]' = None, total_steps: 'Optional[int]' = None, warmup_steps: 'Optional[int]' = None, clock: 'SchedulerClockUnit' = 'epoch')
+A learning-rate scheduler: its kind (``ReduceLROnPlateau`` when ``kind`` is ``None``), the plateau fields, the kind-specific horizons and the clock that one step counts (an epoch or an optimizer update).
 
 ##### `nnx.nn.params.nn_scheduler_params.NNSchedulerParams.state`
 
@@ -9840,7 +10522,7 @@ Raises:
 class nnx.nn.params.nn_transformer_params.NNTransformerParams(*, dropout_prob: 'float', n_heads: 'Optional[int]' = None, activation: 'Optional[Activations]' = leaky_relu, activations: 'Optional[list[Activations]]' = None, dropout_probs: 'Optional[list[float]]' = None, input_dim: 'int', output_dim: 'int', hidden_dims: 'Optional[list[int]]' = None, vocab_size: 'int', n_layers: 'int', d_model: 'int', max_seq_len: 'int', ffn_mult: 'int' = 4, rope_base: 'float' = 10000.0, tie_embeddings: 'bool' = True, attn_dropout: 'float' = 0.0, resid_dropout: 'float' = 0.0) -> 'None'
 ```
 
-NNTransformerParams(*, dropout_prob: 'float', n_heads: 'Optional[int]' = None, activation: 'Optional[Activations]' = leaky_relu, activations: 'Optional[list[Activations]]' = None, dropout_probs: 'Optional[list[float]]' = None, input_dim: 'int', output_dim: 'int', hidden_dims: 'Optional[list[int]]' = None, vocab_size: 'int', n_layers: 'int', d_model: 'int', max_seq_len: 'int', ffn_mult: 'int' = 4, rope_base: 'float' = 10000.0, tie_embeddings: 'bool' = True, attn_dropout: 'float' = 0.0, resid_dropout: 'float' = 0.0)
+Architecture of the decoder-only `TransformerNN`: vocabulary size, depth, width, attention heads and the maximum sequence length.
 
 ##### `nnx.nn.params.nn_transformer_params.NNTransformerParams.state`
 
@@ -10290,7 +10972,7 @@ Returns:
 class nnx.nn.params.nn_run.NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, transforms: 'tuple[NNCheckpointTransform, ...]' = (), idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None, history: 'Optional[str]' = None, precision: 'Optional[ResolvedPrecision]' = None, compile: 'Optional[CompileRecord]' = None) -> 'None'
 ```
 
-NNRun(*, net: 'Optional[NNParams]', train: 'NNTrainParams', model: 'NNModelParams', trainer: 'Optional[NNTrainerParams]' = None, salt: 'Optional[str]' = None, transforms: 'tuple[NNCheckpointTransform, ...]' = (), idps: 'Optional[list[NNIterationDataPoint]]' = None, resume_status: 'Optional[ResumeStatus]' = None, provenance: 'Optional[ProvenanceRecord]' = None, history: 'Optional[str]' = None, precision: 'Optional[ResolvedPrecision]' = None, compile: 'Optional[CompileRecord]' = None)
+A training run: its network, training and model parameters, its id and its persisted history and checkpoints under ``runs/<id>/``. Load one with `NNRun.load`.
 
 ##### `nnx.nn.params.nn_run.NNRun.id`
 
@@ -10537,8 +11219,9 @@ stateful.
 
 When `optimizer_state` is supplied, a generation-addressed sibling
 file holds the training state, plus a fixed-name compatibility copy.
-This sidecar is used by NNModel.train(resume_from=...) to warm-resume
-with the prior optimizer momentum / Adam state.
+This sidecar is used by NNModel.train when NNTrainParams'
+resume_from_run_id / resume_from_checkpoint name this checkpoint, to
+warm-resume with the prior optimizer momentum / Adam state.
 
 The immutable generation sidecar is committed first and the checkpoint
 second. The checkpoint names the sidecar it owns, so interruption
@@ -11485,7 +12168,7 @@ No public description is currently available.
 class nnx.nn.dataset.nn_dataset_base.NNDatasetBase() -> 'None'
 ```
 
-NNDatasetBase()
+Base of the NNx datasets: a name, the input and output sizes and the train / validation / test loaders, all set by the subclass at construction.
 
 ##### `nnx.nn.dataset.nn_dataset_base.NNDatasetBase.state`
 
@@ -12674,7 +13357,7 @@ Returns:
 
 ## 9. Parameter-efficient fine-tuning (`nnx.peft`)
 
-LoRA + DoRA + IA3 + Prefix-Tuning + Prompt-Tuning + Adapters. All methods share the same in-place wrap + save/load idiom (per-method `save_*_weights` / `load_*_weights` persist only the trainable delta).
+LoRA + DoRA + IA3 + Prefix-Tuning + Prompt-Tuning + Adapters. The `apply_*_to` helpers wrap layers in place. LoRA, IA3, Prefix and Prompt ship `save_*_weights` / `load_*_weights`, which persist only the trainable delta. DoRA persists with the full `state_dict()` (the LoRA helpers omit `magnitude`), and `AdapterLayer` is inserted by hand.
 
 ### 9.1. LoRA
 
@@ -12972,6 +13655,10 @@ Raises:
         modified. A Linear inside a shared container is one slot and is
         wrapped once; tied tensors between distinct modules are outside
         this check (see :func:`nnx.peft.apply_lora_to`).
+    TypeError: if a selected Linear is a subclass with its own
+        ``forward`` (a QAT fake-quantized layer), which DoRA's recomposed
+        matmul would bypass. Every wrapper is built before any slot is
+        replaced, so a refused call modifies nothing.
 ```
 
 
@@ -14143,6 +14830,54 @@ Returns:
 ```
 
 
+#### `nnx.diffusion.objective`
+
+```python
+module nnx.diffusion.objective
+```
+
+DDPM noise prediction as an objective.
+
+**Details**
+
+```text
+:func:`diffusion_train_step_factory` is an imperative step: it draws the
+timesteps and noise from the global RNG, takes a mean ``F.mse_loss`` and
+hands it to ``finalize_step``, which owns the optimizer step — so it cannot
+accumulate gradients over uneven microbatches or share the update engine.
+:func:`diffusion_objective` describes the same loss as an objective
+(``nnx.objectives``) and leaves backward, accumulation, mixed precision,
+clipping and the optimizer step to NNx's shared update engine::
+
+    model.train(params=NNTrainParams(...), objective=diffusion_objective(schedule, seed=0))
+
+For each microbatch the objective returns one ``"noise_mse"`` loss term:
+the **sum** of squared errors between the predicted and the true noise
+over every element, normalized by the element count. Over an update
+window the engine divides the summed errors by the summed counts, so
+microbatches ``[2, 1]`` take exactly the update of the full batch of 3 for
+the same timesteps and noise.
+
+The timesteps and noise come from the objective's **own** generator (a CPU
+``torch.Generator``, seeded from ``seed`` or, when ``None``, from one draw
+of the global RNG at first use). Its state is checkpointed component state
+(``"diffusion.objective"``), so a stateful warm resume continues the
+stream, and a :func:`~nnx.diffusion.sample` preview with its own generator
+never perturbs it. Each run starts the stream afresh (a stateful resume
+then restores the saved one), so an instance reused for a second, equally
+seeded run draws the same noise. The draws happen on the CPU — the stream
+is then the same on every device and survives a resume onto another — at
+the cost of a host-to-device copy per microbatch; pass
+``noise_fn(x_0, generator) -> (t, eps)`` to supply the timesteps and noise
+yourself (fixed values in tests, another timestep distribution). The
+``generator`` it receives is the objective's CPU generator: a ``noise_fn``
+that draws on a CUDA device for large image batches must use its own CUDA
+generator or the global RNG instead (which a stateful resume restores, but
+which a ``sample`` preview without its own generator would advance). Its
+timesteps must be int64 (or int32) values in ``[0, T)``.
+```
+
+
 #### `nnx.diffusion.objective.diffusion_objective`
 
 ```python
@@ -14428,6 +15163,72 @@ Raises:
     PrecisionUnsupportedError: if ``generations > 1`` and the model's
         precision is reduced: the KD generations run in full
         precision only, so nothing is trained.
+```
+
+
+#### `nnx.paradigms.offline_distillation`
+
+```python
+module nnx.paradigms.offline_distillation
+```
+
+Offline teacher distributions: distill a student from stored, permissioned teacher probabilities.
+
+**Details**
+
+```text
+``kd_train_step_factory`` and ``kd_objective`` forward a **live** teacher
+every step and compare temperature-softened **logits** (scaled by ``T²``).
+Precomputed teacher output is often only a probability distribution — a
+decision provider's answers, an export from a model you may no longer run —
+with no pre-temperature logits to soften. This module trains on those
+records directly, offline:
+
+- :class:`TeacherRecord` — one stored distribution: the sample and question
+  ids, the ordered candidate ids and their probabilities (finite,
+  nonnegative, summing to 1 within ``1e-6``), the teacher model and
+  revision, the schema digest (e.g. a ``nnx.decisions`` question's
+  ``digest()``), the probability ``semantics`` and the record's
+  ``provenance`` — its ``source`` and the **declared** ``training_rights``
+  under which it may train a student. NNx records the declaration; it does
+  not verify entitlement. An optional ``label`` (a candidate id) is the
+  sample's hard target. :func:`write_teacher_records` /
+  :func:`read_teacher_records` keep them as strict JSONL
+  (``nnx.teacher-record/1``).
+- :class:`TeacherDataset` — records joined to the student's inputs **by
+  sample id**, every distribution aligned **by candidate id** to the
+  student's output order (``candidates``). A record missing a candidate,
+  naming an unknown or duplicate one, another schema digest, a repeated
+  sample id or a sample with no input is refused when the dataset is built
+  — before any optimizer exists. :meth:`TeacherDataset.loader` yields
+  :class:`TeacherBatch`es.
+- :class:`OfflineDistillationObjective` (:meth:`TeacherDataset.objective`)
+  — an objective for NNx's shared update engine: ``alpha ·
+  KL(teacher ‖ student) + (1 − alpha) · CE(student, label)``, both at
+  temperature 1 — no logits are invented and no ``T²`` is applied. The two
+  terms share one mask (every row) and one denominator (the microbatch's
+  rows), so microbatches accumulate exactly to the full-batch update; a
+  partly labelled batch is refused, and ``alpha < 1`` needs every record
+  labelled. The teacher's probabilities are detached, and the objective
+  never back-propagates, zeroes, steps, scales or schedules. Its identity —
+  objective version, schema digest, ``alpha`` and the candidate alignment
+  (``identity()``) — is checkpointed as component state
+  ``"offline_distillation.objective"``, so a stateful resume with any of
+  them changed is refused before the first resumed update; pass the same
+  identity to ``ExperimentManifest.for_model(objective=...)`` to record it
+  in a run's provenance.
+- :func:`evaluate_offline` (and :meth:`TeacherDataset.eval_step` for the
+  training loop's validation) reports **teacher agreement** (the student's
+  top candidate is the teacher's, over every record), **imitation loss**
+  (mean ``KL(teacher ‖ student)`` in nats, over every record) and
+  **labelled quality** (accuracy and NLL on the labelled records only),
+  each with its own denominator: agreeing with a teacher is not being
+  right.
+
+Nothing here reaches the network: records, inputs and the student are
+local. Live distillation (``kd_train_step_factory``,
+``feature_kd_train_step_factory``, ``born_again_train``, ``kd_objective``)
+keeps its logit / temperature contract and refuses these records.
 ```
 
 
@@ -14982,6 +15783,41 @@ nnx.paradigms.jepa.JEPATrainStep.load_component_state(self, state: 'Mapping[str,
 ```
 
 No public description is currently available.
+
+
+#### `nnx.paradigms.jepa_objective`
+
+```python
+module nnx.paradigms.jepa_objective
+```
+
+I-JEPA latent prediction as an objective.
+
+**Details**
+
+```text
+:func:`~nnx.paradigms.jepa_train_step_factory` is an imperative step: it
+takes a masked mean squared error, hands it to ``finalize_step`` (which
+owns the optimizer step) and runs :func:`~nnx.paradigms.update_ema` at
+once — so it cannot accumulate gradients over uneven microbatches or share
+the update engine. :func:`jepa_objective` describes the same loss as an
+objective (``nnx.objectives``)::
+
+    target = build_target_encoder(model.net)
+    predictor = JEPAPredictor(embed_dim=..., n_patches=model.net.n_patches)
+    model.net.add_module("_jepa_predictor", predictor)  # optimizer-owned, once
+    model.train(params=NNTrainParams(...), objective=jepa_objective(target, predictor, mask_fn))
+
+For each microbatch the objective returns one ``"latent_mse"`` loss term:
+the **sum** of squared errors between the predicted and the target
+embeddings at the masked positions, normalized by the number of those
+elements — so microbatches with different target masks combine as
+``(sum_1 + sum_2) / (count_1 + count_2)``. The EMA target encoder runs
+under ``no_grad`` and is never optimizer-owned; it advances **once per
+committed update**, from the updated online weights (the objective's
+``after_update`` hook) — never per microbatch, and not at all for a skipped
+window.
+```
 
 
 #### `nnx.paradigms.jepa_objective.jepa_objective`
@@ -15701,6 +16537,61 @@ Returns:
 
 Executable profiles that separate structural validity from numerical parity: `FeedFwdNN` 4-8-2 FP32 under both exporters, run in ONNX Runtime on CPU, with every stage's outcome and the evidence recorded. Walkthrough, failure classes and exit codes at [Export conformance](export-conformance.md). Opt-in via `pip install "thekaveh-nnx[onnx-runtime,onnx-dynamo]"`; `python scripts/check_export_conformance.py --output conformance.json` runs both profiles.
 
+#### `nnx.export_conformance`
+
+```python
+module nnx.export_conformance
+```
+
+Executable ONNX export conformance profiles.
+
+**Details**
+
+```text
+``onnx.checker`` proves an exported file is *well formed*; it says nothing
+about what a runtime computes from it. A **profile** fixes everything a
+parity claim depends on — the model and its weights, the exporter and its
+options, the runtime, provider and dtype, the input cases and the
+tolerances — runs it, and records each stage's outcome separately::
+
+    dependencies ─► export ─► check ─► load ─► parity
+
+- **dependencies** — ``onnx`` and ``onnxruntime`` (and ``onnxscript`` for
+  the dynamo exporter) are importable. A missing one is a
+  ``missing-dependency`` failure, never a skip.
+- **export** — ``NNModel.to_onnx`` writes the graph (and any external data)
+  into the profile's own directory; the model's parameters, gradients and
+  (mixed) train / eval modes must be unchanged afterwards.
+- **check** — ``onnx.checker.check_model(path, full_check=True)``; records
+  the opset, IR version and input / output signature. Every file the
+  exporter wrote is hashed (SHA-256), external tensors included.
+- **load** — the hashes are verified first (a mismatch is rejected before
+  anything is loaded), then an ``onnxruntime.InferenceSession`` is created
+  on the declared provider.
+- **parity** — every valid input case's raw logits must match the native
+  model in eval mode within ``rtol`` / ``atol``, and an input of the wrong
+  feature width must be refused by the runtime (``input-contract``).
+
+Failures are classified (:data:`FAILURES`); a record's ``level`` is
+``"executed"`` only when the runtime ran the graph and every case passed,
+``"structural"`` when only the checker did, and ``"none"`` otherwise.
+
+Tested profiles (:data:`PROFILES`) — the only targets NNx claims executed
+parity for: ``FeedFwdNN`` 4-8-2 (ReLU, dropout 0, deterministic nontrivial
+FP32 weights), exported at batch 2 with a dynamic batch dimension and run
+on ONNX Runtime's CPU provider at batches 1, 2, 3 and 7, under the legacy
+TorchScript exporter (``feedfwd-fp32-torchscript``) and the
+``torch.export``-based one (``feedfwd-fp32-dynamo``). Everything else —
+other architectures, quantized exports, Netron files, GGUF / Ollama
+artifacts — stays structural or container-only: a checker pass or a
+parser round trip never promotes a target to executed parity.
+
+Run both profiles with ``python scripts/check_export_conformance.py
+--output conformance.json`` (needs ``thekaveh-nnx[onnx-runtime,onnx-dynamo]``).
+Nothing here imports ``onnx`` or ``onnxruntime`` until a profile runs.
+```
+
+
 #### `nnx.export_conformance.Profile`
 
 ```python
@@ -15829,7 +16720,7 @@ A malformed conformance record, or artifacts that do not match it.
 Opt-in via `pip install "thekaveh-nnx[hub]"`. Two integration surfaces:
 
 - **safetensors checkpoints** — `NNCheckpoint.to_file(..., format="safetensors")` writes the safetensors format alongside the default pickle path, and `NNCheckpoint.from_file(path)` reads either (detected from the file; see §3 `NNCheckpoint`). Loadable by outside-Python tools (ComfyUI, vLLM, AutoGPTQ).
-- **Hub publish / load** — `NNModel` mixes in `huggingface_hub.PyTorchModelHubMixin`, so `save_pretrained(local_dir)`, `push_to_hub(repo_id)`, and `NNModel.from_pretrained(repo_id)` work directly on a trained model. The mixin methods are inherited and live on `NNModel` itself — see §2.1.
+- **Hub publish / load** — `NNModel` mixes in `huggingface_hub.PyTorchModelHubMixin`, so `save_pretrained(local_dir)`, `push_to_hub(repo_id)`, and `NNModel.from_pretrained(repo_id)` work directly on a trained model. The mixin methods are inherited and live on `NNModel` itself. The NNx keywords of `from_pretrained` (`precision=`, `exclude_submodules=`, `map_location=`, `strict=`) are documented in [Hub](hub.md).
 
 Walkthrough at [HuggingFace Hub](hub.md).
 
@@ -15852,6 +16743,38 @@ Callable protocol: ``logits, token_history -> adjusted_logits``.
 (across batch dim 0 — we assume a single-sequence batch in
 ``GenerativeNNModel.generate``). Processors that don't care about
 history (temperature, top-k, top-p) simply ignore the arg.
+```
+
+
+#### `nnx.generation.logits_chain`
+
+```python
+module nnx.generation.logits_chain
+```
+
+LogitsChain — a typed, ordered chain of LogitsProcessors.
+
+**Details**
+
+```text
+Plan 5 of the Builder-pattern rollout. The Builder is the opt-in alternative to
+`GenerativeNNModel.generate(temperature=..., top_k=..., top_p=...,
+repetition_penalty=...)`: it lets the user compose the chain
+declaratively and add custom processors (e.g., logit-bias for
+forbidden tokens) without having to drop down to
+`apply_chain(processors=[...])` and reconstruct the canonical order
+themselves.
+
+Builder ordering: regardless of the method-call order, `.build()`
+sorts the processors into NNx's canonical order (the same order
+`GenerativeNNModel.generate` builds from its inline kwargs):
+    RepetitionPenalty → TopKFilter → TopPFilter → TemperatureScaling
+Temperature is deliberately LAST — temperature=0 greedy is implemented
+via ±inf argmax markers that must not be re-filtered, so this differs
+from HF's transformers, which applies temperature before top-k/top-p
+(for temperature≠1 the nucleus token set can differ).
+Custom processors (added via `.custom(processor)`) are appended after
+TemperatureScaling — the "post-default" slot for user extensions.
 ```
 
 
@@ -15969,6 +16892,54 @@ Raises:
         greedy turns the logits into ±inf argmax markers, which a
         logit bias or a token ban would corrupt (the chain would pick
         a banned or arbitrary token).
+```
+
+
+#### `nnx.generation.pipeline`
+
+```python
+module nnx.generation.pipeline
+```
+
+OrderedLogitsPipeline — immutable decoding stages run in declared order.
+
+**Details**
+
+```text
+:class:`~nnx.generation.LogitsChain` (via its builder) sorts the standard
+processors into NNx's canonical order. An :class:`OrderedLogitsPipeline`
+does the opposite: it runs its stages **exactly in the order they were
+declared**, duplicates and custom positions included, so ordered decoding
+configuration can be written down as data::
+
+    from nnx.generation import LogitsStage, OrderedLogitsPipeline
+
+    nucleus_then_cool = OrderedLogitsPipeline.of(LogitsStage.top_p(0.8), LogitsStage.temperature(0.5))
+    with_penalty = nucleus_then_cool.prepend(LogitsStage.repetition_penalty(1.2))  # a new pipeline
+    model.generate(prompt, logits_pipeline=with_penalty)
+
+- **Immutable.** A pipeline holds a tuple of stages; :meth:`append` and
+  :meth:`prepend` return new pipelines. A built-in stage is a frozen spec
+  (:class:`LogitsStage`) — a processor passed in is read once and copied
+  into one, so mutating that processor later changes nothing — and every
+  run compiles fresh processors from the specs.
+- **Validated.** Every value is finite and in its domain when the stage is
+  made. A zero-temperature stage is greedy: it turns the logits into
+  ``±inf`` argmax markers, so it is **terminal** — a stage after it raises
+  (nothing is ever reordered).
+- **Custom stages.** Any ``(logits, token_history) -> logits`` callable can
+  be a :class:`CustomStage` at any position (a subclass of a built-in
+  processor stays custom, keeping its own ``__call__``; the terminal rule
+  sees only built-in stages; a nested pipeline is flattened into its
+  stages). Its state is the caller's (the
+  pipeline keeps the reference, never a copy). It is runtime-only unless
+  its ``tag`` names a :class:`LogitsStageCodec` registered in this process
+  with :func:`register_logits_stage_codec`; a pipeline is never rebuilt by
+  importing code named in data, and nothing about it enters a checkpoint
+  or a run identity.
+- **Versioned round trip.** :meth:`OrderedLogitsPipeline.state` writes
+  ``{"version": 1, "stages": [...]}`` with one tagged entry per stage, in
+  order; :meth:`OrderedLogitsPipeline.from_state` rebuilds it.
 ```
 
 

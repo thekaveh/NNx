@@ -356,3 +356,61 @@ def test_dora_half_classifier_step_and_full_state_round_trip():
     assert "layers.0.magnitude" in net.state_dict()
     torch.testing.assert_close(reloaded(x), net(x), atol=0, rtol=0)
     assert torch.isfinite(reloaded(x)).all()
+
+
+def test_dora_refuses_a_base_with_its_own_forward_and_leaves_the_model_unchanged():
+    import pytest
+    from torch import nn
+
+    from nnx.peft import apply_dora_to
+
+    class Scaled(nn.Linear):
+        def forward(self, x):
+            return super().forward(x) * 2
+
+    model = nn.Sequential(nn.Linear(3, 4), nn.ReLU(), Scaled(4, 2))
+    with pytest.raises(TypeError, match="Scaled"):
+        apply_dora_to(model, "*")
+    assert type(model[0]) is nn.Linear and type(model[2]) is Scaled  # nothing replaced
+    assert all(p.requires_grad for p in model.parameters())  # nothing frozen
+
+
+def test_a_dora_base_replaced_later_by_a_custom_forward_is_refused_at_forward():
+    import pytest
+    import torch
+    from torch import nn
+
+    from nnx.peft import DoRALinear
+
+    class Scaled(nn.Linear):
+        def forward(self, x):
+            return super().forward(x) * 2
+
+    layer = DoRALinear(nn.Linear(3, 2), r=2)
+    swapped = Scaled(3, 2)
+    swapped.load_state_dict(layer.base.state_dict())
+    layer.base = swapped  # what a later QAT prepare does to the slot
+    with pytest.raises(TypeError, match="QAT prepare"):
+        layer(torch.randn(1, 3))
+
+
+def test_a_wrapper_that_fails_to_build_leaves_every_slot_and_flag_unchanged():
+    import pytest
+    from torch import nn
+
+    from nnx.peft import LoRALinear
+    from nnx.peft._targets import wrap_selected_linears
+
+    model = nn.Sequential(nn.Linear(3, 4), nn.ReLU(), nn.Linear(4, 2))
+    built = []
+
+    def wrap(base):
+        if built:
+            raise RuntimeError("cannot build the second wrapper")
+        built.append(LoRALinear(base, r=2))  # freezes the first base
+        return built[-1]
+
+    with pytest.raises(RuntimeError, match="second wrapper"):
+        wrap_selected_linears(model, ("*",), skip_inside=LoRALinear, helper="test", wrap=wrap)
+    assert type(model[0]) is nn.Linear and type(model[2]) is nn.Linear
+    assert all(p.requires_grad for p in model.parameters())

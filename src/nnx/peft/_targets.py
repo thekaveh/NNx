@@ -187,10 +187,24 @@ def wrap_selected_linears(
 
     Building a wrapper already freezes its base, so nothing is constructed
     until the whole matched set has passed :func:`select_linear_slots`.
+    Every wrapper is built before any slot is replaced; a wrapper that
+    fails to build (a quantized weight DoRA cannot norm, say) restores the
+    bases' trainability and leaves every slot as it was.
     """
     targets = select_linear_slots(
         module, name_patterns, skip_inside=skip_inside, refuse_inside=refuse_inside, helper=helper
     )
-    for parent, attr in targets:
-        setattr(parent, attr, wrap(getattr(parent, attr)))
+    bases = [getattr(parent, attr) for parent, attr in targets]
+    flags = [(p, p.requires_grad) for base in bases for p in base.parameters()]
+    modes = [(m, m.training) for base in bases for m in base.modules()]
+    try:
+        wrappers = [wrap(base) for base in bases]
+    except BaseException:
+        for parameter, flag in flags:
+            parameter.requires_grad_(flag)
+        for submodule, training in modes:
+            submodule.training = training
+        raise
+    for (parent, attr), wrapper in zip(targets, wrappers, strict=True):
+        setattr(parent, attr, wrapper)
     return len(targets)

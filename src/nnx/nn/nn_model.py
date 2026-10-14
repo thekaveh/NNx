@@ -2902,7 +2902,7 @@ class NNModel(_HubMixinBase):
         # exception.
         training_modes = _capture_training_modes(self.net)
         self.net.eval()
-        # torch>=2.5 defaults torch.onnx.export to the dynamo-based exporter,
+        # torch>=2.9 defaults torch.onnx.export to the dynamo-based exporter,
         # which requires `onnxscript`. We pass `dynamo` through explicitly so
         # the default (False) keeps the legacy tracing path regardless of
         # the installed torch version — plain `pip install onnx` is enough.

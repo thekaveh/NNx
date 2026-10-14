@@ -16,6 +16,10 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NNModelParams:
+    """How an `NNModel` is built and run: the network (a `Nets` member, a
+    registered `ModelSpec` or a runtime module), the device, the loss and
+    the task."""
+
     # What builds the network (FEAT-006): a built-in ``Nets`` member (with
     # ``NNParams``), a registered ``nnx.models.ModelSpec``, or — filled in by
     # ``NNModel(module=...)`` when left ``None`` — the ``RuntimeModule``

@@ -56,7 +56,7 @@ def _make_data(n_samples: int = 1024, n_features: int = 16) -> tuple[DataLoader,
     # silently override the caller's seed (the same bug PR #31's review
     # originally caught in this very file).
     X = torch.randn(n_samples, n_features)
-    # Three Gaussian-mixture classes separated by a learned random projection.
+    # Three classes from the argmax of a fixed random projection of isotropic Gaussian inputs.
     proj = torch.randn(n_features, 3)
     y = (X @ proj).argmax(dim=1)
     n_train = int(0.8 * n_samples)

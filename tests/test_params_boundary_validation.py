@@ -2079,3 +2079,34 @@ def test_surgery_refuses_a_subclass_with_its_own_forward_and_keeps_a_plain_subcl
         widen(torch.nn.Sequential(torch.nn.Linear(3, 4), Shifted(), torch.nn.Linear(4, 2)), layer_name="0", new_width=6)
     with pytest.raises(TypeError, match="Shifted"):
         deepen(torch.nn.Sequential(torch.nn.Linear(3, 4), Shifted(), torch.nn.Linear(4, 2)), after_layer_name="1")
+
+
+def test_surgery_refuses_a_custom_forward_on_the_feedfwd_paths():
+    from types import SimpleNamespace
+
+    import torch
+
+    from nnx import Activations, NNParams
+    from nnx.nn.net.feed_fwd_nn import FeedFwdNN
+    from nnx.surgery import widen
+    from nnx.surgery.deepen import _check_relu_activation
+
+    class Doubled(torch.nn.Linear):
+        def forward(self, x):
+            return super().forward(x) * 2
+
+    class Shifted(torch.nn.ReLU):
+        def forward(self, x):
+            return super().forward(x) - 0.5
+
+    net = FeedFwdNN(NNParams(input_dim=3, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU))
+    consumer = Doubled(4, 2)
+    consumer.load_state_dict(net.layers[1].state_dict())
+    net.layers[1] = consumer
+    with pytest.raises(ValueError, match="Doubled"):
+        widen(net, layer_name="layers.0", new_width=6)
+    stock = SimpleNamespace(params=SimpleNamespace(activation=torch.nn.ReLU))
+    _check_relu_activation(stock, "layers", 0)  # a stock ReLU factory passes
+    shifted = SimpleNamespace(params=SimpleNamespace(activation=Shifted))
+    with pytest.raises(ValueError, match="Shifted"):
+        _check_relu_activation(shifted, "layers", 0)

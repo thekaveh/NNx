@@ -756,3 +756,31 @@ def test_an_unfed_monitor_warns_again_on_a_second_run_in_the_same_session(tmp_pa
             )
     hits = [w for w in caught if "monitor 'val.nll' has no value" in str(w.message)]
     assert [w.filename for w in hits] == [__file__, __file__]
+
+
+@pytest.mark.parametrize("mode", ["stateful", "weights_only"])
+def test_a_trainer_failure_right_after_the_resume_restore_hands_the_model_back(tmp_path, monkeypatch, mode):
+    import nnx.trainer.trainer as trainer_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X, Y = _data()
+    loader = _batches(X, Y, [5])
+    source = Trainer(_model()).train(params=_trainer_params(loader), trainer_step_fn=_trainer_step)
+    model = _model(seed=3)
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    torch.manual_seed(5)
+    rng_before = torch.get_rng_state()
+    real = trainer_module.ResumeStatus
+
+    def refuse(**fields):  # stands in for a warnings-as-errors filter after the restore
+        if fields.get("mode") == mode:
+            raise RuntimeError("after the restore")
+        return real(**fields)
+
+    monkeypatch.setattr(trainer_module, "ResumeStatus", refuse)
+    with pytest.raises(RuntimeError, match="after the restore"):
+        Trainer(model).train(params=_trainer_params(loader, run_id=source.id, mode=mode), trainer_step_fn=_trainer_step)
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+    assert torch.equal(torch.get_rng_state(), rng_before)
