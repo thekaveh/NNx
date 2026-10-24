@@ -642,6 +642,10 @@ class NNCheckpoint:
         compile: Optional[dict[str, Any]] = None,
         distributed: Optional[dict[str, Any]] = None,
         counters: Optional[dict[str, Any]] = None,
+        optimizer_config: Optional[dict[str, Any]] = None,
+        scheduler_config: Optional[dict[str, Any]] = None,
+        optimizer_configs: Optional[dict[str, dict[str, Any]]] = None,
+        scheduler_configs: Optional[dict[str, Optional[dict[str, Any]]]] = None,
     ) -> None:
         """Save the checkpoint to disk atomically.
 
@@ -664,7 +668,12 @@ class NNCheckpoint:
         ``*_types``, ``optimizer_topologies`` and ``optimizer_factories``)
         carry a multi-optimizer ``Trainer``'s name-keyed states; either
         ``optimizer_state`` or ``optimizers_state`` makes the checkpoint
-        stateful.
+        stateful. ``optimizer_config`` / ``scheduler_config`` (name-keyed:
+        ``optimizer_configs`` / ``scheduler_configs``) record the configured
+        hyperparameters the restored states replace, which a stateful
+        resume compares with its own (#502); ``None`` (and a sidecar
+        written before them) leaves the comparison to the source
+        ``run.yaml``.
 
         When `optimizer_state` is supplied, a generation-addressed sibling
         file holds the training state, plus a fixed-name compatibility copy.
@@ -712,6 +721,11 @@ class NNCheckpoint:
                 # Registered-factory identity ({id, version, config}); absent
                 # (None) for built-in optimizers and older sidecars.
                 "optimizer_factory": optimizer_factory,
+                # #502: the configured optimizer / scheduler hyperparameters
+                # the states below replace on a stateful resume (None when
+                # unrecorded; older sidecars lack the keys).
+                "optimizer_config": optimizer_config,
+                "scheduler_config": scheduler_config,
                 "scheduler": scheduler_state,
                 "scheduler_type": scheduler_type,
                 "scaler": scaler_state,
@@ -729,6 +743,8 @@ class NNCheckpoint:
                 "optimizer_types": optimizer_types,
                 "optimizer_topologies": optimizer_topologies,
                 "optimizer_factories": optimizer_factories,
+                "optimizer_configs": optimizer_configs,
+                "scheduler_configs": scheduler_configs,
                 "schedulers": schedulers_state,
                 "scheduler_types": scheduler_types,
                 # FEAT-028: the run's resolved precision record (None when

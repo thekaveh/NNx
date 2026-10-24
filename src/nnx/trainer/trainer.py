@@ -66,6 +66,7 @@ from ..nn.nn_model import (
     _check_plateau_resume,
     _check_provenance,
     _check_resume_horizon,
+    _check_resume_hyperparameters,
     _check_resume_precision,
     _check_scaler_hook,
     _component_type,
@@ -83,7 +84,9 @@ from ..nn.nn_model import (
     _optimizer_topology,
     _plan_component_restore,
     _restore_weights_only,
+    _resume_hyperparameters,
     _rollback_resume,
+    _saved_hyperparameters,
     _set_loader_epoch,
     _step_monitored_plateau,
     _with_attempt,
@@ -606,6 +609,14 @@ class Trainer:
         from ..optimizers import optimizer_factory_state
 
         optimizer_factories = {name: optimizer_factory_state(params.optims[name]) for name in optimizers}
+        # #502: each optimizer's configured hyperparameters, which a stateful
+        # resume compares before the checkpoint's states replace them.
+        hyperparameters = {
+            name: _resume_hyperparameters(
+                params.optims[name], params.schedulers.get(name, _DEFAULT_SCHEDULER_PARAMS), schedulers[name]
+            )
+            for name in optimizers
+        }
         from ..nn.nn_model import _writer_owned_callbacks
 
         # nnx.distributed.writer_only(...) outside DDP: simply built (FEAT-030).
@@ -896,6 +907,7 @@ class Trainer:
                         train_loader=train_loader,
                         components=registry.collect(),
                         optimizer_factories=optimizer_factories,
+                        hyperparameters=hyperparameters,
                         is_best=record.improved if record is not None else None,
                         trained_recipe=run.transforms,
                         scaler=scaler,
@@ -951,7 +963,9 @@ class Trainer:
                 # named optimizer / scheduler and component, so a completed run
                 # resumes the continuous states.
                 **{
-                    **_named_training_state(self.model.net, optimizers, schedulers, optimizer_factories),
+                    **_named_training_state(
+                        self.model.net, optimizers, schedulers, optimizer_factories, hyperparameters
+                    ),
                     **({} if pre_transform_topologies is None else {"optimizer_topologies": pre_transform_topologies}),
                 },
                 rng_state=pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader),
@@ -980,6 +994,7 @@ class Trainer:
         train_loader: Optional[Any] = None,
         components: Optional[dict[str, Any]] = None,
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
+        hyperparameters: Optional[Mapping[str, Mapping[str, Any]]] = None,
         is_best: Optional[bool] = None,
         trained_recipe: Optional[Sequence[NNCheckpointTransform]] = None,
         scaler: Optional[Any] = None,
@@ -1003,6 +1018,7 @@ class Trainer:
             optimizers=optimizers,
             schedulers=schedulers,
             optimizer_factories=optimizer_factories,
+            named_hyperparameters=hyperparameters,
             is_best=is_best,
             trained_recipe=trained_recipe,
             scaler=scaler,
@@ -1025,8 +1041,9 @@ class Trainer:
         Everything is validated before any state is mutated, with the same
         rules ``NNModel.train`` applies to its one optimizer: the optimizer
         and scheduler name sets, each optimizer's type, registered-factory
-        identity and parameter topology, each scheduler's type and
-        one-cycle horizon, and the component set. Returns ``(start_epoch,
+        identity, configured hyperparameters (#502) and parameter topology,
+        each scheduler's type, restored settings and one-cycle horizon, and
+        the component set. Returns ``(start_epoch,
         component_plan, status, rollback)``; ``rollback`` puts the model and
         RNG back if the later component restore fails.
         """
@@ -1109,6 +1126,22 @@ class Trainer:
         monitor = params.monitor.resolve(params.metrics) if params.monitor is not None else None
         for name, scheduler in schedulers.items():
             _check_plateau_resume(saved_schedulers.get(name), scheduler, monitor)
+        # #502: the checkpoint's param groups and scheduler states would
+        # replace each optimizer's configured hyperparameters.
+        _check_resume_hyperparameters(
+            _saved_hyperparameters(
+                training_state,
+                params.resume_from_run_id,
+                schedulers,
+                trainer=True,
+                default_scheduler=_DEFAULT_SCHEDULER_PARAMS,
+            ),
+            {
+                name: _resume_hyperparameters(params.optims[name], scheduler_params[name], schedulers[name])
+                for name in optimizers
+            },
+            named=True,
+        )
         completed = training_state.get("completed_epoch")
         start_epoch = int(completed) + 1 if completed is not None else source.checkpoint.idp.epoch_idx + 1
         for name, sched_params in scheduler_params.items():

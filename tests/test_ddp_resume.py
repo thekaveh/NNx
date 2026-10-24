@@ -172,3 +172,28 @@ def test_an_invalid_run_id_fails_alike_on_every_rank(tmp_path):
     for rank in results(tmp_path):
         assert rank["error"].startswith("ValueError: "), rank["error"]  # not a DistributedFailure elsewhere
         assert rank["verified"] == 0 and rank["hashed"] == 0
+
+
+# --- #502: changed optimizer hyperparameters ----------------------------------------------------
+
+
+def test_a_stateful_ddp_resume_with_changed_optimizer_hyperparameters_is_refused_on_every_rank(tmp_path):
+    """A two-rank resume of a two-rank parent with a new lr / weight_decay /
+    momentum would train on every rank with the parent's (the checkpoint's
+    param groups) while recording the new ones: every rank refuses before
+    the net or its RNG changes, and no child run is written."""
+    launch("resume_first", tmp_path)
+    first_id = (tmp_path / "first_run_id.txt").read_text(encoding="utf-8").strip()
+    launch("resume_hyperparameters", tmp_path)
+    for rank in results(tmp_path):
+        assert rank["error"].startswith("ValueError: resume hyperparameter mismatch"), rank["error"]
+        for fragment in (
+            "max_lr (checkpoint 0.1, configuration 0.0001)",
+            "weight_decay (checkpoint 0.0, configuration 0.1)",
+            "momentum (checkpoint 0.9, configuration 0.0)",
+            "resume_mode='weights_only'",
+        ):
+            assert fragment in rank["error"], rank["error"]
+        assert rank["unchanged"] and rank["rng_unchanged"]
+    runs = [name for name in os.listdir(tmp_path / "runs") if not name.startswith(".") and name != "best"]
+    assert runs == [first_id]

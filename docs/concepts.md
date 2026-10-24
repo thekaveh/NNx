@@ -1302,7 +1302,8 @@ The resumed run's epochs continue from the saved epoch. Each named optimizer is 
 
 - the optimizer and scheduler names;
 - each optimizer's type, registered-factory identity (§3.1) and parameter topology;
-- each scheduler's type;
+- each optimizer's configured hyperparameters (§14.3);
+- each scheduler's type and the settings its state restores (§14.3);
 - a plateau scheduler's improvement rule (direction, threshold mode and threshold — §6.4);
 - a one-cycle / warmup-decay schedule's explicit `total_steps` horizon covering the original and resumed epochs (updates, on the `optimizer_update` clock);
 - an epoch-clock warmup-decay schedule's explicit `warmup_steps` (§14.2).
@@ -1912,6 +1913,35 @@ torch, CUDA / MPS and the loaders' generators. A run split at an epoch
 boundary therefore continues bit for bit, `ReduceLROnPlateau` included. This
 holds for deterministic single-process training with in-process loaders
 (`num_workers=0`).
+
+**Changed hyperparameters.** Restoring the optimizer state restores its param
+groups, and restoring the scheduler state restores the scheduler's settings.
+A changed configuration would therefore train with the checkpoint's values
+while `run.yaml` and the run id record the new ones. So a stateful resume
+(`"auto"` or `"stateful"`) refuses, with a `ValueError` before the model, an
+optimizer or the RNG changes, any configured value that differs from the
+checkpoint's:
+
+- the optimizer's `name` (`sgd` and `sgd_nesterov`, or `adam` and
+  `adam_amsgrad`, share a torch class), `max_lr`, `weight_decay`, `momentum`
+  (Adam `betas`), `eps` and `param_groups` specs, built-in or registered
+  factory (`max_lr`, `weight_decay`, `param_groups`);
+- a plateau scheduler's `factor`, `patience`, `cooldown` and `min_lr`, a step
+  schedule's `factor` (gamma) and `step_size`, a cosine schedule's `min_lr`
+  and a one-cycle schedule's `max_lr`.
+
+The message names each field, the optimizer (in a `Trainer`), and the saved
+and configured values. Resume with the checkpoint's configuration, or pass
+`resume_mode="weights_only"` to train the new values from the weights. The
+comparison is type-strict (`1` is not `1.0`, as in the run id). It uses the
+configuration the checkpoint recorded, never the live param groups, so a
+plateau cut or a one-cycle phase resumes as before. A checkpoint written
+before this check is compared with its source run's `run.yaml`, or not at all
+when that file is unreadable. `grad_clip_norm` and `accumulate_grad_batches`
+are read live, so a change applies. Horizons keep their own rules: a cosine
+`T_max` stays the checkpoint's (§2.5), and a `total_steps` must cover the
+original and resumed epochs (§14.2). A warmup-decay schedule's settings are
+rebuilt, so they apply.
 
 `resume_epochs` (on `NNTrainParams`) chooses what `n_epochs` means on that
 resume:
