@@ -182,6 +182,22 @@ def test_an_explicit_resume_keeps_parent_lineage_and_leaves_the_parent_intact(tm
     assert _digest(parent_dir) == before  # the parent's artifacts are untouched
 
 
+def test_a_resuming_plan_refuses_an_optimizer_edit_it_would_not_train(tmp_path, monkeypatch):
+    """#502: ``resuming(...).with_optim(...)`` would train with the parent's
+    learning rate (the checkpoint's param groups) while the child's run.yaml
+    recorded the new one; a weights-only resume trains with the edit."""
+    monkeypatch.chdir(tmp_path)
+    parent = _plan().fit()
+    edited = replace(TRAIN.optim, max_lr=1e-4)
+    with pytest.raises(ValueError, match=r"optimizer max_lr \(checkpoint 0.01, configuration 0.0001\)"):
+        _plan().resuming(parent.run.id).with_optim(edited).fit()
+    assert [run.id for run in NNRun.all()] == [parent.run.id]
+    child = _plan().resuming(parent.run.id, mode="weights_only").with_optim(edited).fit()
+    assert child.run.resume_status is not None and child.run.resume_status.mode == "weights_only"
+    assert child.run.train.optim.max_lr == 1e-4
+    assert child.run.idps[0].lr == 1e-4  # the edit trained
+
+
 def test_metrics_name_their_split_and_availability_without_a_second_loader_pass(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     passes = {"train": 0, "val": 0}

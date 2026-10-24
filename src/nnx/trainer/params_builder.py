@@ -173,8 +173,14 @@ class NNTrainerParamsBuilder:
         components (callbacks such as ``EarlyStopping``) continue where
         that run stopped. ``mode`` is ``"auto"`` (stateful when the
         checkpoint has training state, else weights-only), ``"stateful"``
-        (fail unless it has) or ``"weights_only"``. Serialized only as
-        parent lineage, so the resumed run gets its own id."""
+        (fail unless it has) or ``"weights_only"``. A stateful resume
+        refuses, before anything is restored, an optimizer whose configured
+        hyperparameters (name, ``max_lr``, ``weight_decay``, momentum /
+        betas, ``eps``, param-group specs) or scheduler settings differ from
+        the checkpoint's, naming the optimizer: the restored states would
+        train on with the saved values. ``"weights_only"`` trains the new
+        ones. Serialized only as parent lineage, so the resumed run gets its
+        own id."""
         self._fields["resume_from_run_id"] = run_id
         self._fields["resume_from_checkpoint"] = checkpoint
         self._fields["resume_mode"] = mode

@@ -134,7 +134,9 @@ class NNTrainerParams:
     # Warm-resume controls (FEAT-005), mirroring NNTrainParams: the source run
     # and checkpoint are serialized only as parent lineage (`parent_run_id` /
     # `parent_checkpoint`), so a resumed session gets a distinct run id and the
-    # default serialization is unchanged. `resume_mode` is runtime-only.
+    # default serialization is unchanged. `resume_mode` is runtime-only; a
+    # stateful resume refuses changed optimizer / scheduler hyperparameters
+    # (#502), as NNTrainParams' does.
     resume_from_run_id: Optional[str] = field(repr=False, default=None)
     resume_from_checkpoint: str = field(repr=False, default="last")
     parent_run_id: Optional[str] = field(repr=False, default=None)

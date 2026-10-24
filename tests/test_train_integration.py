@@ -872,6 +872,240 @@ def test_warm_resume_rejects_optimizer_and_scheduler_type_changes(tmp_path, monk
         )
 
 
+# --- #502: a stateful resume refuses changed optimizer / scheduler hyperparameters ------------------------
+
+
+class _LiveGroup(Callback):
+    """The hyperparameters the optimizer actually trains with."""
+
+    def __init__(self):
+        self.seen = set()
+
+    def on_epoch_begin(self, ctx):
+        group = ctx.optimizer.param_groups[0]
+        self.seen.add((group["lr"], group["weight_decay"], group["momentum"]))
+
+
+def _hparam_source(train_loader, optim, scheduler=None, data_id="hparam-source"):
+    net_params, model_params = _make_params()
+    torch.manual_seed(0)
+    extra = {} if scheduler is None else {"scheduler": scheduler}
+    return NNModel(net_params=net_params, params=model_params).train(
+        params=NNTrainParams(n_epochs=1, data_id=data_id, train_loader=train_loader, optim=optim, **extra)
+    )
+
+
+def _hparam_resume(train_loader, first, optim, scheduler=None, mode="auto", callbacks=None, model=None):
+    net_params, model_params = _make_params()
+    extra = {} if scheduler is None else {"scheduler": scheduler}
+    model = model or NNModel(net_params=net_params, params=model_params)
+    return model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            data_id="hparam-source",
+            train_loader=train_loader,
+            optim=optim,
+            resume_from_run_id=first.id,
+            resume_mode=mode,
+            **extra,
+        ),
+        callbacks=callbacks,
+    )
+
+
+@pytest.mark.parametrize("mode", ["auto", "stateful"])
+def test_warm_resume_refuses_changed_optimizer_hyperparameters_before_restoring(tmp_path, monkeypatch, mode):
+    """#502: the checkpoint's param groups would replace the new lr /
+    weight_decay / momentum, while run.yaml and the run id recorded them."""
+    from dataclasses import replace
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    parent_optim = NNOptimParams.builder().sgd(max_lr=0.5).build()  # momentum 0.9, weight_decay 0.0
+    first = _hparam_source(train_loader, parent_optim)
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    before = {key: value.clone() for key, value in model.net.state_dict().items()}
+    rng = torch.get_rng_state()
+    with pytest.raises(ValueError, match="resume hyperparameter mismatch") as caught:
+        _hparam_resume(
+            train_loader,
+            first,
+            replace(parent_optim, max_lr=1e-4, weight_decay=0.1, momentum=0.0),
+            mode=mode,
+            model=model,
+        )
+    message = str(caught.value)
+    for fragment in (
+        "optimizer max_lr (checkpoint 0.5, configuration 0.0001)",
+        "optimizer weight_decay (checkpoint 0.0, configuration 0.1)",
+        "optimizer momentum (checkpoint 0.9, configuration 0.0)",
+        "resume_mode='weights_only'",
+    ):
+        assert fragment in message, message
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+    assert torch.equal(torch.get_rng_state(), rng)
+    # No run records the configuration that never trained.
+    assert [run.id for run in NNRun.all()] == [first.id]
+
+
+def test_weights_only_resume_trains_with_the_changed_optimizer_hyperparameters(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    parent_optim = NNOptimParams.builder().sgd(max_lr=0.5).build()
+    first = _hparam_source(train_loader, parent_optim)
+    live = _LiveGroup()
+    child = replace(parent_optim, max_lr=1e-4, weight_decay=0.1, momentum=0.0)
+    run = _hparam_resume(train_loader, first, child, mode="weights_only", callbacks=[live])
+    assert run.resume_status is not None and run.resume_status.mode == "weights_only"
+    assert live.seen == {(1e-4, 0.1, 0.0)}
+    assert NNRun.load(id=run.id).train.optim == child
+
+
+@pytest.mark.parametrize(
+    ("parent", "changes", "fragments"),
+    [
+        (
+            NNOptimParams(name=Optims.ADAMW, max_lr=0.01, momentum=(0.9, 0.999), weight_decay=0.01),
+            {"momentum": (0.5, 0.9), "eps": 1e-3, "weight_decay": 0.3},
+            [
+                "momentum (checkpoint (0.9, 0.999), configuration (0.5, 0.9))",
+                "eps (checkpoint 1e-08, configuration 0.001)",
+                "weight_decay (checkpoint 0.01, configuration 0.3)",
+            ],
+        ),
+        (
+            NNOptimParams(
+                name=Optims.SGD,
+                max_lr=0.1,
+                momentum=0.9,
+                weight_decay=0.0,
+                param_groups=[NNParamGroupSpec(name_pattern="layers.0.*", lr=0.2)],
+            ),
+            {"param_groups": [NNParamGroupSpec(name_pattern="layers.0.*", lr=1e-5)]},
+            ["optimizer param_groups (checkpoint [{", "'lr': 0.2", "'lr': 1e-05"],
+        ),
+        (
+            NNOptimParams.builder().sgd(max_lr=0.1).build(),
+            {"name": Optims.SGD_NESTEROV},
+            ["optimizer name (checkpoint 'sgd', configuration 'sgd_nesterov')"],
+        ),
+        (
+            NNOptimParams.builder().adam(max_lr=0.01).build(),
+            {"name": Optims.ADAM_AMSGRAD},
+            ["optimizer name (checkpoint 'adam', configuration 'adam_amsgrad')"],
+        ),
+        (
+            NNOptimParams.builder().sgd(max_lr=1).build(),
+            {"max_lr": 1.0},
+            ["optimizer max_lr (checkpoint 1, configuration 1.0)"],  # type-strict, as in the run id
+        ),
+    ],
+    ids=["adamw-betas-eps-weight-decay", "param-group-lr", "sgd-to-nesterov", "adam-to-amsgrad", "int-vs-float"],
+)
+def test_warm_resume_refuses_every_changed_param_group_hyperparameter(
+    tmp_path, monkeypatch, parent, changes, fragments
+):
+    from dataclasses import replace
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    first = _hparam_source(train_loader, parent)
+    with pytest.raises(ValueError, match="resume hyperparameter mismatch") as caught:
+        _hparam_resume(train_loader, first, replace(parent, **changes))
+    for fragment in fragments:
+        assert fragment in str(caught.value), str(caught.value)
+    assert [run.id for run in NNRun.all()] == [first.id]
+
+
+@pytest.mark.parametrize(
+    ("parent", "changes", "fragments"),
+    [
+        (
+            NNSchedulerParams(
+                kind=Schedulers.STEP, step_size=1, factor=0.5, min_lr=0.0, patience=0, cooldown=0, threshold=0.0
+            ),
+            {"factor": 0.1, "step_size": 2},
+            [
+                "scheduler factor (checkpoint 0.5, configuration 0.1)",
+                "scheduler step_size (checkpoint 1, configuration 2)",
+            ],
+        ),
+        (
+            NNSchedulerParams(patience=8, cooldown=2, factor=0.95, threshold=1e-3, min_lr=1e-7),
+            {"factor": 0.1, "patience": 0, "cooldown": 0, "min_lr": 1e-3},
+            [
+                "scheduler factor (checkpoint 0.95, configuration 0.1)",
+                "scheduler patience (checkpoint 8, configuration 0)",
+                "scheduler cooldown (checkpoint 2, configuration 0)",
+                "scheduler min_lr (checkpoint 1e-07, configuration 0.001)",
+            ],
+        ),
+    ],
+    ids=["step", "plateau"],
+)
+def test_warm_resume_refuses_changed_scheduler_hyperparameters(tmp_path, monkeypatch, parent, changes, fragments):
+    """StepLR and ReduceLROnPlateau restore their settings from the
+    checkpoint's scheduler state, so a change is refused like an optimizer
+    one (a cosine T_max keeps its own checkpoint-wins rule)."""
+    from dataclasses import replace
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    optim = NNOptimParams.builder().sgd(max_lr=0.1).build()
+    first = _hparam_source(train_loader, optim, parent)
+    with pytest.raises(ValueError, match="resume hyperparameter mismatch") as caught:
+        _hparam_resume(train_loader, first, optim, replace(parent, **changes))
+    for fragment in fragments:
+        assert fragment in str(caught.value), str(caught.value)
+    assert "optimizer" not in str(caught.value).split(". A stateful")[0]
+
+
+def _strip_hyperparameters(tmp_path, run_id):
+    """Rewrite LAST's training state as a sidecar written before #502."""
+    checkpoint = NNCheckpoint.load(run_id, Checkpoints.LAST)
+    assert checkpoint is not None and checkpoint.training_state_id is not None
+    sidecar = tmp_path / "runs" / run_id / "checkpoints" / f"last.pt.opt.{checkpoint.training_state_id}.pt"
+    state = torch.load(sidecar, weights_only=True)
+    assert state["optimizer_config"]["max_lr"] == 0.5 and state["scheduler_config"] is not None
+    for key in ("optimizer_config", "scheduler_config", "optimizer_configs", "scheduler_configs"):
+        del state[key]
+    torch.save(state, sidecar)
+    _restamp(sidecar)
+
+
+def test_a_legacy_sidecar_resumes_statefully_and_checks_against_the_source_run_yaml(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    parent_optim = NNOptimParams.builder().sgd(max_lr=0.5).build()
+    first = _hparam_source(train_loader, parent_optim)
+    _strip_hyperparameters(tmp_path, first.id)
+    # Without the sidecar entry, the source run.yaml supplies what was trained.
+    with pytest.raises(ValueError, match=r"optimizer max_lr \(checkpoint 0.5, configuration 0.0001\)"):
+        _hparam_resume(train_loader, first, replace(parent_optim, max_lr=1e-4))
+    resumed = _hparam_resume(train_loader, first, parent_optim, mode="stateful")
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+    assert resumed.idps[0].epoch_idx == 1
+
+
+def test_a_legacy_sidecar_without_a_readable_source_run_yaml_skips_the_check(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    parent_optim = NNOptimParams.builder().sgd(max_lr=0.5).build()
+    first = _hparam_source(train_loader, parent_optim)
+    _strip_hyperparameters(tmp_path, first.id)
+    (tmp_path / "runs" / first.id / "run.yaml").write_text("{", encoding="utf-8")  # unreadable
+    resumed = _hparam_resume(train_loader, first, replace(parent_optim, max_lr=1e-4), mode="stateful")
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+
+
 @pytest.mark.parametrize(("saved_scaler", "current_scaler"), [({"scale": 2.0}, None), (None, object())])
 def test_warm_resume_rejects_grad_scaler_presence_changes(tmp_path, monkeypatch, saved_scaler, current_scaler):
     monkeypatch.chdir(tmp_path)

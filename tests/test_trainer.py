@@ -1419,6 +1419,108 @@ def test_trainer_resume_rejects_a_changed_parameter_topology(tmp_path, monkeypat
         assert torch.equal(value, before[key]), key
 
 
+def _changed_head(base: NNTrainerParams, *, max_lr=0.05, weight_decay=0.0, factor=0.5, **resume) -> NNTrainerParams:
+    """``_two_optimizer_params`` with the head optimizer's and its StepLR's
+    hyperparameters replaced (#502)."""
+    from nnx import NNSchedulerParams, NNTrainerParamsBuilder
+
+    head = (
+        NNOptimParams.builder()
+        .sgd(max_lr=max_lr, weight_decay=weight_decay)
+        .param_groups([NNParamGroupSpec(name_pattern="layers.1.*")])
+        .build()
+    )
+    step = (
+        NNSchedulerParams.builder()
+        .step(step_size=1, min_lr=0.0, factor=factor, patience=0, cooldown=0, threshold=0.0)
+        .build()
+    )
+    builder = NNTrainerParamsBuilder.from_params(base).optimizer("head", head).scheduler("head", step)
+    if resume:
+        builder.resume_from(**resume)
+    return builder.build()
+
+
+@pytest.mark.parametrize("mode", ["auto", "stateful"])
+def test_trainer_resume_refuses_changed_hyperparameters_naming_the_optimizer(tmp_path, monkeypatch, mode):
+    """#502: the checkpoint's param groups and scheduler state would replace
+    the head's new lr / weight_decay and StepLR gamma while run.yaml and the
+    run id recorded them; the refusal names each optimizer it concerns."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
+    model = _gan_like_model()
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    changed = _changed_head(
+        _two_optimizer_params(1), max_lr=1e-4, weight_decay=0.1, factor=0.1, run_id=first.id, mode=mode
+    )
+    with pytest.raises(ValueError, match="resume hyperparameter mismatch") as caught:
+        Trainer(model).train(params=changed, trainer_step_fn=_two_step)
+    message = str(caught.value)
+    for fragment in (
+        "optimizer 'head' max_lr (checkpoint 0.05, configuration 0.0001)",
+        "optimizer 'head' weight_decay (checkpoint 0.0, configuration 0.1)",
+        "scheduler 'head' factor (checkpoint 0.5, configuration 0.1)",
+        "resume_mode='weights_only'",
+    ):
+        assert fragment in message, message
+    assert "'body'" not in message
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+    assert [run.id for run in NNRun.all()] == [first.id]
+
+
+def test_trainer_weights_only_resume_trains_with_the_changed_hyperparameters(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
+    seen = set()
+
+    def step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+        group = ctx.optimizers["head"].param_groups[0]
+        seen.add((group["lr"], group["weight_decay"]))
+        return _two_step(ctx)
+
+    changed = _changed_head(
+        _two_optimizer_params(1), max_lr=1e-4, weight_decay=0.1, run_id=first.id, mode="weights_only"
+    )
+    resumed = Trainer(_gan_like_model()).train(params=changed, trainer_step_fn=step)
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "weights_only"
+    assert seen == {(1e-4, 0.1)}
+
+
+def test_trainer_resume_with_a_legacy_sidecar_checks_against_the_source_run_yaml(tmp_path, monkeypatch):
+    import hashlib
+    import json
+
+    from nnx import Checkpoints, NNCheckpoint
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
+    checkpoint = NNCheckpoint.load(first.id, Checkpoints.LAST)
+    assert checkpoint is not None and checkpoint.training_state_id is not None
+    sidecar = tmp_path / "runs" / first.id / "checkpoints" / f"last.pt.opt.{checkpoint.training_state_id}.pt"
+    state = torch.load(sidecar, weights_only=True)
+    assert set(state["optimizer_configs"]) == {"body", "head"} and set(state["scheduler_configs"]) == {"body", "head"}
+    for key in ("optimizer_configs", "scheduler_configs"):
+        del state[key]  # as written before #502
+    torch.save(state, sidecar)
+    manifest_path = sidecar.parent / "last.pt.manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][sidecar.name] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"optimizer 'head' max_lr \(checkpoint 0.05, configuration 0.0001\)"):
+        Trainer(_gan_like_model()).train(
+            params=_changed_head(_two_optimizer_params(1), max_lr=1e-4, run_id=first.id), trainer_step_fn=_two_step
+        )
+    resumed = Trainer(_gan_like_model()).train(
+        params=_two_optimizer_params(1, run_id=first.id, mode="stateful"), trainer_step_fn=_two_step
+    )
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+
+
 def test_trainer_resume_rejects_a_changed_optimizer_factory(tmp_path, monkeypatch):
     from nnx import (
         NNOptimFactoryParams,

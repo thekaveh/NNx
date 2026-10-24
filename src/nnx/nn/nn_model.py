@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Union, cast
 
 import numpy as np
 import torch
+import yaml
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -89,8 +90,9 @@ from .params.nn_checkpoint import (
 from .params.nn_evaluation_data_point import NNEvaluationDataPoint
 from .params.nn_iteration_data_point import NNIterationDataPoint
 from .params.nn_model_params import NNModelParams
+from .params.nn_optim_params import NNOptimParams
 from .params.nn_params import NNParams
-from .params.nn_run import NNRun, _best_err, _print_run_saved
+from .params.nn_run import NNRun, _best_err, _print_run_saved, _runs_root, _validate_run_id
 from .params.nn_train_params import NNTrainParams
 
 if TYPE_CHECKING:
@@ -175,16 +177,22 @@ def _named_training_state(
     optimizers: Mapping[str, torch.optim.Optimizer],
     schedulers: Mapping[str, Any],
     optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
+    hyperparameters: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> dict[str, Any]:
     """A ``Trainer``'s name-keyed optimizer / scheduler bundle, as
     ``NNCheckpoint.save`` keyword arguments (FEAT-005): states, types,
-    parameter topologies and registered-factory identities, so a resume can
-    validate each optimizer as ``NNModel.train`` validates its one."""
+    parameter topologies, registered-factory identities and configured
+    hyperparameters (#502, ``_resume_hyperparameters`` by name), so a
+    resume can validate each optimizer as ``NNModel.train`` validates its
+    one."""
+    configured = hyperparameters or {}
     return {
         "optimizers_state": {name: opt.state_dict() for name, opt in optimizers.items()},
         "optimizer_types": {name: _component_type(opt) for name, opt in optimizers.items()},
         "optimizer_topologies": {name: _optimizer_topology(opt, net) for name, opt in optimizers.items()},
         "optimizer_factories": {name: (optimizer_factories or {}).get(name) for name in optimizers},
+        "optimizer_configs": {name: configured[name]["optimizer"] for name in optimizers if name in configured} or None,
+        "scheduler_configs": {name: configured[name]["scheduler"] for name in optimizers if name in configured} or None,
         "schedulers_state": {name: sch.state_dict() for name, sch in schedulers.items()},
         "scheduler_types": {name: _component_type(sch) for name, sch in schedulers.items()},
     }
@@ -1925,6 +1933,144 @@ def _check_plateau_resume(saved: Optional[Mapping[str, Any]], scheduler: Any, mo
         f"(differing: {', '.join(differing)}); resume with the monitor and scheduler threshold the checkpoint "
         "was trained with, or pass resume_mode='weights_only'"
     )
+
+
+# #502: the scheduler settings a stateful resume takes from the checkpoint's
+# scheduler state, by kind (None is the legacy plateau default). Horizons
+# keep their own rules: a cosine T_max is the checkpoint's (with a warning
+# once passed), a total_steps is checked by _check_resume_horizon and by the
+# update clock's component, the plateau rule by _check_plateau_resume. A
+# warm-up/decay schedule's settings live in its LambdaLR closure, which is
+# rebuilt, so they apply.
+_RESTORED_SCHEDULER_FIELDS: dict[Optional[str], tuple[type, tuple[str, ...]]] = {
+    None: (lr_scheduler.ReduceLROnPlateau, ("factor", "patience", "cooldown", "min_lr")),
+    "reduce_lr_on_plateau": (lr_scheduler.ReduceLROnPlateau, ("factor", "patience", "cooldown", "min_lr")),
+    "step": (lr_scheduler.StepLR, ("factor", "step_size")),
+    "cosine_annealing": (lr_scheduler.CosineAnnealingLR, ("min_lr",)),
+    "one_cycle": (lr_scheduler.OneCycleLR, ("max_lr",)),
+}
+
+
+def _optimizer_config(params: Any) -> dict[str, Any]:
+    """The configured hyperparameters an optimizer's param groups start
+    from (#502) — the checkpoint's param groups replace them on a stateful
+    resume, so the sidecar records them and a resume compares them.
+    ``grad_clip_norm`` and ``accumulate_grad_batches`` are read live and a
+    registered factory's identity is checked on its own, so neither is
+    here."""
+    builtin = isinstance(params, NNOptimParams)  # a registered factory has no name, momentum or eps
+    config: dict[str, Any] = {"name": str(params.name)} if builtin else {}
+    config.update(max_lr=params.max_lr, weight_decay=params.weight_decay)
+    if builtin:
+        config.update(momentum=params.momentum, eps=params.eps)
+    config["param_groups"] = None if params.param_groups is None else [group.state() for group in params.param_groups]
+    return config
+
+
+def _scheduler_config(params: Any, scheduler: Any) -> Optional[dict[str, Any]]:
+    """The configured scheduler settings a stateful resume would replace
+    with the checkpoint's (``_RESTORED_SCHEDULER_FIELDS``), or ``None`` when
+    the built scheduler is not the one ``params`` describes (a subclass's
+    own ``_build_scheduler``) or keeps none of them."""
+    kind = getattr(params, "kind", None)
+    restored = _RESTORED_SCHEDULER_FIELDS.get(None if kind is None else str(kind))
+    if restored is None or not isinstance(scheduler, restored[0]):
+        return None
+    return {name: getattr(params, name) for name in restored[1]}
+
+
+def _resume_hyperparameters(optim: Any, scheduler_params: Any, scheduler: Any) -> dict[str, Any]:
+    """One optimizer's configured hyperparameters as a training-state
+    sidecar records them (#502)."""
+    return {"optimizer": _optimizer_config(optim), "scheduler": _scheduler_config(scheduler_params, scheduler)}
+
+
+def _source_hyperparameters(
+    run_id: str, schedulers: Mapping[str, Any], *, trainer: bool, default_scheduler: Any = None
+) -> dict[str, dict[str, Any]]:
+    """For a sidecar written before #502: the hyperparameters the source
+    run's ``run.yaml`` records, keyed like ``schedulers`` (``""`` for
+    ``NNModel.train``'s one optimizer). Empty when the run has no readable
+    ``run.yaml`` (a bundle, a removed run): the check is then skipped."""
+    try:
+        with open(os.path.join(_runs_root(), _validate_run_id(run_id), "run.yaml"), encoding="utf-8") as handle:
+            rep = yaml.safe_load(handle)
+        if trainer:
+            from ..trainer.params import NNTrainerParams
+
+            source = NNTrainerParams.from_state(rep["trainer"])
+            return {
+                name: _resume_hyperparameters(
+                    source.optims[name], source.schedulers.get(name, default_scheduler), scheduler
+                )
+                for name, scheduler in schedulers.items()
+                if name in source.optims
+            }
+        recorded = NNTrainParams.from_state(rep["train"])
+        return {"": _resume_hyperparameters(recorded.optim, recorded.scheduler, schedulers[""])}
+    except (OSError, yaml.YAMLError, KeyError, TypeError, ValueError, AttributeError):
+        return {}
+
+
+def _check_resume_hyperparameters(
+    saved: Mapping[str, Mapping[str, Any]], built: Mapping[str, Mapping[str, Any]], *, named: bool
+) -> None:
+    """Refuse a stateful resume whose configured optimizer or scheduler
+    hyperparameters differ from the ones the checkpoint was trained with
+    (#502): ``optimizer.load_state_dict`` / ``scheduler.load_state_dict``
+    would train on with the checkpoint's values while ``run.yaml`` and the
+    run id recorded these. Compared type-strictly (``1`` is not ``1.0``, as
+    in the run id) against the recorded configuration, never against the
+    live param groups — a plateau cut or a one-cycle phase moves those.
+    Shared by ``NNModel.train`` and ``Trainer.train``; checked before
+    anything is restored, with one report listing every difference."""
+    differences: list[str] = []
+    for name, configured in built.items():
+        recorded = saved.get(name)
+        if recorded is None:
+            continue
+        for component in ("optimizer", "scheduler"):
+            before, after = recorded.get(component), configured.get(component)
+            if before is None or after is None:
+                continue
+            for key in [*after, *(key for key in before if key not in after)]:
+                old, new = before.get(key), after.get(key)
+                if json.dumps(old, sort_keys=True) != json.dumps(new, sort_keys=True):
+                    owner = f"{component} {name!r}" if named else component
+                    differences.append(f"{owner} {key} (checkpoint {old!r}, configuration {new!r})")
+    if differences:
+        raise ValueError(
+            f"resume hyperparameter mismatch: {'; '.join(differences)}. A stateful resume restores the "
+            "checkpoint's optimizer and scheduler state, so the run would train with the checkpoint's values while "
+            "recording the configured ones; resume with the checkpoint's configuration, or pass "
+            "resume_mode='weights_only' to start a fresh optimizer and scheduler from its weights"
+        )
+
+
+def _saved_hyperparameters(
+    training_state: Mapping[str, Any],
+    run_id: str,
+    schedulers: Mapping[str, Any],
+    *,
+    trainer: bool,
+    default_scheduler: Any = None,
+) -> dict[str, dict[str, Any]]:
+    """The hyperparameters a training-state sidecar records (#502), keyed
+    like ``schedulers``; a sidecar written before them falls back to the
+    source run's ``run.yaml``."""
+    if trainer:
+        optimizer_configs = training_state.get("optimizer_configs")
+        if optimizer_configs is not None:
+            scheduler_configs = training_state.get("scheduler_configs") or {}
+            return {
+                name: {"optimizer": optimizer_configs.get(name), "scheduler": scheduler_configs.get(name)}
+                for name in schedulers
+            }
+    elif training_state.get("optimizer_config") is not None:
+        return {
+            "": {"optimizer": training_state["optimizer_config"], "scheduler": training_state.get("scheduler_config")}
+        }
+    return _source_hyperparameters(run_id, schedulers, trainer=trainer, default_scheduler=default_scheduler)
 
 
 def _monitoring_preflight(
@@ -3867,6 +4013,15 @@ class NNModel(_HubMixinBase):
                             raise ValueError("resume optimizer parameter topology does not match the checkpoint")
                         _check_resume_precision(training_state, precision, scaler)
                         _check_plateau_resume(training_state.get("scheduler"), scheduler, monitor)
+                        # #502: the checkpoint's param groups and scheduler
+                        # state would replace the configured hyperparameters.
+                        _check_resume_hyperparameters(
+                            _saved_hyperparameters(
+                                training_state, params.resume_from_run_id, {"": scheduler}, trainer=False
+                            ),
+                            {"": _resume_hyperparameters(params.optim, params.scheduler, scheduler)},
+                            named=False,
+                        )
                         completed_epoch = training_state.get("completed_epoch")
                         if completed_epoch is not None:
                             start_epoch = int(completed_epoch) + 1
@@ -4456,6 +4611,7 @@ class NNModel(_HubMixinBase):
         )
         if not writes:
             return
+        configured = _resume_hyperparameters(params.optim, params.scheduler, scheduler)  # #502
         NNCheckpoint(
             idp=records.last,
             model_params=self.params,
@@ -4478,6 +4634,8 @@ class NNModel(_HubMixinBase):
             scheduler_type=_component_type(scheduler),
             optimizer_topology=resume_optimizer_topology,
             optimizer_factory=resume_optimizer_factory,
+            optimizer_config=configured["optimizer"],
+            scheduler_config=configured["scheduler"],
             components=registry.collect(),
             counters=counters,
         )
@@ -5037,6 +5195,7 @@ class NNModel(_HubMixinBase):
                 completed_epoch=idx_epoch,
                 train_loader=train_loader,
                 optimizer_factory=resume_optimizer_factory,
+                hyperparameters=_resume_hyperparameters(params.optim, params.scheduler, scheduler),
                 components=registry.collect(),
                 is_best=record.improved if record is not None else None,
                 trained_recipe=run.transforms,
@@ -5074,6 +5233,8 @@ class NNModel(_HubMixinBase):
         optimizers: Optional[Mapping[str, torch.optim.Optimizer]] = None,
         schedulers: Optional[Mapping[str, Any]] = None,
         optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
+        hyperparameters: Optional[Mapping[str, Any]] = None,
+        named_hyperparameters: Optional[Mapping[str, Mapping[str, Any]]] = None,
         is_best: Optional[bool] = None,
         trained_recipe: Optional[Sequence[NNCheckpointTransform]] = None,
         counters: Optional[dict[str, Any]] = None,
@@ -5115,9 +5276,16 @@ class NNModel(_HubMixinBase):
             "compile": compile,
             "distributed": distributed,
             "counters": counters,
+            # #502: the configured hyperparameters the restored states replace.
+            "optimizer_config": None if hyperparameters is None else hyperparameters["optimizer"],
+            "scheduler_config": None if hyperparameters is None else hyperparameters["scheduler"],
         }
         if optimizers is not None:
-            stateful_extras.update(_named_training_state(self.net, optimizers, schedulers or {}, optimizer_factories))
+            stateful_extras.update(
+                _named_training_state(
+                    self.net, optimizers, schedulers or {}, optimizer_factories, named_hyperparameters
+                )
+            )
 
         # LAST is the epoch commit marker, so publish it before ancillary
         # phase/BEST checkpoints.

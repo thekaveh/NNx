@@ -285,6 +285,42 @@ def test_resume_refuses_a_second_resume_source():
         rebuilt.resume(_params(1, "twice", batches, resume_from_run_id=run.id))
 
 
+def test_resume_refuses_changed_optimizer_hyperparameters_from_the_bundle_itself():
+    """#502: ``RunBundle.resume`` is always stateful, so the bundle's param
+    groups would replace a new lr / weight_decay / momentum while the run
+    recorded them. The bundle carries what it trained with: the refusal
+    needs no source run on disk."""
+    import shutil
+    from dataclasses import replace
+
+    _, batches = _data()
+    torch.manual_seed(7)
+    parent = NNOptimParams.builder().sgd(max_lr=0.5).build()
+    run = _classifier().train(params=replace(_params(1, "hparams", batches), optim=parent))
+    export_bundle(run.id, "bundle")
+    shutil.rmtree("runs")  # only the bundle remains
+    rebuilt = reconstruct_bundle("bundle")
+    before = {name: tensor.clone() for name, tensor in rebuilt.model.net.state_dict().items()}
+    changed = replace(
+        _params(1, "hparams", batches), optim=replace(parent, max_lr=1e-4, weight_decay=0.1, momentum=0.0)
+    )
+    with pytest.raises(ValueError, match="resume hyperparameter mismatch") as caught:
+        rebuilt.resume(changed)
+    for fragment in (
+        "optimizer max_lr (checkpoint 0.5, configuration 0.0001)",
+        "optimizer weight_decay (checkpoint 0.0, configuration 0.1)",
+        "optimizer momentum (checkpoint 0.9, configuration 0.0)",
+        "resume_mode='weights_only'",
+    ):
+        assert fragment in str(caught.value), str(caught.value)
+    for name, tensor in rebuilt.model.net.state_dict().items():
+        assert torch.equal(tensor, before[name]), name
+    leftover = os.listdir("runs") if os.path.isdir("runs") else []
+    assert not [name for name in leftover if not name.startswith(".")]  # no child run was written
+    resumed = rebuilt.resume(replace(_params(1, "hparams", batches), optim=parent))  # unchanged: resumes
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+
+
 def test_export_refuses_extra_state_and_non_bundle_destinations():
     _, batches = _data()
     torch.manual_seed(7)
