@@ -4869,7 +4869,7 @@ Under torchrun; see Architecture §3.
 nnx.distributed.init_process_group(backend: 'Optional[str]' = None, *, timeout_seconds: 'float' = 120.0) -> 'tuple[int, int]'
 ```
 
-Join the process group ``torchrun`` described in the environment (``env://``) and return ``(rank, world_size)``. ``backend`` defaults to ``nccl`` when CUDA is available, else ``gloo``; ``timeout_seconds`` bounds every collective, so a rank that dies cannot hang the others forever. With CUDA, each process takes ``cuda:LOCAL_RANK``.
+Join the process group ``torchrun`` described in the environment (``env://``) and return ``(rank, world_size)``. ``backend`` defaults to ``nccl`` when CUDA is available, else ``gloo``; ``timeout_seconds`` bounds every collective, so a rank that dies cannot hang the others forever. Under ``nccl`` each process takes ``cuda:LOCAL_RANK`` (``torch.cuda.set_device``); any other backend selects no device, so a CUDA model under ``gloo`` needs ``torch.cuda.set_device(local_rank)`` before it is built (otherwise every rank's model sits on ``cuda:0``).
 
 
 #### `nnx.distributed.shutdown`
@@ -5028,7 +5028,7 @@ No public description is currently available.
 class nnx.distributed.DistributedFailure
 ```
 
-Raised on every rank when another rank failed (preflight, a non-finite loss, a step-count mismatch, a writer-side commit): the failing rank raises its own error, the others this one naming it.
+Raised on every rank when another rank failed (preflight, a step-count mismatch, a writer-only callback, a writer-side commit): the failing rank raises its own error, the others this one naming it.
 
 
 ### 2.16. Budgeted experiment search (`nnx.search`)

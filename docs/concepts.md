@@ -647,7 +647,9 @@ ones.
 
 Under DDP, a mid-epoch request is agreed across ranks when a listener was
 registered in `on_train_begin` on any rank. Otherwise the request takes
-effect at the epoch boundary, agreed there. `committed_updates` is exact for
+effect at the epoch boundary, agreed there. Such a listener's error is agreed
+at the same point: every rank stops after that batch, and the others raise a
+`DistributedFailure` naming the failing rank. `committed_updates` is exact for
 fp16 (a skipped scaler step is not counted) while a listener or an update
 clock is attached. `nnx.search` uses it for its update caps and deadlines
 (§29).

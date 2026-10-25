@@ -289,3 +289,20 @@ def test_a_resume_whose_first_fetch_fails_on_one_rank_is_rolled_back_on_both(fir
     for rank in (waiting, failing):
         assert rank["unchanged"] and rank["python_rng_unchanged"], rank
         assert rank["numpy_rng_unchanged"] and rank["rng_unchanged"], rank
+
+
+def test_a_resume_whose_writer_only_on_train_begin_fails_is_rolled_back_on_every_rank(first_split_run, monkeypatch):
+    """#540: the writer-only on_train_begin failure is agreed inside the
+    resume's rollback window: every rank raises within seconds, hands its
+    weights and its Python, NumPy and torch streams back, and then leaves
+    together through shutdown()."""
+    monkeypatch.setenv("NNX_DDP_TIMEOUT", "30")
+    launch("resume_writer_begin_fails", first_split_run, timeout=180)
+    writer, other = results(first_split_run)
+    own = "OSError: disk full (injected in on_train_begin on the writer)"
+    assert writer["error"] == own, writer
+    assert other["error"] == f"DistributedFailure: the callbacks' on_train_begin failed on rank 0: {own}", other
+    for rank in (writer, other):
+        assert rank["seconds"] < 15 and rank["shutdown"] is None, rank
+        assert rank["unchanged"] and rank["python_rng_unchanged"], rank
+        assert rank["numpy_rng_unchanged"] and rank["rng_unchanged"], rank

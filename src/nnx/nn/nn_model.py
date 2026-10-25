@@ -825,10 +825,17 @@ def _looks_like_converted_qat_state(net_state: Mapping[str, Any]) -> bool:
 
 
 class _CallbackFinalizer:
-    def __init__(self, callbacks: list[Any], ctx: Any):
+    """Runs ``on_train_begin`` (``start``) and, as the block closes, the
+    started callbacks' ``on_train_end``. With ``keep_error`` (DDP, #540) the
+    first ``on_train_end`` error of a fit that trained is kept in ``error``
+    instead of raised, for the caller to agree on every rank."""
+
+    def __init__(self, callbacks: list[Any], ctx: Any, *, keep_error: bool = False):
         self._callbacks = callbacks
         self._ctx = ctx
         self._started: list[Any] = []
+        self._keep_error = keep_error
+        self.error: Optional[BaseException] = None
 
     def __enter__(self):
         return self
@@ -872,6 +879,9 @@ class _CallbackFinalizer:
                     )
                 except Exception:  # noqa: BLE001
                     pass
+            if self._keep_error:
+                self.error = cleanup_errors[0]
+                return False
             raise cleanup_errors[0]
         return False
 
@@ -1617,10 +1627,15 @@ def _distributed_scope(
         local = int(os.environ.get("LOCAL_RANK", "0"))
         index = model.device.index if model.device.index is not None else torch.cuda.current_device()
         if index != local:
-            raise ValueError(
-                f"this rank (LOCAL_RANK={local}) holds its model on cuda:{index}: build the model after "
-                "nnx.distributed.init_process_group(), which selects cuda:LOCAL_RANK"
+            backend = torch.distributed.get_backend()
+            # #540: init_process_group() selects cuda:LOCAL_RANK under nccl only.
+            advice = (
+                "build the model after nnx.distributed.init_process_group(), which selects cuda:LOCAL_RANK under nccl"
+                if backend == "nccl"
+                else f"init_process_group() selects no device under {backend}: call torch.cuda.set_device({local}) "
+                "(this rank's LOCAL_RANK) before building the model"
             )
+            raise ValueError(f"this rank (LOCAL_RANK={local}) holds its model on cuda:{index}: {advice}")
     if isinstance(model.params.net, Nets) and model.params.net in _GRAPH_NETS:
         raise ValueError("distributed= does not cover graph nets (graph neighbour sampling is out of scope)")
     train_loader = params.train_loader
@@ -1846,6 +1861,8 @@ def _with_attempt(
     params: Any,
     fit: Callable[[], Any],
     execution: Optional[Callable[[], Optional[dict[str, Any]]]] = None,
+    *,
+    starting: Callable[[], contextlib.AbstractContextManager[Any]] = contextlib.nullcontext,
 ) -> Any:
     """Run ``fit`` as one recorded attempt (FEAT-019) when a manifest is
     given — shared by ``NNModel.train`` and ``Trainer.train``. The attempt's
@@ -1855,23 +1872,28 @@ def _with_attempt(
     ``execution`` returns the fit's compile record (FEAT-029) when it ends,
     whatever its outcome. The record's parent is the checkpoint the resume
     reads (#537), which the source may have published again since the
-    record started."""
-    if provenance is None:
+    record started. The attempt starts inside ``starting()``, entered with
+    or without a manifest: under DDP an agreed block (#540), so a writer
+    that cannot write ``provenance.json`` stops every rank."""
+    recorder = None
+    with starting():
+        if provenance is not None:
+            from ..provenance import _AttemptRecorder
+
+            recorder = _AttemptRecorder(
+                run,
+                provenance,
+                parent_run_id=getattr(params, "resume_from_run_id", None),
+                parent_checkpoint=getattr(params, "resume_from_checkpoint", None),
+                execution=execution,
+            )
+            recorder.start()
+    if recorder is None:
         token = _RESUME_SOURCE_LISTENER.set(None)  # an enclosing fit's attempt is not this one's
         try:
             return fit()
         finally:
             _RESUME_SOURCE_LISTENER.reset(token)
-    from ..provenance import _AttemptRecorder
-
-    recorder = _AttemptRecorder(
-        run,
-        provenance,
-        parent_run_id=getattr(params, "resume_from_run_id", None),
-        parent_checkpoint=getattr(params, "resume_from_checkpoint", None),
-        execution=execution,
-    )
-    recorder.start()
     token = _RESUME_SOURCE_LISTENER.set(recorder.resumed_from)
     try:
         result = fit()
@@ -3947,6 +3969,12 @@ class NNModel(_HubMixinBase):
                 None if replica else provenance,  # the writer records the attempt
                 params,
                 execution=compile_holder.record,
+                # #540: the writer's attempt start is agreed; a failed write stops every rank.
+                starting=(
+                    contextlib.nullcontext
+                    if ddp_session is None
+                    else functools.partial(_collectively, "starting the provenance attempt")
+                ),
                 fit=lambda: self._train_impl(
                     params=params,
                     run=run,
@@ -4337,11 +4365,24 @@ class NNModel(_HubMixinBase):
                 clock.report_update if clock is not None and engine is None else NO_UPDATE_REPORTER
             )
 
+            # #540: under DDP, an update listener's error (a writer-only
+            # callback's, say) is held until the batch's stop gather, which
+            # every rank reaches, and agreed there.
+            listener_errors: list[BaseException] = []
+            ddp_listening = False  # agreed after on_train_begin, below
+
             def _announce_update() -> None:
                 # FEAT-033: count the committed update and tell the listeners.
                 ctx.committed_updates += 1
                 for listener in list(ctx.update_listeners):
-                    listener(ctx)
+                    if not ddp_listening:
+                        listener(ctx)
+                        continue
+                    try:
+                        listener(ctx)
+                    except Exception as error:
+                        listener_errors.append(error)
+                        break
 
             class _ReportUpdate:
                 """The step's ``report_update``: the clock's (refusing an
@@ -4394,13 +4435,16 @@ class NNModel(_HubMixinBase):
         with (
             torch.set_grad_enabled(True),
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
-            _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
+            _CallbackFinalizer(normalized_callbacks, ctx, keep_error=ddp is not None) as callback_lifecycle,
             # Innermost: a failure before the first committed update (a refused
             # on_train_begin, the component restore, the first epoch's start,
             # fetch or step) is rolled back before on_train_end runs (#507).
             resume_window,
         ):
-            callback_lifecycle.start()
+            # #540: a writer-only on_train_begin failing stops every rank (a
+            # resume is then rolled back on each, by resume_window).
+            with contextlib.nullcontext() if ddp is None else _collectively("the callbacks' on_train_begin"):
+                callback_lifecycle.start()
             # FEAT-033: under DDP, whether any rank listens for updates (and
             # may request a stop at one) is agreed once, not per batch.
             ddp_listening = ddp is not None and any(ddp.gather(bool(ctx.update_listeners)))
@@ -4496,8 +4540,12 @@ class NNModel(_HubMixinBase):
 
                     if ddp is not None and ddp_listening:
                         # FEAT-030: a stop request is decided on every rank alike
-                        # (gathered only when some rank listens for updates).
-                        ctx.stop_at_update = any(ddp.gather(bool(ctx.stop_at_update)))
+                        # (gathered only when some rank listens for updates), and
+                        # so is a listener's failure (#540).
+                        held = listener_errors.pop() if listener_errors else None
+                        ctx.stop_at_update = any(
+                            ddp.gather_agreed(bool(ctx.stop_at_update), held, f"epoch {idx_epoch}'s update listeners")
+                        )
                     # Under DDP a mid-epoch stop needs the agreed request (no
                     # rank listened: the epoch-end gather decides it instead).
                     if ctx.stop_at_update and (ddp is None or ddp_listening):
@@ -4710,6 +4758,12 @@ class NNModel(_HubMixinBase):
         # FEAT-033: after a mid-epoch stop the live tensors belong to no
         # committed epoch: LAST is left as the last commit wrote it.
         refresh_last = bool(records) and not stopped_mid_epoch
+        if ddp is not None:
+            from ..distributed import agree
+
+            # #540: an on_train_end error the finalizer kept (a writer-only
+            # callback's, say) stops every rank, before the final-RNG gather.
+            agree(callback_lifecycle.error, "the callbacks' on_train_end")
         final_rng = ddp.gather(pre_transform_rng_state) if ddp is not None and refresh_last else None
         try:
             if refresh_last:
