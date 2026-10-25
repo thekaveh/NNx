@@ -140,11 +140,20 @@ This writes three files into `./my-model/`:
     A recorded recipe (`nnx.transforms`, see
     [Surgery §8](surgery.md#8-recorded-recipes-surgery-that-checkpoints-can-rebuild))
     can change a model's topology. Such a model writes its ordered operations
-    to `"transforms"`, each with its id, version, targets and config. Without
-    a recipe that list is empty.
+    to `"transforms"`, each with its id, version, targets and config. A
+    torchao QAT conversion (`QATLifecycleCallback`) is recorded there too.
+    A model with neither has an empty list.
     It is saved only while its topology is exactly its base plus that recipe.
     Unrecorded surgery is refused before anything is written, rather than
     failing at load.
+
+    `save_pretrained` also refuses, before anything is written, any other
+    recorded transform, such as a callback's own train-end transform
+    declared through `Callback.checkpoint_transforms`. `from_pretrained`
+    replays only recipe operations and the QAT conversion, so it could not
+    rebuild that artifact. The error names the transform's index and id, as
+    `nnx.bundles.export_bundle` does. Keep such a model in its run's pickle
+    checkpoints.
 
 - `README.md` — auto-generated model card from the mixin.
 
@@ -160,8 +169,9 @@ model = NNModel.from_pretrained("./my-model")
 recorded `"transforms"` on the fresh base: LoRA wrappers are rebuilt, and
 low-rank factors are allocated in their recorded shape (no SVD). It then
 loads the safetensors weights into the freshly-built `self.net`. An unknown
-operation or version is refused before any tensor is loaded. Tensors
-round-trip bit-exactly.
+operation or version is refused before any tensor is loaded. The error names
+both possible causes: an operation of a newer NNx, or a callback's own
+transform that only its producer can rebuild. Tensors round-trip bit-exactly.
 
 The params' `state()` round-trips too, except `NNModelParams.device`. It
 takes `map_location` (default `"cpu"`), so a GPU or MPS model reloads on the
@@ -171,11 +181,14 @@ The saved precision policy is resolved again on the destination device.
 `precision=` replaces it, and the legacy `mixed_precision` flag with it.
 
 A model can be saved with extra top-level submodules attached to its net,
-such as a JEPA predictor registered as `model.net._jepa_predictor`. It
-rebuilds without them through `exclude_submodules`. Every other key still
-loads strictly (`strict=False` would also accept missing weights). A name
-the saved weights do not hold is refused. Without it, the error names the extra
-submodules and this option:
+such as a JEPA predictor registered as `model.net._jepa_predictor`. It can
+also carry extra top-level tensors, such as a `logit_scale` parameter or a
+buffer registered on `model.net`. It rebuilds without them through
+`exclude_submodules`, which takes a submodule's or a tensor's name. Every
+other key still loads strictly (`strict=False` would also accept missing
+weights). A name the saved weights do not hold is refused. Without it, the
+error names the extra submodules and tensors and this option. The net's
+own top-level tensors, such as `ViTNN`'s `cls_token`, are never named:
 
 ```python
 encoder = NNModel.from_pretrained("./jepa-model", exclude_submodules=("_jepa_predictor",))
@@ -191,7 +204,9 @@ model.push_to_hub("your-user/your-model")
 ```
 
 The mixin handles repo creation, file upload, and commit. Everything
-that `save_pretrained` writes locally is pushed.
+that `save_pretrained` writes locally is pushed. Whatever `save_pretrained`
+refuses (§2.2, §2.6), `push_to_hub` refuses before it creates the
+repository or uploads anything.
 
 ### 2.5. Load from the Hub
 
@@ -219,8 +234,9 @@ weights raises before they load. Pass `batch_adapter=` to
 
 A runtime-only module (`NNModel(module=...)`, `reconstructible=False`) has
 no factory to rebuild it. `save_pretrained` / `push_to_hub` therefore reject
-it with `MissingModelFactoryError` before any directory or file is written.
-Register a factory and train from a `ModelSpec` to publish it.
+it with `MissingModelFactoryError` before any directory or file is written,
+and `push_to_hub` before any repository is created. Register a factory and
+train from a `ModelSpec` to publish it.
 
 ## 3. Three artifact formats and their trust boundaries
 
