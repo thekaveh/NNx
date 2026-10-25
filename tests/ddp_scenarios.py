@@ -169,6 +169,50 @@ class FailingWriterCallback(Callback):
         raise OSError("disk full (injected on the writer)")
 
 
+class FailingWriterHook(Callback):
+    """#540: a writer-only callback failing (a full disk, say) in
+    ``on_train_begin``, ``on_train_end`` or the update listener it registers
+    in ``on_train_begin`` (``hook="listener"``)."""
+
+    distributed = "writer"
+
+    def __init__(self, hook: str) -> None:
+        self.hook = hook
+
+    def on_train_begin(self, ctx) -> None:
+        if self.hook == "listener":
+            ctx.update_listeners.append(self.fail)
+        elif self.hook == "on_train_begin":
+            self.fail()
+
+    def on_train_end(self, ctx) -> None:
+        if self.hook == "on_train_end":
+            self.fail()
+
+    def fail(self, *_) -> None:
+        raise OSError(disk_full(self.hook))
+
+
+def disk_full(where: str) -> str:
+    return f"disk full (injected in {where} on the writer)"
+
+
+def unwritable_provenance():
+    """#540: the writer cannot write ``provenance.json`` (the attempt start);
+    returns the undo."""
+    from nnx import provenance
+
+    real = provenance._write_json
+
+    def full(path, value):
+        if os.path.basename(path) == "provenance.json":
+            raise OSError(disk_full("attempt"))
+        real(path, value)
+
+    provenance._write_json = full
+    return lambda: setattr(provenance, "_write_json", real)
+
+
 class TrainEndDraw(Callback):
     """#538: a draw on every rank once training ends (a final test score on a
     loader without a generator); records each rank's streams before it. A
@@ -506,6 +550,33 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         except BaseException as error:  # noqa: BLE001
             out["error"] = f"{type(error).__name__}: {error}"
         out["seconds"] = time.monotonic() - started
+    elif name == "writer_hooks_fail":
+        # #540: each failure happens on the writer only; every rank raises
+        # within seconds, then every rank reaches shutdown()'s barrier.
+        import time
+
+        from nnx.provenance import ExperimentManifest
+
+        out["cases"] = {}
+        for hook in ("on_train_begin", "on_train_end", "listener", "attempt"):
+            undo = unwritable_provenance() if hook == "attempt" and rank == 0 else (lambda: None)
+            case: dict = {"error": None}
+            started = time.monotonic()
+            try:
+                model().train(
+                    params=params(nnx_dist.train_loader(train_set(), batch_size=2, seed=3), n_epochs=1),
+                    salt=hook,
+                    callbacks=[] if hook == "attempt" else [FailingWriterHook(hook)],
+                    provenance=ExperimentManifest(config={"case": hook}) if hook == "attempt" else None,
+                    distributed=nnx_dist.DDP(),
+                )
+            except BaseException as error:  # noqa: BLE001 - recorded for the test
+                case["error"] = f"{type(error).__name__}: {error}"
+            finally:
+                undo()
+            case["seconds"] = time.monotonic() - started
+            case["shutdown"] = _leave_together()
+            out["cases"][hook] = case
     elif name == "steps_mismatch":
         loader = nnx_dist.train_loader(train_set(), batch_size=2, seed=3)
         if rank == 1:
@@ -753,12 +824,15 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         if name == "train_end_draw_first" and rank == 0:
             with open("draw_first_run_id.txt", "w", encoding="utf-8") as handle:
                 handle.write(run.id)
-    elif name in ("resume_steps_mismatch", "resume_unreadable_rank"):
+    elif name in ("resume_steps_mismatch", "resume_unreadable_rank", "resume_writer_begin_fails"):
         # #507: a resume that fails on every rank before its first committed
         # update hands each rank's model and RNG back: the step-count refusal
         # (rank 1 has more batches, past the descriptor check), or rank 1's
         # first fetch failing while rank 0 waits in its first step until the
-        # process group's (short) timeout fails it.
+        # process group's (short) timeout fails it. #540: or a writer-only
+        # on_train_begin failing, agreed on every rank.
+        import time
+
         first_id = open("first_run_id.txt", encoding="utf-8").read().strip()
         data = UnreadableRows(11, seed=1) if name == "resume_unreadable_rank" and rank == 1 else train_set()
         loader = nnx_dist.train_loader(data, batch_size=2, seed=3)
@@ -775,16 +849,19 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         np.random.seed(777 + rank)
         torch.manual_seed(777 + rank)
         python_rng, numpy_rng, torch_rng = random.getstate(), np.random.get_state(), torch.get_rng_state()
+        started = time.monotonic()
         try:
             m.train(
                 params=params(
                     loader, n_epochs=1, data_id="resumed", resume_from_run_id=first_id, resume_mode="stateful"
                 ),
+                callbacks=[FailingWriterHook("on_train_begin")] if name == "resume_writer_begin_fails" else None,
                 distributed=nnx_dist.DDP(),
             )
             out["error"] = None
         except BaseException as error:  # noqa: BLE001
             out["error"] = f"{type(error).__name__}: {error}"
+        out["seconds"] = time.monotonic() - started
         out["unchanged"] = all(torch.equal(before[k], v) for k, v in m.net.state_dict().items())
         out["python_rng_unchanged"] = random.getstate() == python_rng
         numpy_now = np.random.get_state()
@@ -794,6 +871,8 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         out["rng_unchanged"] = torch.equal(torch.get_rng_state(), torch_rng)
         if name == "resume_unreadable_rank":
             out["teardown_done"] = True  # the timed-out group is left for process exit
+        if name == "resume_writer_begin_fails":
+            out["shutdown"] = _leave_together()
     elif name == "parked":
         # #478: rank 1 parks while rank 0 waits at a barrier, so the scenario
         # hangs; its faulthandler dump must name where rank 1 is.
@@ -841,6 +920,21 @@ def _shutdown_count() -> list[int]:
     finally:
         torch.distributed.destroy_process_group = destroy
     return seen
+
+
+def _leave_together():
+    """``nnx.distributed.shutdown()`` with ``destroy_process_group`` skipped,
+    so the group stays up for the next case: None once every rank reached
+    the teardown barrier (#540), else its error."""
+    destroy = torch.distributed.destroy_process_group
+    torch.distributed.destroy_process_group = lambda *args, **kwargs: None
+    try:
+        nnx_dist.shutdown(timeout_seconds=30)
+        return None
+    except RuntimeError as error:
+        return f"{type(error).__name__}: {error}"
+    finally:
+        torch.distributed.destroy_process_group = destroy
 
 
 def _parked_for_diagnostics() -> None:
