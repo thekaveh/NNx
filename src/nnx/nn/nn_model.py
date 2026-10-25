@@ -1157,9 +1157,11 @@ def _classification_edp_for_loss(
     loss_fn: torch.nn.Module,
     target: torch.Tensor,
     prediction: torch.Tensor,
-    loss: float,
+    loss: Optional[float],
     extra_metrics: Optional[Mapping[str, Callable]],
 ) -> NNEvaluationDataPoint:
+    """The classification record of one batch; ``loss`` may be ``None``
+    (an objective's all-masked microbatch has no loss of its own)."""
     _check_scorable_target(loss_fn, target)
     metric_target, metric_prediction = _classification_metric_tensors(loss_fn, target, prediction)
     if metric_target.numel() == 0:
@@ -1171,12 +1173,13 @@ def _classification_edp_for_loss(
             loss=loss,
             error=None,
         )
-    return classification_edp(
+    edp = classification_edp(
         Y=metric_target,
         Y_hat=metric_prediction,
-        loss=loss,
+        loss=0.0 if loss is None else loss,
         extra_metrics=extra_metrics,
     )
+    return edp if loss is not None else replace(edp, loss=None)
 
 
 def _check_resume_precision(
@@ -2326,6 +2329,18 @@ def _objective_microbatch(
     if not isinstance(result, ObjectiveResult):
         raise TypeError(f"an objective must return an ObjectiveResult, got {type(result).__name__}")
     engine.accumulate(result.terms, closes_window=close_window)
+    record = result.record
+    loss = result.loss()
+    if (
+        loss is None
+        and (record is None or (record.kind is None and record.loss is None))
+        and getattr(model, "task_adapter", None) is None
+    ):
+        # No loss of its own (every target ignored, or only weight-0 terms):
+        # the window's running loss so far, as the default step records it
+        # (None before any trainable term). A task record (a TaskSpec, LM,
+        # ranking or link task) keeps its empty record's None loss.
+        loss = engine.running_loss()
     if epoch_summary is not None:
         # Staged per window: a window the engine drops as non-finite
         # ("skip") never reaches the whole-epoch loss, as it never reaches
@@ -2336,8 +2351,6 @@ def _objective_microbatch(
         if epoch_summary is not None:
             # Dropped for a non-finite term or non-finite gradients.
             epoch_summary.close_window(dropped=engine.dropped_nonfinite)
-    record = result.record
-    loss = result.loss()
     if record is None:
         return NNEvaluationDataPoint(loss=loss)
     return record if record.loss is not None or loss is None else record.with_loss(loss)

@@ -974,7 +974,11 @@ samples, or how much total weight, the numerator sums over; it is `0` when
 every sample is masked.
 
 The engine never infers a reduction from a scalar. A
-term that switches between summed and normalized within a window fails.
+term that switches between summed and normalized within a window fails,
+with one exception. A normalized microbatch with **no samples**
+(denominator `0`) adds nothing, so it may share a window with the same term
+summed. That is how a `reduction="sum"` loss with a `TaskSpec` trains a
+window of a valid and an all-masked microbatch, in either order.
 
 Each term is back-propagated into its own gradient buffer. A window of one
 microbatch (the default) takes a single backward pass through its combined
@@ -993,8 +997,11 @@ objective's non-finite policy. `nonfinite="fail"` (default) raises
 `FloatingPointError` before anything is stepped; `"skip"` drops the window's
 gradients.
 
-A window whose every term is masked takes no update, and a
-`GradScaler`-skipped step is always a quiet skip. Only optimizer-owned
+Only a term with a nonzero weight and samples trains: a summed term, or a
+normalized one with a positive denominator. A window without such a term
+(every term masked, or every term of weight `0`) takes no update. Its
+update counter, `optimizer_update` scheduler clock, events and
+`after_update` stay put. A `GradScaler`-skipped step is always a quiet skip. Only optimizer-owned
 parameters that require gradients when a microbatch runs are differentiated.
 So freezing or unfreezing them between epochs (gradual unfreezing) trains
 exactly as the default step does.
@@ -1006,8 +1013,8 @@ parameter before freezing it. Both loops warn once per run about a parameter
 that requires gradients but that no optimizer owns.
 
 Each **committed** optimizer update fires one detached `UpdateEvent` to
-`Callback.on_optimizer_update(ctx, event)`. A microbatch, a masked window or
-a skipped step never fires one. The event holds the optimizer name, that
+`Callback.on_optimizer_update(ctx, event)`. A microbatch, a window with no
+trainable term or a skipped step never fires one. The event holds the optimizer name, that
 optimizer's update index, the epoch and batch where the window closed, the
 microbatches and the term values. `ctx.update_count` and each record's
 `update_count` carry the run's committed-update counter. It is distinct from
@@ -1019,9 +1026,21 @@ continues them; a `weights_only` resume starts them at zero.
 
 The whole-epoch training loss (§6.4) of an objective run applies the same
 rule to the whole epoch. Each term's summed weighted numerators are divided
-by its summed denominators. A window dropped under `nonfinite="skip"` is left out;
-an epoch that drops every window has a non-finite loss. As with step
-functions, declared metrics are recorded on validation only.
+by its summed denominators, over the terms that train: a weight-0 term
+never gives an all-masked epoch a loss of `0.0`, so such an epoch has no
+loss and a training-loss monitor reports `missing`. A window dropped under
+`nonfinite="skip"`, for a non-finite term or non-finite gradients, is left
+out of both the loss and the error. An epoch that drops every window has a
+non-finite loss and error, so a training monitor on either reports
+`nonfinite`. As with step functions, declared metrics are recorded on
+validation only.
+
+A microbatch's record holds its weighted loss over the terms that train.
+A microbatch with none of its own (every target ignored) records the
+window's running loss so far, as the default step does. Before any term
+of the window has trained it records `None`, never NaN. An empty task
+record (a `TaskSpec` model's, or a causal-LM, ranking or link task's)
+always keeps its `None` loss.
 
 `SupervisedObjective` is the model's `loss_fn` normalized by its own
 denominator (non-ignored targets, class weights; summed for a

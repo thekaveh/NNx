@@ -18,14 +18,20 @@ for each microbatch. This engine owns everything after that:
    window-total denominator, summed terms are left as totals, and the
    weighted combination becomes the parameters' gradients — exactly the
    gradient of the full-window loss, whatever the microbatch sizes or
-   masks;
+   masks. Only a term with a nonzero weight and samples (a summed term,
+   or a normalized one with a positive denominator) trains: a window
+   without one — every term masked, or every term of weight ``0`` — takes
+   no update. A normalized term with no samples (denominator ``0``) adds
+   nothing, so it may share a window with the same term summed (a
+   sum-reduction ``TaskSpec`` loss over a valid and an all-masked
+   microbatch);
 3. mixed precision: ``unscale`` → gradient clipping → ``step`` →
    ``update``, in that order (the objective's forward already ran under
    autocast);
 4. a *committed-update* event fires for every named optimizer once per
-   committed window — never for a microbatch, an all-masked window or a
-   skipped step. An optimizer whose parameters got no gradient in the
-   window (frozen during a warm-up, say) is not stepped or unscaled, but it
+   committed window — never for a microbatch, a window with no trainable
+   term or a skipped step. An optimizer whose parameters got no gradient in
+   the window (frozen during a warm-up, say) is not stepped or unscaled, but it
    still counts the committed window, so every optimizer's update clock
    advances together. Before
    the events are delivered, the objective's own ``after_update`` hook runs
@@ -113,6 +119,11 @@ class _TermWindow:
     denominator: float = 0.0
     grads: list[Optional[torch.Tensor]] = field(default_factory=list)  # per parameter, allocated on first use
 
+    @property
+    def trains(self) -> bool:
+        """Whether the window so far gives this term a trainable value."""
+        return trains(self.reduction, self.weight, self.denominator)
+
 
 class UpdateEngine:
     """Accumulates objective terms per microbatch and commits one update
@@ -172,6 +183,7 @@ class UpdateEngine:
         self._terms: dict[str, _TermWindow] = {}
         self._microbatches = 0
         self._nonfinite_window = False
+        self._trains = False  # a term with a nonzero weight and samples was seen
         # A one-microbatch window's combined gradients (one backward pass).
         self._fused: Optional[list[Optional[torch.Tensor]]] = None
 
@@ -208,10 +220,17 @@ class UpdateEngine:
                     )
                 self._nonfinite_window = True
             window = self._terms.setdefault(term.name, _TermWindow(term.reduction, term.weight))
+            if term.reduction != window.reduction:
+                # A summed term and a no-sample normalized one (_check_terms):
+                # the normalized side adds nothing, its numerator included.
+                if term.reduction == "mean":
+                    continue
+                window.reduction, window.numerator = "sum", 0.0
             window.numerator += value
             if term.reduction == "mean":
                 window.denominator += float(term.denominator)
-            if term.weight and (term.reduction == "sum" or term.denominator):
+            if trains(term.reduction, term.weight, term.denominator):
+                self._trains = True
                 if term.numerator.requires_grad:
                     live.append(term)
                 else:
@@ -259,7 +278,8 @@ class UpdateEngine:
     # ---------- per window ----------
 
     def window_values(self) -> tuple[dict[str, float], float]:
-        """Each term's window value and the weighted total (for records)."""
+        """Each term's window value and the weighted total (for records); a
+        weight-0 term is reported but adds nothing to the total."""
         values: dict[str, float] = {}
         total = 0.0
         for name, window in self._terms.items():
@@ -273,10 +293,18 @@ class UpdateEngine:
             total += window.weight * value
         return values, total
 
+    def running_loss(self) -> Optional[float]:
+        """The open window's weighted loss so far over its trainable terms
+        (``None`` before any of them has a sample): what a microbatch with
+        no loss of its own records, as the default step's running mean."""
+        values, total = self.window_values()
+        return total if any(self._terms[name].trains for name in values) else None
+
     def commit(self, *, epoch_idx: int, batch_idx: int) -> tuple[UpdateEvent, ...]:
         """Close the window: combine, (unscale), clip, step. Returns one
         event per named optimizer for a committed window (none when the
-        window was empty, all-masked, non-finite or skipped by the scaler);
+        window was empty, had no trainable term — every term masked or of
+        weight 0 — was non-finite or skipped by the scaler);
         an optimizer without gradients is not stepped but still counts."""
         self.dropped_nonfinite = False
         try:
@@ -286,9 +314,9 @@ class UpdateEngine:
                 self.skipped += 1
                 self.dropped_nonfinite = True
                 return ()
+            if not self._trains:
+                return ()  # every term masked or of weight 0: nothing to learn from
             values, total = self.window_values()
-            if not values:
-                return ()  # every term fully masked: nothing to learn from
             self._assign_gradients()
             scaled: list[torch.optim.Optimizer] = []
             if self.scaler is not None:
@@ -470,6 +498,13 @@ def _is_count(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def trains(reduction: str, weight: float, denominator: Optional[float]) -> bool:
+    """Whether a term trains: a nonzero weight and samples (a summed term,
+    or a normalized one with a positive denominator). Shared by the commit
+    gate, the records and the whole-epoch loss."""
+    return bool(weight) and (reduction == "sum" or bool(denominator))
+
+
 def _term_scale(reduction: str, weight: float, denominator: Optional[float]) -> float:
     """A term's factor in the window loss: ``weight / denominator`` for a
     normalized term, ``weight`` for a summed one."""
@@ -481,7 +516,9 @@ def _term_scale(reduction: str, weight: float, denominator: Optional[float]) -> 
 
 def _check_terms(terms: Sequence[Any], window: Mapping[str, _TermWindow]) -> None:
     """Names are unique per microbatch; a name keeps its reduction and
-    weight for the whole window (summed and normalized terms never mix)."""
+    weight for the whole window (summed and normalized terms never mix —
+    except a normalized term with no samples so far, which adds nothing:
+    a sum-reduction task loss's all-masked microbatch)."""
     names = [term.name for term in terms]
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
@@ -492,10 +529,18 @@ def _check_terms(terms: Sequence[Any], window: Mapping[str, _TermWindow]) -> Non
         existing = window.get(term.name)
         if existing is None:
             continue
-        if existing.reduction != term.reduction:
+        if existing.reduction != term.reduction and not _no_samples(existing, term):
             raise ValueError(
                 f"loss term {term.name!r} mixes {existing.reduction!r} and {term.reduction!r} reductions within one "
                 "update window; a term is either summed or normalized by an explicit denominator"
             )
         if existing.weight != term.weight:
             raise ValueError(f"loss term {term.name!r} changes its weight within one update window")
+
+
+def _no_samples(window: _TermWindow, term: Any) -> bool:
+    """Whether the normalized side of a summed / normalized pair has no
+    samples (denominator 0 so far): it adds nothing to the summed total."""
+    if term.reduction == "mean":
+        return not term.denominator
+    return not window.denominator
