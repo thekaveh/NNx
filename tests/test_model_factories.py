@@ -41,6 +41,7 @@ from nnx import (
 )
 from nnx.nn.enum.checkpoints import Checkpoints
 from nnx.nn.params.nn_checkpoint import NNCheckpoint
+from tests._surgery import SURGERY_FORMS, unrecorded_surgery
 
 
 class Encoder(nn.Module):
@@ -236,9 +237,7 @@ def test_registered_modules_keep_the_topology_reconstruction_guard(tmp_path, mon
         model.train(params=_train_params(1))
 
 
-@pytest.mark.parametrize(
-    "form", ["low_rank", "prune", "weight_norm", "spectral_norm", "legacy_weight_norm", "legacy_spectral_norm"]
-)
+@pytest.mark.parametrize("form", SURGERY_FORMS)
 def test_registered_modules_keep_the_topology_reconstruction_guard_in_trainer_objective_runs(
     form, tmp_path, monkeypatch, encoder_spec
 ):
@@ -247,18 +246,10 @@ def test_registered_modules_keep_the_topology_reconstruction_guard_in_trainer_ob
     import os
 
     from nnx import NNTrainerParams, Trainer, supervised_objective
-    from nnx.prune import magnitude_prune
 
     monkeypatch.chdir(tmp_path)
     model = _registered(encoder_spec)
-    if form == "low_rank":
-        model.net.body[0] = low_rank_factorize(model.net.body[0], rank=2)
-    elif form == "prune":
-        magnitude_prune(model.net, 0.5, bake=False)
-    elif form.startswith("legacy_"):
-        getattr(torch.nn.utils, form.removeprefix("legacy_"))(model.net.body[0])
-    else:
-        getattr(torch.nn.utils.parametrizations, form)(model.net.body[0])
+    unrecorded_surgery(model.net, model.net.body, form)
     with pytest.raises(ValueError) as from_nnmodel:
         model.train(params=_train_params(1), objective=supervised_objective())
     sgd = NNOptimParams.builder().sgd(max_lr=0.05).build()
