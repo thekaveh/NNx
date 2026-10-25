@@ -626,11 +626,14 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             loader.descriptor = lambda: {**loader.partition.descriptor(), "batch_size": 2}  # type: ignore[method-assign]
         import random
 
+        import numpy as np
+
         m = model()
         before = {k: v.clone() for k, v in m.net.state_dict().items()}
         random.seed(777 + rank)
+        np.random.seed(777 + rank)
         torch.manual_seed(777 + rank)
-        python_rng, torch_rng = random.getstate(), torch.get_rng_state()
+        python_rng, numpy_rng, torch_rng = random.getstate(), np.random.get_state(), torch.get_rng_state()
         try:
             m.train(
                 params=params(
@@ -643,6 +646,10 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             out["error"] = f"{type(error).__name__}: {error}"
         out["unchanged"] = all(torch.equal(before[k], v) for k, v in m.net.state_dict().items())
         out["python_rng_unchanged"] = random.getstate() == python_rng
+        numpy_now = np.random.get_state()
+        out["numpy_rng_unchanged"] = numpy_now[0] == numpy_rng[0] and all(
+            np.array_equal(now, then) for now, then in zip(numpy_now[1:], numpy_rng[1:], strict=True)
+        )
         out["rng_unchanged"] = torch.equal(torch.get_rng_state(), torch_rng)
         if name == "resume_unreadable_rank":
             out["teardown_done"] = True  # the timed-out group is left for process exit
