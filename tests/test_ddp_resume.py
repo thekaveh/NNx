@@ -179,7 +179,7 @@ def test_a_resume_point_republished_after_the_writers_verification_is_refused_on
         assert rank["error"].startswith(f"ResumePointError: {first_id}/last: the resume point changed"), rank["error"]
         assert rank["unchanged"] and rank["rng_unchanged"], rank
     assert "generation 2 was verified, generation 3 is published" in writer["error"], writer["error"]
-    assert (writer["verified"], other["verified"]) == (1, 0)
+    assert (writer["verified"], other["verified"]) == (1, 0) and other["hashed"] == 0
     runs = [name for name in os.listdir(tmp_path / "runs") if not name.startswith(".") and name != "best"]
     assert runs == [first_id]
 
@@ -197,6 +197,7 @@ def test_a_resume_point_republished_between_the_ranks_loads_is_refused_alike_on_
     assert "generation 2 was verified, generation 3 is published" in writer["error"], writer["error"]
     for rank in (writer, other):
         assert rank["unchanged"] and rank["rng_unchanged"], rank
+    assert other["hashed"] == 0  # the load compares the checkpoint id: nothing is hashed again
     runs = [name for name in os.listdir(tmp_path / "runs") if not name.startswith(".") and name != "best"]
     assert runs == [first_id]
 
