@@ -50,6 +50,11 @@ jobs:
       - name: Audit frozen dependency graph
         run: |
           uv export --frozen --all-extras --all-groups --python "$PYTHON_VERSION" --no-emit-project --no-hashes --output-file frozen-requirements.txt
-          uv run --frozen python -m pip_audit --requirement frozen-requirements.txt --progress-spinner off
+          # Python 3.10 only: skip the IDs whose fixes need Python >= 3.11 (see the file's header).
+          ignores=()
+          if [ "$PYTHON_VERSION" = "3.10" ]; then
+            while read -r id _; do ignores+=(--ignore-vuln "$id"); done < <(grep -v '^#' .github/pip-audit-py310-ignores.txt)
+          fi
+          uv run --frozen python -m pip_audit --requirement frozen-requirements.txt --progress-spinner off "${ignores[@]}"
         env:
           PYTHON_VERSION: ${{ matrix.python-version }}
