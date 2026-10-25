@@ -91,6 +91,8 @@ def test_a_jepa_run_bundle_rebuilds_its_encoder_bit_exact(jepa, tmp_path):
     message = str(caught.value)
     assert "reconstruct_bundle(path, exclude_submodules=('_jepa_predictor',))" in message
     assert "from_checkpoint" not in message  # the option of the entry point the caller used
+    hint = message.rpartition("\nThe weights hold")[2]
+    assert "cls_token" not in hint and "pos_embed" not in hint  # ViTNN's own top-level tensors (#509)
     with pytest.raises(ValueError, match="do not hold"):
         reconstruct_bundle(bundle, exclude_submodules=("_jepa_predicter",))
     rebuilt = reconstruct_bundle(bundle, exclude_submodules=(PREDICTOR,))
@@ -121,6 +123,8 @@ def test_a_hub_save_with_the_predictor_attached_rebuilds_its_encoder(jepa, tmp_p
     message = str(caught.value)
     assert "from_pretrained(model_id, exclude_submodules=('_jepa_predictor',))" in message
     assert "from_checkpoint" not in message
+    hint = message.rpartition("\nThe weights hold")[2]
+    assert "cls_token" not in hint and "pos_embed" not in hint  # ViTNN's own top-level tensors (#509)
     with pytest.raises(ValueError, match="do not hold"):
         NNModel.from_pretrained(str(saved), exclude_submodules=("_jepa_predicter",))
     _assert_same_encoder(NNModel.from_pretrained(str(saved), exclude_submodules=(PREDICTOR,)), model)
@@ -141,6 +145,28 @@ def test_hub_exclusion_stays_strict_for_every_other_key(jepa, tmp_path):
     save_file(state, weights)
     with pytest.raises(RuntimeError, match="Missing key"):
         NNModel.from_pretrained(str(saved), exclude_submodules=(PREDICTOR,))
+
+
+def test_a_top_level_tensor_attached_beside_the_predictor_is_named_and_excluded_too(jepa, tmp_path):
+    """#509: a top-level parameter registered on the encoder (a learnable
+    temperature) is attached like the predictor: the hint names both, never
+    ViTNN's own top-level ``cls_token`` / ``pos_embed``, and excluding both
+    rebuilds the encoder."""
+    pytest.importorskip("huggingface_hub")
+    pytest.importorskip("safetensors")
+    model, _ = jepa
+    model.net.register_parameter("logit_scale", torch.nn.Parameter(torch.ones(1)))
+    saved = tmp_path / "hub"
+    model.save_pretrained(str(saved))
+    with pytest.raises(RuntimeError) as caught:
+        NNModel.from_pretrained(str(saved))
+    message = str(caught.value)
+    assert "(_jepa_predictor, logit_scale): NNModel.from_pretrained(model_id, exclude_submodules=('_jepa_predictor', 'logit_scale'))" in message  # fmt: skip
+    hint = message.rpartition("\nThe weights hold")[2]
+    assert "cls_token" not in hint and "pos_embed" not in hint
+    rebuilt = NNModel.from_pretrained(str(saved), exclude_submodules=(PREDICTOR, "logit_scale"))
+    del model.net.logit_scale
+    _assert_same_encoder(rebuilt, model)
 
 
 # --- a registered module (its state schema is checked before the load) ---------------------------

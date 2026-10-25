@@ -264,11 +264,14 @@ Rebuild a model, replay topology transforms, and load its weights.
 **Details**
 
 ```text
-``exclude_submodules`` names top-level submodules the training run
-attached to the net that are not part of the rebuilt architecture —
-a JEPA predictor registered as ``model.net._jepa_predictor``, say —
-whose weights are left out; every other weight still loads strictly.
-A name the checkpoint does not hold raises ``ValueError``.
+``exclude_submodules`` names top-level submodules or tensors the
+training run attached to the net that are not part of the rebuilt
+architecture — a JEPA predictor registered as
+``model.net._jepa_predictor``, or a ``logit_scale`` parameter
+registered on ``model.net``, say — whose weights are left out; every
+other weight still loads strictly. A name the checkpoint does not
+hold raises ``ValueError``; without the option, a strict failure
+names the attached ones and this option.
 
 Ordinary and legacy FP32 checkpoints have no transforms. Converted
 QAT checkpoints replay their persisted torchao recipe before state
@@ -301,10 +304,28 @@ Hub save (``huggingface_hub.PyTorchModelHubMixin.save_pretrained``).
 **Details**
 
 ```text
-A runtime-only module has no factory to rebuild it from,
-so it is rejected with :class:`~nnx.models.MissingModelFactoryError`
-before any file or directory is written.
+Everything ``from_pretrained`` could not rebuild is refused before
+any file or directory is written: a runtime-only module, which has no
+factory to rebuild it from (:class:`~nnx.models.MissingModelFactoryError`),
+and, with ``ValueError``, quantized tensor subclasses, unrecorded
+surgery (a topology other than the descriptor plus its recorded
+``nnx.transforms`` recipe), and a recorded topology transform NNx
+cannot replay from data — anything but a recipe operation of a known
+version or a torchao QAT conversion, such as a callback's own
+train-end transform (the error names its index and id), as
+``nnx.bundles.export_bundle`` refuses. Top-level submodules or
+tensors attached to the net beside an unchanged base (a JEPA
+predictor, a ``logit_scale``) are saved; ``from_pretrained`` leaves
+them out through ``exclude_submodules``.
 ```
+
+##### `nnx.nn.nn_model.NNModel.push_to_hub`
+
+```python
+nnx.nn.nn_model.NNModel.push_to_hub(self, repo_id: 'str', *args: 'Any', **kwargs: 'Any') -> 'Any'
+```
+
+Hub upload (``huggingface_hub.PyTorchModelHubMixin.push_to_hub``): `save_pretrained` into a temporary directory, uploaded to ``repo_id``. Whatever `save_pretrained` refuses is refused before the repository is created or anything is uploaded (#509).
 
 ##### `nnx.nn.nn_model.NNModel.freeze`
 
@@ -7880,13 +7901,15 @@ Args:
     batch_adapter: how a registered module sees a batch
         (``nnx.models.BatchAdapter``), as passed to ``NNModel`` — it is
         runtime-only, never stored.
-    exclude_submodules: top-level submodules the training run attached
-        to the net that are not part of the rebuilt architecture — a
-        JEPA predictor registered as ``model.net._jepa_predictor``, say
-        — whose weights are left out, as in
-        ``NNModel.from_checkpoint``; every other weight still loads
-        strictly. A model rebuilt without them serves inference and
-        cannot :meth:`~ReconstructedBundle.resume`.
+    exclude_submodules: top-level submodules or tensors the training
+        run attached to the net that are not part of the rebuilt
+        architecture — a JEPA predictor registered as
+        ``model.net._jepa_predictor``, or a ``logit_scale`` parameter
+        registered on ``model.net``, say — whose weights are left out,
+        as in ``NNModel.from_checkpoint``; every other weight still
+        loads strictly, and without the option a strict failure names
+        the attached ones and this option. A model rebuilt without them
+        serves inference and cannot :meth:`~ReconstructedBundle.resume`.
 
 Everything missing — the model factory, a required or incompatible
 component — is reported in one :class:`BundleReconstructionError` before
