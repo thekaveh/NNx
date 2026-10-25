@@ -1714,7 +1714,12 @@ def _distributed_session(
         session = _DDPSession(model.net, spec, model.device)
     except Exception as caught:
         error = caught
-    agree(error, "building the DDP wrapper")
+    try:
+        agree(error, "building the DDP wrapper")
+    except BaseException:
+        if session is not None:
+            session.release()  # a peer's build failed: this rank's wrapper goes too (#539)
+        raise
     return session, kept
 
 
@@ -1727,8 +1732,6 @@ def _distributing(model: Any, session: Optional[Any]) -> Iterator[None]:
         yield
     finally:
         model._ddp_session = previous
-        if session is not None:
-            session.release()  # the wrapper does not outlive the fit (#478)
 
 
 class _Replay:
@@ -3922,14 +3925,18 @@ class NNModel(_HubMixinBase):
             history=history,
             compile=compile,
         )
-        run = NNRun(
-            train=params,
-            model=self.params,
-            net=self.net_params,
-            salt=salt,
-            transforms=_recipe_transforms(self._topology_transforms),  # FEAT-016: part of the run id when present
-        )
         with contextlib.ExitStack() as stack:
+            if ddp_session is not None:
+                # The wrapper does not outlive train(), however it ends: the
+                # fit, or a failure before it (#478, #539).
+                stack.callback(ddp_session.release)
+            run = NNRun(
+                train=params,
+                model=self.params,
+                net=self.net_params,
+                salt=salt,
+                transforms=_recipe_transforms(self._topology_transforms),  # FEAT-016: part of the run id when present
+            )
             if ddp_session is None:
                 stack.enter_context(run.writable_lease(overwrite=params.overwrite_existing))
             else:
