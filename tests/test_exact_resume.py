@@ -331,3 +331,179 @@ def test_a_crash_between_publishing_the_checkpoint_and_its_manifest_still_resume
     assert sorted({idp.epoch_idx for idp in resumed.idps}) == [2, 3]
     assert _digest(os.path.join("runs", run_id)) == before  # verifying and resuming wrote nothing to the source
     assert NNRun.load(resumed.id).resume_status.source_generation == 2
+
+
+# --- #537: a resume point republished between verification and load --------------------------------
+
+
+def _republish_refused(params, tag="last", *, crashed=False):
+    """Resume with ``params`` while ``tag`` is republished between its
+    verification and its load (``crashed``: the republish stopped before its
+    live manifest): refused, the model untouched and the RNG as the fit's
+    seed left it."""
+    from tests._checkpoint_files import republished_on_verify
+
+    model = _model()
+    before = {name: weight.clone() for name, weight in model.net.state_dict().items()}
+    rng = torch.Generator().manual_seed(params.seed).get_state()
+    with (
+        republished_on_verify(params.resume_from_run_id, tag, crashed=crashed),
+        pytest.raises(ResumePointError) as refused,
+    ):
+        model.train(params=params)
+    assert all(torch.equal(before[name], weight) for name, weight in model.net.state_dict().items())
+    assert torch.equal(rng, torch.get_rng_state())
+    assert not [name for name in os.listdir("runs") if len(name) == 32 and name != params.resume_from_run_id]
+    return str(refused.value)
+
+
+def test_a_stateful_resume_refuses_a_point_republished_after_its_verification():
+    run = _first()
+    message = _republish_refused(_resume("sgd", run.id))
+    assert message.startswith(f"{run.id}/last: the resume point changed while it was being read")
+    assert "generation 3 was verified, generation 4 is published" in message
+
+
+def test_a_weights_only_resume_refuses_a_point_republished_after_its_verification():
+    run = _first()
+    message = _republish_refused(_params("sgd", resume_from_run_id=run.id, resume_mode="weights_only"))
+    assert message.startswith(f"{run.id}/last: the resume point changed while it was being read")
+
+
+def _weights_only_point(run_id):
+    NNCheckpoint.load(run=run_id, type=Checkpoints.LAST).save(run=run_id, type="weights_e1")
+    assert NNCheckpoint.resume_point(run_id, "weights_e1")["checkpoint_id"] is None
+    return _params("sgd", resume_from_run_id=run_id, resume_from_checkpoint="weights_e1", resume_mode="weights_only")
+
+
+def test_a_resume_from_a_weights_only_checkpoint_refuses_a_republished_point():
+    """``NNCheckpoint.save`` without training state writes ``checkpoint_id:
+    null``: the generation, not the id, tells the republished point apart."""
+    from tests._checkpoint_files import republished_on_verify
+
+    run = _first()
+    params = _weights_only_point(run.id)
+    model = _model()
+    before = {name: weight.clone() for name, weight in model.net.state_dict().items()}
+    with (
+        republished_on_verify(run.id, "weights_e1"),
+        pytest.raises(ResumePointError, match="generation 1 was verified"),
+    ):
+        model.train(params=params)
+    assert all(torch.equal(before[name], weight) for name, weight in model.net.state_dict().items())
+
+
+def test_a_stateful_resume_refuses_a_republish_that_stopped_before_its_live_manifest():
+    """The republish published LAST but not its live manifest, which still
+    names the verified generation: the loaded checkpoint id tells it apart."""
+    from nnx.nn.params.nn_checkpoint import _checkpoint_path, _read_staged_manifest
+
+    run = _first()
+    verified = NNCheckpoint.resume_point(run.id, Checkpoints.LAST)["checkpoint_id"]
+    message = _republish_refused(_resume("sgd", run.id), crashed=True)
+    staged = _read_staged_manifest(_checkpoint_path(run.id, Checkpoints.LAST))
+    assert NNCheckpoint.resume_point(run.id, Checkpoints.LAST)["checkpoint_id"] == verified  # still live
+    assert staged is not None and staged["checkpoint_id"] != verified
+    assert message.startswith(f"{run.id}/last: the resume point changed while it was being read")
+    assert f"checkpoint {verified} was verified, {staged['checkpoint_id']} is published" in message
+
+
+def test_a_resume_from_a_weights_only_checkpoint_refuses_a_republish_that_stopped_before_its_live_manifest():
+    """No checkpoint id to compare: the checkpoint's digest tells the
+    republished file apart from the verified generation still live."""
+    run = _first()
+    message = _republish_refused(_weights_only_point(run.id), "weights_e1", crashed=True)
+    assert NNCheckpoint.resume_point(run.id, "weights_e1")["generation"] == 1  # still live
+    assert "generation 1 was verified, weights_e1.pt is generation 2's" in message
+
+
+def _hashed_while_loading(monkeypatch) -> list[str]:
+    """The files ``NNCheckpoint._load_resume_point`` hashes (#440: the point
+    was verified once, so it hashes none but in the narrow weights-only case)."""
+    import nnx.nn.params.nn_checkpoint as nn_checkpoint
+
+    hashed: list[str] = []
+    loading: list[bool] = []
+    real_sha256, real_load = nn_checkpoint._sha256, NNCheckpoint._load_resume_point
+
+    def counting_sha256(path):
+        if loading:
+            hashed.append(os.path.basename(path))
+        return real_sha256(path)
+
+    def tracked_load(*args, **kwargs):
+        loading.append(True)
+        try:
+            return real_load(*args, **kwargs)
+        finally:
+            loading.pop()
+
+    monkeypatch.setattr(nn_checkpoint, "_sha256", counting_sha256)
+    monkeypatch.setattr(NNCheckpoint, "_load_resume_point", staticmethod(tracked_load))
+    return hashed
+
+
+@pytest.mark.parametrize("weights_only", [False, True], ids=["stateful", "weights_only_checkpoint"])
+def test_a_resume_hashes_its_point_only_to_verify_it(monkeypatch, weights_only):
+    """Manifests that agree need no second digest, also for a weights-only
+    checkpoint (no id): the load compares generations and ids only."""
+    run = _first()
+    params = _weights_only_point(run.id) if weights_only else _resume("sgd", run.id)
+    hashed = _hashed_while_loading(monkeypatch)
+    resumed = _model().train(params=params)
+    assert NNRun.load(resumed.id).resume_status.source_generation == (1 if weights_only else 3)
+    assert hashed == []
+
+
+def test_a_weights_only_checkpoint_whose_republish_stopped_before_publishing_still_resumes(monkeypatch):
+    """The republish staged its manifest but never published its checkpoint:
+    the verified generation is intact on disk, so the resume goes ahead —
+    after hashing that checkpoint, the one file hashed twice."""
+    from pathlib import Path
+
+    from nnx.nn.params.nn_checkpoint import _checkpoint_path, _manifest_path, _staged_manifest_path
+    from tests._checkpoint_files import republish
+
+    run = _first()
+    params = _weights_only_point(run.id)
+    checkpoint_path = _checkpoint_path(run.id, "weights_e1")
+    files = {Path(path): Path(path).read_bytes() for path in (checkpoint_path, _manifest_path(checkpoint_path))}
+    republish(run.id, "weights_e1")
+    os.replace(_manifest_path(checkpoint_path), _staged_manifest_path(checkpoint_path))
+    for path, content in files.items():  # the checkpoint and live manifest as before the republish
+        path.write_bytes(content)
+    hashed = _hashed_while_loading(monkeypatch)
+    resumed = _model().train(params=params)
+    assert NNRun.load(resumed.id).resume_status.source_generation == 1
+    assert hashed == ["weights_e1.pt"]
+
+
+class _Ranks:
+    """A DDP session stand-in whose gather returns every rank's value."""
+
+    def __init__(self, values):
+        self.values = values
+
+    def gather(self, value):
+        return self.values
+
+
+def test_ranks_refusing_differently_all_raise_the_lowest_refusing_ranks_error(monkeypatch):
+    """Rank 1 saw an interrupted republish, rank 2 a completed one: every
+    rank raises rank 1's refusal, a rank's own different one as its cause."""
+    from nnx.nn.nn_model import _load_verified_resume_point
+
+    first, second = "run/last: the resume point changed (checkpoint a)", "run/last: the resume point changed (gen 4)"
+    own = ResumePointError(second)
+
+    def refused(*args, **kwargs):
+        raise own
+
+    monkeypatch.setattr(NNCheckpoint, "_load_resume_point", staticmethod(refused))
+    with pytest.raises(ResumePointError) as raised:
+        _load_verified_resume_point("run", Checkpoints.LAST, {}, _Ranks([None, first, second]))
+    assert str(raised.value) == first and raised.value.__cause__ is own
+    monkeypatch.setattr(NNCheckpoint, "_load_resume_point", staticmethod(lambda *args, **kwargs: (None, None)))
+    with pytest.raises(ResumePointError, match=r"\(checkpoint a\)$") as raised:  # a rank that loaded cleanly
+        _load_verified_resume_point("run", Checkpoints.LAST, {}, _Ranks([None, first, second]))
+    assert raised.value.__cause__ is None

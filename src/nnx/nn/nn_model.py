@@ -323,8 +323,9 @@ class _ResumeSource:
     training_state: Optional[dict[str, Any]]
     net_state: dict[str, Any]
     label: str
-    # #394: the verified resume-point manifest (None for a checkpoint written
-    # before manifests, or an in-memory source).
+    # #394: the verified resume-point manifest, of the generation loaded
+    # (#537; None for a checkpoint written before manifests, or an in-memory
+    # source).
     manifest: Optional[dict[str, Any]] = None
 
 
@@ -332,6 +333,12 @@ class _ResumeSource:
 # one train() call — a run bundle's (nnx.bundles), which never becomes a pickle.
 _IN_MEMORY_RESUME: contextvars.ContextVar[Optional[tuple[str, str, NNCheckpoint, Optional[dict[str, Any]]]]] = (
     contextvars.ContextVar("nnx_in_memory_resume", default=None)
+)
+
+# Told (source run id, checkpoint) once a resume has read its source, for one
+# train() call recording an attempt: its parent is that checkpoint (#537).
+_RESUME_SOURCE_LISTENER: contextvars.ContextVar[Optional[Callable[[str, NNCheckpoint], None]]] = contextvars.ContextVar(
+    "nnx_resume_source_listener", default=None
 )
 
 
@@ -419,6 +426,34 @@ def _verified_resume_point(run_id: str, ckpt_type: Any, ddp: Any) -> Optional[di
     raise DistributedFailure(f"verifying the resume point failed on rank {ddp.spec.writer_rank}: {kind}: {message}")
 
 
+def _load_verified_resume_point(run_id: str, ckpt_type: Any, manifest: dict[str, Any], ddp: Any) -> tuple[Any, Any]:
+    """Load the verified resume point (``NNCheckpoint._load_resume_point``,
+    #537). Under DDP every rank loads it itself, so a republish landing
+    between two ranks' loads is refused by the later one only: the ranks
+    share their refusals, and every rank raises the same
+    :class:`ResumePointError` (as :func:`_verified_resume_point` does), not
+    a peer's ``DistributedFailure``: the lowest refusing rank's, with a
+    rank's own different failure as its cause. Every rank reaches the
+    gather: each one's own failure is caught first, then raised."""
+    if ddp is None:
+        return NNCheckpoint._load_resume_point(run_id, ckpt_type, manifest)
+    loaded: Any = None
+    failure: Optional[Exception] = None
+    try:
+        loaded = NNCheckpoint._load_resume_point(run_id, ckpt_type, manifest)
+    except Exception as error:  # shared below, then raised
+        failure = error
+    refusal = str(failure) if isinstance(failure, ResumePointError) else None
+    refusals = [message for message in ddp.gather(refusal) if message is not None]
+    if refusals:  # the same message on every rank, also when several refused
+        if isinstance(failure, ResumePointError) and str(failure) == refusals[0]:
+            raise failure
+        raise ResumePointError(refusals[0]) from failure
+    if failure is not None:  # anything else is agreed on by the "resuming the run" block
+        raise failure
+    return loaded
+
+
 def _load_resume_source(
     run_id: str,
     checkpoint: Any,
@@ -440,9 +475,14 @@ def _load_resume_source(
         ckpt, training_state = in_memory[2], in_memory[3]
     else:
         # #394: a torn, mixed or corrupted resume point is refused here, with
-        # its reason, before anything is restored from it.
+        # its reason, before anything is restored from it — and #537: one
+        # published again since it was verified, on every rank (the load
+        # compares the verified generation in its own lock hold).
         manifest = _verified_resume_point(run_id, cast(Any, ckpt_type), ddp)
-        ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=cast(Any, ckpt_type))
+        if manifest is None:  # a checkpoint without a manifest loads as before
+            ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=cast(Any, ckpt_type))
+        else:
+            ckpt, training_state = _load_verified_resume_point(run_id, cast(Any, ckpt_type), manifest, ddp)
     if ckpt is None:
         raise ValueError(f"resume_from_run_id={run_id!r}/{ckpt_type} not found on disk")
     resume_net_state = training_state.get("model") if training_state is not None else None
@@ -468,6 +508,9 @@ def _load_resume_source(
         )
     label = str(ckpt_type)
     training_state = _resume_training_state(training_state, mode, f"{run_id}/{label}", trainer=trainer)
+    listener = _RESUME_SOURCE_LISTENER.get()
+    if listener is not None:  # the attempt's parent is the checkpoint read here (#537)
+        listener(run_id, ckpt)
     return _ResumeSource(ckpt, training_state, resume_net_state or ckpt.net_state, label, manifest)
 
 
@@ -1809,9 +1852,15 @@ def _with_attempt(
     ``KeyboardInterrupt``) and last committed checkpoint are recorded; a
     failure to record a failed attempt never masks the training error.
     ``execution`` returns the fit's compile record (FEAT-029) when it ends,
-    whatever its outcome."""
+    whatever its outcome. The record's parent is the checkpoint the resume
+    reads (#537), which the source may have published again since the
+    record started."""
     if provenance is None:
-        return fit()
+        token = _RESUME_SOURCE_LISTENER.set(None)  # an enclosing fit's attempt is not this one's
+        try:
+            return fit()
+        finally:
+            _RESUME_SOURCE_LISTENER.reset(token)
     from ..provenance import _AttemptRecorder
 
     recorder = _AttemptRecorder(
@@ -1822,11 +1871,14 @@ def _with_attempt(
         execution=execution,
     )
     recorder.start()
+    token = _RESUME_SOURCE_LISTENER.set(recorder.resumed_from)
     try:
         result = fit()
     except BaseException as error:
         recorder.fail(error)
         raise
+    finally:
+        _RESUME_SOURCE_LISTENER.reset(token)
     try:
         recorder.complete()
     except Exception as record_error:  # the fit succeeded and is saved; do not lose it
@@ -4087,14 +4139,6 @@ class NNModel(_HubMixinBase):
                         if completed_epoch is not None:
                             start_epoch = int(completed_epoch) + 1
                         counters = training_state.get("counters") or {}
-                        if (
-                            source.manifest is not None
-                            and source.manifest.get("checkpoint_id") != source.checkpoint.training_state_id
-                        ):
-                            raise ResumePointError(
-                                f"resume_from_run_id={params.resume_from_run_id!r}/{source.label}: the resume point "
-                                "changed while it was being read — retry once its writer has finished"
-                            )
                         session_epochs = _session_epochs(
                             params, start_epoch, counters, f"resume_from_run_id={params.resume_from_run_id!r}"
                         )
