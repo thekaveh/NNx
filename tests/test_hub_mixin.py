@@ -11,6 +11,7 @@ asserts on.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 import torch
@@ -257,20 +258,27 @@ def test_hub_round_trip_tied_transformer(tmp_path):
     assert a == b
 
 
-def test_hub_config_persists_and_replays_topology_transforms(tmp_path, monkeypatch):
-    from nnx.nn import nn_model as nn_model_module
-    from nnx.nn.params.nn_checkpoint import NNCheckpointTransform
+def test_hub_config_persists_and_replays_topology_transforms(tmp_path):
+    """config.json records the model's transforms, and from_pretrained
+    replays them for real — a LoRA wrapper is rebuilt — before loading."""
+    from nnx.peft import LoRALinear
+    from nnx.transforms import TransformRecipe, lora
 
     model = _tiny_model()
-    transform = NNCheckpointTransform(name="test-transform", options={"value": 1})
-    model._topology_transforms = (transform,)
+    first = next(name for name, module in model.net.named_modules() if type(module) is torch.nn.Linear)
+    TransformRecipe([lora(first, r=2, alpha=4.0)]).materialize(model)
     model.save_pretrained(str(tmp_path))
-    applied = []
-    monkeypatch.setattr(nn_model_module, "_apply_checkpoint_transform", lambda restored, item: applied.append(item))
+    config = json.loads((tmp_path / "config.json").read_text())
+    assert config["transforms"] == [transform.state() for transform in model._topology_transforms]
 
-    NNModel.from_pretrained(str(tmp_path))
+    rebuilt = NNModel.from_pretrained(str(tmp_path))
 
-    assert applied == [transform]
+    assert rebuilt._topology_transforms == model._topology_transforms
+    assert isinstance(rebuilt.net.get_submodule(first), LoRALinear)
+    x = torch.randn(3, 4, generator=torch.Generator().manual_seed(0))
+    model.net.eval(), rebuilt.net.eval()
+    with torch.no_grad():
+        assert torch.equal(rebuilt.net(x), model.net(x))
 
 
 def test_remote_hub_load_uses_one_atomic_snapshot(tmp_path, monkeypatch):
@@ -521,3 +529,184 @@ def test_hub_from_pretrained_refuses_an_explicit_override_instead_of_dropping_it
         override = {"params": m.params, "net_params": m.net_params, "tokenizer": object()}[key]
     with pytest.raises(TypeError, match=f"from_pretrained got {key}"):
         NNModel.from_pretrained(str(tmp_path), **{key: override})
+
+
+# ---------- #509: unreplayable saves are refused; top-level tensors are excludable ----------
+
+
+def _trained_with_own_transform(tmp_path, monkeypatch, loop: str = "model") -> NNModel:
+    """The ticket's Example 1: a callback declares its own train-end
+    transform through the public hook, so no NNx loader can replay it."""
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx import Callback, NNCheckpointTransform, NNOptimParams, NNTrainerParams, NNTrainParams, Trainer
+    from nnx.objectives import supervised_objective
+
+    class Convert(Callback):
+        def checkpoint_transforms(self):
+            return (NNCheckpointTransform(name="my-convert"),)
+
+        def on_train_end(self, ctx):
+            old = ctx.model.net.layers[0]
+            ctx.model.net.layers[0] = torch.nn.Linear(old.in_features, old.out_features)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    model = _tiny_model()
+    generator = torch.Generator().manual_seed(0)
+    loader = DataLoader(
+        TensorDataset(torch.randn(8, 4, generator=generator), torch.randint(0, 2, (8,), generator=generator)),
+        batch_size=4,
+    )
+    optim = NNOptimParams.builder().sgd(max_lr=0.1).build()
+    if loop == "model":
+        model.train(NNTrainParams(n_epochs=1, train_loader=loader, optim=optim), callbacks=[Convert()])
+    else:
+        params = NNTrainerParams.builder().n_epochs(1).train_loader(loader).optimizer("default", optim).build()
+        Trainer(model).train(params=params, objective=supervised_objective(), callbacks=[Convert()])
+    assert [transform.name for transform in model._topology_transforms] == ["my-convert"]
+    return model
+
+
+@pytest.mark.parametrize("loop", ["model", "trainer"])
+def test_save_pretrained_refuses_a_callbacks_own_transform_before_writing(tmp_path, monkeypatch, loop):
+    """#509: from_pretrained could not replay a callback's own transform, so
+    save_pretrained refuses it before the directory exists, as export_bundle
+    does."""
+    model = _trained_with_own_transform(tmp_path, monkeypatch, loop)
+    target = tmp_path / "artifact"
+    with pytest.raises(
+        ValueError,
+        match=r"save_pretrained refused before writing anything: topology transform 0 \('my-convert' version 1\)",
+    ):
+        model.save_pretrained(str(target))
+    assert not target.exists()
+
+
+def _mocked_hf_api(monkeypatch):
+    from unittest import mock
+
+    api = mock.MagicMock()
+    api.create_repo.return_value.repo_id = "owner/repo"
+    api.upload_folder.return_value = "https://huggingface.co/owner/repo/commit/0"
+    monkeypatch.setattr("huggingface_hub.hub_mixin.HfApi", mock.MagicMock(return_value=api))
+    return api
+
+
+@pytest.mark.parametrize("case", ["own-transform", "unrecorded-lora", "runtime-module"])
+def test_push_to_hub_refuses_before_creating_the_repository(tmp_path, monkeypatch, case):
+    """#509: the mixin creates the repository before it saves; every
+    save-side refusal comes first, so nothing is created or uploaded."""
+    from nnx import MissingModelFactoryError
+    from nnx.peft import apply_lora_to
+
+    if case == "own-transform":
+        model = _trained_with_own_transform(tmp_path, monkeypatch)
+        error, pattern = ValueError, r"push_to_hub refused before creating the repository.*'my-convert' version 1"
+    elif case == "unrecorded-lora":
+        model = _tiny_model()
+        apply_lora_to(model.net, "*")
+        error, pattern = ValueError, "push_to_hub refused before creating the repository.*unrecorded surgery"
+    else:
+        model = NNModel(module=_HubEncoder(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+        error, pattern = MissingModelFactoryError, "push_to_hub needs a rebuildable module"
+    api = _mocked_hf_api(monkeypatch)
+    with pytest.raises(error, match=pattern):
+        model.push_to_hub("owner/repo")
+    api.create_repo.assert_not_called()
+    api.upload_folder.assert_not_called()
+
+
+def test_push_to_hub_still_uploads_a_portable_model(monkeypatch):
+    api = _mocked_hf_api(monkeypatch)
+    uploaded = []
+    api.upload_folder.side_effect = lambda **kwargs: uploaded.append(sorted(os.listdir(kwargs["folder_path"])))
+    _tiny_model().push_to_hub("owner/repo")
+    api.create_repo.assert_called_once()
+    assert uploaded == [["README.md", "config.json", "model.safetensors"]]
+
+
+def test_a_qat_converted_model_still_saves_and_round_trips(tmp_path, monkeypatch):
+    """#509: a torchao QAT conversion replays from data, so it is not refused."""
+    pytest.importorskip("torchao")
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx import NNOptimParams, NNTrainParams, QATLifecycleCallback, qat_train_step_factory
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    torch.manual_seed(0)
+    model = NNModel(  # hidden widths divide the default int4 groupsize (32)
+        net_params=NNParams(
+            input_dim=32, output_dim=3, hidden_dims=[64], dropout_prob=0.0, activation=Activations.RELU
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    loader = DataLoader(TensorDataset(torch.randn(16, 32), torch.randint(0, 3, (16,))), batch_size=8)
+    model.train(
+        NNTrainParams(n_epochs=1, train_loader=loader, optim=NNOptimParams.builder().sgd(max_lr=0.1).build()),
+        train_step_fn=qat_train_step_factory(),
+        callbacks=[QATLifecycleCallback()],
+    )
+    assert [transform.name for transform in model._topology_transforms] == ["torchao_qat"]
+    model.save_pretrained(str(tmp_path / "hub"))
+    rebuilt = NNModel.from_pretrained(str(tmp_path / "hub"))
+    assert rebuilt._topology_transforms == model._topology_transforms
+    probe = torch.randn(4, 32, generator=torch.Generator().manual_seed(1))
+    model.net.eval(), rebuilt.net.eval()
+    with torch.no_grad():
+        assert torch.equal(rebuilt.net(probe), model.net(probe))
+
+
+def test_an_unknown_transform_names_both_causes(tmp_path):
+    """#509: an unknown transform is either a newer NNx's operation or a
+    callback's own, which no NNx version replays."""
+    model = _tiny_model()
+    model.save_pretrained(str(tmp_path))
+    config_path = tmp_path / "config.json"
+    config = json.loads(config_path.read_text())
+    config_path.write_text(json.dumps({**config, "transforms": [{"name": "my-convert", "version": 1, "options": {}}]}))
+    with pytest.raises(ValueError) as caught:
+        NNModel.from_pretrained(str(tmp_path))
+    message = str(caught.value)
+    assert "topology transform 0 ('my-convert' version 1)" in message
+    assert "newer NNx" in message and "callback's own transform" in message
+
+
+def _with_top_level(kind: str) -> tuple[NNModel, str]:
+    model = _tiny_model()
+    if kind == "parameter":
+        model.net.register_parameter("logit_scale", torch.nn.Parameter(torch.full((1,), 2.0)))
+        return model, "logit_scale"
+    if kind == "buffer":
+        model.net.register_buffer("class_prior", torch.tensor([0.25, 0.75]))
+        return model, "class_prior"
+    model.net.add_module("aux_head", torch.nn.Linear(2, 2))  # a top-level submodule, as before #509
+    return model, "aux_head"
+
+
+@pytest.mark.parametrize("kind", ["parameter", "buffer", "submodule"])
+def test_a_top_level_tensor_or_submodule_is_excluded_strictly(tmp_path, kind):
+    """#509: exclude_submodules names a top-level tensor as it names a
+    submodule; every other key still loads strictly."""
+    from safetensors.torch import load_file, save_file
+
+    model, name = _with_top_level(kind)
+    saved = tmp_path / "hub"
+    model.save_pretrained(str(saved))
+    with pytest.raises(RuntimeError) as caught:
+        NNModel.from_pretrained(str(saved))
+    message = str(caught.value)
+    assert f"({name}): NNModel.from_pretrained(model_id, exclude_submodules=('{name}',))" in message
+    rebuilt = NNModel.from_pretrained(str(saved), exclude_submodules=(name,))
+    base = {key: value for key, value in model.net.state_dict().items() if key.split(".", 1)[0] != name}
+    assert rebuilt.net.state_dict().keys() == base.keys()
+    for key, value in base.items():
+        assert torch.equal(rebuilt.net.state_dict()[key], value), key
+
+    weights = saved / "model.safetensors"
+    state = load_file(str(weights))
+    del state["layers.0.weight"]
+    save_file(state, str(weights))
+    with pytest.raises(RuntimeError, match=r'Missing key\(s\) in state_dict: "layers.0.weight"'):
+        NNModel.from_pretrained(str(saved), exclude_submodules=(name,))

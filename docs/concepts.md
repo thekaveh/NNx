@@ -2794,9 +2794,12 @@ export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bund
   `GenerativeNNModel` tokenizer) are not bundled.
 - **Excluded submodules.** `exclude_submodules=` rebuilds without top-level
   submodules the training run attached to the net (a JEPA predictor, see
-  [JEPA](jepa.md)). Every other weight is still strict, as
-  `NNModel.from_checkpoint` and `from_pretrained` do. Such a model serves
-  inference and cannot `resume()`.
+  [JEPA](jepa.md)). It also rebuilds without top-level tensors attached to
+  it, such as a `logit_scale` parameter or a buffer registered on
+  `model.net`. Every other weight is still strict, as
+  `NNModel.from_checkpoint` and `from_pretrained` do. Without the option, a
+  strict failure names the attached submodules and tensors and this option.
+  Such a model serves inference and cannot `resume()`.
 - **Untrusted bundles.** Like `from_pretrained` with a `config.json`,
   reconstruction builds the architecture the bundle's parameters describe.
   Read an untrusted bundle's `inspect_bundle(...).model_params` and
