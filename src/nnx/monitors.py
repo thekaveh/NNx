@@ -59,6 +59,7 @@ from ._confusion import AVERAGES, ConfusionCounts
 # One implementation of the probability terms, shared with nnx.calibration.
 from ._probability import brier_terms as _brier_terms
 from ._probability import nll_terms as _nll_terms
+from ._update_engine import trains
 from ._validation import require_count
 
 if TYPE_CHECKING:
@@ -841,9 +842,10 @@ class _TrainEpochSummary:
     reports its loss terms through :meth:`observe_terms`, so the epoch's
     loss is the objective's own window rule applied to the whole epoch
     (over the terms that train: a weight-0 term never makes an all-masked
-    epoch's loss 0.0), and both its loss and its error cover the windows
-    the engine committed — a window dropped as non-finite is left out of
-    both; for custom steps only the returned records are available,
+    epoch's loss 0.0), and a window the engine drops as non-finite is
+    left out of both its loss and its error (a window of weight-0 terms
+    alone still pools its records' errors); for custom steps only the
+    returned records are available,
     weighted by their ``count`` (task records) or by the batch's sample
     count."""
 
@@ -918,8 +920,6 @@ class _TrainEpochSummary:
         weight, so a weight annealed across windows counts as it was
         applied) over its summed denominators; a summed term adds its
         weighted totals. A term is keyed by its name and reduction."""
-        from ._update_engine import trains
-
         for term in terms:
             entry = self._terms.setdefault((term.name, term.reduction), [term.reduction, 0.0, 0.0, False])
             entry[1] += float(term.weight) * term._numerator_value
