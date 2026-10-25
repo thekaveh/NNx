@@ -216,9 +216,18 @@ This state is restored after the callbacks' reset hooks, so a split run stops
 at the same epoch as the uninterrupted one
 ([Concepts §14.1](concepts.md#141-component-state)).
 
+A stateful resume continues with the checkpoint's optimizer and scheduler
+settings, so it refuses a changed `max_lr`, `weight_decay`, `momentum`, `eps`,
+optimizer name, param-group spec or restored scheduler setting (a plateau
+`factor`, `patience`, `cooldown` or `min_lr`, a step schedule's `factor` or
+`step_size`). The `ValueError` names each field with its saved and configured
+values, before anything is restored
+([Concepts §14.3](concepts.md#143-exact-resume-to-the-planned-horizon)).
+
 `resume_mode="stateful"` fails before restoring anything when the checkpoint
 is weights-only. `resume_mode="weights_only"` warm-starts from the weights
-alone, with a fresh optimizer, scheduler and components. The returned
+alone, with a fresh optimizer, scheduler and components, so new
+hyperparameters train from the first step. The returned
 `run.resume_status` says which happened. The multi-optimizer `Trainer` resumes
 the same way through `NNTrainerParams.builder().resume_from(run_id)`
 ([Concepts §8.4](concepts.md#84-warm-resume)).

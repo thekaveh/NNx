@@ -408,6 +408,34 @@ def test_resume_rejects_a_changed_factory_identity_or_topology(tmp_path, monkeyp
         unregister_optimizer_factory(FACTORY_ID, 2)
 
 
+@pytest.mark.parametrize(
+    ("change", "fragment"),
+    [
+        ({"max_lr": 1e-4}, "optimizer max_lr (checkpoint 0.05, configuration 0.0001)"),
+        ({"weight_decay": 0.1}, "optimizer weight_decay (checkpoint 0.0001, configuration 0.1)"),
+        (
+            {"param_groups": [NNParamGroupSpec(name_pattern="*", lr=1e-5)]},
+            "optimizer param_groups (checkpoint None, configuration [{",
+        ),
+    ],
+    ids=["max_lr", "weight_decay", "group-lr"],
+)
+def test_resume_refuses_a_changed_factory_hyperparameter_under_the_same_identity(
+    tmp_path, monkeypatch, counting_sgd, change, fragment
+):
+    """#502: the factory id / version / config match, but the checkpoint's
+    param groups would replace the configured max_lr / weight_decay / group
+    lr, so the run would train with the checkpoint's while recording these."""
+    first = _train_source(tmp_path, monkeypatch, _factory_params())
+    with pytest.raises(ValueError, match="resume hyperparameter mismatch") as caught:
+        _resume(first, _factory_params(**change))
+    assert fragment in str(caught.value) and "resume_mode='weights_only'" in str(caught.value)
+    assert [run.id for run in NNRun.all()] == [first.id]
+    assert len(counting_sgd.calls) == 2  # built, refused before anything was restored
+    resumed = _resume(first, _factory_params())  # the same configuration still resumes
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+
+
 def test_resume_identity_is_type_strict(tmp_path, monkeypatch, counting_sgd):
     """A config written as 1 does not resume as 1.0: they are different
     specs in run.yaml, so the checkpoint belongs to a different optimizer."""

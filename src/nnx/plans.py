@@ -457,7 +457,12 @@ class ExperimentPlan:
         run is recorded as the new run's parent lineage and is never
         overwritten: the resumed fit writes its own run directory. ``mode``
         (``"auto"`` / ``"stateful"`` / ``"weights_only"``) defaults to the
-        training parameters' own ``resume_mode``. ``epochs`` sets what
+        training parameters' own ``resume_mode``. A stateful resume refuses
+        a ``with_optim`` / ``with_scheduler`` edit whose
+        hyperparameters differ from the checkpoint's, before anything is
+        restored, since the restored optimizer and scheduler state would
+        train on with the saved values; ``mode="weights_only"`` trains the
+        edit. ``epochs`` sets what
         ``n_epochs`` means on the resume and defaults to the training
         parameters' own ``resume_epochs``: ``"additional"`` trains
         ``n_epochs`` more; ``"planned"`` continues the source run's plan up

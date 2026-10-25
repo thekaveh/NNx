@@ -157,7 +157,12 @@ class NNTrainParams:
     # checkpoint has it and falls back to its weights with a warning;
     # "stateful" requires the training state and fails before restoring
     # anything when the checkpoint is weights-only; "weights_only" restores
-    # only the model weights and starts every component fresh.
+    # only the model weights and starts every component fresh. A stateful
+    # resume ("auto" with training state, or "stateful") also refuses,
+    # before restoring anything, optimizer or scheduler hyperparameters that
+    # differ from the checkpoint's (#502): its restored param groups and
+    # scheduler state would train on with the saved values. "weights_only"
+    # trains the new ones.
     resume_mode: str = field(repr=False, default="auto")
     # #394 — what `n_epochs` means on a resume: "additional" (default) trains
     # n_epochs more after the checkpoint's epoch; "planned" continues the

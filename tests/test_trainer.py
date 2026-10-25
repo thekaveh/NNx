@@ -1419,6 +1419,132 @@ def test_trainer_resume_rejects_a_changed_parameter_topology(tmp_path, monkeypat
         assert torch.equal(value, before[key]), key
 
 
+def _changed_head(base: NNTrainerParams, *, max_lr=0.05, weight_decay=0.0, factor=0.5, **resume) -> NNTrainerParams:
+    """``_two_optimizer_params`` with the head optimizer's and its StepLR's
+    hyperparameters replaced (#502)."""
+    from nnx import NNSchedulerParams, NNTrainerParamsBuilder
+
+    head = (
+        NNOptimParams.builder()
+        .sgd(max_lr=max_lr, weight_decay=weight_decay)
+        .param_groups([NNParamGroupSpec(name_pattern="layers.1.*")])
+        .build()
+    )
+    step = (
+        NNSchedulerParams.builder()
+        .step(step_size=1, min_lr=0.0, factor=factor, patience=0, cooldown=0, threshold=0.0)
+        .build()
+    )
+    builder = NNTrainerParamsBuilder.from_params(base).optimizer("head", head).scheduler("head", step)
+    if resume:
+        builder.resume_from(**resume)
+    return builder.build()
+
+
+@pytest.mark.parametrize("mode", ["auto", "stateful"])
+def test_trainer_resume_refuses_changed_hyperparameters_naming_the_optimizer(tmp_path, monkeypatch, mode):
+    """#502: the checkpoint's param groups and scheduler state would replace
+    the head's new lr / weight_decay and StepLR gamma while run.yaml and the
+    run id recorded them; the refusal names each optimizer it concerns."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
+    model = _gan_like_model()
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    changed = _changed_head(
+        _two_optimizer_params(1), max_lr=1e-4, weight_decay=0.1, factor=0.1, run_id=first.id, mode=mode
+    )
+    trainer = Trainer(model)
+    rng = torch.get_rng_state()
+    with pytest.raises(ValueError, match="resume hyperparameter mismatch") as caught:
+        trainer.train(params=changed, trainer_step_fn=_two_step)
+    assert torch.equal(torch.get_rng_state(), rng)
+    message = str(caught.value)
+    for fragment in (
+        "optimizer 'head' max_lr (checkpoint 0.05, configuration 0.0001)",
+        "optimizer 'head' weight_decay (checkpoint 0.0, configuration 0.1)",
+        "scheduler 'head' factor (checkpoint 0.5, configuration 0.1)",
+        "resume_mode='weights_only'",
+    ):
+        assert fragment in message, message
+    assert "'body'" not in message
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+    assert [run.id for run in NNRun.all()] == [first.id]
+
+
+def test_trainer_weights_only_resume_trains_with_the_changed_hyperparameters(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
+    seen = set()
+
+    def step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+        group = ctx.optimizers["head"].param_groups[0]
+        seen.add((group["lr"], group["weight_decay"]))
+        return _two_step(ctx)
+
+    changed = _changed_head(
+        _two_optimizer_params(1), max_lr=1e-4, weight_decay=0.1, run_id=first.id, mode="weights_only"
+    )
+    resumed = Trainer(_gan_like_model()).train(params=changed, trainer_step_fn=step)
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "weights_only"
+    assert seen == {(1e-4, 0.1)}
+
+
+def _strip_trainer_hyperparameters(tmp_path, run_id):
+    """Rewrite LAST's training state as a Trainer sidecar written before #502."""
+    from nnx import Checkpoints, NNCheckpoint
+    from tests._checkpoint_files import restamp
+
+    checkpoint = NNCheckpoint.load(run_id, Checkpoints.LAST)
+    assert checkpoint is not None and checkpoint.training_state_id is not None
+    sidecar = tmp_path / "runs" / run_id / "checkpoints" / f"last.pt.opt.{checkpoint.training_state_id}.pt"
+    state = torch.load(sidecar, weights_only=True)
+    assert set(state["optimizer_configs"]) == {"body", "head"} and set(state["scheduler_configs"]) == {"body", "head"}
+    for key in ("optimizer_configs", "scheduler_configs"):
+        del state[key]
+    torch.save(state, sidecar)
+    restamp(sidecar)
+
+
+def test_trainer_resume_with_a_legacy_sidecar_checks_against_the_source_run_yaml(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
+    _strip_trainer_hyperparameters(tmp_path, first.id)
+
+    with pytest.raises(ValueError, match=r"optimizer 'head' max_lr \(checkpoint 0.05, configuration 0.0001\)"):
+        Trainer(_gan_like_model()).train(
+            params=_changed_head(_two_optimizer_params(1), max_lr=1e-4, run_id=first.id), trainer_step_fn=_two_step
+        )
+    resumed = Trainer(_gan_like_model()).train(
+        params=_two_optimizer_params(1, run_id=first.id, mode="stateful"), trainer_step_fn=_two_step
+    )
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+
+
+def test_trainer_resume_with_a_legacy_sidecar_skips_the_check_when_the_source_has_a_parent(tmp_path, monkeypatch):
+    """A source that was itself a stateful resume made before #502 trained
+    with its parent's values while its run.yaml recorded the changed ones,
+    so that run.yaml is no record of what trained."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    root = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
+    _strip_trainer_hyperparameters(tmp_path, root.id)
+    (tmp_path / "runs" / root.id / "run.yaml").write_text("{", encoding="utf-8")  # no check, as before #502
+    middle = Trainer(_gan_like_model()).train(
+        params=_changed_head(_two_optimizer_params(1), max_lr=1e-4, run_id=root.id, mode="stateful"),
+        trainer_step_fn=_two_step,
+    )
+    _strip_trainer_hyperparameters(tmp_path, middle.id)
+    # middle's run.yaml records max_lr 1e-4, but its sidecar trained at 0.05.
+    resumed = Trainer(_gan_like_model()).train(
+        params=_two_optimizer_params(1, run_id=middle.id, mode="stateful"), trainer_step_fn=_two_step
+    )
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+
+
 def test_trainer_resume_rejects_a_changed_optimizer_factory(tmp_path, monkeypatch):
     from nnx import (
         NNOptimFactoryParams,

@@ -468,6 +468,33 @@ def test_an_exhausted_grid_stops_the_search_without_spending_budget():
     assert sorted(o.params["lr"] for o in result.outcomes) == [0.01, 0.02]
 
 
+def test_a_search_over_lr_on_a_resuming_plan_never_ranks_trials_that_trained_alike():
+    """#502: on a stateful resuming plan every trial would train with the
+    source's learning rate (the checkpoint's param groups) while its run.yaml
+    recorded the trial's own, so the search would rank identical runs. Each
+    trial is refused instead; a weights-only resume trains each at its lr."""
+    from nnx.nn.params.nn_run import NNRun
+
+    source = plan(n_epochs=1).fit().run
+    space = SearchSpace(CategoricalParam(name="lr", choices=(0.5, 1e-7)))
+
+    def grid():
+        return optuna.samplers.GridSampler({"lr": [0.5, 1e-7]}, seed=0)
+
+    stateful = run(plan().resuming(source.id), space=space, sampler=grid(), name="stateful")
+    assert stateful.asked == 2 and {o.state for o in stateful.outcomes} == {"failed"} and stateful.best is None
+    for outcome in stateful.outcomes:
+        assert outcome.error is not None and "resume hyperparameter mismatch" in outcome.error
+        assert f"max_lr (checkpoint 0.05, configuration {outcome.params['lr']!r})" in outcome.error
+    weights = run(plan().resuming(source.id, mode="weights_only"), space=space, sampler=grid(), name="weights")
+    completed = [o for o in weights.outcomes if o.state == "completed"]
+    assert len(completed) == 2
+    for outcome in completed:
+        assert outcome.run_id is not None
+        assert NNRun.load(id=outcome.run_id).idps[0].lr == outcome.params["lr"]  # trained at its own lr
+    assert completed[0].monitor_value != completed[1].monitor_value
+
+
 def test_the_missing_extra_is_named(monkeypatch):
     import sys
 
