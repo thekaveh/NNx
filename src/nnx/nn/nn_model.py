@@ -346,17 +346,19 @@ def _attached_submodules_error(
     error: Exception, net: torch.nn.Module, state: Mapping[str, Any], call: str, excluded: Sequence[str] = ()
 ) -> Optional[Exception]:
     """``error`` (a strict load's or a state-schema check's), explained when
-    the weights hold top-level submodules the rebuilt ``net`` lacks — a JEPA
-    predictor the training run registered under ``model.net``, say: ``call``,
-    the caller's entry point formatted with ``names`` (the ``excluded`` names
-    already passed plus these), rebuilds without them. ``None`` when nothing
-    is attached (FEAT-047)."""
-    children = {name for name, _ in net.named_children()}
-    attached = sorted({key.split(".", 1)[0] for key in state if "." in key} - children)
+    the weights hold top-level submodules or tensors the rebuilt ``net``
+    lacks — a JEPA predictor the training run registered under ``model.net``,
+    or a ``logit_scale`` parameter registered on it, say: ``call``, the
+    caller's entry point formatted with ``names`` (the ``excluded`` names
+    already passed plus these), rebuilds without them. The net's own
+    top-level tensors (``ViTNN.cls_token``) are not attached. ``None`` when
+    nothing is attached (FEAT-047, #509)."""
+    own = {name for name, _ in net.named_children()} | {key for key in net.state_dict() if "." not in key}
+    attached = sorted({key.split(".", 1)[0] for key in state} - own)
     if not attached:
         return None
     return type(error)(
-        f"{error}\nThe weights hold submodules the rebuilt {type(net).__name__} does not have "
+        f"{error}\nThe weights hold top-level submodules or tensors the rebuilt {type(net).__name__} does not have "
         f"({', '.join(attached)}): {call.format(names=(*excluded, *attached))} rebuilds the architecture without them"
     )
 
@@ -368,22 +370,25 @@ def _excluded_names(names: Any) -> Any:
 
 
 def _without_submodules(state: Mapping[str, Any], names: Sequence[str]) -> Mapping[str, Any]:
-    """``state`` without the weights of the named top-level submodules
-    (``from_checkpoint(exclude_submodules=...)``); every name must be present."""
+    """``state`` without the weights of the named top-level submodules, and
+    without the named top-level tensors (an undotted key such as
+    ``logit_scale``, #509) (``from_checkpoint(exclude_submodules=...)``);
+    every name must be present."""
     if isinstance(names, str):
         raise TypeError("exclude_submodules must be a sequence of submodule names, not a string")
     names = tuple(names or ())  # a one-shot iterable is read once
     if not names:
         return state
-    held = {key.split(".", 1)[0] for key in state if "." in key}
+    held = {key.split(".", 1)[0] for key in state}
     unknown = sorted(set(names) - held)
     if unknown:
         raise ValueError(
-            f"exclude_submodules names {unknown}, which the saved weights do not hold (their submodules: {sorted(held)})"
+            f"exclude_submodules names {unknown}, which the saved weights do not hold (their top-level submodules "
+            f"and tensors: {sorted(held)})"
         )
     excluded = tuple(f"{name}." for name in names)
     kept: OrderedDict[str, Any] = OrderedDict(
-        (key, value) for key, value in state.items() if not key.startswith(excluded)
+        (key, value) for key, value in state.items() if key not in names and not key.startswith(excluded)
     )
     metadata = getattr(state, "_metadata", None)  # per-module versions load_state_dict reads
     if metadata is not None:
@@ -685,8 +690,9 @@ def _apply_checkpoint_transform(model: NNModel, transform: NNCheckpointTransform
         return
 
     raise ValueError(
-        f"unsupported checkpoint transform {transform.name!r} version {transform.version}; "
-        "upgrade NNx or load the checkpoint with the producer's compatible version"
+        f"unsupported checkpoint transform {transform.name!r} version {transform.version}: either an operation of a "
+        "newer NNx (upgrade NNx, or load it with the producer's compatible version) or a callback's own transform, "
+        "which only its producer can rebuild"
     )
 
 
@@ -3226,11 +3232,14 @@ class NNModel(_HubMixinBase):
     ) -> Self:
         """Rebuild a model, replay topology transforms, and load its weights.
 
-        ``exclude_submodules`` names top-level submodules the training run
-        attached to the net that are not part of the rebuilt architecture —
-        a JEPA predictor registered as ``model.net._jepa_predictor``, say —
-        whose weights are left out; every other weight still loads strictly.
-        A name the checkpoint does not hold raises ``ValueError``.
+        ``exclude_submodules`` names top-level submodules or tensors the
+        training run attached to the net that are not part of the rebuilt
+        architecture — a JEPA predictor registered as
+        ``model.net._jepa_predictor``, or a ``logit_scale`` parameter
+        registered on ``model.net``, say — whose weights are left out; every
+        other weight still loads strictly. A name the checkpoint does not
+        hold raises ``ValueError``; without the option, a strict failure
+        names the attached ones and this option.
 
         Ordinary and legacy FP32 checkpoints have no transforms. Converted
         QAT checkpoints replay their persisted torchao recipe before state
@@ -3357,10 +3366,37 @@ class NNModel(_HubMixinBase):
     def save_pretrained(self, save_directory, *args: Any, **kwargs: Any) -> Any:
         """Hub save (``huggingface_hub.PyTorchModelHubMixin.save_pretrained``).
 
-        A runtime-only module has no factory to rebuild it from,
-        so it is rejected with :class:`~nnx.models.MissingModelFactoryError`
-        before any file or directory is written."""
-        self._require_portable("save_pretrained")
+        Everything ``from_pretrained`` could not rebuild is refused before
+        any file or directory is written: a runtime-only module, which has no
+        factory to rebuild it from (:class:`~nnx.models.MissingModelFactoryError`),
+        and, with ``ValueError``, quantized tensor subclasses, unrecorded
+        surgery (a topology other than the descriptor plus its recorded
+        ``nnx.transforms`` recipe), and a recorded topology transform NNx
+        cannot replay from data — anything but a recipe operation of a known
+        version or a torchao QAT conversion, such as a callback's own
+        train-end transform (the error names its index and id), as
+        ``nnx.bundles.export_bundle`` refuses. Top-level submodules or
+        tensors attached to the net beside an unchanged base (a JEPA
+        predictor, a ``logit_scale``) are saved; ``from_pretrained`` leaves
+        them out through ``exclude_submodules``."""
+        self._refuse_unloadable_hub_artifact("save_pretrained refused before writing anything")
+        return super().save_pretrained(save_directory, *args, **kwargs)
+
+    def push_to_hub(self, repo_id: str, *args: Any, **kwargs: Any) -> Any:
+        """Hub upload (``huggingface_hub.PyTorchModelHubMixin.push_to_hub``):
+        :meth:`save_pretrained` into a temporary directory, uploaded to
+        ``repo_id``. Whatever :meth:`save_pretrained` refuses is refused
+        before the repository is created or anything is uploaded (#509)."""
+        self._refuse_unloadable_hub_artifact(
+            "push_to_hub refused before creating the repository or uploading anything", operation="push_to_hub"
+        )
+        return super().push_to_hub(repo_id, *args, **kwargs)
+
+    def _refuse_unloadable_hub_artifact(self, refused: str, operation: str = "save_pretrained") -> None:
+        """Refuse a model whose Hub artifact ``from_pretrained`` could not
+        rebuild, before anything is written (``refused`` prefixes the
+        ``ValueError``s)."""
+        self._require_portable(operation)
         # A quantized tensor subclass (torchao int8 weights) has no plain
         # storage for safetensors: refuse before the directory exists.
         quantized = sorted(
@@ -3370,25 +3406,35 @@ class NNModel(_HubMixinBase):
         )
         if quantized:
             raise ValueError(
-                f"save_pretrained refused before writing anything: {quantized[:3]} hold quantized tensor "
-                "subclasses, which a safetensors artifact cannot store; save the float model instead"
+                f"{refused}: {quantized[:3]} hold quantized tensor subclasses, which a safetensors artifact cannot "
+                "store; save the float model instead"
             )
         transforms = tuple(self._topology_transforms)
+        unportable = _unportable_transform(transforms)
+        if unportable is not None:
+            # #509: from_pretrained would replay it before loading any tensor
+            # and fail — strict or not.
+            raise ValueError(
+                f"{refused}: {unportable}; from_pretrained replays only operations NNx rebuilds from data "
+                "(nnx.transforms recipe operations, a torchao QAT conversion) — keep this model in its run's "
+                "pickle checkpoints"
+            )
         if not transforms or all(_replayable(t) for t in transforms):
             # The artifact rebuilds the descriptor plus its recorded recipe:
             # one whose topology differs (unrecorded surgery: a LoRA / IA3
             # wrap, a widen) would fail only when someone loads it. A
             # train-end transform (QAT) rebuilds its own topology. A wholly
-            # new top-level submodule (a JEPA predictor) is not drift: loading
-            # names exclude_submodules for it.
+            # new top-level submodule or tensor (a JEPA predictor, a
+            # logit_scale) is not drift: loading names exclude_submodules
+            # for it.
             drift = None if not transforms and self._only_attached_submodules() else self._topology_drift()
             if drift is not None:
-                raise ValueError(f"save_pretrained refused before writing anything: {drift}")
-        return super().save_pretrained(save_directory, *args, **kwargs)
+                raise ValueError(f"{refused}: {drift}")
 
     def _only_attached_submodules(self) -> bool:
         """The live state is the base exactly, plus tensors under top-level
-        submodules the base does not have (attached auxiliaries)."""
+        submodules the base does not have, or top-level tensors it does not
+        have (attached auxiliaries: ``exclude_submodules`` names either)."""
         base = self._base_state()
         if base is None:
             return False
@@ -3510,12 +3556,15 @@ class NNModel(_HubMixinBase):
         ``map_location`` device, never taken from saved metadata;
         ``precision=`` replaces it (and the legacy ``mixed_precision`` flag).
 
-        FEAT-047: ``exclude_submodules`` names top-level submodules saved
-        with the net that are not part of the rebuilt architecture — a JEPA
-        predictor registered as ``model.net._jepa_predictor``, say — whose
-        weights are left out; every other key still loads under ``strict``
-        (unlike ``strict=False``, a missing weight is still refused). A name
-        the saved weights do not hold raises ``ValueError``.
+        FEAT-047: ``exclude_submodules`` names top-level submodules or
+        tensors saved with the net that are not part of the rebuilt
+        architecture — a JEPA predictor registered as
+        ``model.net._jepa_predictor``, or a ``logit_scale`` parameter
+        registered on ``model.net`` (#509), say — whose weights are left out;
+        every other key still loads under ``strict`` (unlike
+        ``strict=False``, a missing weight is still refused). A name the
+        saved weights do not hold raises ``ValueError``; without the option,
+        a strict failure names the attached ones and this option.
         """
         # The mixin inspects NNModel.__init__'s signature and auto-injects
         # matching config.json entries ("net_params"/"params") as kwargs.

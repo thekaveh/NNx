@@ -399,3 +399,47 @@ def test_inspecting_a_built_in_bundle_shows_the_architecture_reconstruction_buil
     info = inspect_bundle("bundle")
     assert info.net_params is not None and info.net_params["hidden_dims"] == "[8]"
     assert info.net_params["input_dim"] == 4 and info.net_params["output_dim"] == 3
+
+
+# --- #509: a top-level tensor attached to the net ------------------------------------------------
+
+
+@pytest.mark.parametrize("kind", ["parameter", "buffer"])
+def test_a_run_with_a_top_level_tensor_rebuilds_without_it_through_every_rebuild_path(kind):
+    """#509: train() accepts a top-level tensor registered on the net (a
+    learnable temperature, a class prior); its checkpoints and its bundle
+    rebuild without it through exclude_submodules, and each strict failure
+    names the option of the entry point the caller used."""
+    from nnx import Checkpoints, NNCheckpoint
+
+    _, batches = _data()
+    torch.manual_seed(7)
+    model = _classifier()
+    name = "logit_scale" if kind == "parameter" else "class_prior"
+    if kind == "parameter":
+        model.net.register_parameter(name, torch.nn.Parameter(torch.ones(1)))
+        model.net.register_forward_hook(lambda module, args, output: output * module.logit_scale)
+    else:
+        model.net.register_buffer(name, torch.tensor([0.2, 0.3, 0.5]))
+    run = model.train(params=_params(1, "top-level", batches))
+    checkpoint = NNCheckpoint.load(run.id, Checkpoints.LAST)
+    assert checkpoint is not None and name in checkpoint.net_state
+    export_bundle(run.id, "bundle")
+    base = {key: value for key, value in model.net.state_dict().items() if key != name}
+
+    with pytest.raises(RuntimeError) as caught:
+        NNModel.from_checkpoint(checkpoint)
+    assert f"({name}): NNModel.from_checkpoint(checkpoint, exclude_submodules=('{name}',))" in str(caught.value)
+    with pytest.raises(RuntimeError) as caught:
+        reconstruct_bundle("bundle")
+    message = str(caught.value)
+    assert f"({name}): reconstruct_bundle(path, exclude_submodules=('{name}',))" in message
+    assert "from_checkpoint" not in message
+
+    for rebuilt in (
+        NNModel.from_checkpoint(checkpoint, exclude_submodules=(name,)),
+        reconstruct_bundle("bundle", exclude_submodules=(name,)).model,
+    ):
+        assert rebuilt.net.state_dict().keys() == base.keys()
+        for key, value in base.items():
+            assert torch.equal(rebuilt.net.state_dict()[key], value), key

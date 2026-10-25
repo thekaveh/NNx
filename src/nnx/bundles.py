@@ -1432,13 +1432,15 @@ def reconstruct_bundle(
         batch_adapter: how a registered module sees a batch
             (``nnx.models.BatchAdapter``), as passed to ``NNModel`` — it is
             runtime-only, never stored.
-        exclude_submodules: top-level submodules the training run attached
-            to the net that are not part of the rebuilt architecture — a
-            JEPA predictor registered as ``model.net._jepa_predictor``, say
-            — whose weights are left out, as in
-            ``NNModel.from_checkpoint``; every other weight still loads
-            strictly. A model rebuilt without them serves inference and
-            cannot :meth:`~ReconstructedBundle.resume`.
+        exclude_submodules: top-level submodules or tensors the training
+            run attached to the net that are not part of the rebuilt
+            architecture — a JEPA predictor registered as
+            ``model.net._jepa_predictor``, or a ``logit_scale`` parameter
+            registered on ``model.net``, say — whose weights are left out,
+            as in ``NNModel.from_checkpoint``; every other weight still
+            loads strictly, and without the option a strict failure names
+            the attached ones and this option. A model rebuilt without them
+            serves inference and cannot :meth:`~ReconstructedBundle.resume`.
 
     Everything missing — the model factory, a required or incompatible
     component — is reported in one :class:`BundleReconstructionError` before
