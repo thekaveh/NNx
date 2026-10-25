@@ -1991,7 +1991,10 @@ def _source_hyperparameters(
     """For a sidecar written before #502: the hyperparameters the source
     run's ``run.yaml`` records, keyed like ``schedulers`` (``""`` for
     ``NNModel.train``'s one optimizer). Empty when the run has no readable
-    ``run.yaml`` (a bundle, a removed run): the check is then skipped."""
+    ``run.yaml`` (a bundle, a removed run), or when that run has a parent:
+    it may itself be a stateful resume made before #502 that trained with
+    its parent's values while recording changed ones, so its ``run.yaml``
+    is no record of what trained. The check is then skipped."""
     try:
         with open(os.path.join(_runs_root(), _validate_run_id(run_id), "run.yaml"), encoding="utf-8") as handle:
             rep = yaml.safe_load(handle)
@@ -1999,6 +2002,8 @@ def _source_hyperparameters(
             from ..trainer.params import NNTrainerParams
 
             source = NNTrainerParams.from_state(rep["trainer"])
+            if source.parent_run_id is not None:
+                return {}
             return {
                 name: _resume_hyperparameters(
                     source.optims[name], source.schedulers.get(name, default_scheduler), scheduler
@@ -2007,6 +2012,8 @@ def _source_hyperparameters(
                 if name in source.optims
             }
         recorded = NNTrainParams.from_state(rep["train"])
+        if recorded.parent_run_id is not None:
+            return {}
         return {"": _resume_hyperparameters(recorded.optim, recorded.scheduler, schedulers[""])}
     except (OSError, yaml.YAMLError, KeyError, TypeError, ValueError, AttributeError):
         return {}
