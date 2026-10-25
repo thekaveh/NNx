@@ -1038,8 +1038,9 @@ validation only.
 A microbatch's record holds its weighted loss over the terms that train.
 A microbatch with none of its own (every target ignored) records the
 window's running loss so far, as the default step does. Before any term
-of the window has trained it records `None`, never NaN, and a `TaskSpec`
-model's all-masked record is always `None`.
+of the window has trained it records `None`, never NaN. An empty task
+record (a `TaskSpec` model's, or a causal-LM, ranking or link task's)
+always keeps its `None` loss.
 
 `SupervisedObjective` is the model's `loss_fn` normalized by its own
 denominator (non-ignored targets, class weights; summed for a

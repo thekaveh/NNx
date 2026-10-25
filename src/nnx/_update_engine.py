@@ -220,8 +220,12 @@ class UpdateEngine:
                     )
                 self._nonfinite_window = True
             window = self._terms.setdefault(term.name, _TermWindow(term.reduction, term.weight))
-            if term.reduction == "sum":
-                window.reduction = "sum"  # after no-sample normalized microbatches only (_check_terms)
+            if term.reduction != window.reduction:
+                # A summed term and a no-sample normalized one (_check_terms):
+                # the normalized side adds nothing, its numerator included.
+                if term.reduction == "mean":
+                    continue
+                window.reduction, window.numerator = "sum", 0.0
             window.numerator += value
             if term.reduction == "mean":
                 window.denominator += float(term.denominator)

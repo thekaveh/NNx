@@ -2331,10 +2331,15 @@ def _objective_microbatch(
     engine.accumulate(result.terms, closes_window=close_window)
     record = result.record
     loss = result.loss()
-    if loss is None and (record is None or record.loss is None) and getattr(model, "task_adapter", None) is None:
+    if (
+        loss is None
+        and (record is None or (record.kind is None and record.loss is None))
+        and getattr(model, "task_adapter", None) is None
+    ):
         # No loss of its own (every target ignored, or only weight-0 terms):
         # the window's running loss so far, as the default step records it
-        # (None before any trainable term; a task model's record stays None).
+        # (None before any trainable term). A task record (a TaskSpec, LM,
+        # ranking or link task) keeps its empty record's None loss.
         loss = engine.running_loss()
     if epoch_summary is not None:
         # Staged per window: a window the engine drops as non-finite
