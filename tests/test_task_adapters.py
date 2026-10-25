@@ -20,6 +20,7 @@ from nnx import (
     Activations,
     Devices,
     Losses,
+    MetricSpec,
     Nets,
     NNModel,
     NNModelParams,
@@ -709,3 +710,122 @@ def test_a_recordless_objective_on_a_task_model_keeps_a_masked_microbatch_loss_n
     assert trained.loss is not None
     assert empty.loss is None
     assert run.idps[-1].update_count == 1
+
+
+# ------------------------------------------- narrow integer targets (#511)
+
+_WIDE = 200  # class 156 is a real class: -100 wraps to it in uint8
+
+
+_MASK_CASES = [
+    (-100, torch.uint8, [156, 3, 7], [True, True, True]),  # -100 is 156 in uint8
+    (256, torch.uint8, [0, 1, 4], [True, True, True]),  # 256 is 0 in uint8
+    (255, torch.uint8, [255, 156, 3], [False, True, True]),  # ignore values that fit the dtype still mask
+    (-100, torch.int8, [-100, 100, 3], [False, True, True]),
+    (-100, torch.int16, [-100, 156, 3], [False, True, True]),
+    (-100, torch.int32, [-100, 156, 3], [False, True, True]),
+]
+
+
+def test_ignore_index_is_compared_after_the_int64_cast():
+    """#511: the categorical mask compares ``ignore_index`` with int64
+    targets; in a narrow dtype the Python int wrapped and masked a real class."""
+    logits = torch.randn(3, _WIDE)
+    for ignore, dtype, values, expected in _MASK_CASES:
+        _, target, valid = task_adapter(TaskSpec.categorical(_WIDE, ignore_index=ignore)).prepare(
+            logits, torch.tensor(values, dtype=dtype)
+        )
+        assert valid.tolist() == expected, (ignore, dtype)
+        assert target.dtype == torch.int64 and target.tolist() == values, (ignore, dtype)
+
+
+def test_an_out_of_range_uint8_class_is_refused_like_an_int64_one():
+    """#511: with three classes, a uint8 156 (-100 wrapped) is out of range,
+    not ignored."""
+    adapter = task_adapter(TaskSpec.categorical(3, ignore_index=-100))
+    for dtype in (torch.int64, torch.uint8):
+        with pytest.raises(TaskValidationError, match=r"\[0, 3\) or ignore_index=-100, got values in \[1, 156\]"):
+            adapter.prepare(torch.randn(3, 3), torch.tensor([156, 1, 2], dtype=dtype))
+
+
+@pytest.mark.parametrize("dtype", [torch.uint16, torch.uint32, torch.uint64])
+def test_wide_unsigned_targets_are_scored_like_int64_targets(dtype):
+    """#511: uint16 / uint32 / uint64 class indices are cast to int64 before
+    any check (aminmax raised NotImplementedError on them before)."""
+    logits = torch.randn(3, _WIDE)
+    for spec in (TaskSpec.categorical(_WIDE, ignore_index=-100), TaskSpec.categorical(_WIDE)):
+        adapter = task_adapter(spec)
+        _, target, valid = adapter.prepare(logits, torch.tensor([156, 3, 7], dtype=dtype))
+        assert target.dtype == torch.int64 and target.tolist() == [156, 3, 7] and valid.all()
+        wide = adapter.record(logits, torch.tensor([156, 3, 7], dtype=dtype), loss=None)
+        assert wide == adapter.record(logits, torch.tensor([156, 3, 7]), loss=None)
+    with pytest.raises(TaskValidationError, match="above 2"):  # beyond int64: refused, never wrapped negative
+        task_adapter(TaskSpec.categorical(3, ignore_index=-100)).prepare(
+            torch.randn(1, 3), torch.tensor([2**64 - 100], dtype=torch.uint64)
+        )
+
+
+def _wide_model(task: TaskSpec | None, input_dim: int) -> NNModel:
+    return _model(task, loss=Losses.CROSS_ENTROPY, output_dim=_WIDE, input_dim=input_dim)
+
+
+_WIDE_TASKS = [TaskSpec.categorical(_WIDE, ignore_index=-100), None]
+
+
+@pytest.mark.parametrize("task", _WIDE_TASKS, ids=["task", "no-task"])
+def test_evaluate_scores_uint8_labels_like_int64_labels(task):
+    """#511: class-156 rows stay in accuracy, declared metrics, the loss and
+    the task count, over one batch and over two (the loss weights)."""
+    set_seed(0)
+    x, y = torch.randn(6, 4), torch.tensor([156, 156, 156, 3, 4, 5])
+    model = _wide_model(task, 4)
+    with torch.no_grad():
+        [m for m in model.net.modules() if isinstance(m, torch.nn.Linear)][-1].bias[156] += 1000.0
+    for loader in ([(x, y)], [(x[:3], y[:3]), (x[3:], y[3:])]):
+        records = [
+            model.evaluate([(xb, yb.to(dtype)) for xb, yb in loader], metrics=[MetricSpec("accuracy")])
+            for dtype in (torch.int64, torch.uint8)
+        ]
+        wide, narrow = records
+        assert wide.accuracy == 0.5
+        assert (narrow.accuracy, dict(narrow.metrics), narrow.count) == (
+            wide.accuracy,
+            dict(wide.metrics),
+            wide.count,
+        )
+        assert narrow.loss == pytest.approx(wide.loss, rel=1e-6)
+
+
+@pytest.mark.parametrize("task", _WIDE_TASKS, ids=["task", "no-task"])
+def test_a_loader_of_only_uint8_class_156_rows_is_scored(task):
+    """#511: every uint8 156 was taken as ignored, so the loader was empty
+    (a ValueError without a task, an empty record with one)."""
+    set_seed(0)
+    x, y = torch.randn(2, 4), torch.tensor([156, 156])
+    model = _wide_model(task, 4)
+    wide = model.evaluate([(x, y)])
+    narrow = model.evaluate([(x, y.to(torch.uint8))])
+    assert narrow.loss == pytest.approx(wide.loss, rel=1e-6)
+    assert narrow.count == wide.count == (2 if task is not None else None)
+
+
+@pytest.mark.parametrize("task", _WIDE_TASKS, ids=["task", "no-task"])
+def test_training_on_uint8_labels_ends_where_int64_labels_do(tmp_path, monkeypatch, task):
+    """#511: one batch of 8, batches of 4 led by an all-156 batch, and those
+    batches accumulated over 2 end with the same parameters for both dtypes
+    (an all-156 uint8 batch or window added no gradient before)."""
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    set_seed(0)
+    x, y = torch.randn(8, 3), torch.tensor([156] * 4 + [3] * 4)
+    for batch_size, accumulate in ((8, 1), (4, 1), (4, 2)):
+        trained = []
+        for dtype in (torch.int64, torch.uint8):
+            run_dir = tmp_path / f"{batch_size}-{accumulate}-{dtype}"  # one run directory per fit
+            run_dir.mkdir()
+            monkeypatch.chdir(run_dir)
+            model = _wide_model(task, 3)
+            loader = DataLoader(TensorDataset(x, y.to(dtype)), batch_size=batch_size)
+            _train(model, loader, accumulate=accumulate, n_epochs=3)
+            trained.append(_params_snapshot(model))
+        for name, value in trained[0].items():
+            torch.testing.assert_close(trained[1][name], value, msg=f"{batch_size}/{accumulate}: {name}")

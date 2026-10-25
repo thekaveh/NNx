@@ -740,7 +740,7 @@ def _batch_inputs(
             target = target.reshape(-1)
             valid = valid.reshape(-1) if valid is not None else None
         if valid is None and ignore_index is not None:
-            valid = target != ignore_index
+            valid = _not_ignored(target, ignore_index)
         if valid is not None:
             output, target = output[valid], target[valid]
         inputs: dict[str, np.ndarray] = {}
@@ -809,6 +809,21 @@ def _ignore_index(loss_fn: torch.nn.Module) -> Optional[int]:
     if isinstance(loss_fn, (torch.nn.CrossEntropyLoss, torch.nn.NLLLoss)):
         return int(loss_fn.ignore_index)
     return None
+
+
+def _not_ignored(target: torch.Tensor, ignore_index: int) -> torch.Tensor:
+    """Which class targets differ from ``ignore_index``, compared exactly
+    (FIX-044). An integer target is compared as int64, as the loss reads it:
+    in its own narrow dtype a Python int wraps (-100 is 156 in uint8). An
+    unsigned target never equals a negative ``ignore_index``, even a uint64
+    one beyond int64 that the cast wraps negative."""
+    if target.is_floating_point():
+        return target != ignore_index
+    indices = target.long()
+    valid = indices != ignore_index
+    if not target.dtype.is_signed:
+        valid |= indices < 0
+    return valid
 
 
 class _WeightedMean:

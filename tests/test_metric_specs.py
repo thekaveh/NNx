@@ -303,3 +303,16 @@ def test_only_the_inputs_declared_metrics_need_are_built():
     _, both = _batch_inputs("categorical", target, logits, None, -100, frozenset({"labels", "probabilities"}))
     assert set(both) == {"labels", "probabilities"}
     assert both["probabilities"].sum(axis=1) == pytest.approx([1.0, 1.0])
+
+
+def test_the_declared_metric_mask_compares_ignore_index_on_int64_targets():
+    """#511: without a task, a uint8 156 (-100 wrapped) is a real class,
+    while an ignore value the dtype holds still masks."""
+    from nnx.monitors import _batch_inputs
+
+    logits = torch.zeros(3, 200)
+    target = torch.tensor([156, 3, 255], dtype=torch.uint8)
+    kept, _ = _batch_inputs("categorical", target, logits, None, -100, frozenset({"labels"}))
+    assert kept.tolist() == [156, 3, 255]
+    kept, _ = _batch_inputs("categorical", target, logits, None, 255, frozenset({"labels"}))
+    assert kept.tolist() == [156, 3]

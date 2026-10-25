@@ -1155,3 +1155,71 @@ def test_feat020_review_round_nineteen_a_positional_only_bounded_is_no_keyword()
 
     with pytest.raises(ValueError, match="takes no bounded keyword"):
         _bounded_task_accumulator(_PositionalOnly(TaskSpec.regression(1)), "streaming_eval_step()")
+
+
+# --------------------------------------------- narrow integer targets (#511)
+
+
+def test_loss_normalization_weight_compares_ignore_index_on_int64_targets():
+    """#511: a uint8 156 is -100 wrapped, not an ignored target, so it keeps
+    its share of the denominator."""
+    logits = torch.randn(3, 200)
+    narrow = torch.tensor([156, 156, 3], dtype=torch.uint8)
+    assert _loss_normalization_weight(torch.nn.CrossEntropyLoss(), logits, narrow) == 3.0
+    assert _loss_normalization_weight(torch.nn.NLLLoss(ignore_index=3), logits, narrow) == 2.0  # a fitting one masks
+
+
+def test_loss_normalization_weight_indexes_class_weights_with_int64_targets():
+    """#511: a uint8 index read the class weights as a boolean mask —
+    IndexError, or with exactly C targets a wrong denominator (6, not 10)."""
+    weighted = torch.nn.CrossEntropyLoss(weight=torch.tensor([1.0, 2.0, 3.0, 4.0]))
+    target = torch.tensor([1, 2, 3, 0], dtype=torch.uint8)
+    assert _loss_normalization_weight(weighted, torch.randn(4, 4), target) == 10.0
+    wide = torch.nn.NLLLoss(weight=torch.arange(1.0, 201.0))
+    assert _loss_normalization_weight(wide, torch.randn(3, 200), torch.tensor([156, 3, 7], dtype=torch.uint8)) == 169.0
+
+
+def test_classification_metric_tensors_keep_a_uint8_class_156():
+    target = torch.tensor([156, 3, 7], dtype=torch.uint8)
+    prediction = torch.tensor([156, 0, 7])
+    metric_target, metric_prediction = _classification_metric_tensors(torch.nn.CrossEntropyLoss(), target, prediction)
+    assert metric_target.tolist() == [156, 3, 7] and torch.equal(metric_prediction, prediction)
+
+
+@pytest.mark.parametrize(
+    ("loss", "loss_fn"),
+    [
+        (Losses.CROSS_ENTROPY, lambda: torch.nn.CrossEntropyLoss(weight=torch.linspace(0.5, 2.0, 200))),
+        (Losses.NEGATIVE_LOG_LIKELIHOOD, lambda: torch.nn.NLLLoss(weight=torch.linspace(0.5, 2.0, 200))),
+    ],
+    ids=["ce", "nll"],
+)
+def test_a_class_weighted_loss_trains_and_evaluates_on_uint8_labels(tmp_path, monkeypatch, loss, loss_fn):
+    """#511: without a task, a weighted CE / NLL loss raised IndexError on
+    uint8 labels in train() and evaluate(); it now matches int64 labels."""
+    from nnx.nn.params.nn_train_params import NNTrainParams
+
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    torch.manual_seed(0)
+    x, y = torch.randn(6, 4), torch.tensor([156, 156, 3, 4, 5, 6])
+    results = []
+    for dtype in (torch.int64, torch.uint8):
+        run_dir = tmp_path / str(dtype)  # one run directory per fit
+        run_dir.mkdir()
+        monkeypatch.chdir(run_dir)
+        torch.manual_seed(1)
+        model = NNModel(
+            net_params=NNParams(
+                input_dim=4, output_dim=200, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU
+            ),
+            params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=loss),
+        )
+        model.loss_fn = loss_fn()
+        loader = DataLoader(TensorDataset(x, y.to(dtype)), batch_size=4)
+        optim = NNOptimParams.builder().sgd(max_lr=0.1, momentum=0.0).build()
+        model.train(params=NNTrainParams(n_epochs=2, optim=optim).with_train_loader(loader))
+        results.append((model.evaluate(loader).loss, [p.detach().clone() for p in model.net.parameters()]))
+    (wide_loss, wide_params), (narrow_loss, narrow_params) = results
+    assert narrow_loss == pytest.approx(wide_loss, rel=1e-6)
+    for wide, narrow in zip(wide_params, narrow_params, strict=True):
+        torch.testing.assert_close(narrow, wide)

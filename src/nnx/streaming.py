@@ -65,6 +65,7 @@ from .monitors import (
     MetricSpec,
     _batch_inputs,
     _check_metric_inputs,
+    _not_ignored,
     _unique_metrics,
 )
 from .prediction import PredictionResult, ProbabilitySpec
@@ -760,7 +761,10 @@ def _target_rule(target: Any, mask: Any, ignore_index: Optional[int]) -> Any:
     elif target.dtype.kind == "f":
         mask = mask & ~np.isnan(target)
     if ignore_index is not None:
-        mask = mask & (target != ignore_index)
+        # NumPy compares an out-of-range int exactly; a tensor would wrap it (FIX-044).
+        mask = mask & (
+            _not_ignored(target, ignore_index) if isinstance(target, torch.Tensor) else target != ignore_index
+        )
     return mask
 
 
