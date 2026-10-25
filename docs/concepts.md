@@ -1941,9 +1941,10 @@ skipped when that file is unreadable, or when the source run has a parent: it
 may itself be a stateful resume made before this check, whose `run.yaml`
 records values that never trained. `grad_clip_norm` and
 `accumulate_grad_batches` are read live, so a change applies. Horizons keep their own rules: a cosine
-`T_max` stays the checkpoint's (§2.5), and a `total_steps` must cover the
-original and resumed epochs (§14.2). A warmup-decay schedule's settings are
-rebuilt, so they apply.
+`T_max` stays the checkpoint's (§2.5), and so does a step schedule's
+`step_size` when it is left at its horizon-derived default. A `total_steps`
+must cover the original and resumed epochs (§14.2). A warmup-decay
+schedule's settings are rebuilt, so they apply.
 
 `resume_epochs` (on `NNTrainParams`) chooses what `n_epochs` means on that
 resume:
