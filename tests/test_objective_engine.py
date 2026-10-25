@@ -72,6 +72,10 @@ def test_mixing_summed_and_normalized_terms_fails():
     engine.accumulate([LossTerm("a", param * 8, 2)])
     with pytest.raises(ValueError, match="mixes 'mean' and 'sum' reductions"):
         engine.accumulate([LossTerm("a", param * 1, reduction="sum")])
+    summed = _engine(param)
+    summed.accumulate([LossTerm("t", param * 2, reduction="sum")])
+    with pytest.raises(ValueError, match="mixes 'sum' and 'mean' reductions"):
+        summed.accumulate([LossTerm("t", param * 3, 2)])  # a normalized term with samples is refused too
     with pytest.raises(ValueError, match="takes no denominator"):
         LossTerm("a", param * 1, 2, reduction="sum")
     with pytest.raises(ValueError, match="needs an explicit finite denominator"):
