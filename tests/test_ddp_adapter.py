@@ -233,6 +233,31 @@ def test_a_non_finite_loss_on_one_rank_stops_every_rank(tmp_path):
     assert [rank["live_ddp"] for rank in errors] == [0, 0]  # released on every rank (#478)
 
 
+def test_a_fit_failing_before_the_loop_or_in_ddps_forward_releases_the_wrapper(tmp_path):
+    # #539: counted in each rank's handler and when shutdown() called there
+    # reaches destroy_process_group.
+    out = tmp_path / "release"
+    launch("release_on_failure", out)
+    first, second = (rank["cases"] for rank in results(out))
+    assert first["reservation"]["error"].startswith("FileExistsError")
+    assert second["reservation"]["error"].startswith("DistributedFailure: reserving the run failed on rank 0")
+    assert first["build"]["error"].startswith("DistributedFailure: building the DDP wrapper failed on rank 1")
+    assert second["build"]["error"] == "RuntimeError: Reducer failed (injected on rank 1)"
+    for label, what in (("nnrun", "NNRun"), ("compiling", "_compiling")):
+        assert first[label]["error"] == f"RuntimeError: {what} failed (injected on rank 0)"
+        assert second[label]["error"] == f"RuntimeError: {what} failed (injected on rank 1)"
+    assert first["forward"]["error"].startswith("RuntimeError") and second["forward"]["error"].startswith(
+        "RuntimeError"
+    )
+    for cases in (first, second):
+        for label, case in cases.items():
+            assert case["live_ddp"] == 0, label
+            assert case["live_ddp_at_destroy"] == [0], label
+        # the net's own forward frames keep their locals; only DDP's are cleared
+        assert cases["forward"]["net_forward_locals"]
+        assert all(names for names in cases["forward"]["net_forward_locals"])
+
+
 def test_unequal_step_counts_fail_collectively_not_hang(tmp_path):
     out = tmp_path / "steps"
     completed = launch("steps_mismatch", out, timeout=180)
