@@ -880,8 +880,15 @@ Raises:
         trainer_step_fn run sets grad_clip_norm or
         accumulate_grad_batches, an objective run's optimizers share
         a parameter, an objective run sets
-        auto_step_schedulers=False, or a callback registers update
-        listeners or sets ctx.stop_at_update.
+        auto_step_schedulers=False, a callback registers update
+        listeners or sets ctx.stop_at_update, or — before any run is
+        reserved, with ``NNModel.train``'s message — an objective
+        run's model carries unrecorded surgery its checkpoints could
+        not rebuild (low-rank factors, unbaked prune masks, a
+        weight_norm / spectral_norm parametrization or legacy hook),
+        or a recipe model's topology is not its base plus its recipe.
+        A trainer_step_fn run on a model without a recipe is not
+        checked.
     RuntimeError: in a process group of more than one rank.
 ```
 

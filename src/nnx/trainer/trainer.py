@@ -388,8 +388,15 @@ class Trainer:
                 trainer_step_fn run sets grad_clip_norm or
                 accumulate_grad_batches, an objective run's optimizers share
                 a parameter, an objective run sets
-                auto_step_schedulers=False, or a callback registers update
-                listeners or sets ctx.stop_at_update.
+                auto_step_schedulers=False, a callback registers update
+                listeners or sets ctx.stop_at_update, or — before any run is
+                reserved, with ``NNModel.train``'s message — an objective
+                run's model carries unrecorded surgery its checkpoints could
+                not rebuild (low-rank factors, unbaked prune masks, a
+                weight_norm / spectral_norm parametrization or legacy hook),
+                or a recipe model's topology is not its base plus its recipe.
+                A trainer_step_fn run on a model without a recipe is not
+                checked.
             RuntimeError: in a process group of more than one rank.
         """
         from ..distributed import _refuse_multi_rank
@@ -407,9 +414,11 @@ class Trainer:
         # and monitor preflights see (and bind) the real callbacks.
         callbacks = _writer_owned_callbacks(callbacks)
         _check_history(history, callbacks)
-        if _recipe_transforms(self.model._topology_transforms):
-            # FEAT-016: a recipe model's topology must be its base plus its
-            # recorded recipe, or its checkpoints could not be rebuilt.
+        if objective is not None or _recipe_transforms(self.model._topology_transforms):
+            # As in NNModel.train: NNx owns the update (an objective), or the
+            # model carries a recipe (FEAT-016): the run's checkpoints must be
+            # reconstructible from the params and recorded recipe (#508). A
+            # trainer_step_fn owns its topology, as train_step_fn does.
             self.model._assert_reconstructible_topology()
         if params is None:
             raise ValueError("trainer params must not be None")
