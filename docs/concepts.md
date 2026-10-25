@@ -1936,9 +1936,11 @@ and configured values. Resume with the checkpoint's configuration, or pass
 comparison is type-strict (`1` is not `1.0`, as in the run id). It uses the
 configuration the checkpoint recorded, never the live param groups, so a
 plateau cut or a one-cycle phase resumes as before. A checkpoint written
-before this check is compared with its source run's `run.yaml`, or not at all
-when that file is unreadable. `grad_clip_norm` and `accumulate_grad_batches`
-are read live, so a change applies. Horizons keep their own rules: a cosine
+before this check is compared with its source run's `run.yaml`. The check is
+skipped when that file is unreadable, or when the source run has a parent: it
+may itself be a stateful resume made before this check, whose `run.yaml`
+records values that never trained. `grad_clip_norm` and
+`accumulate_grad_batches` are read live, so a change applies. Horizons keep their own rules: a cosine
 `T_max` stays the checkpoint's (§2.5), and a `total_steps` must cover the
 original and resumed epochs (§14.2). A warmup-decay schedule's settings are
 rebuilt, so they apply.

@@ -1489,27 +1489,27 @@ def test_trainer_weights_only_resume_trains_with_the_changed_hyperparameters(tmp
     assert seen == {(1e-4, 0.1)}
 
 
-def test_trainer_resume_with_a_legacy_sidecar_checks_against_the_source_run_yaml(tmp_path, monkeypatch):
-    import hashlib
-    import json
-
+def _strip_trainer_hyperparameters(tmp_path, run_id):
+    """Rewrite LAST's training state as a Trainer sidecar written before #502."""
     from nnx import Checkpoints, NNCheckpoint
+    from tests._checkpoint_files import restamp
 
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
-    first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
-    checkpoint = NNCheckpoint.load(first.id, Checkpoints.LAST)
+    checkpoint = NNCheckpoint.load(run_id, Checkpoints.LAST)
     assert checkpoint is not None and checkpoint.training_state_id is not None
-    sidecar = tmp_path / "runs" / first.id / "checkpoints" / f"last.pt.opt.{checkpoint.training_state_id}.pt"
+    sidecar = tmp_path / "runs" / run_id / "checkpoints" / f"last.pt.opt.{checkpoint.training_state_id}.pt"
     state = torch.load(sidecar, weights_only=True)
     assert set(state["optimizer_configs"]) == {"body", "head"} and set(state["scheduler_configs"]) == {"body", "head"}
     for key in ("optimizer_configs", "scheduler_configs"):
-        del state[key]  # as written before #502
+        del state[key]
     torch.save(state, sidecar)
-    manifest_path = sidecar.parent / "last.pt.manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["files"][sidecar.name] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    restamp(sidecar)
+
+
+def test_trainer_resume_with_a_legacy_sidecar_checks_against_the_source_run_yaml(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
+    _strip_trainer_hyperparameters(tmp_path, first.id)
 
     with pytest.raises(ValueError, match=r"optimizer 'head' max_lr \(checkpoint 0.05, configuration 0.0001\)"):
         Trainer(_gan_like_model()).train(
@@ -1517,6 +1517,27 @@ def test_trainer_resume_with_a_legacy_sidecar_checks_against_the_source_run_yaml
         )
     resumed = Trainer(_gan_like_model()).train(
         params=_two_optimizer_params(1, run_id=first.id, mode="stateful"), trainer_step_fn=_two_step
+    )
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+
+
+def test_trainer_resume_with_a_legacy_sidecar_skips_the_check_when_the_source_has_a_parent(tmp_path, monkeypatch):
+    """A source that was itself a stateful resume made before #502 trained
+    with its parent's values while its run.yaml recorded the changed ones,
+    so that run.yaml is no record of what trained."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    root = Trainer(_gan_like_model()).train(params=_two_optimizer_params(1), trainer_step_fn=_two_step)
+    _strip_trainer_hyperparameters(tmp_path, root.id)
+    (tmp_path / "runs" / root.id / "run.yaml").write_text("{", encoding="utf-8")  # no check, as before #502
+    middle = Trainer(_gan_like_model()).train(
+        params=_changed_head(_two_optimizer_params(1), max_lr=1e-4, run_id=root.id, mode="stateful"),
+        trainer_step_fn=_two_step,
+    )
+    _strip_trainer_hyperparameters(tmp_path, middle.id)
+    # middle's run.yaml records max_lr 1e-4, but its sidecar trained at 0.05.
+    resumed = Trainer(_gan_like_model()).train(
+        params=_two_optimizer_params(1, run_id=middle.id, mode="stateful"), trainer_step_fn=_two_step
     )
     assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
 

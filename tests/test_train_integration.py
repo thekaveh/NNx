@@ -37,19 +37,7 @@ from nnx.nn.params.nn_params import NNParams
 from nnx.nn.params.nn_run import NNRun
 from nnx.nn.params.nn_scheduler_params import NNSchedulerParams
 from nnx.nn.params.nn_train_params import NNTrainParams
-
-
-def _restamp(sidecar) -> None:
-    """Record a deliberately edited sidecar in its resume-point manifest (#394),
-    as if the run had written that content: the test then exercises the check
-    it targets rather than the digest check."""
-    import hashlib
-    import json
-
-    manifest_path = sidecar.parent / (sidecar.name.split(".opt.")[0] + ".manifest.json")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["files"][sidecar.name] = hashlib.sha256(sidecar.read_bytes()).hexdigest()
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+from tests._checkpoint_files import restamp
 
 
 def _save_checkpoint_in_process(checkpoint, root: str, marker: int) -> None:
@@ -593,7 +581,7 @@ def test_failed_resume_rolls_back_model_and_loader_rng(tmp_path, monkeypatch):
     state = torch.load(sidecar, weights_only=True)
     state["optimizer"]["param_groups"] = []
     torch.save(state, sidecar)
-    _restamp(sidecar)
+    restamp(sidecar)
 
     resume_loader = DataLoader(
         train_loader.dataset,
@@ -1064,17 +1052,17 @@ def test_warm_resume_refuses_changed_scheduler_hyperparameters(tmp_path, monkeyp
     assert "optimizer" not in str(caught.value).split(". A stateful")[0]
 
 
-def _strip_hyperparameters(tmp_path, run_id):
+def _strip_hyperparameters(tmp_path, run_id, max_lr=0.5):
     """Rewrite LAST's training state as a sidecar written before #502."""
     checkpoint = NNCheckpoint.load(run_id, Checkpoints.LAST)
     assert checkpoint is not None and checkpoint.training_state_id is not None
     sidecar = tmp_path / "runs" / run_id / "checkpoints" / f"last.pt.opt.{checkpoint.training_state_id}.pt"
     state = torch.load(sidecar, weights_only=True)
-    assert state["optimizer_config"]["max_lr"] == 0.5 and state["scheduler_config"] is not None
+    assert state["optimizer_config"]["max_lr"] == max_lr and state["scheduler_config"] is not None
     for key in ("optimizer_config", "scheduler_config", "optimizer_configs", "scheduler_configs"):
         del state[key]
     torch.save(state, sidecar)
-    _restamp(sidecar)
+    restamp(sidecar)
 
 
 def test_a_legacy_sidecar_resumes_statefully_and_checks_against_the_source_run_yaml(tmp_path, monkeypatch):
@@ -1106,6 +1094,31 @@ def test_a_legacy_sidecar_without_a_readable_source_run_yaml_skips_the_check(tmp
     assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
 
 
+def test_a_legacy_sidecar_skips_the_check_when_the_source_run_has_a_parent(tmp_path, monkeypatch):
+    """A source that was itself a stateful resume made before #502 trained
+    with its parent's values while its run.yaml recorded the changed ones,
+    so that run.yaml is no record of what trained: the check is skipped."""
+    from dataclasses import replace
+
+    monkeypatch.chdir(tmp_path)
+    train_loader, _ = _make_tiny_loaders()
+    parent_optim = NNOptimParams.builder().sgd(max_lr=0.5).build()
+    root = _hparam_source(train_loader, parent_optim)
+    _strip_hyperparameters(tmp_path, root.id)
+    (tmp_path / "runs" / root.id / "run.yaml").write_text("{", encoding="utf-8")  # no check, as before #502
+    trained = []
+
+    class _Lr(Callback):
+        def on_epoch_begin(self, ctx):
+            trained.append(ctx.optimizer.param_groups[0]["lr"])
+
+    middle = _hparam_resume(train_loader, root, replace(parent_optim, max_lr=1e-4), mode="stateful", callbacks=[_Lr()])
+    assert set(trained) == {0.5}  # the old bug: run.yaml records 1e-4
+    _strip_hyperparameters(tmp_path, middle.id, max_lr=1e-4)
+    resumed = _hparam_resume(train_loader, middle, parent_optim, mode="stateful")
+    assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+
+
 @pytest.mark.parametrize(("saved_scaler", "current_scaler"), [({"scale": 2.0}, None), (None, object())])
 def test_warm_resume_rejects_grad_scaler_presence_changes(tmp_path, monkeypatch, saved_scaler, current_scaler):
     monkeypatch.chdir(tmp_path)
@@ -1119,7 +1132,7 @@ def test_warm_resume_rejects_grad_scaler_presence_changes(tmp_path, monkeypatch,
     state = torch.load(sidecar, weights_only=True)
     state["scaler"] = saved_scaler
     torch.save(state, sidecar)
-    _restamp(sidecar)
+    restamp(sidecar)
 
     monkeypatch.setattr(NNModel, "_build_grad_scaler", lambda _self: current_scaler)
     with pytest.raises(ValueError, match="GradScaler presence mismatch"):
