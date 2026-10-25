@@ -127,6 +127,13 @@ class Undeclared(Callback):
     pass
 
 
+class TopologyChanging(Callback):
+    """Changes model.net's topology as QAT does: it overrides only checkpoint_transforms."""
+
+    def checkpoint_transforms(self):
+        return ()
+
+
 class WriterComponent(Callback):
     """A writer-only callback that also carries checkpointed state."""
 
@@ -316,6 +323,8 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             "partition_mismatch": dict(mismatch=True),
             "writer_component": dict(callbacks=[WriterComponent()]),
             "writer_only_component": dict(callbacks=[nnx_dist.writer_only(WriterComponent)]),
+            "topology_callback": dict(callbacks=[TopologyChanging()]),
+            "writer_only_topology_callback": dict(callbacks=[nnx_dist.writer_only(TopologyChanging)]),
             "batchnorm": dict(batchnorm=True),
             "compile": dict(train_kwargs=dict(compile=CompileSpec(backend="aot_eager"))),
             "history_journal": dict(train_kwargs=dict(history=HistoryJournal(retention=3, chunk_size=2))),

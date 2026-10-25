@@ -4934,7 +4934,7 @@ class nnx.distributed.DDP(*, writer_rank: 'int' = 0, find_unused_parameters: 'bo
 nnx.distributed.writer_only(factory: 'Callable[[], Any]') -> 'Any'
 ```
 
-A callback NNx builds on the writer rank only — for callbacks that write when constructed (``TensorBoardCallback``, ``WandbCallback``): ``callbacks=[writer_only(lambda: TensorBoardCallback("tb"))]``. Without ``distributed=``, the factory is simply called.
+A callback NNx builds on the writer rank only — for callbacks that write when constructed (``TensorBoardCallback``, ``WandbCallback``): ``callbacks=[writer_only(lambda: TensorBoardCallback("tb"))]``. Without ``distributed=``, the factory is simply called. It is no way around the DDP scope: under ``distributed=DDP()``, a callback that changes ``model.net``'s topology (it overrides ``Callback.checkpoint_transforms``, as ``QATLifecycleCallback`` does) is refused on every rank before any run is reserved, wrapped in ``writer_only`` or not.
 
 
 #### `nnx.distributed.RankPartition`

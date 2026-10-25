@@ -406,7 +406,11 @@ def writer_only(factory: Callable[[], Any]) -> Any:
     """A callback NNx builds on the writer rank only — for callbacks that
     write when constructed (``TensorBoardCallback``, ``WandbCallback``):
     ``callbacks=[writer_only(lambda: TensorBoardCallback("tb"))]``. Without
-    ``distributed=``, the factory is simply called."""
+    ``distributed=``, the factory is simply called. It is no way around the
+    DDP scope: under ``distributed=DDP()``, a callback that changes
+    ``model.net``'s topology (it overrides ``Callback.checkpoint_transforms``,
+    as ``QATLifecycleCallback`` does) is refused on every rank before any run
+    is reserved, wrapped in ``writer_only`` or not."""
     if not callable(factory):
         raise TypeError("writer_only needs a zero-argument factory returning a Callback")
     from .nn.callbacks import _WriterOwned
@@ -566,7 +570,7 @@ def _rank_behaviour(callback: Any) -> Optional[str]:
 def classify_callbacks(callbacks: Sequence[Any], *, writer: bool) -> list[Any]:
     """This rank's callbacks under DDP, or a ValueError for one whose rank
     behaviour is unsupported or undeclared."""
-    from .nn.callbacks import _WriterOwned
+    from .nn.callbacks import Callback, _WriterOwned
 
     kept: list[Any] = []
     for callback in callbacks:
@@ -581,6 +585,15 @@ def classify_callbacks(callbacks: Sequence[Any], *, writer: bool) -> list[Any]:
                     raise ValueError(
                         f"writer_only built {type(built).__name__}, which carries checkpointed component state that "
                         "every rank must restore alike on resume: pass it without writer_only (distributed = 'all')"
+                    )
+                if type(built).checkpoint_transforms is not Callback.checkpoint_transforms:
+                    # The preflight's topology check saw only the wrapper (#510):
+                    # on the writer alone it would change model.net mid-run, so
+                    # DDP would average mismatched gradients across the ranks.
+                    raise ValueError(
+                        f"writer_only built {type(built).__name__}, which changes model.net's topology (e.g. QAT) "
+                        "on the writer rank only: distributed= does not cover topology-changing callbacks, wrapped "
+                        "in writer_only or not; train without distributed=, or without it"
                     )
                 kept.append(built)
             continue

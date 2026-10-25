@@ -287,6 +287,8 @@ def test_preflight_refusals_fail_on_every_rank_before_any_run(tmp_path):
         "partition_mismatch",
         "writer_component",
         "writer_only_component",
+        "topology_callback",
+        "writer_only_topology_callback",
         "batchnorm",
         "compile",
         "history_journal",
@@ -302,6 +304,18 @@ def test_preflight_refusals_fail_on_every_rank_before_any_run(tmp_path):
     assert (
         "component state" in second["errors"]["writer_only_component"]
         or "rank 0" in second["errors"]["writer_only_component"]
+    )
+    # #510: a topology-changing callback is refused on every rank, wrapped in
+    # writer_only or not; the writer names the built class, the others the writer.
+    topology = (
+        "ValueError: callbacks ['TopologyChanging'] change model.net's topology, which distributed= does not cover"
+    )
+    assert first["errors"]["topology_callback"] == second["errors"]["topology_callback"] == topology
+    assert first["errors"]["writer_only_topology_callback"].startswith(
+        "ValueError: writer_only built TopologyChanging, which changes model.net's topology"
+    )
+    assert second["errors"]["writer_only_topology_callback"].startswith(
+        "DistributedFailure: the distributed preflight failed on rank 0: ValueError: writer_only built TopologyChanging"
     )
     assert "batch normalization" in first["errors"]["batchnorm"]
     for errors in (first["errors"], second["errors"]):
