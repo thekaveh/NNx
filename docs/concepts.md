@@ -1111,8 +1111,8 @@ step) do so.
 explicit policy, or full precision), never in the student's. That holds even
 under the legacy `mixed_precision` flag, which never governs inference. As
 with the default step, `NNModel.train` and `Trainer.train` reject an
-objective run on a surgery topology they cannot reconstruct. Imperative step functions
-and `finalize_step` are unchanged by objectives.
+objective run on a surgery topology they cannot reconstruct. Imperative
+step functions and `finalize_step` are unchanged by objectives.
 
 ## 7. Fine-tuning (transfer learning)
 

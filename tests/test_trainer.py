@@ -35,6 +35,7 @@ from nnx import (
     TrainerStepContext,
     TrainerStepFn,
 )
+from tests._surgery import SURGERY_FORMS, unrecorded_surgery
 
 
 def _supervised_model() -> NNModel:
@@ -113,29 +114,16 @@ def _supervised_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
     )
 
 
-@pytest.mark.parametrize(
-    "form", ["low_rank", "prune", "weight_norm", "spectral_norm", "legacy_weight_norm", "legacy_spectral_norm"]
-)
+@pytest.mark.parametrize("form", SURGERY_FORMS)
 def test_trainer_custom_steps_keep_the_unrecorded_surgery_exemption(form, tmp_path, monkeypatch):
     """#508 pins the exemption: a trainer_step_fn owns its updates (and any
     reconstructibility-aware topology), so unrecorded surgery still trains,
     like NNModel.train(train_step_fn=custom); the GAN composite idiom relies
     on it. Only objective runs and recipe models are checked."""
-    from nnx import low_rank_factorize
-    from nnx.prune import magnitude_prune
-
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
     model = _supervised_model()
-    layer = model.net.layers[0]
-    if form == "low_rank":
-        model.net.layers[0] = low_rank_factorize(layer, rank=2)
-    elif form == "prune":
-        magnitude_prune(model.net, 0.5, bake=False)
-    elif form.startswith("legacy_"):
-        getattr(torch.nn.utils, form.removeprefix("legacy_"))(layer)
-    else:
-        getattr(torch.nn.utils.parametrizations, form)(layer)
+    unrecorded_surgery(model.net, model.net.layers, form)
     params = NNTrainerParams(
         n_epochs=1,
         train_loader=_supervised_loader(8),

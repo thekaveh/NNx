@@ -38,6 +38,7 @@ from nnx._step_helpers import softened_kl
 from nnx._update_engine import UpdateEngine
 from nnx.nn.nn_model import _objective_microbatch
 from nnx.objectives import LossTerm, ObjectiveResult, kd_objective, supervised_objective
+from tests._surgery import SURGERY_FORMS, unrecorded_surgery
 
 RTOL, ATOL = 1e-6, 1e-7
 
@@ -731,26 +732,6 @@ def _feed_fwd() -> NNModel:
     )
 
 
-def _unrecorded_surgery(net: torch.nn.Module, layer: str, form: str) -> None:
-    """Change ``net`` in place, outside any recipe, so no checkpoint could rebuild it."""
-    from nnx import low_rank_factorize
-    from nnx.prune import magnitude_prune
-
-    parent, _, child = layer.rpartition(".")
-    owner = net.get_submodule(parent)
-    if form == "low_rank":
-        owner[int(child)] = low_rank_factorize(owner[int(child)], rank=2)
-    elif form == "prune":
-        magnitude_prune(net, 0.5, bake=False)
-    elif form.startswith("legacy_"):
-        getattr(torch.nn.utils, form.removeprefix("legacy_"))(owner[int(child)])
-    else:
-        getattr(torch.nn.utils.parametrizations, form)(owner[int(child)])
-
-
-SURGERY_FORMS = ["low_rank", "prune", "weight_norm", "spectral_norm", "legacy_weight_norm", "legacy_spectral_norm"]
-
-
 @pytest.mark.parametrize("form", SURGERY_FORMS)
 def test_trainer_objective_runs_keep_the_topology_reconstruction_guard(form, tmp_path, monkeypatch):
     """#508: Trainer.train(objective=...) refuses unrecorded surgery with
@@ -758,7 +739,7 @@ def test_trainer_objective_runs_keep_the_topology_reconstruction_guard(form, tmp
     monkeypatch.chdir(tmp_path)
     batches = [(torch.randn(2, 4), torch.tensor([0, 1]))]
     model = _feed_fwd()
-    _unrecorded_surgery(model.net, "layers.0", form)
+    unrecorded_surgery(model.net, model.net.layers, form)
     with pytest.raises(ValueError) as from_nnmodel:
         _fit(model, batches, supervised_objective())
     params = NNTrainerParams.builder().n_epochs(1).train_loader(batches).optimizer("main", _sgd(1)).build()
