@@ -1237,6 +1237,62 @@ def test_a_window_whose_every_term_has_weight_zero_commits_nothing():
     assert event.loss == pytest.approx(3.0)  # the weight-0 term is reported but adds nothing
 
 
+@pytest.mark.parametrize("masked_first", [False, True], ids=["summed-first", "no-sample-first"])
+def test_a_no_sample_normalized_term_adds_nothing_to_a_summed_window(masked_first):
+    """#504: a normalized microbatch with no samples may share a window with
+    the term summed, and adds nothing to it: neither gradient nor value,
+    even with a nonzero numerator, so the event matches the step."""
+    param = torch.nn.Parameter(torch.tensor(1.0))
+    engine = UpdateEngine(optimizers={"default": torch.optim.SGD([param], lr=0.1)})
+    microbatches = [[LossTerm("t", param * 2, reduction="sum")], [LossTerm("t", param * 0 + 5.0, 0)]]
+    for terms in reversed(microbatches) if masked_first else microbatches:
+        engine.accumulate(terms)
+    (event,) = engine.commit(epoch_idx=0, batch_idx=1)
+    assert event.losses == {"t": pytest.approx(2.0)} and event.loss == pytest.approx(2.0)
+    assert param.item() == pytest.approx(0.8)  # the gradient of 2 * param alone
+
+
+@pytest.mark.parametrize("via", ["model", "trainer"])
+def test_an_objective_of_weight_zero_terms_never_steps_an_update_clocked_scheduler(tmp_path, monkeypatch, via):
+    """#504: a run whose every window has only weight-0 terms commits no
+    update, so an optimizer_update scheduler never steps."""
+    from nnx import NNSchedulerParams
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def weight_zero(ctx):
+        x, t = ctx.batch
+        ce = F.cross_entropy(ctx.model.net(x), t, reduction="sum")
+        return ObjectiveResult((LossTerm("ce", ce, len(t), weight=0.0),))
+
+    g = torch.Generator().manual_seed(0)
+    x, y = torch.randn(8, 4, generator=g), torch.randint(0, 2, (8,), generator=g)
+    scheduler = (
+        NNSchedulerParams.builder()
+        .step(step_size=1, min_lr=0.0, factor=0.5, patience=0, cooldown=0, threshold=0.0)
+        .clock("optimizer_update")
+        .build()
+    )
+    model, events = _feed_fwd_4x2(), _UpdateBatches()
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    run = _train_via(
+        via,
+        model,
+        [(x[:4], y[:4]), (x[4:], y[4:])],
+        objective=weight_zero,
+        optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+        scheduler=scheduler,
+        callbacks=[events],
+        data_id=f"weight-zero-{via}",
+    )
+    assert [i.update_count for i in run.idps] == [0, 0]
+    assert [i.lr for i in run.idps] == pytest.approx([0.1, 0.1])
+    assert events.batches == []
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+
+
 @pytest.mark.parametrize("via", ["model", "trainer"])
 @pytest.mark.parametrize("aux_weight", [None, 0.0], ids=["no-aux", "aux-weight-0"])
 def test_an_all_masked_epoch_with_a_weight_zero_term_has_no_loss(tmp_path, monkeypatch, via, aux_weight):
@@ -1327,7 +1383,8 @@ def test_a_task_free_window_masked_throughout_records_no_loss(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("via", ["model", "trainer"])
-def test_early_stopping_on_the_training_loss_trains_through_an_all_masked_tail(tmp_path, monkeypatch, via):
+@pytest.mark.parametrize("name", ["supervised", "kd-alpha-0"])
+def test_early_stopping_on_the_training_loss_trains_through_an_all_masked_tail(tmp_path, monkeypatch, via, name):
     """#504: the NaN record of a masked tail counted as an epoch without
     improvement, so EarlyStopping(train_edp.loss, patience=0) stopped after
     one epoch where the default step trains all three."""
@@ -1345,7 +1402,7 @@ def test_early_stopping_on_the_training_loss_trains_through_an_all_masked_tail(t
         via,
         _linear(),
         _MASKED_TAIL,
-        objective=supervised_objective(),
+        objective=_task_free_objective(name),
         optim=_sgd(2),
         epochs=3,
         callbacks=[EarlyStopping(monitor="train_edp.loss", patience=0)],
