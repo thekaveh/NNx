@@ -4031,6 +4031,9 @@ class NNModel(_HubMixinBase):
         resume_status = ResumeStatus()
         previous_net_state: Optional[dict[str, Any]] = None
         previous_rng_state: Optional[dict[str, Any]] = None
+        # #538: the streams a stateful resume restored, applied again after
+        # on_train_begin (a hook may draw: QAT preparation does).
+        resumed_rng_state: Optional[dict[str, Any]] = None
 
         resume_optimizer_factory = optimizer_factory_state(params.optim)
         resume_optimizer_topology = _optimizer_topology(optimizer, self.net)
@@ -4196,6 +4199,8 @@ class NNModel(_HubMixinBase):
                                 _restore_rng_state(training_state["rng"], train_loader)
                             if rank_rng is not None:  # this rank's own streams (FEAT-030)
                                 _restore_rng_state(dict(rank_rng), train_loader)
+                            if training_state.get("rng") is not None or rank_rng is not None:
+                                resumed_rng_state = _capture_rng_state(train_loader)
                         except BaseException:
                             self.net.load_state_dict(net_snapshot)
                             _restore_rng_state(rng_snapshot, train_loader)
@@ -4367,6 +4372,11 @@ class NNModel(_HubMixinBase):
                 .with_compile(_record_of(compile_session))
             )
             ctx.run = run
+            if resumed_rng_state is not None:
+                # #538: the resumed session's hooks have run; its first epoch
+                # starts from the restored streams, as the uninterrupted fit's
+                # next epoch would (a failure here is rolled back as well).
+                _restore_rng_state(resumed_rng_state, train_loader)
             unowned_warned: set[str] = set()
             for local_epoch in range(session_epochs):
                 idx_epoch = start_epoch + local_epoch
@@ -4646,12 +4656,13 @@ class NNModel(_HubMixinBase):
         # deliberately untouched — it tracks the best *training-time* state.
         final_error: Optional[BaseException] = None
         # FEAT-030: every rank's RNG for the final LAST, gathered outside the
-        # agreed block so a rank failing inside it can never skip the gather
-        # (distributed runs have no topology transforms: the live streams).
+        # agreed block so a rank failing inside it can never skip the gather.
+        # #538: each rank's streams before on_train_end, whose draws the
+        # uninterrupted fit's next epoch would never see.
         # FEAT-033: after a mid-epoch stop the live tensors belong to no
         # committed epoch: LAST is left as the last commit wrote it.
         refresh_last = bool(records) and not stopped_mid_epoch
-        final_rng = ddp.gather(_capture_rng_state(train_loader)) if ddp is not None and refresh_last else None
+        final_rng = ddp.gather(pre_transform_rng_state) if ddp is not None and refresh_last else None
         try:
             if refresh_last:
                 self._save_final_last(
@@ -4716,10 +4727,14 @@ class NNModel(_HubMixinBase):
         final_rng: Optional[list[Any]] = None,
         counters: Optional[dict[str, Any]] = None,
     ) -> None:
-        """Re-save LAST from the live net after ``on_train_end`` (see #87)."""
+        """Re-save LAST from the live net after ``on_train_end`` (see #87),
+        with the RNG streams from before it (#538): a hook's draw (a final
+        ``evaluate()`` on a loader without a generator) is not part of the
+        training a resume continues."""
         final_transforms, keeps_pre_transform = _final_transforms(self, normalized_callbacks, run.transforms)
         self._topology_transforms = final_transforms
-        rng_state = pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader)
+        assert pre_transform_rng_state is not None  # captured whenever an epoch committed
+        rng_state = pre_transform_rng_state
         distributed_state = (
             None if ddp is None else _distributed_state(ddp, train_loader, params.val_loader, final_rng or [])
         )

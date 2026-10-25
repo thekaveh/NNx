@@ -467,3 +467,87 @@ def test_trainer_final_last_keeps_every_component_and_resumes_the_continuous_sta
     )
     assert resumed.resume_status is not None and resumed.resume_status.restored_components == ("early_stopping",)
     assert resumed.idps[0].epoch_idx == 2
+
+
+@pytest.mark.parametrize("qat", [False, True], ids=["plain", "qat"])
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_final_last_keeps_the_rng_from_before_on_train_end(loop, qat, tmp_path, monkeypatch):
+    """#538: a draw in on_train_end (here a final test score on a loader
+    without a generator) is no part of the training a resume continues: the
+    final LAST holds the streams from before it, with or without a declared
+    train-end transform, while its model stays post-on_train_end (#87)."""
+    from nnx import NNTrainerParams, Trainer
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    width = 32 if qat else 4  # QAT's int4 groupsize (32) divides every Linear's input
+    torch.manual_seed(0)
+    X, y = torch.randn(16, width), torch.randint(0, 2, (16,))
+    loader = DataLoader(TensorDataset(X, y), batch_size=8, shuffle=False)
+
+    class FinalScore(Callback):
+        rng_before = None
+
+        def on_train_end(self, ctx):
+            self.rng_before = _capture_streams()
+            ctx.model.evaluate(DataLoader(TensorDataset(X, y), batch_size=8, shuffle=True))  # draws its seed
+            assert not torch.equal(torch.get_rng_state(), self.rng_before["torch"])
+
+    callbacks: list[Callback] = []
+    step: object = None
+    if qat:
+        pytest.importorskip("torchao")
+        from nnx import QATLifecycleCallback, qat_train_step_factory
+
+        callbacks.append(QATLifecycleCallback())
+        step = qat_train_step_factory()
+    score = FinalScore()
+    callbacks.append(score)  # on_train_end runs in reverse: first, before any conversion
+    model = NNModel(
+        net_params=NNParams(
+            input_dim=width, output_dim=2, hidden_dims=[64 if qat else 8], dropout_prob=0.2, activation=Activations.RELU
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    if loop == "nnmodel":
+        run = model.train(params=_tiny_train_params(loader), train_step_fn=step, callbacks=callbacks)
+    else:
+
+        def trainer_step(ctx):
+            ctx.model.net.train()
+            optimizer = ctx.optimizers["main"]
+            optimizer.zero_grad()
+            (x,), target = ctx.model.net.unpack_batch(ctx.batch)
+            loss = ctx.model.loss_fn(ctx.model.net(x), target)
+            loss.backward()
+            optimizer.step()
+            return NNEvaluationDataPoint(loss=float(loss.detach()), error=float(loss.detach()))
+
+        trainer_params = NNTrainerParams(
+            n_epochs=2, train_loader=loader, optims={"main": NNOptimParams.builder().sgd(max_lr=0.05).build()}
+        )
+        run = Trainer(model).train(params=trainer_params, trainer_step_fn=trainer_step, callbacks=callbacks)
+
+    checkpoint, state = NNCheckpoint.load_with_training_state(run.id, Checkpoints.LAST)
+    assert checkpoint is not None and state is not None and score.rng_before is not None
+    assert bool(checkpoint.transforms) is qat
+    saved = state["rng"]
+    assert torch.equal(saved["torch"], score.rng_before["torch"])
+    assert saved["python"] == score.rng_before["python"]
+    for key, value in score.rng_before["numpy"].items():
+        assert saved["numpy"][key] == value, key
+    for key, value in model.net.state_dict().items():  # the post-on_train_end model
+        assert torch.equal(checkpoint.net_state[key], value), key
+
+
+def _capture_streams() -> dict:
+    import random
+
+    import numpy as np
+
+    numpy_state = np.random.get_state()
+    return {
+        "python": random.getstate(),
+        "numpy": {"state": numpy_state[1].tolist(), "position": numpy_state[2]},
+        "torch": torch.get_rng_state(),
+    }

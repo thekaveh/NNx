@@ -1916,6 +1916,14 @@ boundary therefore continues bit for bit, `ReduceLROnPlateau` included. This
 holds for deterministic single-process training with in-process loaders
 (`num_workers=0`).
 
+It holds when callbacks draw from the random streams too. A final
+`evaluate()` in `on_train_end` draws one (a `DataLoader` without a generator
+takes its base seed from torch), and so does QAT preparation in
+`on_train_begin`. The final LAST keeps the streams from before `on_train_end`,
+on every DDP rank, while its model is the post-`on_train_end` one. A resumed
+session applies its restored streams again once `on_train_begin` has run, in
+`NNModel.train` and `Trainer.train` alike.
+
 **Changed hyperparameters.** Restoring the optimizer state restores its param
 groups, and restoring the scheduler state restores the scheduler's settings.
 A changed configuration would therefore train with the checkpoint's values
