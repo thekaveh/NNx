@@ -96,9 +96,10 @@ class _ReadSpy:
         monkeypatch.setattr(nn_checkpoint, "_sha256", no_read_back)
 
     def payloads(self) -> list[str]:
-        """Reads of anything but a manifest (read to number the generation)
-        or a directory (fsynced to persist a rename)."""
-        return [path for path in self.reads if not path.endswith(".json") and not os.path.isdir(path)]
+        """Reads of anything but a manifest (read to number the generation),
+        a directory (fsynced to persist a rename) or a ``.lock`` file
+        (filelock 4 reopens its own lock file read-write)."""
+        return [path for path in self.reads if not path.endswith((".json", ".lock")) and not os.path.isdir(path)]
 
 
 @pytest.mark.parametrize("stateful", [True, False])

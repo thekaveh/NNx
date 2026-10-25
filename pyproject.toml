@@ -1,11 +1,11 @@
 [build-system]
 # >=77: PEP 639 SPDX license metadata below. "wheel" is auto-provided.
-requires = ["setuptools==84.0.0"]
+requires = ["setuptools==84.1.0"]
 build-backend = "setuptools.build_meta"
 
 [dependency-groups]
 release = [
-    "setuptools==84.0.0",
+    "setuptools==84.1.0",
     "wheel==0.48.0",
     "twine==7.0.0",
 ]
@@ -209,6 +209,11 @@ Repository = "https://github.com/thekaveh/NNx"
 Documentation = "https://thekaveh.github.io/NNx/"
 Changelog = "https://github.com/thekaveh/NNx/blob/main/CHANGELOG.md"
 Issues = "https://github.com/thekaveh/NNx/issues"
+
+[tool.uv]
+# filelock 4.1.0-4.2.0 carry advisories fixed only in 4.2.1, which needs
+# Python >= 3.11; 4.0.x does not have them, so the 3.10 lock stays on 4.0.x.
+constraint-dependencies = ["filelock<4.1 ; python_full_version < '3.11'"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
