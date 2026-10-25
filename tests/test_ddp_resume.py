@@ -212,12 +212,13 @@ def first_split_run(tmp_path_factory) -> Path:
 def test_a_resumes_step_count_refusal_hands_every_ranks_model_and_rng_back(first_split_run):
     """The step-count check runs inside the resume's rollback window: with
     unequal per-rank step counts every rank refuses, its weights and its
-    Python and torch streams as before the call."""
+    Python, NumPy and torch streams as before the call."""
     launch("resume_steps_mismatch", first_split_run, timeout=180)
     for rank in results(first_split_run):
         assert rank["error"].startswith("DistributedFailure: "), rank["error"]
         assert "different numbers of steps" in rank["error"], rank["error"]
-        assert rank["unchanged"] and rank["python_rng_unchanged"] and rank["rng_unchanged"], rank
+        assert rank["unchanged"] and rank["python_rng_unchanged"], rank
+        assert rank["numpy_rng_unchanged"] and rank["rng_unchanged"], rank
 
 
 def test_a_resume_whose_first_fetch_fails_on_one_rank_is_rolled_back_on_both(first_split_run, monkeypatch):
@@ -230,4 +231,5 @@ def test_a_resume_whose_first_fetch_fails_on_one_rank_is_rolled_back_on_both(fir
     assert failing["error"].startswith("OSError: cannot read sample"), failing
     assert waiting["error"] is not None and "OSError" not in waiting["error"], waiting  # the group's timeout
     for rank in (waiting, failing):
-        assert rank["unchanged"] and rank["python_rng_unchanged"] and rank["rng_unchanged"], rank
+        assert rank["unchanged"] and rank["python_rng_unchanged"], rank
+        assert rank["numpy_rng_unchanged"] and rank["rng_unchanged"], rank
