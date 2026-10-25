@@ -523,3 +523,62 @@ def test_the_default_loss_terms_of_an_all_ignored_batch_are_an_exact_zero():
     assert weight == 0.0 and float(numerator) == 0.0
     numerator.backward()
     assert torch.isfinite(logits.grad).all()
+
+
+_CATEGORICAL_LOSSES = {
+    "ce": lambda: torch.nn.CrossEntropyLoss(),
+    "ce-sum": lambda: torch.nn.CrossEntropyLoss(reduction="sum"),
+    "ce-class-weight": lambda: torch.nn.CrossEntropyLoss(weight=torch.tensor([0.2, 1.0, 3.0])),
+    "ce-label-smoothing": lambda: torch.nn.CrossEntropyLoss(label_smoothing=0.1),
+    "nll": lambda: torch.nn.NLLLoss(),
+    "nll-sum": lambda: torch.nn.NLLLoss(reduction="sum"),
+    "nll-class-weight": lambda: torch.nn.NLLLoss(weight=torch.tensor([0.2, 1.0, 3.0])),
+}
+
+
+@pytest.mark.parametrize("shape", [(8, 3), (4, 3, 5)], ids=["rows", "sequence"])
+@pytest.mark.parametrize("loss_name", list(_CATEGORICAL_LOSSES))
+def test_a_masked_categorical_batch_scores_the_selected_rows_directly(loss_name, shape):
+    """A partly ignored categorical batch has the value, numerator, weight
+    and gradients of the loss itself over the valid rows alone: class
+    weights, label smoothing and both reductions apply unchanged."""
+    loss_fn = _CATEGORICAL_LOSSES[loss_name]()
+    gen = torch.Generator().manual_seed(0)
+    raw = torch.randn(*shape, generator=gen)
+    target = torch.randint(0, 3, (shape[0], *shape[2:]), generator=gen)
+    target.view(-1)[::3] = -1  # every third position ignored
+    adapter = task_adapter(TaskSpec.categorical(3, ignore_index=-1))
+
+    logits = raw.clone().requires_grad_(True)
+    display, numerator, weight = adapter.loss_terms(loss_fn, *adapter.prepare(logits, target))
+    display_grad, numerator_grad = (torch.autograd.grad(t, logits, retain_graph=True)[0] for t in (display, numerator))
+
+    reference_logits = raw.clone().requires_grad_(True)
+    rows, flat = reference_logits.movedim(1, -1).reshape(-1, 3), target.reshape(-1)
+    keep = flat != -1
+    selected = rows[keep]
+    if isinstance(loss_fn, torch.nn.NLLLoss):
+        selected = selected.log_softmax(1)  # NLLLoss scores the net's logits as log-probabilities (FIX-001)
+    reference = loss_fn(selected, flat[keep])
+    if loss_fn.reduction == "sum":
+        expected_weight, expected_numerator = None, reference
+    else:
+        class_weight = loss_fn.weight
+        expected_weight = float(class_weight[flat[keep]].sum()) if class_weight is not None else float(keep.sum())
+        expected_numerator = reference * expected_weight
+    reference_grad, reference_numerator_grad = (
+        torch.autograd.grad(t, reference_logits, retain_graph=True)[0] for t in (reference, expected_numerator)
+    )
+
+    assert torch.allclose(display, reference) and torch.allclose(numerator, expected_numerator)
+    assert weight == pytest.approx(expected_weight) if expected_weight is not None else weight is None
+    assert torch.allclose(display_grad, reference_grad) and torch.allclose(numerator_grad, reference_numerator_grad)
+    assert (display_grad.movedim(1, -1).reshape(-1, 3)[~keep] == 0).all()  # ignored rows get no gradient
+
+
+def test_the_categorical_adapter_overrides_only_the_masked_branch():
+    """The all-masked and unmasked branches of ``loss_terms`` are shared;
+    the categorical adapter supplies only its row selection."""
+    categorical = type(task_adapter(TaskSpec.categorical(3)))
+    assert "loss_terms" not in vars(categorical)
+    assert "_masked_loss_terms" in vars(categorical)

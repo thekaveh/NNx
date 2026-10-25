@@ -580,3 +580,50 @@ def test_ranks_refusing_differently_all_raise_the_lowest_refusing_ranks_error(mo
     with pytest.raises(ResumePointError, match=r"\(checkpoint a\)$") as raised:  # a rank that loaded cleanly
         _load_verified_resume_point("run", Checkpoints.LAST, {}, _Ranks([None, first, second]))
     assert raised.value.__cause__ is None
+
+
+class _ReadCounting(dict):
+    """A counters mapping that counts every read of each key."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reads: dict[str, int] = {}
+
+    def __getitem__(self, key):
+        self.reads[key] = self.reads.get(key, 0) + 1
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self.reads[key] = self.reads.get(key, 0) + 1
+        return super().get(key, default)
+
+
+@pytest.mark.parametrize(
+    ("counters", "outcome"),
+    [
+        ({}, "predates resume counters"),
+        ({"planned_n_epochs": None, "global_step": 4}, "predates resume counters"),
+        ({"planned_n_epochs": 3, "global_step": None}, "predates resume counters"),
+        ({"planned_n_epochs": 3, "global_step": 4}, 1),
+        ({"planned_n_epochs": 5, "global_step": 4}, "demo planned 5 epochs; a planned resume continues that plan"),
+        ({"planned_n_epochs": 2, "global_step": 4}, "demo planned 2 epochs"),
+    ],
+    ids=["no-counters", "no-plan", "no-step", "remaining", "changed-plan", "changed-to-done"],
+)
+def test_the_session_epochs_read_the_saved_plan_once(counters, outcome):
+    """A planned session reads the source's plan once and refuses a missing
+    or changed one; an equal plan trains the remaining epochs."""
+    from nnx.nn.nn_model import _session_epochs
+
+    saved = _ReadCounting(counters)
+    planned = type("P", (), {"resume_epochs": "planned", "n_epochs": 3})()
+    if isinstance(outcome, int):
+        assert _session_epochs(planned, 2, saved, "demo") == outcome
+    else:
+        with pytest.raises(ValueError, match=outcome):
+            _session_epochs(planned, 2, saved, "demo")
+    assert saved.reads.get("planned_n_epochs") == 1
+    with pytest.raises(ValueError, match="restores the weights only"):
+        _session_epochs(planned, 2, None, "demo")
+    additional = type("P", (), {"resume_epochs": "additional", "n_epochs": 3})()
+    assert _session_epochs(additional, 2, _ReadCounting(counters), "demo") == 3

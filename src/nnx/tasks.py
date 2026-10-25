@@ -554,20 +554,11 @@ class _CategoricalAdapter(TaskAdapter):
         # Range-checked class indices: an exact cast, as the loss needs int64 (int32 / int16 fail there).
         return flat_output, flat_target.long(), valid
 
-    def loss_terms(self, loss_fn, output, target, valid):
+    def _masked_loss_terms(self, loss_fn, output, target, valid, n_valid):
         # Rows are masked by selection: (M', C) keeps the class axis, so class
         # weights and CE/NLL's own normalization apply unchanged.
         from .nn.nn_model import _loss_terms
 
-        n_valid = int(valid.sum())
-        if n_valid == 0:
-            # A graph-connected exact zero: output.sum() * 0.0 is NaN when an
-            # output is +-inf (a -inf class mask), which would poison the
-            # evaluated loss sum through a batch that adds no weight.
-            zero = output.reshape(-1)[:0].sum()
-            return zero + float("nan"), zero, 0.0
-        if n_valid == valid.numel():
-            return _loss_terms(loss_fn, output, target)
         return _loss_terms(loss_fn, output[valid], target[valid])
 
     def decode(self, output):
