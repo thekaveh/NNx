@@ -1454,8 +1454,11 @@ def test_trainer_resume_refuses_changed_hyperparameters_naming_the_optimizer(tmp
     changed = _changed_head(
         _two_optimizer_params(1), max_lr=1e-4, weight_decay=0.1, factor=0.1, run_id=first.id, mode=mode
     )
+    trainer = Trainer(model)
+    rng = torch.get_rng_state()
     with pytest.raises(ValueError, match="resume hyperparameter mismatch") as caught:
-        Trainer(model).train(params=changed, trainer_step_fn=_two_step)
+        trainer.train(params=changed, trainer_step_fn=_two_step)
+    assert torch.equal(torch.get_rng_state(), rng)
     message = str(caught.value)
     for fragment in (
         "optimizer 'head' max_lr (checkpoint 0.05, configuration 0.0001)",
