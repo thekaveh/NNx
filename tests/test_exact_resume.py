@@ -336,16 +336,20 @@ def test_a_crash_between_publishing_the_checkpoint_and_its_manifest_still_resume
 # --- #537: a resume point republished between verification and load --------------------------------
 
 
-def _republish_refused(params):
-    """Resume with ``params`` while LAST is republished between its
-    verification and its load: refused, the model untouched and the RNG
-    as the fit's seed left it."""
+def _republish_refused(params, tag="last", *, crashed=False):
+    """Resume with ``params`` while ``tag`` is republished between its
+    verification and its load (``crashed``: the republish stopped before its
+    live manifest): refused, the model untouched and the RNG as the fit's
+    seed left it."""
     from tests._checkpoint_files import republished_on_verify
 
     model = _model()
     before = {name: weight.clone() for name, weight in model.net.state_dict().items()}
     rng = torch.Generator().manual_seed(params.seed).get_state()
-    with republished_on_verify(params.resume_from_run_id), pytest.raises(ResumePointError) as refused:
+    with (
+        republished_on_verify(params.resume_from_run_id, tag, crashed=crashed),
+        pytest.raises(ResumePointError) as refused,
+    ):
         model.train(params=params)
     assert all(torch.equal(before[name], weight) for name, weight in model.net.state_dict().items())
     assert torch.equal(rng, torch.get_rng_state())
@@ -366,15 +370,19 @@ def test_a_weights_only_resume_refuses_a_point_republished_after_its_verificatio
     assert message.startswith(f"{run.id}/last: the resume point changed while it was being read")
 
 
+def _weights_only_point(run_id):
+    NNCheckpoint.load(run=run_id, type=Checkpoints.LAST).save(run=run_id, type="weights_e1")
+    assert NNCheckpoint.resume_point(run_id, "weights_e1")["checkpoint_id"] is None
+    return _params("sgd", resume_from_run_id=run_id, resume_from_checkpoint="weights_e1", resume_mode="weights_only")
+
+
 def test_a_resume_from_a_weights_only_checkpoint_refuses_a_republished_point():
     """``NNCheckpoint.save`` without training state writes ``checkpoint_id:
     null``: the generation, not the id, tells the republished point apart."""
     from tests._checkpoint_files import republished_on_verify
 
     run = _first()
-    NNCheckpoint.load(run=run.id, type=Checkpoints.LAST).save(run=run.id, type="weights_e1")
-    assert NNCheckpoint.resume_point(run.id, "weights_e1")["checkpoint_id"] is None
-    params = _params("sgd", resume_from_run_id=run.id, resume_from_checkpoint="weights_e1", resume_mode="weights_only")
+    params = _weights_only_point(run.id)
     model = _model()
     before = {name: weight.clone() for name, weight in model.net.state_dict().items()}
     with (
@@ -383,3 +391,47 @@ def test_a_resume_from_a_weights_only_checkpoint_refuses_a_republished_point():
     ):
         model.train(params=params)
     assert all(torch.equal(before[name], weight) for name, weight in model.net.state_dict().items())
+
+
+def test_a_stateful_resume_refuses_a_republish_that_stopped_before_its_live_manifest():
+    """The republish published LAST but not its live manifest, which still
+    names the verified generation: the loaded checkpoint id tells it apart."""
+    from nnx.nn.params.nn_checkpoint import _checkpoint_path, _read_staged_manifest
+
+    run = _first()
+    verified = NNCheckpoint.resume_point(run.id, Checkpoints.LAST)["checkpoint_id"]
+    message = _republish_refused(_resume("sgd", run.id), crashed=True)
+    staged = _read_staged_manifest(_checkpoint_path(run.id, Checkpoints.LAST))
+    assert NNCheckpoint.resume_point(run.id, Checkpoints.LAST)["checkpoint_id"] == verified  # still live
+    assert staged is not None and staged["checkpoint_id"] != verified
+    assert message.startswith(f"{run.id}/last: the resume point changed while it was being read")
+    assert f"checkpoint {verified} was verified, {staged['checkpoint_id']} is published" in message
+
+
+def test_a_resume_from_a_weights_only_checkpoint_refuses_a_republish_that_stopped_before_its_live_manifest():
+    """No checkpoint id to compare: the checkpoint's digest tells the
+    republished file apart from the verified generation still live."""
+    run = _first()
+    message = _republish_refused(_weights_only_point(run.id), "weights_e1", crashed=True)
+    assert NNCheckpoint.resume_point(run.id, "weights_e1")["generation"] == 1  # still live
+    assert "generation 1 was verified, weights_e1.pt is generation 2's" in message
+
+
+def test_a_weights_only_checkpoint_whose_republish_stopped_before_publishing_still_resumes():
+    """The republish staged its manifest but never published its checkpoint:
+    the verified generation is intact on disk, so the resume goes ahead."""
+    from pathlib import Path
+
+    from nnx.nn.params.nn_checkpoint import _checkpoint_path, _manifest_path, _staged_manifest_path
+    from tests._checkpoint_files import republish
+
+    run = _first()
+    params = _weights_only_point(run.id)
+    checkpoint_path = _checkpoint_path(run.id, "weights_e1")
+    files = {Path(path): Path(path).read_bytes() for path in (checkpoint_path, _manifest_path(checkpoint_path))}
+    republish(run.id, "weights_e1")
+    os.replace(_manifest_path(checkpoint_path), _staged_manifest_path(checkpoint_path))
+    for path, content in files.items():  # the checkpoint and live manifest as before the republish
+        path.write_bytes(content)
+    resumed = _model().train(params=params)
+    assert NNRun.load(resumed.id).resume_status.source_generation == 1

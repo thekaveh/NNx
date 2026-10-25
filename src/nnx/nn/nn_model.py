@@ -426,6 +426,33 @@ def _verified_resume_point(run_id: str, ckpt_type: Any, ddp: Any) -> Optional[di
     raise DistributedFailure(f"verifying the resume point failed on rank {ddp.spec.writer_rank}: {kind}: {message}")
 
 
+def _load_verified_resume_point(run_id: str, ckpt_type: Any, manifest: dict[str, Any], ddp: Any) -> tuple[Any, Any]:
+    """Load the verified resume point (``NNCheckpoint._load_resume_point``,
+    #537). Under DDP every rank loads it itself, so a republish landing
+    between two ranks' loads is refused by the later one only: the ranks
+    share that refusal, and every rank raises the same
+    :class:`ResumePointError` (as :func:`_verified_resume_point` does), not
+    a peer's ``DistributedFailure``. Every rank reaches the gather: each
+    one's own failure is caught first, then raised."""
+    if ddp is None:
+        return NNCheckpoint._load_resume_point(run_id, ckpt_type, manifest)
+    loaded: Any = None
+    failure: Optional[Exception] = None
+    try:
+        loaded = NNCheckpoint._load_resume_point(run_id, ckpt_type, manifest)
+    except Exception as error:  # shared below, then raised
+        failure = error
+    refusal = str(failure) if isinstance(failure, ResumePointError) else None
+    refusals = [message for message in ddp.gather(refusal) if message is not None]
+    if isinstance(failure, ResumePointError):
+        raise failure
+    if refusals:
+        raise ResumePointError(refusals[0])
+    if failure is not None:  # anything else is agreed on by the "resuming the run" block
+        raise failure
+    return loaded
+
+
 def _load_resume_source(
     run_id: str,
     checkpoint: Any,
@@ -454,7 +481,7 @@ def _load_resume_source(
         if manifest is None:  # a checkpoint without a manifest loads as before
             ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=cast(Any, ckpt_type))
         else:
-            ckpt, training_state = NNCheckpoint._load_resume_point(run_id, cast(Any, ckpt_type), manifest)
+            ckpt, training_state = _load_verified_resume_point(run_id, cast(Any, ckpt_type), manifest, ddp)
     if ckpt is None:
         raise ValueError(f"resume_from_run_id={run_id!r}/{ckpt_type} not found on disk")
     resume_net_state = training_state.get("model") if training_state is not None else None

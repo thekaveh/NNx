@@ -184,6 +184,23 @@ def test_a_resume_point_republished_after_the_writers_verification_is_refused_on
     assert runs == [first_id]
 
 
+def test_a_resume_point_republished_between_the_ranks_loads_is_refused_alike_on_every_rank(tmp_path):
+    """#537: the writer rank loads the verified point cleanly, then LAST is
+    published again before rank 1 loads it: rank 1's refusal is shared, so
+    every rank raises the same ResumePointError, not a DistributedFailure."""
+    launch("resume_first", tmp_path)
+    first_id = (tmp_path / "first_run_id.txt").read_text(encoding="utf-8").strip()
+    launch("resume_republished_between_loads", tmp_path)
+    writer, other = results(tmp_path)
+    assert other["error"].startswith(f"ResumePointError: {first_id}/last: the resume point changed"), other["error"]
+    assert writer["error"] == other["error"], (writer["error"], other["error"])
+    assert "generation 2 was verified, generation 3 is published" in writer["error"], writer["error"]
+    for rank in (writer, other):
+        assert rank["unchanged"] and rank["rng_unchanged"], rank
+    runs = [name for name in os.listdir(tmp_path / "runs") if not name.startswith(".") and name != "best"]
+    assert runs == [first_id]
+
+
 def test_an_invalid_run_id_fails_alike_on_every_rank(tmp_path):
     launch("resume_bad_id", tmp_path)
     for rank in results(tmp_path):

@@ -2028,7 +2028,12 @@ published again in between (a source still training, or retrained with
 `overwrite_existing=True`) is refused with `ResumePointError` too: the
 resume point changed while it was being read. Every resume path refuses it,
 `NNModel.train` and `Trainer.train` in either resume mode, and so does every
-DDP rank. Nothing is hashed twice.
+DDP rank, with the same error even when the point changed between two ranks'
+loads. So does a republish that stopped after publishing its checkpoint but
+before its live manifest: the checkpoint id tells the files apart, or, for a
+weights-only checkpoint (no id), the checkpoint's digest. That digest is the
+only file hashed twice, and only while such an interrupted republish is on
+disk.
 
 `NNCheckpoint.resume_point(run, type)` reads the manifest. A checkpoint
 written before manifests loads as before. Stopping (`should_stop`, an
