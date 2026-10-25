@@ -160,7 +160,8 @@ class UpdateEngine:
             self._owner[name] = owned
         if scaler is not None:
             check_scaler_ownership(self.optimizers)
-        self.update_counts: dict[str, int] = {name: 0 for name in self.optimizers}
+        # One update clock: every named optimizer counts every committed
+        # window, so each one's update_idx is the commit count.
         self.commits = 0
         self.skipped = 0
         self._reset_window()
@@ -173,16 +174,6 @@ class UpdateEngine:
         self._nonfinite_window = False
         # A one-microbatch window's combined gradients (one backward pass).
         self._fused: Optional[list[Optional[torch.Tensor]]] = None
-
-    @property
-    def pending_microbatches(self) -> int:
-        return self._microbatches
-
-    @property
-    def window_nonfinite(self) -> bool:
-        """Whether the open window saw a non-finite term (``"skip"``: the
-        window is dropped at commit)."""
-        return self._nonfinite_window
 
     #: Whether the last :meth:`commit` dropped its window under the
     #: non-finite policy (a non-finite term or non-finite gradients).
@@ -342,11 +333,10 @@ class UpdateEngine:
             self.commits += 1
             events = []
             for name in self.optimizers:
-                self.update_counts[name] += 1
                 events.append(
                     UpdateEvent(
                         optimizer=name,
-                        update_idx=self.update_counts[name],
+                        update_idx=self.commits,
                         epoch_idx=epoch_idx,
                         batch_idx=batch_idx,
                         microbatches=self._microbatches,
@@ -397,20 +387,23 @@ class UpdateEngine:
         return ComponentSpec("nnx.update_engine", version=1, required=False)
 
     def component_state(self) -> dict[str, Any]:
-        return {"commits": self.commits, "skipped": self.skipped, "update_counts": dict(self.update_counts)}
+        # Per-name counts stay in the saved state (every one equals
+        # ``commits``): released NNx requires the mapping to load it.
+        counts = {name: self.commits for name in self.optimizers}
+        return {"commits": self.commits, "skipped": self.skipped, "update_counts": counts}
 
     def check_component_state(self, state: Mapping[str, Any], *, version: int) -> list[str]:
         counts = state.get("update_counts")
         values = [state.get("commits"), state.get("skipped"), *(counts.values() if isinstance(counts, Mapping) else ())]
         if not isinstance(counts, Mapping) or not all(_is_count(value) for value in values):
             return [f"malformed update counters {dict(state)!r}"]
+        if any(value != state["commits"] for value in counts.values()):
+            return [f"per-optimizer update counts {dict(counts)!r} disagree with commits={state['commits']!r}"]
         return []
 
     def load_component_state(self, state: Mapping[str, Any], *, version: int) -> None:
         self.commits = int(state["commits"])
         self.skipped = int(state["skipped"])
-        saved = state["update_counts"]
-        self.update_counts = {name: int(saved.get(name, 0)) for name in self.optimizers}
 
 
 def scaler_step(scaler: Any, optimizers: Iterable[torch.optim.Optimizer], *, judge: bool = True) -> bool:

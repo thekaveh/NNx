@@ -295,13 +295,13 @@ def _session_epochs(params: Any, start_epoch: int, counters: Optional[Mapping[st
             "only (resume_mode='weights_only', or a checkpoint without training state) — resume statefully, or "
             "use resume_epochs='additional'"
         )
-    if counters.get("planned_n_epochs") is None or counters.get("global_step") is None:
+    saved_plan = counters.get("planned_n_epochs")
+    if saved_plan is None or counters.get("global_step") is None:
         raise ValueError(
             f"{where}: its checkpoint predates resume counters, so its plan and logical step are unknown — "
             "resume it with resume_epochs='additional'"
         )
-    saved_plan = counters.get("planned_n_epochs")
-    if saved_plan is not None and saved_plan != params.n_epochs:
+    if saved_plan != params.n_epochs:
         raise ValueError(
             f"{where} planned {saved_plan} epochs; a planned resume continues that plan — set n_epochs={saved_plan}, "
             "or resume with resume_epochs='additional' to train n_epochs more"

@@ -20,9 +20,11 @@ import torch.nn.functional as F
 from nnx import (
     Activations,
     Callback,
+    Checkpoints,
     Devices,
     Losses,
     Nets,
+    NNCheckpoint,
     NNModel,
     NNModelParams,
     NNOptimParams,
@@ -329,8 +331,8 @@ def test_every_named_optimizer_counts_a_committed_window():
         listeners=[events.append],
     )
     _run_window(engine, supervised_objective(), model)
-    assert sorted(event.optimizer for event in events) == ["bias", "weight"]
-    assert engine.update_counts == {"weight": 1, "bias": 1} and engine.commits == 1
+    assert sorted((event.optimizer, event.update_idx) for event in events) == [("bias", 1), ("weight", 1)]
+    assert engine.commits == 1
     assert torch.equal(bias.detach(), before)  # counted, not changed
     assert bias_steps == []  # not stepped: its step hooks never fire
 
@@ -709,6 +711,94 @@ def test_committed_update_counters_continue_across_a_stateful_resume(tmp_path, m
         objective=supervised_objective(),
     )
     assert [i.update_count for i in fresh.idps] == [1, 2]  # a weights-only resume starts fresh
+
+
+class _UpdateLog(Callback):
+    def __init__(self):
+        self.events = []
+
+    def on_optimizer_update(self, ctx, event):
+        self.events.append((event.optimizer, event.update_idx, ctx.update_count))
+
+
+class _FreezeWeightInEpoch0(Callback):
+    """The "weight" optimizer gets no gradient in epoch 0."""
+
+    def on_epoch_begin(self, ctx):
+        ctx.model.net.layers[0].weight.requires_grad = ctx.epoch != 0
+
+
+def _two_optimizer_params(epochs: int, resume=None) -> NNTrainerParams:
+    X4, Y4 = torch.tensor([[1.0], [2.0], [4.0], [3.0]]), torch.tensor([0, 1, 1, 0])
+    nan = (torch.tensor([[math.nan]]), torch.tensor([1]))  # a window dropped by nonfinite="skip"
+    loader = [(X4[:2], Y4[:2]), (X4[2:], Y4[2:]), nan, nan, (X4[:1], Y4[:1])]
+    builder = NNTrainerParams.builder().n_epochs(epochs).train_loader(loader)
+    for name in ("weight", "bias"):
+        optim = (
+            NNOptimParams.builder()
+            .sgd(max_lr=0.1, momentum=0.0)
+            .accumulate_grad(2)
+            .param_groups([NNParamGroupSpec(name_pattern=f"layers.0.{name}")])
+            .build()
+        )
+        builder = builder.optimizer(name, optim)
+    return (builder.resume_from(resume) if resume else builder).build()
+
+
+def test_named_optimizers_share_one_update_clock_across_a_resume(tmp_path, monkeypatch):
+    """Every named optimizer — one frozen in epoch 0 included — emits the
+    engine's committed-update count, a dropped non-finite window counts for
+    none, the saved state keeps its per-name ``update_counts`` mapping (the
+    format released NNx loads) and a stateful resume continues the clock."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    objective = supervised_objective(nonfinite="skip")
+    log = _UpdateLog()
+    first = Trainer(_linear()).train(
+        params=_two_optimizer_params(2), objective=objective, callbacks=[_FreezeWeightInEpoch0(), log]
+    )
+    assert log.events == [(name, i, i) for i in (1, 2, 3, 4) for name in ("weight", "bias")]
+    saved = NNCheckpoint.load_training_state(run=first.id, type=Checkpoints.LAST)["components"]["nnx.update_engine"]
+    assert saved["state"] == {"commits": 4, "skipped": 2, "update_counts": {"weight": 4, "bias": 4}}
+
+    log = _UpdateLog()
+    Trainer(_linear()).train(params=_two_optimizer_params(1, resume=first.id), objective=objective, callbacks=[log])
+    assert log.events == [(name, i, i) for i in (5, 6) for name in ("weight", "bias")]
+
+
+def test_the_engine_keeps_one_commit_counter():
+    """``commits`` is the engine's only update counter: no per-name mirror
+    and no unread window properties."""
+    engine = _engine(torch.nn.Parameter(torch.tensor(1.0)))
+    for name in ("update_counts", "pending_microbatches", "window_nonfinite"):
+        assert not hasattr(engine, name), name
+    assert engine.component_state() == {"commits": 0, "skipped": 0, "update_counts": {"default": 0}}
+
+
+def test_saved_update_counters_restore_the_commit_clock():
+    """A saved state (per-name counts equal to ``commits``, as every NNx
+    release writes) resumes its clock; one whose per-name counts disagree
+    with ``commits`` is refused rather than silently re-counted."""
+    model = _linear()
+    weight, bias = model.net.layers[0].weight, model.net.layers[0].bias
+    events = []
+    engine = UpdateEngine(
+        optimizers={"weight": torch.optim.SGD([weight], lr=0.1), "bias": torch.optim.SGD([bias], lr=0.1)},
+        listeners=[events.append],
+    )
+    saved = {"commits": 4, "skipped": 2, "update_counts": {"weight": 4, "bias": 4}}
+    assert engine.check_component_state(saved, version=1) == []
+    engine.load_component_state(saved, version=1)
+    _run_window(engine, supervised_objective(), model)
+    assert sorted((event.optimizer, event.update_idx) for event in events) == [("bias", 5), ("weight", 5)]
+    assert engine.commits == 5 and engine.skipped == 2
+    assert engine.component_state()["update_counts"] == {"weight": 5, "bias": 5}
+
+    disagreeing = {"commits": 4, "skipped": 0, "update_counts": {"weight": 4, "bias": 3}}
+    (problem,) = engine.check_component_state(disagreeing, version=1)
+    assert "disagree" in problem
+    (problem,) = engine.check_component_state({"commits": 4, "skipped": 0, "update_counts": [4]}, version=1)
+    assert "malformed" in problem
 
 
 def _feed_fwd() -> NNModel:
