@@ -131,10 +131,10 @@ validation loop runs no collective.
 forward + backward through DDP  (no_sync until the window's last microbatch)
    │   loss numerator only; finiteness agreed on every rank before backward
    ▼
-window end:  W = all_reduce(sum of the ranks' loss denominators)
-   │   W == 0 for a task model → skip the update on every rank
+window end:  W, S = all_reduce(the ranks' loss denominators, ranks with an additive loss)
+   │   a task model with no valid target on any rank → skip the update on every rank
    ▼
-grad = DDP average × world_size / W        (an additive loss: × world_size)
+grad = DDP average × world_size / W        (an additive loss, S > 0: × world_size)
    ▼
 clip → optimizer.step()  — identical parameters on every rank
 ```
