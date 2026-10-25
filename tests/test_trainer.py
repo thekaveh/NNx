@@ -2152,6 +2152,33 @@ def test_a_resume_is_not_rolled_back_once_a_step_commits_an_update(loop, commit,
     assert not _same_weights(target, _weights(checkpoint))  # the update trained from the loaded state
 
 
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+@pytest.mark.parametrize("mode", ["stateful", "weights_only"])
+def test_a_resume_whose_first_report_update_is_refused_hands_the_model_and_rng_back(loop, mode, tmp_path, monkeypatch):
+    """A refused ``report_update`` (a name in ``NNModel.train``, an unknown
+    name in ``Trainer``) is no update: the window stays open and the resume
+    is rolled back."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def refused_report(ctx):
+        ctx.report_update("main" if loop == "nnmodel" else "nope")
+
+    source = _rollback_fit(loop, _rollback_model(0), _rollback_loader())
+    target = _rollback_model(1)
+    before = _weights(target)
+    expected = (
+        (TypeError, "takes no optimizer name") if loop == "nnmodel" else (ValueError, "no optimizer of that name")
+    )
+    streams = _seed_caller_streams()
+    with pytest.raises(expected[0], match=expected[1]):
+        _rollback_fit(
+            loop, target, _rollback_loader(), step=refused_report, resume_from_run_id=source.id, resume_mode=mode
+        )
+    assert _same_weights(target, before)
+    assert _streams_equal(_global_streams(), streams)
+
+
 def _last_net_state(run_id: str) -> dict:
     from nnx import Checkpoints, NNCheckpoint
 

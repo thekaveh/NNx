@@ -31,6 +31,7 @@ from .._scheduler_clock import (
     SchedulerClock,
     listens,
     planned_updates,
+    refuse_optimizer_name,
     uses_update_clock,
 )
 from .._update_engine import gradients_finite, scaler_step, warn_unowned_trainables
@@ -4249,6 +4250,9 @@ class NNModel(_HubMixinBase):
                 says whether anything needs a judged step (``listens``)."""
 
                 def __call__(self, *names: Any) -> None:
+                    # A refused report is no update: refuse before the window
+                    # closes, as Trainer checks its name first (#507).
+                    refuse_optimizer_name(names)
                     resume_window.close()  # an update NNx sees: a resume's rollback window ends (#507)
                     clock_report(*names)
                     _announce_update()
