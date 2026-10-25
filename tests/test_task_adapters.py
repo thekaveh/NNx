@@ -582,3 +582,105 @@ def test_the_categorical_adapter_overrides_only_the_masked_branch():
     categorical = type(task_adapter(TaskSpec.categorical(3)))
     assert "loss_terms" not in vars(categorical)
     assert "_masked_loss_terms" in vars(categorical)
+
+
+# ------------------------------------------- #504: sum-reduction task windows
+
+_SUM_TASKS = {
+    "categorical-ce-sum": (
+        lambda: TaskSpec.categorical(3, ignore_index=-100),
+        Losses.CROSS_ENTROPY,
+        lambda: torch.nn.CrossEntropyLoss(reduction="sum", ignore_index=-100),
+        3,
+        torch.tensor([0, 1]),
+        torch.tensor([-100, -100]),
+    ),
+    "regression-mse-sum": (
+        lambda: TaskSpec.regression(1),
+        Losses.MEAN_SQUARED_ERROR,
+        lambda: torch.nn.MSELoss(reduction="sum"),
+        1,
+        torch.tensor([[0.5], [-1.0]]),
+        torch.full((2, 1), math.nan),
+    ),
+}
+_SUM_X = torch.randn(4, 3, generator=torch.Generator().manual_seed(1))
+
+
+def _fit_sum_task(case: str, loader, *, via: str = "model", objective=None, optim=None, tag: str = "sum"):
+    from nnx import NNTrainerParams, Trainer
+
+    task, loss, loss_fn, output_dim, _, _ = _SUM_TASKS[case]
+    model = _model(task(), loss=loss, output_dim=output_dim)
+    model.loss_fn = loss_fn()
+    optim = optim or _sgd(accumulate=2)
+    if via == "trainer":
+        params = (
+            NNTrainerParams.builder()
+            .n_epochs(1)
+            .train_loader(loader)
+            .optimizer("main", optim)
+            .save_phase_checkpoints(False)
+            .data_id(f"{tag}-{case}-trainer")
+            .build()
+        )
+        run = Trainer(model).train(params=params, objective=objective)
+    else:
+        params = NNTrainParams(
+            n_epochs=1, train_loader=loader, optim=optim, save_phase_checkpoints=False, data_id=f"{tag}-{case}"
+        )
+        run = model.train(params=params, objective=objective)
+    return model, run
+
+
+@pytest.mark.filterwarnings("ignore:epoch 0. skipping ReduceLROnPlateau step")  # a masked last record: no loss
+@pytest.mark.parametrize("via", ["model", "trainer"])
+@pytest.mark.parametrize("order", ["valid-first", "masked-first"])
+@pytest.mark.parametrize("case", list(_SUM_TASKS))
+def test_a_sum_task_window_mixing_valid_and_all_masked_microbatches_trains_the_valid_rows(
+    tmp_path, monkeypatch, case, order, via
+):
+    """#504: the valid microbatch's term is summed, the all-masked one's is
+    a no-sample normalized term; the engine refused the mix ("mixes 'sum'
+    and 'mean' reductions") where the default step trained the valid rows."""
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    valid, masked = _SUM_TASKS[case][4], _SUM_TASKS[case][5]
+    reference, _ = _fit_sum_task(case, [(_SUM_X[:2], valid)], tag="reference")  # one step on the valid rows
+    window = [(_SUM_X[:2], valid), (_SUM_X[2:], masked)]
+    if order == "masked-first":
+        window.reverse()
+    model, run = _fit_sum_task(case, window, via=via, objective=supervised_objective(), tag=order)
+    for got, want in zip(model.net.parameters(), reference.net.parameters(), strict=True):
+        torch.testing.assert_close(got, want, rtol=0.0, atol=1e-6)
+    assert run.idps[-1].update_count == 1
+
+
+@pytest.mark.parametrize("optim", ["sgd", "sgd-momentum-wd"])
+@pytest.mark.parametrize("step", ["objective", "default"])
+@pytest.mark.parametrize("case", list(_SUM_TASKS))
+def test_a_lone_all_masked_sum_task_window_takes_no_update(tmp_path, monkeypatch, case, step, optim):
+    """#504 guard: accepting a no-sample term beside summed ones must not
+    make a lone all-masked window commit — momentum and weight decay would
+    then move the weights with nothing to learn from."""
+    import warnings
+
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    task, loss, _, output_dim, _, masked = _SUM_TASKS[case]
+    before = _params_snapshot(_model(task(), loss=loss, output_dim=output_dim))
+    momentum, weight_decay = (0.9, 0.1) if optim == "sgd-momentum-wd" else (0.0, 0.0)
+    built = NNOptimParams.builder().sgd(max_lr=0.1, momentum=momentum, weight_decay=weight_decay).build()
+    objective = supervised_objective() if step == "objective" else None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # nothing to schedule on: the plateau scheduler says so
+        model, run = _fit_sum_task(case, [(_SUM_X[2:], masked)], objective=objective, optim=built)
+    for name, param in model.net.named_parameters():
+        assert torch.equal(param.detach(), before[name]), f"{name} moved on an all-masked window"
+    assert run.idps[-1].train_edp.loss is None
+    if step == "objective":
+        assert run.idps[-1].update_count == 0

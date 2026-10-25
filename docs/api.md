@@ -2444,8 +2444,15 @@ Args:
         masked; must be ``None`` for ``reduction="sum"``.
     reduction: ``"mean"`` (divided by the window-total denominator) or
         ``"sum"`` (the window total). A term keeps its reduction for
-        the whole window; mixing them fails.
-    weight: finite factor applied to the term's window value.
+        the whole window; mixing them fails, except that a normalized
+        microbatch with no samples (denominator ``0``) adds nothing
+        and may share a window with the term summed (a sum-reduction
+        ``TaskSpec`` loss over an all-masked microbatch).
+    weight: finite factor applied to the term's window value. Only a
+        term with a nonzero weight and samples trains: a window
+        without one (every term masked, or of weight ``0``) takes no
+        committed update, and a weight-0 term adds nothing to the
+        recorded loss.
 ```
 
 ##### `nnx.objectives.LossTerm.value`
@@ -2498,7 +2505,7 @@ An objective's output: the loss terms and, optionally, the microbatch's metric r
 nnx.objectives.ObjectiveResult.loss(self) -> 'Optional[float]'
 ```
 
-The microbatch's weighted loss over its unmasked terms.
+The microbatch's weighted loss over the terms that train (a nonzero weight and samples); ``None`` when none does — every term masked or of weight ``0``.
 
 
 #### `nnx.objectives.Objective`
@@ -2541,7 +2548,7 @@ Called once per committed update — after the window's step (an optimizer witho
 class nnx.objectives.SupervisedObjective(*, nonfinite: 'str' = 'fail') -> 'None'
 ```
 
-The standard supervised loss as an objective: the model's ``loss_fn`` on its outputs, normalized by the loss's own denominator (non-ignored targets, class weights) — or summed for a ``reduction="sum"`` loss — and, with a ``TaskSpec``, the task's masked loss over its valid targets.
+The standard supervised loss as an objective: the model's ``loss_fn`` on its outputs, normalized by the loss's own denominator (non-ignored targets, class weights) — or summed for a ``reduction="sum"`` loss — and, with a ``TaskSpec``, the task's masked loss over its valid targets. A microbatch whose every target is ignored has no loss of its own: it records the window's running loss so far, as the default step does (``None`` before any valid target, and always for a ``TaskSpec`` model), never NaN.
 
 
 #### `nnx.objectives.KDObjective`
@@ -2564,7 +2571,8 @@ the student's loss on the labels with its own denominator (weight
 the rows are split into microbatches or targets are ignored. The teacher
 is frozen and put in eval mode once, as ``kd_train_step_factory`` does,
 and never updated. At ``alpha=0`` only the ``"supervised"`` term is
-returned.
+returned. An all-masked microbatch at ``alpha=0`` records like
+:class:`SupervisedObjective`'s, never NaN.
 ```
 
 

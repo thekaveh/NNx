@@ -90,8 +90,15 @@ class LossTerm:
             masked; must be ``None`` for ``reduction="sum"``.
         reduction: ``"mean"`` (divided by the window-total denominator) or
             ``"sum"`` (the window total). A term keeps its reduction for
-            the whole window; mixing them fails.
-        weight: finite factor applied to the term's window value.
+            the whole window; mixing them fails, except that a normalized
+            microbatch with no samples (denominator ``0``) adds nothing
+            and may share a window with the term summed (a sum-reduction
+            ``TaskSpec`` loss over an all-masked microbatch).
+        weight: finite factor applied to the term's window value. Only a
+            term with a nonzero weight and samples trains: a window
+            without one (every term masked, or of weight ``0``) takes no
+            committed update, and a weight-0 term adds nothing to the
+            recorded loss.
     """
 
     name: str
@@ -187,8 +194,10 @@ class ObjectiveResult:
         object.__setattr__(self, "terms", terms)
 
     def loss(self) -> Optional[float]:
-        """The microbatch's weighted loss over its unmasked terms."""
-        values = [(term.weight, term.value) for term in self.terms]
+        """The microbatch's weighted loss over the terms that train (a
+        nonzero weight and samples); ``None`` when none does — every term
+        masked or of weight ``0``."""
+        values = [(term.weight, term.value) for term in self.terms if term.weight]
         present = [(w, v) for w, v in values if v is not None]
         return sum(w * v for w, v in present) if present else None
 
@@ -284,7 +293,10 @@ class SupervisedObjective(Objective):
     ``loss_fn`` on its outputs, normalized by the loss's own denominator
     (non-ignored targets, class weights) — or summed for a
     ``reduction="sum"`` loss — and, with a ``TaskSpec``, the task's masked
-    loss over its valid targets."""
+    loss over its valid targets. A microbatch whose every target is
+    ignored has no loss of its own: it records the window's running loss
+    so far, as the default step does (``None`` before any valid target,
+    and always for a ``TaskSpec`` model), never NaN."""
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
         from .nn.nn_model import _classification_edp_for_loss
@@ -309,7 +321,7 @@ class SupervisedObjective(Objective):
             loss_fn=model.loss_fn,
             target=target,
             prediction=prediction,
-            loss=term.value if term.value is not None else math.nan,
+            loss=term.value,
             extra_metrics=ctx.extra_metrics,
         )
         return ObjectiveResult((term,), record)
@@ -333,7 +345,8 @@ class KDObjective(Objective):
     the rows are split into microbatches or targets are ignored. The teacher
     is frozen and put in eval mode once, as ``kd_train_step_factory`` does,
     and never updated. At ``alpha=0`` only the ``"supervised"`` term is
-    returned.
+    returned. An all-masked microbatch at ``alpha=0`` records like
+    :class:`SupervisedObjective`'s, never NaN.
     """
 
     def __init__(self, teacher: NNModel, *, alpha: float = 0.5, temperature: float = 4.0, nonfinite: str = "fail"):
@@ -371,13 +384,11 @@ class KDObjective(Objective):
                 self.alpha,
             )
             terms = (soft, hard)
-        result = ObjectiveResult(terms)
-        loss = result.loss()
         record = _classification_edp_for_loss(
             loss_fn=model.loss_fn,
             target=Y,
             prediction=predicted_labels(model.loss_fn, student.detach()),
-            loss=loss if loss is not None else math.nan,
+            loss=ObjectiveResult(terms).loss(),
             extra_metrics=ctx.extra_metrics,
         )
         return ObjectiveResult(terms, record)
