@@ -197,3 +197,39 @@ def test_a_stateful_ddp_resume_with_changed_optimizer_hyperparameters_is_refused
         assert rank["unchanged"] and rank["rng_unchanged"]
     runs = [name for name in os.listdir(tmp_path / "runs") if not name.startswith(".") and name != "best"]
     assert runs == [first_id]
+
+
+# --- #507: a resume failing before its first update is rolled back on every rank ---------------
+
+
+@pytest.fixture(scope="module")
+def first_split_run(tmp_path_factory) -> Path:
+    out = tmp_path_factory.mktemp("ddp-rollback")
+    launch("resume_first", out)
+    return out
+
+
+def test_a_resumes_step_count_refusal_hands_every_ranks_model_and_rng_back(first_split_run):
+    """The step-count check runs inside the resume's rollback window: with
+    unequal per-rank step counts every rank refuses, its weights and its
+    Python, NumPy and torch streams as before the call."""
+    launch("resume_steps_mismatch", first_split_run, timeout=180)
+    for rank in results(first_split_run):
+        assert rank["error"].startswith("DistributedFailure: "), rank["error"]
+        assert "different numbers of steps" in rank["error"], rank["error"]
+        assert rank["unchanged"] and rank["python_rng_unchanged"], rank
+        assert rank["numpy_rng_unchanged"] and rank["rng_unchanged"], rank
+
+
+def test_a_resume_whose_first_fetch_fails_on_one_rank_is_rolled_back_on_both(first_split_run, monkeypatch):
+    """Rank 1's first fetch fails; rank 0 waits in its first step until the
+    process group's timeout fails it. Neither has committed an update, so
+    both hand their model and RNG back."""
+    monkeypatch.setenv("NNX_DDP_TIMEOUT", "15")
+    launch("resume_unreadable_rank", first_split_run, timeout=180)
+    waiting, failing = results(first_split_run)
+    assert failing["error"].startswith("OSError: cannot read sample"), failing
+    assert waiting["error"] is not None and "OSError" not in waiting["error"], waiting  # the group's timeout
+    for rank in (waiting, failing):
+        assert rank["unchanged"] and rank["python_rng_unchanged"], rank
+        assert rank["numpy_rng_unchanged"] and rank["rng_unchanged"], rank

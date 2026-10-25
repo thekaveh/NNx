@@ -65,6 +65,13 @@ class Rows(torch.utils.data.Dataset):
         return self.X[index], self.y[index]
 
 
+class UnreadableRows(Rows):
+    """``Rows`` whose every sample fails to read (a corrupt or missing file)."""
+
+    def __getitem__(self, index: int):
+        raise OSError(f"cannot read sample {index}")
+
+
 def _device() -> Devices:
     """CPU (Gloo), or CUDA (NCCL, one device per rank) when the launch sets
     ``NNX_DDP_DEVICE=cuda`` (FEAT-043's two-GPU parity run)."""
@@ -605,6 +612,47 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
                 handle.write(run.id)
         out["rng_after"] = torch.get_rng_state()
         out["hashed"], out["verified"] = len(hashed), len(verified)
+    elif name in ("resume_steps_mismatch", "resume_unreadable_rank"):
+        # #507: a resume that fails on every rank before its first committed
+        # update hands each rank's model and RNG back: the step-count refusal
+        # (rank 1 has more batches, past the descriptor check), or rank 1's
+        # first fetch failing while rank 0 waits in its first step until the
+        # process group's (short) timeout fails it.
+        first_id = open("first_run_id.txt", encoding="utf-8").read().strip()
+        data = UnreadableRows(11, seed=1) if name == "resume_unreadable_rank" and rank == 1 else train_set()
+        loader = nnx_dist.train_loader(data, batch_size=2, seed=3)
+        if name == "resume_steps_mismatch" and rank == 1:
+            loader.batch_size = 1
+            loader.descriptor = lambda: {**loader.partition.descriptor(), "batch_size": 2}  # type: ignore[method-assign]
+        import random
+
+        import numpy as np
+
+        m = model()
+        before = {k: v.clone() for k, v in m.net.state_dict().items()}
+        random.seed(777 + rank)
+        np.random.seed(777 + rank)
+        torch.manual_seed(777 + rank)
+        python_rng, numpy_rng, torch_rng = random.getstate(), np.random.get_state(), torch.get_rng_state()
+        try:
+            m.train(
+                params=params(
+                    loader, n_epochs=1, data_id="resumed", resume_from_run_id=first_id, resume_mode="stateful"
+                ),
+                distributed=nnx_dist.DDP(),
+            )
+            out["error"] = None
+        except BaseException as error:  # noqa: BLE001
+            out["error"] = f"{type(error).__name__}: {error}"
+        out["unchanged"] = all(torch.equal(before[k], v) for k, v in m.net.state_dict().items())
+        out["python_rng_unchanged"] = random.getstate() == python_rng
+        numpy_now = np.random.get_state()
+        out["numpy_rng_unchanged"] = numpy_now[0] == numpy_rng[0] and all(
+            np.array_equal(now, then) for now, then in zip(numpy_now[1:], numpy_rng[1:], strict=True)
+        )
+        out["rng_unchanged"] = torch.equal(torch.get_rng_state(), torch_rng)
+        if name == "resume_unreadable_rank":
+            out["teardown_done"] = True  # the timed-out group is left for process exit
     elif name == "parked":
         # #478: rank 1 parks while rank 0 waits at a barrier, so the scenario
         # hangs; its faulthandler dump must name where rank 1 is.

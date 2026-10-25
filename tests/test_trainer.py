@@ -1865,8 +1865,9 @@ def test_nnmodel_hands_a_resumed_model_back_when_a_begin_hook_raises(hook, mode,
 
 
 def test_nnmodel_rolls_a_resume_back_when_the_first_set_epoch_raises(tmp_path, monkeypatch):
-    """The first epoch's loader set_epoch (and the DDP step check) run inside
-    the rollback guard: nothing has trained yet."""
+    """The first epoch's loader set_epoch runs inside the rollback window:
+    nothing has trained yet (the DDP step check's rollback is pinned in
+    tests/test_ddp_resume.py)."""
     from torch.utils.data import DataLoader, TensorDataset
 
     from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNOptimParams, NNParams, NNTrainParams
@@ -1930,3 +1931,521 @@ def test_a_trainer_run_converted_at_train_end_resumes_statefully(tmp_path, monke
         params=params(resume_from_run_id=first.id, resume_mode="stateful"), trainer_step_fn=_supervised_step
     )
     assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+
+
+# --- #507: a resume rolls back until its first committed update -------------------------------
+
+
+_ROLLBACK_X = torch.randn(8, 4, generator=torch.Generator().manual_seed(7))
+_ROLLBACK_Y = torch.randint(0, 2, (8,), generator=torch.Generator().manual_seed(8))
+
+
+class _Unreadable(torch.utils.data.Dataset):
+    """A corrupt or missing file behind every sample."""
+
+    def __len__(self) -> int:
+        return 8
+
+    def __getitem__(self, index: int):
+        raise OSError(f"cannot read sample {index}")
+
+
+def _rollback_model(seed: int, *, loss: Losses = Losses.CROSS_ENTROPY, output_dim: int = 2) -> NNModel:
+    torch.manual_seed(seed)
+    return NNModel(
+        net_params=NNParams(
+            input_dim=4, output_dim=output_dim, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=loss),
+    )
+
+
+def _rollback_loader(kind: str = "good") -> DataLoader:
+    if kind == "fetch":
+        return DataLoader(_Unreadable(), batch_size=4)
+    if kind == "empty":  # zero batches
+        return DataLoader(TensorDataset(_ROLLBACK_X[:2], _ROLLBACK_Y[:2]), batch_size=4, drop_last=True)
+    return DataLoader(TensorDataset(_ROLLBACK_X, _ROLLBACK_Y), batch_size=4)
+
+
+def _plain_trainer_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+    model, optimizer = ctx.model, ctx.optimizers["main"]
+    optimizer.zero_grad()
+    xs, y = model.net.unpack_batch(ctx.batch)
+    loss = model.loss_fn(model.net(*xs), y)
+    loss.backward()
+    optimizer.step()
+    return NNEvaluationDataPoint(loss=float(loss.detach()), error=0.5)
+
+
+def _rollback_fit(
+    loop: str,
+    model: NNModel,
+    loader,
+    *,
+    step=None,
+    objective=None,
+    callbacks=None,
+    components=None,
+    optim=None,
+    **resume,
+):
+    from nnx import NNTrainParams
+
+    optim = optim if optim is not None else NNOptimParams.builder().sgd(max_lr=0.1).build()
+    if loop == "nnmodel":
+        params = NNTrainParams(n_epochs=1, optim=optim, train_loader=loader, **resume)
+        return model.train(
+            params=params, train_step_fn=step, objective=objective, callbacks=callbacks, components=components
+        )
+    trainer_params = NNTrainerParams(n_epochs=1, optims={"main": optim}, train_loader=loader, **resume)
+    if objective is None and step is None:
+        step = _plain_trainer_step
+    return Trainer(model).train(
+        params=trainer_params, trainer_step_fn=step, objective=objective, callbacks=callbacks, components=components
+    )
+
+
+def _global_streams() -> tuple:
+    import random
+
+    import numpy as np
+
+    return random.getstate(), np.random.get_state(), torch.get_rng_state()
+
+
+def _seed_caller_streams() -> tuple:
+    import random
+
+    import numpy as np
+
+    random.seed(777)
+    np.random.seed(777)
+    torch.manual_seed(777)
+    return _global_streams()
+
+
+def _streams_equal(left: tuple, right: tuple) -> bool:
+    import numpy as np
+
+    (python_a, numpy_a, torch_a), (python_b, numpy_b, torch_b) = left, right
+    return (
+        python_a == python_b
+        and numpy_a[0] == numpy_b[0]
+        and np.array_equal(numpy_a[1], numpy_b[1])
+        and numpy_a[2:] == numpy_b[2:]
+        and torch.equal(torch_a, torch_b)
+    )
+
+
+def _weights(model: NNModel) -> dict:
+    return {key: value.clone() for key, value in model.net.state_dict().items()}
+
+
+def _same_weights(model: NNModel, before: dict) -> bool:
+    return all(torch.equal(before[key], value) for key, value in model.net.state_dict().items())
+
+
+def _refusing_objective():
+    from nnx.objectives import SupervisedObjective
+
+    class Refusing(SupervisedObjective):
+        def __call__(self, ctx):
+            raise ValueError("the objective refused its first microbatch")
+
+    return Refusing()
+
+
+def _refusing_step(ctx):
+    raise ValueError("the step refused its batch before any update")
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+@pytest.mark.parametrize("mode", ["stateful", "weights_only"])
+@pytest.mark.parametrize("fault", ["fetch", "empty", "step", "objective"])
+def test_a_resume_failing_before_its_first_update_hands_the_model_and_rng_back(
+    loop, mode, fault, tmp_path, monkeypatch
+):
+    """A failing first fetch, an empty first epoch, or a first step (custom
+    or objective) that raises before any update: nothing has trained from
+    the loaded state, so the caller gets its model and the global Python,
+    NumPy and torch streams back — not the checkpoint's — and the original
+    error."""
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    objective_source = supervised_objective() if fault == "objective" else None
+    source = _rollback_fit(loop, _rollback_model(0), _rollback_loader(), objective=objective_source)
+    target = _rollback_model(1)
+    before = _weights(target)
+    loader = _rollback_loader(fault if fault in ("fetch", "empty") else "good")
+    step = _refusing_step if fault == "step" else None
+    objective = _refusing_objective() if fault == "objective" else None
+    expected = {
+        "fetch": (OSError, "cannot read sample 0"),
+        "empty": (ValueError, "yielded no batches in epoch"),
+        "step": (ValueError, "refused its batch before any update"),
+        "objective": (ValueError, "refused its first microbatch"),
+    }[fault]
+    streams = _seed_caller_streams()
+    with pytest.raises(expected[0], match=expected[1]):
+        _rollback_fit(
+            loop, target, loader, step=step, objective=objective, resume_from_run_id=source.id, resume_mode=mode
+        )
+    assert _same_weights(target, before)
+    assert _streams_equal(_global_streams(), streams)
+
+
+@pytest.mark.parametrize("mode", ["stateful", "weights_only"])
+def test_a_resume_refused_by_the_default_steps_mse_check_hands_the_model_and_rng_back(mode, tmp_path, monkeypatch):
+    """The default step refuses continuous targets under MSE without a
+    regression task before its first backward: a resume is rolled back."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    whole = DataLoader(TensorDataset(_ROLLBACK_X, _ROLLBACK_Y[:, None].float()), batch_size=4)
+    continuous = DataLoader(TensorDataset(_ROLLBACK_X, torch.rand(8, 1)), batch_size=4)
+    source = _rollback_fit("nnmodel", _rollback_model(0, loss=Losses.MEAN_SQUARED_ERROR, output_dim=1), whole)
+    target = _rollback_model(1, loss=Losses.MEAN_SQUARED_ERROR, output_dim=1)
+    before = _weights(target)
+    streams = _seed_caller_streams()
+    with pytest.raises(ValueError, match="TaskSpec.regression"):
+        _rollback_fit("nnmodel", target, continuous, resume_from_run_id=source.id, resume_mode=mode)
+    assert _same_weights(target, before)
+    assert _streams_equal(_global_streams(), streams)
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+@pytest.mark.parametrize("commit", ["report_update", "engine"])
+def test_a_resume_is_not_rolled_back_once_a_step_commits_an_update(loop, commit, tmp_path, monkeypatch):
+    """The boundary: a first step that commits an update NNx sees (reported
+    through ``report_update``, or by an objective's engine) and then raises
+    keeps the trained state, as a fresh fit does."""
+    from nnx import default_train_step
+    from nnx.objectives import SupervisedObjective, supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def reported_then_raises(ctx):
+        if loop == "nnmodel":
+            default_train_step(ctx)  # updates, then reports it
+        else:
+            _plain_trainer_step(ctx)
+            ctx.report_update("main")
+        raise ValueError("raised after its update")
+
+    class RaisesAfterCommit(SupervisedObjective):
+        def after_update(self, events) -> None:
+            raise ValueError("raised after its update")
+
+    engine = commit == "engine"
+    source = _rollback_fit(
+        loop, _rollback_model(0), _rollback_loader(), objective=supervised_objective() if engine else None
+    )
+    checkpoint = _rollback_model(1)
+    checkpoint.net.load_state_dict(_last_net_state(source.id))
+    target = _rollback_model(1)
+    before = _weights(target)
+    with pytest.raises(ValueError, match="raised after its update"):
+        _rollback_fit(
+            loop,
+            target,
+            _rollback_loader(),
+            step=None if engine else reported_then_raises,
+            objective=RaisesAfterCommit() if engine else None,
+            resume_from_run_id=source.id,
+            resume_mode="stateful",
+        )
+    assert not _same_weights(target, before)  # not handed back
+    assert not _same_weights(target, _weights(checkpoint))  # the update trained from the loaded state
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+@pytest.mark.parametrize("mode", ["stateful", "weights_only"])
+def test_a_resume_whose_first_report_update_is_refused_hands_the_model_and_rng_back(loop, mode, tmp_path, monkeypatch):
+    """A refused ``report_update`` (a name in ``NNModel.train``, an unknown
+    name in ``Trainer``) is no update: the window stays open and the resume
+    is rolled back."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def refused_report(ctx):
+        ctx.report_update("main" if loop == "nnmodel" else "nope")
+
+    source = _rollback_fit(loop, _rollback_model(0), _rollback_loader())
+    target = _rollback_model(1)
+    before = _weights(target)
+    expected = (
+        (TypeError, "takes no optimizer name") if loop == "nnmodel" else (ValueError, "no optimizer of that name")
+    )
+    streams = _seed_caller_streams()
+    with pytest.raises(expected[0], match=expected[1]):
+        _rollback_fit(
+            loop, target, _rollback_loader(), step=refused_report, resume_from_run_id=source.id, resume_mode=mode
+        )
+    assert _same_weights(target, before)
+    assert _streams_equal(_global_streams(), streams)
+
+
+def _last_net_state(run_id: str) -> dict:
+    from nnx import Checkpoints, NNCheckpoint
+
+    checkpoint = NNCheckpoint.load(run=run_id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    return checkpoint.net_state
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+@pytest.mark.parametrize("mode", ["stateful", "weights_only"])
+def test_a_failure_in_the_setup_after_the_resume_restore_hands_the_model_and_rng_back(
+    loop, mode, tmp_path, monkeypatch
+):
+    """The post-restore setup (here, the training history) runs inside the
+    rollback window too."""
+    import nnx.nn.nn_model as nn_model_module
+    import nnx.trainer.trainer as trainer_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    source = _rollback_fit(loop, _rollback_model(0), _rollback_loader())
+
+    def refuse(*_args, **_kwargs):
+        raise RuntimeError("the history could not be opened")
+
+    monkeypatch.setattr(nn_model_module if loop == "nnmodel" else trainer_module, "_training_history", refuse)
+    target = _rollback_model(1)
+    before = _weights(target)
+    streams = _seed_caller_streams()
+    with pytest.raises(RuntimeError, match="the history could not be opened"):
+        _rollback_fit(loop, target, _rollback_loader(), resume_from_run_id=source.id, resume_mode=mode)
+    assert _same_weights(target, before)
+    assert _streams_equal(_global_streams(), streams)
+
+
+class _UnreadableAfterTwoBatches(torch.utils.data.Dataset):
+    """Two readable batches of four, then a corrupt file behind every sample."""
+
+    def __len__(self) -> int:
+        return 16
+
+    def __getitem__(self, index: int):
+        if index >= 8:
+            raise OSError(f"cannot read sample {index}")
+        return _ROLLBACK_X[index], _ROLLBACK_Y[index]
+
+
+@pytest.mark.parametrize(("loop", "kind"), [("nnmodel", "default"), ("nnmodel", "objective"), ("trainer", "objective")])
+@pytest.mark.parametrize("mode", ["stateful", "weights_only"])
+def test_a_resume_failing_between_accumulated_micro_steps_hands_the_model_and_rng_back(
+    loop, kind, mode, tmp_path, monkeypatch
+):
+    """Under gradient accumulation the first micro-step returns without an
+    update: for the default step and an objective, which tell NNx of every
+    update, the window stays open until the first commit, so a fetch that
+    fails before it still hands the model and RNG back."""
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    objective = supervised_objective if kind == "objective" else lambda: None
+    source = _rollback_fit(loop, _rollback_model(0), _rollback_loader(), objective=objective())
+    target = _rollback_model(1)
+    before = _weights(target)
+    accumulated = NNOptimParams.builder().sgd(max_lr=0.1).accumulate_grad(4).build()
+    streams = _seed_caller_streams()
+    with pytest.raises(OSError, match="cannot read sample 8"):
+        _rollback_fit(
+            loop,
+            target,
+            DataLoader(_UnreadableAfterTwoBatches(), batch_size=4),
+            objective=objective(),
+            optim=accumulated,
+            resume_from_run_id=source.id,
+            resume_mode=mode,
+        )
+    assert _same_weights(target, before)
+    assert _streams_equal(_global_streams(), streams)
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_a_custom_steps_first_return_still_closes_the_resume_window(loop, tmp_path, monkeypatch):
+    """A custom step may never report an update, so its first return closes
+    the window (under ``NNModel.train``'s accumulation too; Trainer step
+    functions refuse it): a later failure keeps its training."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def unreported(ctx):
+        if loop == "trainer":
+            return _plain_trainer_step(ctx)
+        ctx.optimizer.zero_grad()
+        xs, y = ctx.model.net.unpack_batch(ctx.batch)
+        loss = ctx.model.loss_fn(ctx.model.net(*xs), y)
+        loss.backward()
+        ctx.optimizer.step()  # never reported
+        return NNEvaluationDataPoint(loss=float(loss.detach()), error=0.5)
+
+    source = _rollback_fit(loop, _rollback_model(0), _rollback_loader())
+    target = _rollback_model(1)
+    before = _weights(target)
+    accumulated = NNOptimParams.builder().sgd(max_lr=0.1).accumulate_grad(4).build() if loop == "nnmodel" else None
+    with pytest.raises(OSError, match="cannot read sample 8"):
+        _rollback_fit(
+            loop,
+            target,
+            DataLoader(_UnreadableAfterTwoBatches(), batch_size=4),
+            step=unreported,
+            optim=accumulated,
+            resume_from_run_id=source.id,
+            resume_mode="weights_only",
+        )
+    assert not _same_weights(target, before)  # not handed back
+
+
+def _rewire_then_refuse():
+    """A reset hook that rewires the net (so the rollback cannot reload it),
+    then a refusal at the first resumed epoch."""
+    from nnx import Callback
+
+    class RewireThenRefuse(Callback):
+        def on_train_begin(self, ctx) -> None:
+            ctx.model.net.layers[0] = torch.nn.Sequential(ctx.model.net.layers[0])
+
+        def on_epoch_begin(self, ctx) -> None:
+            raise RuntimeError("boom: refused at the first resumed epoch")
+
+    return RewireThenRefuse()
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_an_error_filter_never_replaces_the_error_a_failed_rollback_reports(loop, tmp_path, monkeypatch):
+    """Under ``warnings.simplefilter("error")`` the rollback's own warning
+    (the net could not be reloaded) is dropped: the caller gets the
+    original error, and the RNG streams back."""
+    import warnings
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    source = _rollback_fit(loop, _rollback_model(0), _rollback_loader())
+    target = _rollback_model(1)
+    streams = _seed_caller_streams()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(RuntimeError, match="boom: refused at the first resumed epoch") as raised:
+            _rollback_fit(
+                loop,
+                target,
+                _rollback_loader(),
+                callbacks=[_rewire_then_refuse()],
+                resume_from_run_id=source.id,
+                resume_mode="stateful",
+            )
+    assert type(raised.value) is RuntimeError
+    assert _streams_equal(_global_streams(), streams)
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+@pytest.mark.parametrize("resumed", [False, True])
+def test_an_error_filter_never_replaces_the_training_error_with_a_cleanup_warning(loop, resumed, tmp_path, monkeypatch):
+    """An ``on_train_end`` that fails while a training error propagates is
+    reported as a warning; under an error filter that warning is dropped and
+    the training error still reaches the caller."""
+    import warnings
+
+    from nnx import Callback
+
+    class FailsAtEnd(Callback):
+        def on_epoch_begin(self, ctx) -> None:
+            raise RuntimeError("the training error")
+
+        def on_train_end(self, ctx) -> None:
+            raise OSError("cleanup failed")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    resume = {}
+    if resumed:
+        resume = {"resume_from_run_id": _rollback_fit(loop, _rollback_model(0), _rollback_loader()).id}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(RuntimeError, match="the training error") as raised:
+            _rollback_fit(loop, _rollback_model(1), _rollback_loader(), callbacks=[FailsAtEnd()], **resume)
+    assert type(raised.value) is RuntimeError
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+@pytest.mark.parametrize("resumed", [False, True])
+def test_an_error_filter_never_replaces_the_first_on_train_end_error(loop, resumed, tmp_path, monkeypatch):
+    """A fit that trains but whose ``on_train_end`` hooks fail raises the first
+    failure; the others are warnings, which an error filter drops."""
+    import warnings
+
+    from nnx import Callback
+
+    class FailsAtEnd(Callback):
+        def __init__(self, error: BaseException) -> None:
+            self.error = error
+
+        def on_train_end(self, ctx) -> None:
+            raise self.error
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    resume = {}
+    if resumed:
+        resume = {"resume_from_run_id": _rollback_fit(loop, _rollback_model(0), _rollback_loader()).id}
+    # on_train_end runs in reverse order: the last callback's failure is the first.
+    callbacks = [FailsAtEnd(OSError("second cleanup failure")), FailsAtEnd(OSError("first cleanup failure"))]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(OSError, match="first cleanup failure"):
+            _rollback_fit(loop, _rollback_model(1), _rollback_loader(), callbacks=callbacks, **resume)
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_an_error_filter_never_replaces_a_component_restore_error(loop, tmp_path, monkeypatch):
+    """A component restore that fails, with a component whose own rollback
+    fails too: under an error filter the caller still gets the restore's
+    error (not the rollback warning), with the model and RNG handed back."""
+    import warnings
+
+    from nnx import ComponentSpec
+
+    class Flaky:
+        def __init__(self, *, fail_load: bool = False, fail_rollback: bool = False) -> None:
+            self.value, self.fail_load, self.fail_rollback = 0, fail_load, fail_rollback
+
+        def component_spec(self):
+            return ComponentSpec("flaky")
+
+        def component_state(self):
+            return {"value": self.value}
+
+        def load_component_state(self, state, *, version):
+            if self.fail_load:
+                self.fail_load = False
+                raise RuntimeError("the component restore failed")
+            if self.fail_rollback:
+                raise RuntimeError("its rollback failed too")
+            self.value = state["value"]
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    source = _rollback_fit(loop, _rollback_model(0), _rollback_loader(), components=[Flaky()])
+    target = _rollback_model(1)
+    before = _weights(target)
+    streams = _seed_caller_streams()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(RuntimeError, match="the component restore failed"):
+            _rollback_fit(
+                loop,
+                target,
+                _rollback_loader(),
+                components=[Flaky(fail_load=True, fail_rollback=True)],
+                resume_from_run_id=source.id,
+                resume_mode="stateful",
+            )
+    assert _same_weights(target, before)
+    assert _streams_equal(_global_streams(), streams)
