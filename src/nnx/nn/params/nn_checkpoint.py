@@ -889,6 +889,45 @@ class NNCheckpoint:
             return checkpoint, state
 
     @staticmethod
+    def _load_resume_point(
+        run: str,
+        type: Checkpoints,
+        verified: Mapping[str, Any],
+        root: Optional[str] = None,
+        map_location: Any = "cpu",
+    ) -> tuple[Optional[NNCheckpoint], Optional[dict[str, Any]]]:
+        """:meth:`load_with_training_state` of the resume point
+        :meth:`verify` returned (#537). In the same lock hold, it refuses
+        with :class:`ResumePointError` a tag published again since: its
+        manifests (the live one, or a staged one :meth:`verify` may have
+        read) no longer name the verified generation, or the loaded
+        checkpoint is not the verified checkpoint id. Nothing is hashed
+        again: the point was verified once."""
+        checkpoint_path = _checkpoint_path(run, type, root=root)
+        if not _run_directory_exists(checkpoint_path):
+            return None, None
+        label = f"{run}/{type}"
+        with FileLock(checkpoint_path + ".lock"):
+            generation = verified.get("generation")
+            published = [m for m in (_read_manifest(checkpoint_path), _read_staged_manifest(checkpoint_path)) if m]
+            if generation not in [manifest.get("generation") for manifest in published]:
+                now = published[0].get("generation") if published else None
+                raise ResumePointError(
+                    f"{label}: the resume point changed while it was being read (generation {generation} was "
+                    f"verified, generation {now} is published) — retry once its writer has finished"
+                )
+            checkpoint = NNCheckpoint.from_file(checkpoint_path, map_location=map_location)
+            loaded_id = getattr(checkpoint, "training_state_id", None)
+            if checkpoint is not None and loaded_id != verified.get("checkpoint_id"):
+                raise ResumePointError(
+                    f"{label}: the resume point changed while it was being read (checkpoint "
+                    f"{verified.get('checkpoint_id')} was verified, {loaded_id} is published) "
+                    "— retry once its writer has finished"
+                )
+            state = NNCheckpoint._load_training_state_unlocked(checkpoint_path, checkpoint, map_location)
+            return checkpoint, state
+
+    @staticmethod
     def _load_training_state_unlocked(
         checkpoint_path: str,
         checkpoint: Optional[NNCheckpoint],

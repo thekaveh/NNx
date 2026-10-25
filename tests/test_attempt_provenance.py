@@ -343,3 +343,51 @@ def test_checkpoint_summaries_never_load_the_weights():
         patched.setattr(NNCheckpoint, "load", no_full_load)
         summary = _checkpoint_summary(run.id, "last", None)
     assert summary == run.provenance.attempt.last_committed
+
+
+# --- #537: the parent is the generation the resume restored ------------------------------------
+
+
+def _trainer_params(epochs: int, **resume) -> NNTrainerParams:
+    builder = (
+        NNTrainerParams.builder()
+        .n_epochs(epochs)
+        .train_loader(_loader())
+        .optimizer("default", NNOptimParams.builder().sgd(max_lr=0.1).build())
+    )
+    if resume:
+        builder.resume_from(**resume)
+    return builder.build()
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_a_resumed_attempt_links_the_generation_it_restored(loop):
+    """LAST is published again (epoch 5) after the attempt started but
+    before the resume verified it: the resume restores that generation, and
+    the parent and ResumeStatus name it, not the one read at the start."""
+    from nnx.objectives import supervised_objective
+    from tests._checkpoint_files import republished_on_verify
+
+    def fit(epochs, **resume):
+        if loop == "nnmodel":
+            params = _params(epochs, resume_from_run_id=resume["run_id"]) if resume else _params(epochs)
+            return _model().train(params=params, provenance=PLAN)
+        return Trainer(_model()).train(
+            params=_trainer_params(epochs, **resume), objective=supervised_objective(), provenance=PLAN
+        )
+
+    first = fit(2)
+    with republished_on_verify(first.id, before=True):
+        child = fit(1, run_id=first.id)
+    restored = NNCheckpoint.resume_point(first.id, Checkpoints.LAST)
+    assert restored["generation"] == 4 and restored["completed_epoch"] == 5
+    status = NNRun.load(child.id).resume_status
+    assert (status.source_generation, status.source_checkpoint_id, status.source_epoch) == (
+        4,
+        restored["checkpoint_id"],
+        5,
+    )
+    for record in (child.provenance, load_provenance(child.id)):
+        parent = record.attempt.parent
+        assert (parent["epoch"], parent["generation"]) == (5, restored["checkpoint_id"]), parent
+        assert parent["attempt_id"] == first.provenance.attempt.attempt_id

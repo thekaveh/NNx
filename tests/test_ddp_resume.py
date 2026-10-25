@@ -167,6 +167,23 @@ def test_a_corrupted_resume_point_is_refused_on_every_rank_naming_the_reason(cor
     assert writer["hashed"] >= 1 and other["hashed"] == 0
 
 
+def test_a_resume_point_republished_after_the_writers_verification_is_refused_on_every_rank(tmp_path):
+    """#537: LAST is published again (generation 4) after the writer rank
+    verified generation 3 and shared it: a weights-only resume refuses on
+    every rank before anything is restored, and no child run is written."""
+    launch("resume_first", tmp_path)
+    first_id = (tmp_path / "first_run_id.txt").read_text(encoding="utf-8").strip()
+    launch("resume_republished", tmp_path)
+    writer, other = results(tmp_path)
+    for rank in (writer, other):
+        assert rank["error"].startswith(f"ResumePointError: {first_id}/last: the resume point changed"), rank["error"]
+        assert rank["unchanged"] and rank["rng_unchanged"], rank
+    assert "generation 2 was verified, generation 3 is published" in writer["error"], writer["error"]
+    assert (writer["verified"], other["verified"]) == (1, 0)
+    runs = [name for name in os.listdir(tmp_path / "runs") if not name.startswith(".") and name != "best"]
+    assert runs == [first_id]
+
+
 def test_an_invalid_run_id_fails_alike_on_every_rank(tmp_path):
     launch("resume_bad_id", tmp_path)
     for rank in results(tmp_path):

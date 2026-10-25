@@ -659,6 +659,21 @@ class _AttemptRecorder:
         _write_json(self._path(MANIFEST_FILE), {**self.manifest.document(), "fingerprint": self.fingerprint})
         _write_json(self._path(ATTEMPT_FILE), self.attempt.state())
 
+    def resumed_from(self, run_id: str, checkpoint: Any) -> None:
+        """The resume read ``checkpoint`` of ``run_id`` (#537): the parent
+        names its epoch and generation, rewritten when the source published
+        the tag again after the record was started."""
+        parent = self.attempt.parent
+        if parent is None or parent.get("run_id") != run_id:
+            return
+        restored = {"epoch": int(checkpoint.idp.epoch_idx), "generation": checkpoint.training_state_id}
+        if all(parent.get(key) == value for key, value in restored.items()):
+            return
+        from dataclasses import replace
+
+        self.attempt = replace(self.attempt, parent={**parent, **restored})
+        _write_json(self._path(ATTEMPT_FILE), self.attempt.state())
+
     def _finish(self, status: str, error: Optional[BaseException]) -> None:
         from dataclasses import replace
 
