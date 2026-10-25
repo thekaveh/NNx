@@ -157,6 +157,9 @@ evidence: a CUDA report whose listed tests passed in every phase.
   export-conformance, installed-profile and `floor-deps` lanes.
 - The branch ruleset requires only `lint-and-test` and `pip-audit` on
   3.10–3.12. Check the other lanes before you arm auto-merge.
+- On Python 3.10, the `security.yml` and `release.yml` audits skip the IDs in
+  `.github/pip-audit-py310-ignores.txt`. Each is fixed only in a release that
+  needs Python 3.11 or later. The 3.11+ audits do not skip them.
 - Address review comments by pushing new commits; pull requests merge with a merge commit.
 
 ## 7. Releases

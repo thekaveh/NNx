@@ -85,6 +85,30 @@ def test_security_runs_for_pushes_and_pull_requests_on_gitflow_branches():
     assert "  pull_request:\n    branches: [main, develop]\n" in workflow
 
 
+@pytest.mark.parametrize("workflow_path", [(*_WORKFLOW_DIRECTORY, "security.yml"), _RELEASE_WORKFLOW])
+def test_audits_ignore_vulnerabilities_only_on_python_3_10_and_only_listed_ones(workflow_path):
+    workflow = repo_file(*workflow_path).read_text(encoding="utf-8")
+    ignores = repo_file(".github", "pip-audit-py310-ignores.txt").read_text(encoding="utf-8")
+
+    # The one audit that skips IDs does so under the 3.10 guard, from the reviewed list.
+    assert workflow.count("python -m pip_audit") == 1
+    assert workflow.count("--ignore-vuln") == 1
+    guard = workflow.index('if [ "$PYTHON_VERSION" = "3.10" ]; then')
+    assert guard < workflow.index("--ignore-vuln") < workflow.index("fi", guard)
+    assert "< <(grep -v '^#' .github/pip-audit-py310-ignores.txt)" in workflow
+    assert workflow.index("fi", guard) < workflow.index('--progress-spinner off "${ignores[@]}"')
+    # `while read` drops an unterminated last line; a blank line would ignore "".
+    assert ignores.endswith("\n")
+    entries = [line for line in ignores.splitlines() if not line.startswith("#")]
+    assert entries and all(entries)
+    assert len({line.split()[0] for line in entries}) == len(entries)
+    for line in entries:
+        assert re.fullmatch(
+            r"(CVE-\d{4}-\d+|GHSA(-[0-9a-z]{4}){3}|PYSEC-\d{4}-\d+)  # .+: fixed in \S+ \(requires-python >=3\.11\)",
+            line,
+        ), line
+
+
 def test_release_build_and_audit_tools_are_resolved_from_uv_lock():
     workflow = repo_file(*_RELEASE_WORKFLOW).read_text(encoding="utf-8")
     pyproject = _PYPROJECT.read_text(encoding="utf-8")
