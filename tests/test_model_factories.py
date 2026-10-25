@@ -41,6 +41,7 @@ from nnx import (
 )
 from nnx.nn.enum.checkpoints import Checkpoints
 from nnx.nn.params.nn_checkpoint import NNCheckpoint
+from tests._surgery import SURGERY_FORMS, unrecorded_surgery
 
 
 class Encoder(nn.Module):
@@ -234,6 +235,29 @@ def test_registered_modules_keep_the_topology_reconstruction_guard(tmp_path, mon
     model.net.body[0] = low_rank_factorize(model.net.body[0], rank=2)
     with pytest.raises(ValueError, match="no reconstruction recipe"):
         model.train(params=_train_params(1))
+
+
+@pytest.mark.parametrize("form", SURGERY_FORMS)
+def test_registered_modules_keep_the_topology_reconstruction_guard_in_trainer_objective_runs(
+    form, tmp_path, monkeypatch, encoder_spec
+):
+    """#508: Trainer.train(objective=...) refuses a registered module's
+    unrecorded surgery with NNModel.train's message, before reserving a run."""
+    import os
+
+    from nnx import NNTrainerParams, Trainer, supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    model = _registered(encoder_spec)
+    unrecorded_surgery(model.net, model.net.body, form)
+    with pytest.raises(ValueError) as from_nnmodel:
+        model.train(params=_train_params(1), objective=supervised_objective())
+    sgd = NNOptimParams.builder().sgd(max_lr=0.05).build()
+    params = NNTrainerParams.builder().n_epochs(1).train_loader(_loader()).optimizer("main", sgd).build()
+    with pytest.raises(ValueError) as from_trainer:
+        Trainer(model).train(params=params, objective=supervised_objective())
+    assert str(from_trainer.value) == str(from_nnmodel.value)
+    assert not os.path.exists("runs")
 
 
 # --- runs ----------------------------------------------------------------------------------
