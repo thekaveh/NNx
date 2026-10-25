@@ -798,7 +798,10 @@ class Trainer:
                             report_update=report_update,
                         )
                         train_edp = trainer_step_fn(step_ctx)
-                    resume_window.close()  # the first step returned: a later failure keeps its training
+                        # #507: a custom step may never report an update, so its
+                        # first return closes the window; an objective's closes
+                        # only at its engine's first commit (accumulated windows).
+                        resume_window.close()  # a later failure keeps its training
                     if epoch_summary is not None:
                         epoch_summary.add(train_edp, _batch_sample_count(self.model.net, batch))
 

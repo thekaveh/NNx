@@ -527,11 +527,13 @@ class _ResumeWindow:
     nothing has trained from the loaded state: a failure in that window (the
     post-restore setup, a refused ``on_train_begin`` or first
     ``on_epoch_begin``, the component restore, the first fetch, an empty
-    first epoch, a first step raising before its update) hands the caller's
-    model and RNG back (``rollback``) before the error propagates. The window
-    closes when the first step returns or NNx sees an update before that
-    (``report_update``, an objective's engine committing); a later failure
-    keeps the trained state, as in a fresh fit. Used as a context manager,
+    first epoch, a first step raising before its update, a fetch or step
+    between accumulated micro-steps) hands the caller's model and RNG back
+    (``rollback``) before the error propagates. The window closes when NNx
+    sees the first update (``report_update``, which the default step calls,
+    or an objective's engine committing); a custom step may never report
+    one, so its first return closes the window too. A later failure keeps
+    the trained state, as in a fresh fit. Used as a context manager,
     as often as the guarded code needs; ``rollback=None`` (no resume) makes
     it a no-op."""
 
@@ -4274,6 +4276,11 @@ class NNModel(_HubMixinBase):
                     engine.listeners.append(lambda event: clock.committed())
                 step_fn = _ObjectiveStep(objective, engine)
                 ctx.update_count = engine.commits
+            # #507: the default step and an objective tell NNx of every update
+            # (report_update, the engine's commits), so their window closes only
+            # at one; a micro-step under gradient accumulation commits nothing.
+            # A custom step may never report one: its first return closes it.
+            updates_seen = step_fn is default_train_step or engine is not None
 
             # #394: a planned resume continues the logical step and update counters.
             idx_iter = int(restored_counters.get("global_step") or 0)
@@ -4366,7 +4373,8 @@ class NNModel(_HubMixinBase):
                     if compile_session is not None:
                         compile_session.where = {"phase": "train", "epoch": idx_epoch, "batch": idx_batch}
                     train_edp = step_fn(step_ctx)
-                    resume_window.close()  # the first step returned: a later failure keeps its training
+                    if not updates_seen:
+                        resume_window.close()  # a custom step returned: a later failure keeps its training
                     if epoch_summary is not None:
                         epoch_summary.add(train_edp, _batch_sample_count(self.net, batch))
 
