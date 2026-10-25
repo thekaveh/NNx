@@ -238,9 +238,7 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             out["message"] = str(error)
         # #478: the failed fit's DDP wrapper is dropped on every rank, even the
         # one whose error (and its traceback) is still alive here.
-        from torch.nn.parallel import DistributedDataParallel
-
-        out["live_ddp"] = sum(isinstance(item, DistributedDataParallel) for item in gc.get_objects())
+        out["live_ddp"] = _live_ddp()
     elif name == "release_on_failure":
         # #539: a fit that fails before the loop (a refused reservation, a
         # peer's failed wrapper build, NNRun or the compile session) or inside
