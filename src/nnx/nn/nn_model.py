@@ -65,6 +65,7 @@ from ..monitors import (
     _ignore_index,
     _metric_domain,
     _MetricSet,
+    _not_ignored,
     _TrainEpochSummary,
 )
 from ..precision import EVALUATE as _PRECISION_EVALUATE
@@ -1057,7 +1058,9 @@ def _loss_normalization_weight(
         if native_ce and target.is_floating_point():
             return float(target.numel() // target.size(1))
 
-        valid_target = target[target != classification_loss.ignore_index]
+        # int64 targets: a narrow one wraps ignore_index, and a uint8 one
+        # would index the class weights as a boolean mask (FIX-044).
+        valid_target = target[_not_ignored(target, classification_loss.ignore_index)].long()
         if classification_loss.weight is None:
             return float(valid_target.numel())
         if valid_target.numel() == 0:
@@ -1128,7 +1131,7 @@ def _classification_metric_tensors(
         return target.argmax(dim=1).reshape(-1), prediction.reshape(-1)
     if isinstance(loss_fn, (torch.nn.CrossEntropyLoss, torch.nn.NLLLoss)) and not target.is_floating_point():
         classification_loss = cast(Union[torch.nn.CrossEntropyLoss, torch.nn.NLLLoss], loss_fn)
-        valid = target != classification_loss.ignore_index
+        valid = _not_ignored(target, classification_loss.ignore_index)
         return target[valid], prediction[valid]
     return target, prediction
 

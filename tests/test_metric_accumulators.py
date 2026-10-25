@@ -582,3 +582,25 @@ def test_review_round_eighteen_a_broken_accumulation_says_so_first():
         assert broken._top_class == -1  # the failed batch recorded no class
     finally:
         unregister_metric("tests.fails", 1)
+
+
+@pytest.mark.parametrize("as_array", [False, True], ids=["tensor", "array"])
+def test_update_and_update_logits_score_the_same_uint8_rows(as_array):
+    """#511: update_logits() compared ignore_index in the uint8 dtype, where
+    -100 is class 156; update() (NumPy) compared it exactly."""
+    logits = torch.randn(3, 200)
+    target = torch.tensor([156, 3, 7], dtype=torch.uint8)
+    given = target.numpy() if as_array else target
+    probabilities = torch.softmax(logits, dim=1)
+    by_logits = StreamingMetrics([MetricSpec("accuracy")], "categorical", ignore_index=-100, num_outputs=200)
+    by_probs = StreamingMetrics([MetricSpec("accuracy")], "categorical", ignore_index=-100, num_outputs=200)
+    assert by_logits.update_logits(given, logits.numpy() if as_array else logits) == 3
+    assert by_probs.update(given, probabilities=probabilities.numpy() if as_array else probabilities) == 3
+    assert by_logits.finalize().values == by_probs.finalize().values
+    fitting = StreamingMetrics([MetricSpec("accuracy")], "categorical", ignore_index=255, num_outputs=256)
+    assert fitting.update_logits(torch.tensor([255, 3], dtype=torch.uint8), torch.randn(2, 256)) == 1  # still masks
+    # Signed targets still mask -100; wide unsigned ones are scored like int64.
+    for dtype in (torch.int8, torch.int16, torch.int32, torch.uint16, torch.uint32, torch.uint64):
+        other = StreamingMetrics([MetricSpec("accuracy")], "categorical", ignore_index=-100, num_outputs=200)
+        values = [-100 if dtype.is_signed else 156, 3, 7]
+        assert other.update_logits(torch.tensor(values, dtype=dtype), logits) == (2 if dtype.is_signed else 3), dtype
