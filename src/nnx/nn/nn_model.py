@@ -1938,10 +1938,11 @@ def _check_plateau_resume(saved: Optional[Mapping[str, Any]], scheduler: Any, mo
 # #502: the scheduler settings a stateful resume takes from the checkpoint's
 # scheduler state, by kind (None is the legacy plateau default). Horizons
 # keep their own rules: a cosine T_max is the checkpoint's (with a warning
-# once passed), a total_steps is checked by _check_resume_horizon and by the
-# update clock's component, the plateau rule by _check_plateau_resume. A
-# warm-up/decay schedule's settings live in its LambdaLR closure, which is
-# rebuilt, so they apply.
+# once passed), as is a step_size left at its horizon-derived default (None
+# on both sides, so nothing differs), a total_steps is checked by
+# _check_resume_horizon and by the update clock's component, the plateau
+# rule by _check_plateau_resume. A warm-up/decay schedule's settings live
+# in its LambdaLR closure, which is rebuilt, so they apply.
 _RESTORED_SCHEDULER_FIELDS: dict[Optional[str], tuple[type, tuple[str, ...]]] = {
     None: (lr_scheduler.ReduceLROnPlateau, ("factor", "patience", "cooldown", "min_lr")),
     "reduce_lr_on_plateau": (lr_scheduler.ReduceLROnPlateau, ("factor", "patience", "cooldown", "min_lr")),
