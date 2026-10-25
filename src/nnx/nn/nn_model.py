@@ -1453,9 +1453,11 @@ def _global_records(
 
     weights = [part[5] for part in parts]
     display: Optional[float]
-    if all(weight is None for weight in weights):  # an additive (sum) loss
+    if any(weight is None for weight in weights):  # an additive (sum) loss
+        # A rank whose task batch is all-masked (weight 0, a NaN loss) adds
+        # nothing to the global batch's sum (#503).
         total: Optional[float] = None
-        display = float(sum(part[4] for part in parts))
+        display = float(sum(part[4] for part in parts if part[5] is None))
     else:
         total = float(sum(weight or 0.0 for weight in weights))
         if total:
@@ -2486,23 +2488,23 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
     if ctx.epoch_summary is not None:
         _observe_epoch_summary(ctx.epoch_summary, model, record_terms, adapter)
 
-    # FEAT-030: the window's global loss denominator (one collective per
-    # committed update) normalizes the averaged gradient and decides a
-    # masked window on every rank alike.
-    global_weight = (
-        ddp.sum(accumulation_state.normalization_weight)
-        if ddp is not None and should_step and accumulation_state is not None
-        else None
-    )
+    # FEAT-030: the window's global loss denominator and the number of ranks
+    # whose loss is additive (one collective per committed update) normalize
+    # the averaged gradient and decide a masked window on every rank alike:
+    # a sum-reduction window is masked only when no rank has a valid target
+    # (#503), whatever one rank's own window held.
+    global_weight: Optional[float] = None
+    additive_ranks = 0.0
+    if ddp is not None and should_step and accumulation_state is not None:
+        global_weight, additive_ranks = ddp.sum(
+            accumulation_state.normalization_weight, float(not accumulation_state.normalization_required)
+        )
     if ddp is not None and should_step:
         _global_window_check(terms, accumulation_state, global_weight)
     masked = (
         _window_is_masked(terms, accumulation_state, window_is_this_batch=cycle_size == 1)
         if ddp is None
-        else terms.valid is not None
-        and accumulation_state is not None
-        and accumulation_state.normalization_required
-        and global_weight == 0
+        else terms.valid is not None and accumulation_state is not None and not additive_ranks and global_weight == 0
     )
     if should_step and masked:
         # FEAT-002: every target in this optimizer window is masked — there
@@ -2514,9 +2516,10 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             scaler.unscale_(ctx.optimizer)
         if ddp is not None:
             # DDP averaged the ranks' numerator gradients: world / W turns the
-            # average into the global batch's (an additive loss: its sum).
+            # average into the global batch's (an additive loss on any rank:
+            # its sum, × world even where this rank's window was all-masked).
             assert accumulation_state is not None and global_weight is not None
-            if not accumulation_state.normalization_required:
+            if additive_ranks:
                 _scale_gradients(model.net, float(ddp.world_size))
             elif global_weight:
                 _scale_gradients(model.net, ddp.world_size / global_weight)
