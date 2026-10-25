@@ -575,9 +575,21 @@ class StreamingMetrics:
                 f"{rows}, or one-hot / soft rows shaped like the logits, got {tuple(target_t.shape)}"
             )
         if not categorical and target_t.shape != logits_t.shape:
-            raise ValueError(
-                f"logits must be shaped like the targets {tuple(target_t.shape)}, got {tuple(logits_t.shape)}"
-            )
+            # The regression task accepts an (N,) target for an (N, 1) output
+            # (tasks.py's prepare); update_logits documents deriving inputs as
+            # evaluate() does, so it accepts the same pair (#549).
+            if (
+                self._semantics == "continuous"
+                and target_t.ndim == 1
+                and logits_t.ndim == 2
+                and logits_t.shape[1] == 1
+                and target_t.shape[0] == logits_t.shape[0]
+            ):
+                target_t = target_t.unsqueeze(1)
+            else:
+                raise ValueError(
+                    f"logits must be shaped like the targets {tuple(target_t.shape)}, got {tuple(logits_t.shape)}"
+                )
         if soft:
             # One-hot / soft class targets: whole rows decided by their argmax, masked by
             # valid (shaped like the rows) and — as every NaN target here — a row holding a

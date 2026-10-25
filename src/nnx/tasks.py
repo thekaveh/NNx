@@ -732,8 +732,11 @@ class _MultilabelAccumulator(TaskMetricAccumulator):
         self._label_valid += mask.sum(axis=axes)
         hits = (truth == prediction) & mask
         self._element_correct += int(hits.sum())
-        rows_with_valid = mask.reshape(mask.shape[0], -1).any(axis=1)
-        rows_correct = (hits | ~mask).reshape(mask.shape[0], -1).all(axis=1) & rows_with_valid
+        # Reduce over every non-batch axis directly: a zero-row batch makes the
+        # reshape(rows, -1) form fail its -1 inference on the empty size.
+        non_batch = tuple(range(1, mask.ndim))
+        rows_with_valid = mask.any(axis=non_batch)
+        rows_correct = (hits | ~mask).all(axis=non_batch) & rows_with_valid
         self._rows += int(rows_with_valid.sum())
         self._rows_correct += int(rows_correct.sum())
         self.count += int(mask.sum())

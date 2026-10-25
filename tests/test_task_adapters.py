@@ -367,6 +367,18 @@ def test_an_all_masked_window_takes_no_update_and_records_an_empty_batch(tmp_pat
 # ------------------------------------------------------ review regressions
 
 
+def test_a_zero_row_multilabel_batch_records_empty_like_the_other_kinds():
+    # A loader can hand a zero-row batch; the multilabel accumulator used to
+    # crash reshaping it (#549) where categorical and regression recorded empty.
+    for spec, target in (
+        (TaskSpec.categorical(3), torch.zeros(0, dtype=torch.long)),
+        (TaskSpec.multilabel(3), torch.zeros(0, 3)),
+        (TaskSpec.regression(3), torch.zeros(0, 3)),
+    ):
+        rec = task_adapter(spec).record(torch.zeros(0, 3), target, loss=None)
+        assert (rec.status, rec.count) == ("empty", 0)
+
+
 def test_multilabel_masked_loss_keeps_per_label_pos_weight():
     adapter = task_adapter(TaskSpec.multilabel(3))
     loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([1.0, 2.0, 3.0]))
