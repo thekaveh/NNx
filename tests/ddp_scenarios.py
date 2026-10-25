@@ -35,6 +35,7 @@ from nnx import (
     NNOptimParams,
     NNParams,
     NNTrainParams,
+    TaskSpec,
 )
 from nnx import distributed as nnx_dist
 from nnx.history import HistoryJournal
@@ -270,15 +271,11 @@ SUM_MASK_CASES = {
 SUM_LOSSES = ("cross_entropy", "nll", "mse", "bce", "cross_entropy_mean", "task_free_sum")
 
 
-class TaskRows(torch.utils.data.Dataset):
+class TaskRows(Rows):
+    """``Rows`` over given features and targets, of any target shape."""
+
     def __init__(self, X: torch.Tensor, y: torch.Tensor) -> None:
         self.X, self.y = X, y
-
-    def __len__(self) -> int:
-        return len(self.y)
-
-    def __getitem__(self, index: int):
-        return self.X[index], self.y[index]
 
 
 def sum_task_rows(loss: str, masked: tuple[int, ...]) -> TaskRows:
@@ -300,8 +297,6 @@ def sum_task_rows(loss: str, masked: tuple[int, ...]) -> TaskRows:
 
 
 def sum_task_model(loss: str) -> NNModel:
-    from nnx import TaskSpec
-
     categorical = TaskSpec.categorical(CLASSES, ignore_index=IGNORE)
     task, enum, loss_fn, outputs = {
         "cross_entropy": (
