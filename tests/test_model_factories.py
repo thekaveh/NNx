@@ -236,6 +236,39 @@ def test_registered_modules_keep_the_topology_reconstruction_guard(tmp_path, mon
         model.train(params=_train_params(1))
 
 
+@pytest.mark.parametrize(
+    "form", ["low_rank", "prune", "weight_norm", "spectral_norm", "legacy_weight_norm", "legacy_spectral_norm"]
+)
+def test_registered_modules_keep_the_topology_reconstruction_guard_in_trainer_objective_runs(
+    form, tmp_path, monkeypatch, encoder_spec
+):
+    """#508: Trainer.train(objective=...) refuses a registered module's
+    unrecorded surgery with NNModel.train's message, before reserving a run."""
+    import os
+
+    from nnx import NNTrainerParams, Trainer, supervised_objective
+    from nnx.prune import magnitude_prune
+
+    monkeypatch.chdir(tmp_path)
+    model = _registered(encoder_spec)
+    if form == "low_rank":
+        model.net.body[0] = low_rank_factorize(model.net.body[0], rank=2)
+    elif form == "prune":
+        magnitude_prune(model.net, 0.5, bake=False)
+    elif form.startswith("legacy_"):
+        getattr(torch.nn.utils, form.removeprefix("legacy_"))(model.net.body[0])
+    else:
+        getattr(torch.nn.utils.parametrizations, form)(model.net.body[0])
+    with pytest.raises(ValueError) as from_nnmodel:
+        model.train(params=_train_params(1), objective=supervised_objective())
+    sgd = NNOptimParams.builder().sgd(max_lr=0.05).build()
+    params = NNTrainerParams.builder().n_epochs(1).train_loader(_loader()).optimizer("main", sgd).build()
+    with pytest.raises(ValueError) as from_trainer:
+        Trainer(model).train(params=params, objective=supervised_objective())
+    assert str(from_trainer.value) == str(from_nnmodel.value)
+    assert not os.path.exists("runs")
+
+
 # --- runs ----------------------------------------------------------------------------------
 
 
