@@ -711,25 +711,22 @@ def test_committed_update_counters_continue_across_a_stateful_resume(tmp_path, m
     assert [i.update_count for i in fresh.idps] == [1, 2]  # a weights-only resume starts fresh
 
 
-def test_objective_runs_keep_the_topology_reconstruction_guard(tmp_path, monkeypatch):
-    from nnx import low_rank_factorize
-
-    monkeypatch.chdir(tmp_path)
-    model = NNModel(
-        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
-        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
-    )
-    model.net.layers[1] = low_rank_factorize(model.net.layers[1], rank=2)
-    with pytest.raises(ValueError, match="no reconstruction recipe"):
-        _fit(model, [(torch.randn(2, 4), torch.tensor([0, 1]))], supervised_objective())
-    assert not os.path.exists("runs")  # rejected before any run is reserved
-
-
 def _feed_fwd() -> NNModel:
     return NNModel(
         net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
         params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
     )
+
+
+def test_objective_runs_keep_the_topology_reconstruction_guard(tmp_path, monkeypatch):
+    from nnx import low_rank_factorize
+
+    monkeypatch.chdir(tmp_path)
+    model = _feed_fwd()
+    model.net.layers[1] = low_rank_factorize(model.net.layers[1], rank=2)
+    with pytest.raises(ValueError, match="no reconstruction recipe"):
+        _fit(model, [(torch.randn(2, 4), torch.tensor([0, 1]))], supervised_objective())
+    assert not os.path.exists("runs")  # rejected before any run is reserved
 
 
 @pytest.mark.parametrize("form", SURGERY_FORMS)
