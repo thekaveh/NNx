@@ -157,7 +157,7 @@ class JEPAObjective(Objective):
     def check_run(
         self, model: Any, *, optimizers: Mapping[str, torch.optim.Optimizer], callbacks: Sequence[Any]
     ) -> None:
-        from ..nn.callbacks import Callback
+        from ..nn.callbacks import _changes_topology
 
         net = model.net
         if not hasattr(net, "n_patches") or not callable(getattr(net, "patch_positions", None)):
@@ -213,11 +213,7 @@ class JEPAObjective(Objective):
                 f"JEPA target-encoder parameters {moved} are on another device or dtype than model.net's; move the "
                 "target with the net (target.to(...)) or rebuild it from the current net"
             )
-        changing = [
-            type(cb).__name__
-            for cb in callbacks
-            if isinstance(cb, Callback) and type(cb).checkpoint_transforms is not Callback.checkpoint_transforms
-        ]
+        changing = [type(cb).__name__ for cb in callbacks if _changes_topology(cb)]
         if changing:
             raise ValueError(
                 f"callbacks {changing} change model.net's topology, which breaks the JEPA target's EMA name "

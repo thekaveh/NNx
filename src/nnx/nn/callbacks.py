@@ -70,6 +70,13 @@ class Callback:
         return ()
 
 
+def _changes_topology(callback: Any) -> bool:
+    """Whether ``callback`` changes ``model.net``'s topology mid-run (e.g.
+    QAT): its type overrides ``Callback.checkpoint_transforms``. One
+    predicate for the compile=, DDP and JEPA refusals (#510)."""
+    return isinstance(callback, Callback) and type(callback).checkpoint_transforms is not Callback.checkpoint_transforms
+
+
 class _LegacyCallback(Callback):
     """Adapts a plain Callable[[List[IDP]], None] into a Callback.
 

@@ -1537,13 +1537,9 @@ def _compile_session(
         raise ValueError(
             f"compile= covers full-precision (fp32) forwards only; this run trains in {precision.effective}"
         )
-    from .callbacks import Callback
+    from .callbacks import _changes_topology
 
-    changing = [
-        type(cb).__name__
-        for cb in callbacks or ()
-        if isinstance(cb, Callback) and type(cb).checkpoint_transforms is not Callback.checkpoint_transforms
-    ]
+    changing = [type(cb).__name__ for cb in callbacks or () if _changes_topology(cb)]
     if changing:
         raise ValueError(
             f"callbacks {changing} change model.net's topology mid-run (e.g. QAT), which a compiled forward would "
@@ -1595,7 +1591,7 @@ def _distributed_scope(
     """What DDP covers (FEAT-030), checked on each rank: the callbacks this
     rank runs, or a ValueError."""
     from ..distributed import ShardedLoader, classify_callbacks
-    from .callbacks import Callback
+    from .callbacks import _changes_topology
 
     if objective is not None or train_step_fn not in (None, default_train_step) or eval_step_fn is not None:
         raise ValueError(
@@ -1640,11 +1636,7 @@ def _distributed_scope(
             "distributed= needs params.val_loader = nnx.distributed.validation_loader(dataset, batch_size) — an "
             "unpadded shard that scores every row exactly once"
         )
-    changing = [
-        type(cb).__name__
-        for cb in callbacks or ()
-        if isinstance(cb, Callback) and type(cb).checkpoint_transforms is not Callback.checkpoint_transforms
-    ]
+    changing = [type(cb).__name__ for cb in callbacks or () if _changes_topology(cb)]
     if changing:
         raise ValueError(f"callbacks {changing} change model.net's topology, which distributed= does not cover")
     return classify_callbacks(model._normalize_callbacks(callbacks), writer=writer)
