@@ -183,7 +183,10 @@ on the writer only and may not carry checkpointed component state. `TensorBoardC
 `WandbCallback` write when constructed, so a borrowed instance is refused;
 `nnx.distributed.writer_only(lambda: TensorBoardCallback(...))` builds one on
 the writer alone. A callback that declares nothing is refused before training,
-on every rank.
+on every rank. So is a callback that changes `model.net`'s topology (it
+overrides `Callback.checkpoint_transforms`, as `QATLifecycleCallback` does),
+wrapped in `writer_only` or not: on one rank only, DDP would average
+mismatched gradients.
 
 Exactness holds for deterministic forwards. Batch normalization is refused,
 because its running statistics would differ per rank. Dropout draws each
