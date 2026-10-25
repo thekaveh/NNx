@@ -902,27 +902,39 @@ class NNCheckpoint:
         manifests (the live one, or a staged one :meth:`verify` may have
         read) no longer name the verified generation, or the loaded
         checkpoint is not the verified checkpoint id. Nothing is hashed
-        again: the point was verified once."""
+        again — the point was verified once — except a weights-only
+        checkpoint (no id to compare) whose manifests disagree: a republish
+        that stopped between publishing its checkpoint and its live manifest
+        leaves the verified generation live over the next one's file, which
+        only its digest tells apart."""
         checkpoint_path = _checkpoint_path(run, type, root=root)
         if not _run_directory_exists(checkpoint_path):
             return None, None
         label = f"{run}/{type}"
+        changed = f"{label}: the resume point changed while it was being read"
+        retry = "— retry once its writer has finished"
         with FileLock(checkpoint_path + ".lock"):
             generation = verified.get("generation")
             published = [m for m in (_read_manifest(checkpoint_path), _read_staged_manifest(checkpoint_path)) if m]
-            if generation not in [manifest.get("generation") for manifest in published]:
-                now = published[0].get("generation") if published else None
+            generations = [manifest.get("generation") for manifest in published]
+            if generation not in generations:
+                now = generations[0] if generations else None
                 raise ResumePointError(
-                    f"{label}: the resume point changed while it was being read (generation {generation} was "
-                    f"verified, generation {now} is published) — retry once its writer has finished"
+                    f"{changed} (generation {generation} was verified, generation {now} is published) {retry}"
                 )
+            if verified.get("checkpoint_id") is None and set(generations) != {generation}:
+                name = os.path.basename(checkpoint_path)
+                if _sha256(checkpoint_path) != verified.get("files", {}).get(name):
+                    now = next(value for value in generations if value != generation)
+                    raise ResumePointError(
+                        f"{changed} (generation {generation} was verified, {name} is generation {now}'s) {retry}"
+                    )
             checkpoint = NNCheckpoint.from_file(checkpoint_path, map_location=map_location)
             loaded_id = getattr(checkpoint, "training_state_id", None)
             if checkpoint is not None and loaded_id != verified.get("checkpoint_id"):
                 raise ResumePointError(
-                    f"{label}: the resume point changed while it was being read (checkpoint "
-                    f"{verified.get('checkpoint_id')} was verified, {loaded_id} is published) "
-                    "— retry once its writer has finished"
+                    f"{changed} (checkpoint {verified.get('checkpoint_id')} was verified, {loaded_id} is "
+                    f"published) {retry}"
                 )
             state = NNCheckpoint._load_training_state_unlocked(checkpoint_path, checkpoint, map_location)
             return checkpoint, state
