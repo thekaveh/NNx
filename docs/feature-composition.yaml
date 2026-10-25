@@ -235,6 +235,36 @@ scenarios:
       - tests/test_ddp_resume.py::test_a_corrupted_resume_point_is_refused_on_every_rank_naming_the_reason
     rationale: Executed two-rank negative test (one flipped byte); per-rank verify and hash counts and unchanged weights asserted.
     status: unsupported
+  - id: CR-09
+    group: checkpoint-resume
+    features: [stateful resume, changed optimizer or scheduler hyperparameters]
+    entry_point: NNTrainParams(resume_from_run_id=..., resume_mode="auto" | "stateful")
+    profile: {device: cpu, dtype: fp32, dependencies: [optuna]}
+    expected: Refused before the model, an optimizer or the RNG changes, naming each changed field with its saved and configured values; no run records them. Weights-only resumes train the new values.
+    tests:
+      - tests/test_train_integration.py::test_warm_resume_refuses_changed_optimizer_hyperparameters_before_restoring
+      - tests/test_train_integration.py::test_weights_only_resume_trains_with_the_changed_optimizer_hyperparameters
+      - tests/test_train_integration.py::test_warm_resume_refuses_every_changed_param_group_hyperparameter
+      - tests/test_train_integration.py::test_warm_resume_refuses_changed_scheduler_hyperparameters
+      - tests/test_train_integration.py::test_a_legacy_sidecar_resumes_statefully_and_checks_against_the_source_run_yaml
+      - tests/test_optimizer_factories.py::test_resume_refuses_a_changed_factory_hyperparameter_under_the_same_identity
+      - tests/test_trainer.py::test_trainer_resume_refuses_changed_hyperparameters_naming_the_optimizer
+      - tests/test_trainer.py::test_trainer_resume_with_a_legacy_sidecar_checks_against_the_source_run_yaml
+      - tests/test_plan_execution.py::test_a_resuming_plan_refuses_an_optimizer_edit_it_would_not_train
+      - tests/test_search.py::test_a_search_over_lr_on_a_resuming_plan_never_ranks_trials_that_trained_alike
+      - tests/test_run_bundles.py::test_resume_refuses_changed_optimizer_hyperparameters_from_the_bundle_itself
+    rationale: Executed negative tests through NNModel.train, Trainer.train, ExperimentPlan.resuming, nnx.search and RunBundle.resume; weights, RNG and the runs on disk asserted unchanged.
+    status: unsupported
+  - id: CR-10
+    group: checkpoint-resume
+    features: [DDP, stateful resume, changed optimizer hyperparameters]
+    entry_point: NNModel.train(distributed=DDP(), resume)
+    profile: {device: cpu, dtype: fp32, dependencies: [torch.distributed gloo]}
+    expected: Refused on every rank before anything is restored, naming each changed field.
+    tests:
+      - tests/test_ddp_resume.py::test_a_stateful_ddp_resume_with_changed_optimizer_hyperparameters_is_refused_on_every_rank
+    rationale: Executed two-rank negative test; each rank's message, weights and RNG asserted, and no child run written.
+    status: unsupported
   - id: MT-01
     group: model-transformations
     features: [torch.compile, QAT (topology-changing callback)]

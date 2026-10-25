@@ -1143,7 +1143,7 @@ What BEST selection and plateau schedulers track.
 nnx.trainer.params_builder.NNTrainerParamsBuilder.resume_from(self, run_id: 'str', checkpoint: 'str' = 'last', mode: 'str' = 'auto') -> 'NNTrainerParamsBuilder'
 ```
 
-Warm-resume from ``run_id``'s ``checkpoint``: the model, every named optimizer and scheduler, the RNG and the registered components (callbacks such as ``EarlyStopping``) continue where that run stopped. ``mode`` is ``"auto"`` (stateful when the checkpoint has training state, else weights-only), ``"stateful"`` (fail unless it has) or ``"weights_only"``. Serialized only as parent lineage, so the resumed run gets its own id.
+Warm-resume from ``run_id``'s ``checkpoint``: the model, every named optimizer and scheduler, the RNG and the registered components (callbacks such as ``EarlyStopping``) continue where that run stopped. ``mode`` is ``"auto"`` (stateful when the checkpoint has training state, else weights-only), ``"stateful"`` (fail unless it has) or ``"weights_only"``. A stateful resume refuses, before anything is restored, an optimizer whose configured hyperparameters (name, ``max_lr``, ``weight_decay``, momentum / betas, ``eps``, param-group specs) or scheduler settings differ from the checkpoint's, naming the optimizer: the restored states would train on with the saved values. ``"weights_only"`` trains the new ones. Serialized only as parent lineage, so the resumed run gets its own id.
 
 ##### `nnx.trainer.params_builder.NNTrainerParamsBuilder.overwrite_existing`
 
@@ -7246,7 +7246,7 @@ No public description is currently available.
 nnx.plans.ExperimentPlan.resuming(self, run_id: 'str', *, checkpoint: 'str' = 'last', mode: 'Optional[str]' = None, epochs: 'Optional[str]' = None) -> 'ExperimentPlan'
 ```
 
-Warm-resume from the run ``run_id``'s ``checkpoint``. The source run is recorded as the new run's parent lineage and is never overwritten: the resumed fit writes its own run directory. ``mode`` (``"auto"`` / ``"stateful"`` / ``"weights_only"``) defaults to the training parameters' own ``resume_mode``. ``epochs`` sets what ``n_epochs`` means on the resume and defaults to the training parameters' own ``resume_epochs``: ``"additional"`` trains ``n_epochs`` more; ``"planned"`` continues the source run's plan up to ``n_epochs`` in total, which needs its training state (a ``"weights_only"`` mode is refused).
+Warm-resume from the run ``run_id``'s ``checkpoint``. The source run is recorded as the new run's parent lineage and is never overwritten: the resumed fit writes its own run directory. ``mode`` (``"auto"`` / ``"stateful"`` / ``"weights_only"``) defaults to the training parameters' own ``resume_mode``. A stateful resume refuses a ``with_optim`` / ``with_scheduler`` edit whose hyperparameters differ from the checkpoint's, before anything is restored, since the restored optimizer and scheduler state would train on with the saved values; ``mode="weights_only"`` trains the edit. ``epochs`` sets what ``n_epochs`` means on the resume and defaults to the training parameters' own ``resume_epochs``: ``"additional"`` trains ``n_epochs`` more; ``"planned"`` continues the source run's plan up to ``n_epochs`` in total, which needs its training state (a ``"weights_only"`` mode is refused).
 
 ##### `nnx.plans.ExperimentPlan.without_resume`
 
@@ -11189,7 +11189,7 @@ offers for YAML/CSV.
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.save`
 
 ```python
-nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None, components: 'Optional[dict[str, Any]]' = None, optimizers_state: 'Optional[dict[str, Any]]' = None, schedulers_state: 'Optional[dict[str, Any]]' = None, optimizer_types: 'Optional[dict[str, str]]' = None, scheduler_types: 'Optional[dict[str, str]]' = None, optimizer_topologies: 'Optional[dict[str, list[list[dict[str, Any]]]]]' = None, optimizer_factories: 'Optional[dict[str, Optional[dict[str, Any]]]]' = None, precision: 'Optional[dict[str, Any]]' = None, compile: 'Optional[dict[str, Any]]' = None, distributed: 'Optional[dict[str, Any]]' = None, counters: 'Optional[dict[str, Any]]' = None) -> 'None'
+nnx.nn.params.nn_checkpoint.NNCheckpoint.save(self, run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, optimizer_state: 'Optional[dict[str, Any]]' = None, scheduler_state: 'Optional[dict[str, Any]]' = None, scaler_state: 'Optional[dict[str, Any]]' = None, rng_state: 'Optional[dict[str, Any]]' = None, completed_epoch: 'Optional[int]' = None, resume_net_state: 'Optional[dict[str, Any]]' = None, optimizer_type: 'Optional[str]' = None, scheduler_type: 'Optional[str]' = None, optimizer_topology: 'Optional[list[list[dict[str, Any]]]]' = None, optimizer_factory: 'Optional[dict[str, Any]]' = None, components: 'Optional[dict[str, Any]]' = None, optimizers_state: 'Optional[dict[str, Any]]' = None, schedulers_state: 'Optional[dict[str, Any]]' = None, optimizer_types: 'Optional[dict[str, str]]' = None, scheduler_types: 'Optional[dict[str, str]]' = None, optimizer_topologies: 'Optional[dict[str, list[list[dict[str, Any]]]]]' = None, optimizer_factories: 'Optional[dict[str, Optional[dict[str, Any]]]]' = None, precision: 'Optional[dict[str, Any]]' = None, compile: 'Optional[dict[str, Any]]' = None, distributed: 'Optional[dict[str, Any]]' = None, counters: 'Optional[dict[str, Any]]' = None, optimizer_config: 'Optional[dict[str, Any]]' = None, scheduler_config: 'Optional[dict[str, Any]]' = None, optimizer_configs: 'Optional[dict[str, dict[str, Any]]]' = None, scheduler_configs: 'Optional[dict[str, Optional[dict[str, Any]]]]' = None) -> 'None'
 ```
 
 Save the checkpoint to disk atomically.
@@ -11216,7 +11216,12 @@ and component state from different generations are never paired.
 ``*_types``, ``optimizer_topologies`` and ``optimizer_factories``)
 carry a multi-optimizer ``Trainer``'s name-keyed states; either
 ``optimizer_state`` or ``optimizers_state`` makes the checkpoint
-stateful.
+stateful. ``optimizer_config`` / ``scheduler_config`` (name-keyed:
+``optimizer_configs`` / ``scheduler_configs``) record the configured
+hyperparameters the restored states replace, which a stateful
+resume compares with its own (#502); ``None`` (and a sidecar
+written before them) leaves the comparison to the source
+``run.yaml``.
 
 When `optimizer_state` is supplied, a generation-addressed sibling
 file holds the training state, plus a fixed-name compatibility copy.

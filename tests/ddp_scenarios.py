@@ -19,6 +19,7 @@ import gc
 import os
 import sys
 import traceback
+from dataclasses import replace
 
 import torch
 
@@ -89,12 +90,16 @@ def val_set(n: int = 5) -> Rows:
     return Rows(n, seed=2)
 
 
+def sgd_optim(accumulate: int = 2) -> NNOptimParams:
+    return NNOptimParams.builder().sgd(max_lr=0.1).accumulate_grad(accumulate).build()
+
+
 def params(train_loader, val_loader=None, **kwargs) -> NNTrainParams:
     return NNTrainParams(
         n_epochs=kwargs.pop("n_epochs", 2),
         train_loader=train_loader,
         val_loader=val_loader,
-        optim=NNOptimParams.builder().sgd(max_lr=0.1).accumulate_grad(kwargs.pop("accumulate", 2)).build(),
+        optim=kwargs.pop("optim", None) or sgd_optim(kwargs.pop("accumulate", 2)),
         overwrite_existing=True,
         **kwargs,
     )
@@ -526,7 +531,15 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         out.update(summary(run))
         out["state"] = {k: v.clone() for k, v in m.net.state_dict().items()}
         out["rng_after"] = torch.get_rng_state()
-    elif name in ("resume_full", "resume_first", "resume_second", "resume_changed", "resume_corrupt", "resume_bad_id"):
+    elif name in (
+        "resume_full",
+        "resume_first",
+        "resume_second",
+        "resume_changed",
+        "resume_corrupt",
+        "resume_bad_id",
+        "resume_hyperparameters",
+    ):
         loader = nnx_dist.train_loader(train_set(), batch_size=2, seed=3)
         m = model()
         import nnx.nn.params.nn_checkpoint as nn_checkpoint
@@ -569,15 +582,20 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
                         handle.seek(-1, os.SEEK_END)
                         handle.write(bytes([last[0] ^ 0xFF]))
                 torch.distributed.barrier()
+            # #502: a changed lr / weight_decay / momentum is refused on every rank.
+            changed = name == "resume_hyperparameters"
+            configured = replace(sgd_optim(), max_lr=1e-4, weight_decay=0.1, momentum=0.0) if changed else None
             before = {k: v.clone() for k, v in m.net.state_dict().items()}
+            rng_before = torch.get_rng_state()
             try:
                 run = m.train(
-                    params=params(loader, n_epochs=1, data_id="split", resume_from_run_id=first_id),
+                    params=params(loader, n_epochs=1, data_id="split", resume_from_run_id=first_id, optim=configured),
                     distributed=nnx_dist.DDP(),
                 )
             except BaseException as error:  # noqa: BLE001
                 out["error"] = f"{type(error).__name__}: {error}"
                 out["unchanged"] = all(torch.equal(before[k], v) for k, v in m.net.state_dict().items())
+                out["rng_unchanged"] = torch.equal(rng_before, torch.get_rng_state())
                 out["hashed"], out["verified"] = len(hashed), len(verified)
                 return out
         out.update(summary(run))
