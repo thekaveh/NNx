@@ -72,6 +72,10 @@ def test_mixing_summed_and_normalized_terms_fails():
     engine.accumulate([LossTerm("a", param * 8, 2)])
     with pytest.raises(ValueError, match="mixes 'mean' and 'sum' reductions"):
         engine.accumulate([LossTerm("a", param * 1, reduction="sum")])
+    summed = _engine(param)
+    summed.accumulate([LossTerm("t", param * 2, reduction="sum")])
+    with pytest.raises(ValueError, match="mixes 'sum' and 'mean' reductions"):
+        summed.accumulate([LossTerm("t", param * 3, 2)])  # a normalized term with samples is refused too
     with pytest.raises(ValueError, match="takes no denominator"):
         LossTerm("a", param * 1, 2, reduction="sum")
     with pytest.raises(ValueError, match="needs an explicit finite denominator"):
@@ -1104,3 +1108,308 @@ def test_trainer_refuses_a_stop_requested_at_an_update(tmp_path, monkeypatch):
     # Refused at the first update event, not after the whole epoch.
     assert StopAtUpdate.calls == 1
     assert not torch.equal(model.net.layers[0].weight, before)
+
+
+# --- #504: windows without usable signal --------------------------------------
+
+
+def _train_via(via: str, model: NNModel, loader, *, objective, optim=None, epochs=1, **options) -> NNRun:
+    """One objective run through ``NNModel.train`` or ``Trainer.train``
+    (``scheduler``, ``monitor``, ``callbacks`` and ``data_id`` pass through)."""
+    optim = optim or _sgd(1)
+    scheduler, monitor = options.get("scheduler"), options.get("monitor")
+    callbacks, data_id = options.get("callbacks"), options.get("data_id")
+    if via == "trainer":
+        builder = (
+            NNTrainerParams.builder()
+            .n_epochs(epochs)
+            .train_loader(loader)
+            .optimizer("main", optim)
+            .save_phase_checkpoints(False)
+        )
+        if scheduler is not None:
+            builder.scheduler("main", scheduler)
+        if monitor is not None:
+            builder.monitor(monitor)
+        if data_id is not None:
+            builder.data_id(data_id)
+        return Trainer(model).train(params=builder.build(), objective=objective, callbacks=callbacks)
+    kwargs = {"scheduler": scheduler} if scheduler is not None else {}
+    params = NNTrainParams(
+        n_epochs=epochs,
+        train_loader=loader,
+        optim=optim,
+        save_phase_checkpoints=False,
+        monitor=monitor,
+        data_id=data_id,
+        **kwargs,
+    )
+    return model.train(params=params, objective=objective, callbacks=callbacks)
+
+
+def _feed_fwd_4x2() -> NNModel:
+    torch.manual_seed(0)
+    return NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+
+class _WithAuxiliary:
+    """A summed cross-entropy plus, optionally, an auxiliary term of a given
+    weight (a regulariser annealed from 0, or a logged-only term)."""
+
+    def __init__(self, aux_weight):
+        self.aux_weight = aux_weight
+        self.after_updates = 0
+        self.snapshots: list[torch.Tensor] = []
+
+    def __call__(self, ctx):
+        self.snapshots.append(torch.cat([p.detach().flatten().clone() for p in ctx.model.net.parameters()]))
+        x, t = ctx.batch
+        ctx.model.net.train()
+        logits = ctx.model.net(x)
+        ce = F.cross_entropy(logits, t, ignore_index=-100, reduction="sum")
+        terms = [LossTerm("ce", ce, int((t != -100).sum()))]
+        if self.aux_weight is not None:
+            terms.append(LossTerm("l2", logits.pow(2).sum(), logits.numel(), weight=self.aux_weight))
+        return ObjectiveResult(terms)
+
+    def after_update(self, events):
+        self.after_updates += 1
+
+
+class _UpdateBatches(Callback):
+    def __init__(self):
+        self.batches: list[int] = []
+
+    def on_optimizer_update(self, ctx, event):
+        if event.optimizer in ("default", "main"):
+            self.batches.append(event.batch_idx)
+
+
+@pytest.mark.parametrize("via", ["model", "trainer"])
+@pytest.mark.parametrize("aux_weight", [None, 0.0], ids=["no-aux", "aux-weight-0"])
+def test_a_weight_zero_term_never_commits_an_all_masked_window(tmp_path, monkeypatch, via, aux_weight):
+    """#504: a weight-0 term with samples made an all-masked window commit:
+    no parameter moved, yet the update count, the optimizer_update
+    scheduler clock, on_optimizer_update and after_update all advanced."""
+    from nnx import NNSchedulerParams
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    g = torch.Generator().manual_seed(0)
+    x, y = torch.randn(12, 4, generator=g), torch.randint(0, 2, (12,), generator=g)
+    y[4:8] = -100  # batch 1: every target masked
+    scheduler = (
+        NNSchedulerParams.builder()
+        .step(step_size=1, min_lr=0.0, factor=0.5, patience=0, cooldown=0, threshold=0.0)
+        .clock("optimizer_update")
+        .build()
+    )
+    objective, events = _WithAuxiliary(aux_weight), _UpdateBatches()
+    run = _train_via(
+        via,
+        _feed_fwd_4x2(),
+        [(x[i : i + 4], y[i : i + 4]) for i in (0, 4, 8)],
+        objective=objective,
+        optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+        scheduler=scheduler,
+        callbacks=[events],
+        data_id=f"aux-{via}-{aux_weight}",
+    )
+    assert torch.equal(objective.snapshots[1], objective.snapshots[2])  # the masked batch moved nothing
+    assert [i.update_count for i in run.idps] == [1, 1, 2]
+    assert [i.lr for i in run.idps] == pytest.approx([0.1, 0.05, 0.05])
+    assert events.batches == [0, 2]
+    assert objective.after_updates == 2
+
+
+def test_a_window_whose_every_term_has_weight_zero_commits_nothing():
+    """#504: only a term with a nonzero weight and samples trains, so a
+    window of weight-0 terms takes no committed update."""
+    param = torch.nn.Parameter(torch.tensor(1.0))
+    heard = []
+    engine = _engine(param, listeners=[heard.append])
+    engine.accumulate([LossTerm("a", param * 2, 1, weight=0.0), LossTerm("b", param * 3, reduction="sum", weight=0.0)])
+    engine.accumulate([LossTerm("a", param * 2, 1, weight=0.0), LossTerm("b", param * 3, reduction="sum", weight=0.0)])
+    assert engine.commit(epoch_idx=0, batch_idx=1) == ()
+    assert engine.commits == 0 and heard == []
+    engine.accumulate([LossTerm("a", param * 2, 1, weight=0.0), LossTerm("b", param * 3, reduction="sum")])
+    (event,) = engine.commit(epoch_idx=0, batch_idx=2)
+    assert engine.commits == 1 and event.losses == {"a": pytest.approx(2.0), "b": pytest.approx(3.0)}
+    assert event.loss == pytest.approx(3.0)  # the weight-0 term is reported but adds nothing
+
+
+@pytest.mark.parametrize("masked_first", [False, True], ids=["summed-first", "no-sample-first"])
+def test_a_no_sample_normalized_term_adds_nothing_to_a_summed_window(masked_first):
+    """#504: a normalized microbatch with no samples may share a window with
+    the term summed, and adds nothing to it: neither gradient nor value,
+    even with a nonzero numerator, so the event matches the step."""
+    param = torch.nn.Parameter(torch.tensor(1.0))
+    engine = UpdateEngine(optimizers={"default": torch.optim.SGD([param], lr=0.1)})
+    microbatches = [[LossTerm("t", param * 2, reduction="sum")], [LossTerm("t", param * 0 + 5.0, 0)]]
+    for terms in reversed(microbatches) if masked_first else microbatches:
+        engine.accumulate(terms)
+    (event,) = engine.commit(epoch_idx=0, batch_idx=1)
+    assert event.losses == {"t": pytest.approx(2.0)} and event.loss == pytest.approx(2.0)
+    assert param.item() == pytest.approx(0.8)  # the gradient of 2 * param alone
+
+
+@pytest.mark.parametrize("via", ["model", "trainer"])
+def test_an_objective_of_weight_zero_terms_never_steps_an_update_clocked_scheduler(tmp_path, monkeypatch, via):
+    """#504: a run whose every window has only weight-0 terms commits no
+    update, so an optimizer_update scheduler never steps."""
+    from nnx import NNSchedulerParams
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def weight_zero(ctx):
+        x, t = ctx.batch
+        ce = F.cross_entropy(ctx.model.net(x), t, reduction="sum")
+        return ObjectiveResult((LossTerm("ce", ce, len(t), weight=0.0),))
+
+    g = torch.Generator().manual_seed(0)
+    x, y = torch.randn(8, 4, generator=g), torch.randint(0, 2, (8,), generator=g)
+    scheduler = (
+        NNSchedulerParams.builder()
+        .step(step_size=1, min_lr=0.0, factor=0.5, patience=0, cooldown=0, threshold=0.0)
+        .clock("optimizer_update")
+        .build()
+    )
+    model, events = _feed_fwd_4x2(), _UpdateBatches()
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    run = _train_via(
+        via,
+        model,
+        [(x[:4], y[:4]), (x[4:], y[4:])],
+        objective=weight_zero,
+        optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+        scheduler=scheduler,
+        callbacks=[events],
+        data_id=f"weight-zero-{via}",
+    )
+    assert [i.update_count for i in run.idps] == [0, 0]
+    assert [i.lr for i in run.idps] == pytest.approx([0.1, 0.1])
+    assert events.batches == []
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+
+
+@pytest.mark.parametrize("via", ["model", "trainer"])
+@pytest.mark.parametrize("aux_weight", [None, 0.0], ids=["no-aux", "aux-weight-0"])
+def test_an_all_masked_epoch_with_a_weight_zero_term_has_no_loss(tmp_path, monkeypatch, via, aux_weight):
+    """#504: a weight-0 term made an all-masked epoch report loss 0.0 —
+    a train-loss monitor elected it BEST, and no later epoch of a
+    nonnegative loss could beat it."""
+    from nnx.monitors import MonitorSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    x = torch.randn(8, 4, generator=torch.Generator().manual_seed(0))
+    y = torch.full((8,), -100)
+    run = _train_via(
+        via,
+        _feed_fwd_4x2(),
+        [(x[:4], y[:4]), (x[4:], y[4:])],
+        objective=_WithAuxiliary(aux_weight),
+        optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+        monitor=MonitorSpec(metric="loss", split="train", mode="min"),
+        data_id=f"all-masked-{via}-{aux_weight}",
+    )
+    last = run.idps[-1]
+    assert [i.train_edp.loss for i in run.idps] == [None, None]
+    assert last.train_summary is not None and last.train_summary.loss is None
+    assert (last.selection.status, last.selection.improved) == ("missing", False)
+    assert [i.update_count for i in run.idps] == [0, 0]
+
+
+def test_an_objective_records_loss_skips_weight_zero_terms():
+    """#504: the microbatch loss covers the terms that train — a weight-0
+    term beside a fully masked one is no loss at all, never 0.0."""
+    param = torch.nn.Parameter(torch.tensor(1.0))
+    masked = LossTerm("ce", param * 0, 0)
+    assert ObjectiveResult((masked, LossTerm("l2", param * 4, 2, weight=0.0))).loss() is None
+    assert ObjectiveResult((LossTerm("ce", param * 6, 3), LossTerm("l2", param * 4, 2, weight=0.0))).loss() == 2.0
+
+
+_MASKED_TAIL = [(X[:2], Y[:2]), (X[2:], torch.tensor([-100]))]  # 2nd batch: every target ignored
+
+
+def _task_free_objective(name: str):
+    return supervised_objective() if name == "supervised" else kd_objective(_teacher(), alpha=0.0)
+
+
+@pytest.mark.parametrize("via", ["model", "trainer"])
+@pytest.mark.parametrize("name", ["supervised", "kd-alpha-0"])
+def test_a_task_free_all_masked_microbatch_records_the_windows_running_loss(tmp_path, monkeypatch, via, name):
+    """#504: a task-free objective recorded NaN for an all-masked
+    microbatch, so the default ReduceLROnPlateau skipped its step on it.
+    It records the window's running loss, as the default step does."""
+    import warnings
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    default = _linear().train(
+        params=NNTrainParams(
+            n_epochs=1, train_loader=_MASKED_TAIL, optim=_sgd(2), save_phase_checkpoints=False, data_id="default"
+        )
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        run = _train_via(via, _linear(), _MASKED_TAIL, objective=_task_free_objective(name), optim=_sgd(2))
+    losses = [i.train_edp.loss for i in run.idps]
+    assert losses == pytest.approx([i.train_edp.loss for i in default.idps])
+    assert losses[1] == pytest.approx(losses[0])  # the window's running mean: the valid microbatch's loss
+    assert not [w for w in caught if "ReduceLROnPlateau" in str(w.message)]
+
+
+@pytest.mark.parametrize("via", ["model", "trainer"])
+@pytest.mark.parametrize("name", ["supervised", "kd-alpha-0"])
+def test_a_task_free_window_masked_throughout_records_no_loss(tmp_path, monkeypatch, via, name):
+    """#504: with no valid target anywhere in the window there is no
+    running loss either: the records hold None, never NaN."""
+    import warnings
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    masked = [(X[:2], torch.tensor([-100, -100])), (X[2:], torch.tensor([-100]))]
+    model = _linear()
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # nothing to schedule on: the plateau scheduler says so
+        run = _train_via(via, model, masked, objective=_task_free_objective(name), optim=_sgd(2))
+    assert [i.train_edp.loss for i in run.idps] == [None, None]
+    assert [i.update_count for i in run.idps] == [0, 0]
+    for key, value in model.net.state_dict().items():
+        assert torch.equal(value, before[key]), key
+
+
+@pytest.mark.parametrize("via", ["model", "trainer"])
+@pytest.mark.parametrize("name", ["supervised", "kd-alpha-0"])
+def test_early_stopping_on_the_training_loss_trains_through_an_all_masked_tail(tmp_path, monkeypatch, via, name):
+    """#504: the NaN record of a masked tail counted as an epoch without
+    improvement, so EarlyStopping(train_edp.loss, patience=0) stopped after
+    one epoch where the default step trains all three."""
+    from nnx import EarlyStopping
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    default = _linear().train(
+        params=NNTrainParams(
+            n_epochs=3, train_loader=_MASKED_TAIL, optim=_sgd(2), save_phase_checkpoints=False, data_id="default"
+        ),
+        callbacks=[EarlyStopping(monitor="train_edp.loss", patience=0)],
+    )
+    run = _train_via(
+        via,
+        _linear(),
+        _MASKED_TAIL,
+        objective=_task_free_objective(name),
+        optim=_sgd(2),
+        epochs=3,
+        callbacks=[EarlyStopping(monitor="train_edp.loss", patience=0)],
+    )
+    assert len({i.epoch_idx for i in default.idps}) == 3
+    assert len({i.epoch_idx for i in run.idps}) == 3

@@ -848,3 +848,115 @@ def test_a_trainer_weights_only_resume_starts_from_the_checkpoint_weights(tmp_pa
     )
     for key, value in saved.net_state.items():
         assert torch.equal(seen[key], value), key
+
+
+# ------------------------------------------- #504: dropped objective windows
+
+
+def _drop_data() -> tuple[torch.Tensor, torch.Tensor]:
+    generator = torch.Generator().manual_seed(0)
+    return torch.randn(8, 4, generator=generator), torch.randint(0, 3, (8,), generator=generator)
+
+
+def _drop_model() -> NNModel:
+    torch.manual_seed(0)
+    return NNModel(
+        net_params=NNParams(input_dim=4, output_dim=3, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+
+class _InfGradientAt:
+    """The supervised objective, with a finite term but non-finite
+    gradients on one batch (``nonfinite="skip"`` drops its window)."""
+
+    nonfinite = "skip"
+
+    def __init__(self, batch_idx: int):
+        from nnx.objectives import supervised_objective
+
+        self.batch_idx = batch_idx
+        self.inner = supervised_objective()
+
+    def __call__(self, ctx):
+        from nnx.objectives import LossTerm, ObjectiveResult
+
+        result = self.inner(ctx)
+        if ctx.batch_idx != self.batch_idx:
+            return result
+        (term,) = result.terms
+        weight = ctx.model.net.layers[0].weight
+        poisoned = term.numerator + torch.sqrt((weight - weight.detach()).sum())  # +0, infinite gradient
+        return ObjectiveResult((LossTerm(term.name, poisoned, term.denominator),), result.record)
+
+
+def _fit_dropping(via: str, X, Y, metric: str, *, objective, accumulate: int = 1, tag: str) -> NNRun:
+    optim = NNOptimParams.builder().sgd(max_lr=0.1).accumulate_grad(accumulate).build()
+    loader = [(X[i : i + 2], Y[i : i + 2]) for i in (0, 2, 4, 6)]
+    monitor = MonitorSpec(metric=metric, split="train", mode="min")
+    if via == "trainer":
+        params = (
+            NNTrainerParams.builder()
+            .n_epochs(1)
+            .train_loader(loader)
+            .optimizer("main", optim)
+            .monitor(monitor)
+            .save_phase_checkpoints(False)
+            .data_id(f"{tag}-trainer")
+            .build()
+        )
+        return Trainer(_drop_model()).train(params=params, objective=objective)
+    params = NNTrainParams(
+        n_epochs=1, train_loader=loader, optim=optim, save_phase_checkpoints=False, monitor=monitor, data_id=tag
+    )
+    return _drop_model().train(params=params, objective=objective)
+
+
+@pytest.mark.parametrize("via", ["model", "trainer"])
+@pytest.mark.parametrize(
+    ("drop", "accumulate", "committed"),
+    [("term", 1, [0, 2, 3]), ("gradients", 1, [0, 2, 3]), ("term", 2, [2, 3])],
+    ids=["nonfinite-term", "nonfinite-gradients", "accumulated-window"],
+)
+def test_the_training_error_leaves_out_windows_dropped_as_nonfinite(
+    tmp_path, monkeypatch, via, drop, accumulate, committed
+):
+    """#504: the epoch loss left dropped windows out, the epoch error kept
+    them — and with accumulate_grad(2) the dropped window's finite
+    microbatch too. Both cover the committed windows only."""
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X, Y = _drop_data()
+    if drop == "term":
+        X = X.clone()
+        X[2:4, 0] = math.inf  # batch 1: a non-finite loss
+        objective = supervised_objective(nonfinite="skip")
+    else:
+        objective = _InfGradientAt(1)
+    run = _fit_dropping(via, X, Y, "error", objective=objective, accumulate=accumulate, tag=f"{drop}-{accumulate}")
+    errors = [run.idps[i].train_edp.error for i in committed]
+    summary = run.idps[-1].train_summary
+    assert summary is not None and summary.error == pytest.approx(sum(errors) / len(errors))
+    assert summary.error == pytest.approx({1: 2 / 3, 2: 0.75}[accumulate])
+
+
+@pytest.mark.parametrize("via", ["model", "trainer"])
+@pytest.mark.parametrize("metric", ["loss", "error"])
+def test_an_epoch_dropping_every_window_has_a_nonfinite_error(tmp_path, monkeypatch, via, metric):
+    """#504: an epoch whose every window was dropped kept the error of what
+    it never trained on, so a train-error monitor elected it BEST."""
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X, Y = _drop_data()
+    objective = supervised_objective(nonfinite="skip")
+    run = _fit_dropping(via, torch.full_like(X, math.inf), Y, metric, objective=objective, tag=f"all-{metric}")
+    last = run.idps[-1]
+    assert last.update_count == 0
+    summary = last.train_summary
+    assert summary is not None and summary.error is not None and math.isnan(summary.error)
+    assert summary.loss is not None and math.isnan(summary.loss)
+    assert (last.selection.status, last.selection.improved) == ("nonfinite", False)

@@ -329,6 +329,26 @@ def test_accumulation_normalizes_by_the_windows_valid_tokens():
         assert torch.allclose(want, got, atol=1e-6), name
 
 
+def test_an_all_masked_microbatch_in_a_trained_window_records_no_loss():
+    """#504: an empty task record keeps its None loss inside an accumulated
+    window after a microbatch that trained (never the window's running loss)."""
+    task = CausalLMTask(vocab_size=V, alignment="pre_shifted")
+    x, y = _ids(4, 5, seed=10), _ids(4, 5, seed=11)
+    y[2:] = -100  # microbatch 2: every position masked
+    run = _model().train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=DataLoader(TensorDataset(x, y), batch_size=2),
+            optim=NNOptimParams.builder().sgd(max_lr=0.1).accumulate_grad(2).build(),
+            save_phase_checkpoints=False,
+        ),
+        objective=task.objective(),
+    )
+    (trained, empty) = (idp.train_edp for idp in run.idps)
+    assert (trained.status, trained.count) == ("ok", 10) and trained.loss is not None
+    assert (empty.status, empty.count, empty.loss, dict(empty.metrics)) == ("empty", 0, None, {})
+
+
 # --- review hardening -------------------------------------------------------------------------------------
 
 
