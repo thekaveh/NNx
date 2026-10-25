@@ -1979,11 +1979,20 @@ def _plain_trainer_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
 
 
 def _rollback_fit(
-    loop: str, model: NNModel, loader, *, step=None, objective=None, callbacks=None, components=None, **resume
+    loop: str,
+    model: NNModel,
+    loader,
+    *,
+    step=None,
+    objective=None,
+    callbacks=None,
+    components=None,
+    optim=None,
+    **resume,
 ):
     from nnx import NNTrainParams
 
-    optim = NNOptimParams.builder().sgd(max_lr=0.1).build()
+    optim = optim if optim is not None else NNOptimParams.builder().sgd(max_lr=0.1).build()
     if loop == "nnmodel":
         params = NNTrainParams(n_epochs=1, optim=optim, train_loader=loader, **resume)
         return model.train(
@@ -2212,6 +2221,86 @@ def test_a_failure_in_the_setup_after_the_resume_restore_hands_the_model_and_rng
         _rollback_fit(loop, target, _rollback_loader(), resume_from_run_id=source.id, resume_mode=mode)
     assert _same_weights(target, before)
     assert _streams_equal(_global_streams(), streams)
+
+
+class _UnreadableAfterTwoBatches(torch.utils.data.Dataset):
+    """Two readable batches of four, then a corrupt file behind every sample."""
+
+    def __len__(self) -> int:
+        return 16
+
+    def __getitem__(self, index: int):
+        if index >= 8:
+            raise OSError(f"cannot read sample {index}")
+        return _ROLLBACK_X[index], _ROLLBACK_Y[index]
+
+
+@pytest.mark.parametrize(("loop", "kind"), [("nnmodel", "default"), ("nnmodel", "objective"), ("trainer", "objective")])
+@pytest.mark.parametrize("mode", ["stateful", "weights_only"])
+def test_a_resume_failing_between_accumulated_micro_steps_hands_the_model_and_rng_back(
+    loop, kind, mode, tmp_path, monkeypatch
+):
+    """Under gradient accumulation the first micro-step returns without an
+    update: for the default step and an objective, which tell NNx of every
+    update, the window stays open until the first commit, so a fetch that
+    fails before it still hands the model and RNG back."""
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    objective = supervised_objective if kind == "objective" else lambda: None
+    source = _rollback_fit(loop, _rollback_model(0), _rollback_loader(), objective=objective())
+    target = _rollback_model(1)
+    before = _weights(target)
+    accumulated = NNOptimParams.builder().sgd(max_lr=0.1).accumulate_grad(4).build()
+    streams = _seed_caller_streams()
+    with pytest.raises(OSError, match="cannot read sample 8"):
+        _rollback_fit(
+            loop,
+            target,
+            DataLoader(_UnreadableAfterTwoBatches(), batch_size=4),
+            objective=objective(),
+            optim=accumulated,
+            resume_from_run_id=source.id,
+            resume_mode=mode,
+        )
+    assert _same_weights(target, before)
+    assert _streams_equal(_global_streams(), streams)
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_a_custom_steps_first_return_still_closes_the_resume_window(loop, tmp_path, monkeypatch):
+    """A custom step may never report an update, so its first return closes
+    the window (under ``NNModel.train``'s accumulation too; Trainer step
+    functions refuse it): a later failure keeps its training."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def unreported(ctx):
+        if loop == "trainer":
+            return _plain_trainer_step(ctx)
+        ctx.optimizer.zero_grad()
+        xs, y = ctx.model.net.unpack_batch(ctx.batch)
+        loss = ctx.model.loss_fn(ctx.model.net(*xs), y)
+        loss.backward()
+        ctx.optimizer.step()  # never reported
+        return NNEvaluationDataPoint(loss=float(loss.detach()), error=0.5)
+
+    source = _rollback_fit(loop, _rollback_model(0), _rollback_loader())
+    target = _rollback_model(1)
+    before = _weights(target)
+    accumulated = NNOptimParams.builder().sgd(max_lr=0.1).accumulate_grad(4).build() if loop == "nnmodel" else None
+    with pytest.raises(OSError, match="cannot read sample 8"):
+        _rollback_fit(
+            loop,
+            target,
+            DataLoader(_UnreadableAfterTwoBatches(), batch_size=4),
+            step=unreported,
+            optim=accumulated,
+            resume_from_run_id=source.id,
+            resume_mode="weights_only",
+        )
+    assert not _same_weights(target, before)  # not handed back
 
 
 def _rewire_then_refuse():
