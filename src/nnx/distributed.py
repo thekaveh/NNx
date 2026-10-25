@@ -466,26 +466,44 @@ class _DDPSession:
         from torch.nn.parallel import DistributedDataParallel
 
         self._net = net
-        self.module = DistributedDataParallel(
-            net,
-            device_ids=[device] if device.type == "cuda" else None,
-            find_unused_parameters=spec.find_unused_parameters,
-        )
+        try:
+            self.module = DistributedDataParallel(
+                net,
+                device_ids=[device] if device.type == "cuda" else None,
+                find_unused_parameters=spec.find_unused_parameters,
+            )
+        except BaseException as error:
+            # A half-built wrapper (its process group set, no Reducer yet)
+            # lives on in DDP's __init__ frames of the traceback (#539).
+            _drop_ddp_frames(error)
+            raise
         self.in_step = False
         self.validation_ids: list[int] = []
 
     def release(self) -> None:
-        """Drop the DDP wrapper when the fit ends (#478). Its Reducer holds
-        the process group; a rank that raised (a non-finite loss, say) would
-        otherwise keep it alive through the exception's traceback until an
-        arbitrary garbage collection, possibly after the group is destroyed.
-        The session's collectives (``gather``, ``sum``) keep working."""
+        """Drop the DDP wrapper when ``train()`` ends, however it ends (#478,
+        #539): after the fit, and after a failure before it (a refused run
+        reservation, a peer's failed wrapper build, the run or compile setup)
+        or inside it, DDP's forward included. Its Reducer holds the process
+        group; a rank that raised would otherwise keep it alive through the
+        exception's traceback until an arbitrary garbage collection, possibly
+        after the group is destroyed (``shutdown()``'s own collection cannot
+        free what a live traceback reaches). DDP's own frames in such a
+        traceback hold it as ``self``, so the session clears them where they
+        raise (the wrapper's build, ``forward``). The session's
+        collectives (``gather``, ``sum``) keep working."""
         self.module = cast(Any, None)
         self._net = cast(Any, None)
 
     # the forward the train step routes through DDP; everything else is canonical
     def forward(self, *args: Any, **kwargs: Any) -> Any:
-        return self.module(*args, **kwargs) if self.in_step else self._net(*args, **kwargs)
+        if not self.in_step:
+            return self._net(*args, **kwargs)
+        try:
+            return self.module(*args, **kwargs)
+        except BaseException as error:
+            _drop_ddp_frames(error)  # the net's own frames keep their locals (#539)
+            raise
 
     @contextlib.contextmanager
     def step(self, *, sync: bool) -> Iterator[None]:
@@ -517,6 +535,28 @@ class _DDPSession:
                 f"epoch {epoch}: ranks would take different numbers of steps {counts}; every rank must serve "
                 "the same number of batches (use nnx.distributed.train_loader)"
             )
+
+
+def _drop_ddp_frames(error: BaseException) -> None:
+    """Clear the locals of ``error``'s finished traceback frames whose
+    ``self`` is a DDP wrapper (#539): DDP's ``forward`` / ``__init__`` frames
+    would keep the wrapper, and with it the process group, alive for as long
+    as the exception lives. Other frames (the net's ``forward``) keep theirs."""
+    from torch.nn.parallel import DistributedDataParallel
+
+    traceback = error.__traceback__
+    while traceback is not None:
+        frame = traceback.tb_frame
+        names = frame.f_locals
+        if isinstance(names.get("self"), DistributedDataParallel):
+            try:
+                frame.clear()
+            except RuntimeError:  # still executing: not a finished frame
+                pass
+            else:
+                if isinstance(names, dict):  # before 3.13, a snapshot the frame keeps (clear() leaves it)
+                    names.clear()
+        traceback = traceback.tb_next
 
 
 def _rank_behaviour(callback: Any) -> Optional[str]:

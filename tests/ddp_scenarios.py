@@ -78,11 +78,11 @@ def _device() -> Devices:
     return Devices.CUDA if os.environ.get("NNX_DDP_DEVICE") == "cuda" else Devices.CPU
 
 
-def model() -> NNModel:
+def model(input_dim: int = FEATURES) -> NNModel:
     torch.manual_seed(0)
     return NNModel(
         net_params=NNParams(
-            input_dim=FEATURES, output_dim=CLASSES, hidden_dims=[6], dropout_prob=0.0, activation=Activations.RELU
+            input_dim=input_dim, output_dim=CLASSES, hidden_dims=[6], dropout_prob=0.0, activation=Activations.RELU
         ),
         params=NNModelParams(net=Nets.FEED_FWD, device=_device(), loss=Losses.CROSS_ENTROPY),
     )
@@ -107,7 +107,7 @@ def params(train_loader, val_loader=None, **kwargs) -> NNTrainParams:
         train_loader=train_loader,
         val_loader=val_loader,
         optim=kwargs.pop("optim", None) or sgd_optim(kwargs.pop("accumulate", 2)),
-        overwrite_existing=True,
+        overwrite_existing=kwargs.pop("overwrite_existing", True),
         **kwargs,
     )
 
@@ -238,9 +238,53 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             out["message"] = str(error)
         # #478: the failed fit's DDP wrapper is dropped on every rank, even the
         # one whose error (and its traceback) is still alive here.
-        from torch.nn.parallel import DistributedDataParallel
+        out["live_ddp"] = _live_ddp()
+    elif name == "release_on_failure":
+        # #539: a fit that fails before the loop (a refused reservation, a
+        # peer's failed wrapper build, NNRun or the compile session) or inside
+        # DDP's forward drops the wrapper before the error reaches the caller.
+        # Each handler counts the live wrappers, then calls shutdown(), whose
+        # destroy_process_group is spied on (and skipped, so the group lives on).
+        import nnx.nn.nn_model as nn_model_module
 
-        out["live_ddp"] = sum(isinstance(item, DistributedDataParallel) for item in gc.get_objects())
+        def fit(salt: str, **kwargs):
+            input_dim = kwargs.pop("input_dim", FEATURES)
+            loader = nnx_dist.train_loader(train_set(), batch_size=2, seed=3)
+            return model(input_dim).train(
+                params=params(loader, n_epochs=1, **kwargs), salt=salt, distributed=nnx_dist.DDP()
+            )
+
+        def failing(what: str):
+            def fail(*args, **kwargs):
+                raise RuntimeError(f"{what} failed (injected on rank {rank})")
+
+            return fail
+
+        fit("rerun", overwrite_existing=False)  # a finished run, re-run below
+        cases = {
+            "reservation": ({}, dict(salt="rerun", overwrite_existing=False)),
+            "build": ({"Reducer": (torch.distributed, failing("Reducer"))} if rank == 1 else {}, dict(salt="build")),
+            "nnrun": ({"NNRun": (nn_model_module, failing("NNRun"))}, dict(salt="nnrun")),
+            "compiling": ({"_compiling": (nn_model_module, failing("_compiling"))}, dict(salt="compiling")),
+            "forward": ({}, dict(salt="forward", input_dim=FEATURES + 1)),  # the rows have FEATURES columns
+        }
+        out["cases"] = {}
+        for label, (patches, kwargs) in cases.items():
+            originals = {attr: getattr(owner, attr) for attr, (owner, _) in patches.items()}
+            for attr, (owner, replacement) in patches.items():
+                setattr(owner, attr, replacement)
+            case: dict = {"error": None}
+            try:
+                fit(kwargs.pop("salt"), **kwargs)
+            except BaseException as error:  # noqa: BLE001 - recorded for the test
+                case["error"] = f"{type(error).__name__}: {error}"
+                case["live_ddp"] = _live_ddp()
+                case["net_forward_locals"] = _net_forward_locals(error)
+                case["live_ddp_at_destroy"] = _shutdown_count()
+            finally:
+                for attr, (owner, _) in patches.items():
+                    setattr(owner, attr, originals[attr])
+            out["cases"][label] = case
     elif name == "unscorable":
         # A task-free MSE model: one rank's batch holds a fractional target (unscorable as a class).
         from torch.utils.data import TensorDataset
@@ -750,6 +794,44 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
     else:
         raise SystemExit(f"unknown scenario {name}")
     return out
+
+
+def _live_ddp() -> int:
+    """The DDP wrappers in ``gc.get_objects()``, garbage included (#478)."""
+    from torch.nn.parallel import DistributedDataParallel
+
+    return sum(isinstance(item, DistributedDataParallel) for item in gc.get_objects())
+
+
+def _net_forward_locals(error: BaseException) -> list[list[str]]:
+    """The local names of each net ``forward`` frame in ``error``'s
+    traceback (DDP's own frames excluded): #539 clears DDP's frames only."""
+    from torch.nn.parallel import DistributedDataParallel
+
+    names = []
+    tb = error.__traceback__
+    while tb is not None:
+        frame = tb.tb_frame
+        owner = frame.f_locals.get("self")
+        if frame.f_code.co_name == "forward" and isinstance(owner, torch.nn.Module):
+            if not isinstance(owner, DistributedDataParallel):
+                names.append(sorted(frame.f_locals))
+        tb = tb.tb_next
+    return names
+
+
+def _shutdown_count() -> list[int]:
+    """``nnx.distributed.shutdown()`` with ``destroy_process_group`` spied on:
+    the live DDP wrappers it reaches the destroy with (#539). The destroy is
+    skipped, so the group stays up for the next case."""
+    seen: list[int] = []
+    destroy = torch.distributed.destroy_process_group
+    torch.distributed.destroy_process_group = lambda *args, **kwargs: seen.append(_live_ddp())
+    try:
+        nnx_dist.shutdown(timeout_seconds=30)
+    finally:
+        torch.distributed.destroy_process_group = destroy
+    return seen
 
 
 def _parked_for_diagnostics() -> None:
