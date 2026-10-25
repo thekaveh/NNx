@@ -684,3 +684,28 @@ def test_a_lone_all_masked_sum_task_window_takes_no_update(tmp_path, monkeypatch
     assert run.idps[-1].train_edp.loss is None
     if step == "objective":
         assert run.idps[-1].update_count == 0
+
+
+@pytest.mark.filterwarnings("ignore:epoch 0. skipping ReduceLROnPlateau step")  # a masked last record: no loss
+@pytest.mark.parametrize("via", ["model", "trainer"])
+def test_a_recordless_objective_on_a_task_model_keeps_a_masked_microbatch_loss_none(tmp_path, monkeypatch, via):
+    """#504: a custom objective on a ``TaskSpec`` model that returns no
+    record still records ``None`` for an all-masked microbatch, as the
+    default step does for a task model — never the window's running loss."""
+    from nnx.objectives import ObjectiveResult, supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    supervised = supervised_objective()
+
+    def recordless(ctx):
+        return ObjectiveResult(supervised(ctx).terms)
+
+    case = "categorical-ce-sum"
+    valid, masked = _SUM_TASKS[case][4], _SUM_TASKS[case][5]
+    window = [(_SUM_X[:2], valid), (_SUM_X[2:], masked)]
+    _, run = _fit_sum_task(case, window, via=via, objective=recordless, tag="recordless")
+    trained, empty = (idp.train_edp for idp in run.idps)
+    assert trained.loss is not None
+    assert empty.loss is None
+    assert run.idps[-1].update_count == 1
