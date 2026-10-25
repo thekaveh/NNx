@@ -331,3 +331,55 @@ def test_a_crash_between_publishing_the_checkpoint_and_its_manifest_still_resume
     assert sorted({idp.epoch_idx for idp in resumed.idps}) == [2, 3]
     assert _digest(os.path.join("runs", run_id)) == before  # verifying and resuming wrote nothing to the source
     assert NNRun.load(resumed.id).resume_status.source_generation == 2
+
+
+# --- #537: a resume point republished between verification and load --------------------------------
+
+
+def _republish_refused(params):
+    """Resume with ``params`` while LAST is republished between its
+    verification and its load: refused, the model untouched and the RNG
+    as the fit's seed left it."""
+    from tests._checkpoint_files import republished_on_verify
+
+    model = _model()
+    before = {name: weight.clone() for name, weight in model.net.state_dict().items()}
+    rng = torch.Generator().manual_seed(params.seed).get_state()
+    with republished_on_verify(params.resume_from_run_id), pytest.raises(ResumePointError) as refused:
+        model.train(params=params)
+    assert all(torch.equal(before[name], weight) for name, weight in model.net.state_dict().items())
+    assert torch.equal(rng, torch.get_rng_state())
+    assert not [name for name in os.listdir("runs") if len(name) == 32 and name != params.resume_from_run_id]
+    return str(refused.value)
+
+
+def test_a_stateful_resume_refuses_a_point_republished_after_its_verification():
+    run = _first()
+    message = _republish_refused(_resume("sgd", run.id))
+    assert message.startswith(f"{run.id}/last: the resume point changed while it was being read")
+    assert "generation 3 was verified, generation 4 is published" in message
+
+
+def test_a_weights_only_resume_refuses_a_point_republished_after_its_verification():
+    run = _first()
+    message = _republish_refused(_params("sgd", resume_from_run_id=run.id, resume_mode="weights_only"))
+    assert message.startswith(f"{run.id}/last: the resume point changed while it was being read")
+
+
+def test_a_resume_from_a_weights_only_checkpoint_refuses_a_republished_point():
+    """``NNCheckpoint.save`` without training state writes ``checkpoint_id:
+    null``: the generation, not the id, tells the republished point apart."""
+    from tests._checkpoint_files import republished_on_verify
+
+    run = _first()
+    NNCheckpoint.load(run=run.id, type=Checkpoints.LAST).save(run=run.id, type="weights_e1")
+    assert NNCheckpoint.resume_point(run.id, "weights_e1")["checkpoint_id"] is None
+    params = _params("sgd", resume_from_run_id=run.id, resume_from_checkpoint="weights_e1", resume_mode="weights_only")
+    model = _model()
+    before = {name: weight.clone() for name, weight in model.net.state_dict().items()}
+    with (
+        republished_on_verify(run.id, "weights_e1"),
+        pytest.raises(ResumePointError, match="generation 1 was verified"),
+    ):
+        model.train(params=params)
+    assert all(torch.equal(before[name], weight) for name, weight in model.net.state_dict().items())

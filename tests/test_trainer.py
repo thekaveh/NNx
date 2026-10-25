@@ -2449,3 +2449,28 @@ def test_an_error_filter_never_replaces_a_component_restore_error(loop, tmp_path
             )
     assert _same_weights(target, before)
     assert _streams_equal(_global_streams(), streams)
+
+
+# --- #537: a resume point republished between verification and load ----------------------------
+
+
+@pytest.mark.parametrize("mode", ["stateful", "auto", "weights_only"])
+def test_trainer_refuses_a_resume_point_republished_after_its_verification(tmp_path, monkeypatch, mode):
+    """LAST is published again (generation 4, epoch 5) after the resume
+    verified generation 3: the Trainer refuses before anything is restored,
+    as NNModel.train does, instead of training on from epoch 6."""
+    from nnx import ResumePointError
+    from tests._checkpoint_files import republished_on_verify
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    first = Trainer(_gan_like_model()).train(params=_two_optimizer_params(2), trainer_step_fn=_two_step)
+    target, params = _gan_like_model(), _two_optimizer_params(1, run_id=first.id, mode=mode)
+    before = {name: weight.clone() for name, weight in target.net.state_dict().items()}
+    rng = torch.get_rng_state()
+    with republished_on_verify(first.id), pytest.raises(ResumePointError) as refused:
+        Trainer(target).train(params=params, trainer_step_fn=_two_step)
+    assert str(refused.value).startswith(f"{first.id}/last: the resume point changed while it was being read")
+    assert "generation 3 was verified, generation 4 is published" in str(refused.value)
+    assert all(torch.equal(before[name], weight) for name, weight in target.net.state_dict().items())
+    assert torch.equal(rng, torch.get_rng_state())

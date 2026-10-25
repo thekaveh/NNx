@@ -486,8 +486,8 @@ run.provenance.fingerprint, run.provenance.attempt.attempt_id, run.provenance.at
   a failed attempt is a warning; it never replaces the training error.
   `Trainer.train(..., provenance=...)` records attempts the same way.
 - **Resumed attempts.** A resume is a new attempt of the same plan. It links
-  its parent's attempt and checkpoint generation, and leaves the parent's
-  files untouched. `NNRun.save` never rewrites them, and both files are written
+  its parent's attempt and the checkpoint generation it restored, and leaves
+  the parent's files untouched. `NNRun.save` never rewrites them, and both files are written
   atomically, so an interrupted write leaves the previous record. An attempt
   that fails before writing any run file releases its reservation. A failed
   first LAST commit keeps the run, with a `failed` attempt and no committed
@@ -2022,6 +2022,14 @@ refuses with `ResumePointError` a point that is:
 - *mixed*: its files are of different generations;
 - *corrupted*: a digest does not match.
 
+The load that follows takes the checkpoint's lock again. In that hold it
+checks that the tag still holds the verified generation, so a point
+published again in between (a source still training, or retrained with
+`overwrite_existing=True`) is refused with `ResumePointError` too: the
+resume point changed while it was being read. Every resume path refuses it,
+`NNModel.train` and `Trainer.train` in either resume mode, and so does every
+DDP rank. Nothing is hashed twice.
+
 `NNCheckpoint.resume_point(run, type)` reads the manifest. A checkpoint
 written before manifests loads as before. Stopping (`should_stop`, an
 interrupt) leaves the last committed point intact.
@@ -2030,7 +2038,8 @@ interrupt) leaves the last committed point intact.
 verification, it takes the source checkpoint's lock file. The resumed
 session's run id hashes its parent (`parent_run_id`, `parent_checkpoint`).
 `run.resume_status` records the source run, checkpoint, epoch,
-`source_generation` and `source_checkpoint_id`. It is stored in
+`source_generation` and `source_checkpoint_id`, all of the generation the
+resume restored. It is stored in
 `metadata.yaml` under `resume`, never in `run.yaml`, whose content *is* the
 run id.
 

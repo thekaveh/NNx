@@ -546,6 +546,7 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         "resume_corrupt",
         "resume_bad_id",
         "resume_hyperparameters",
+        "resume_republished",
     ):
         loader = nnx_dist.train_loader(train_set(), batch_size=2, seed=3)
         m = model()
@@ -564,7 +565,12 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
 
         def counting_verify(*args, **kwargs):
             verified.append(str(kwargs.get("run", args[0] if args else None)))
-            return real_verify(*args, **kwargs)
+            manifest = real_verify(*args, **kwargs)
+            if name == "resume_republished":  # #537: LAST is published again before the ranks load it
+                from _checkpoint_files import republish
+
+                republish(verified[-1], Checkpoints.LAST)
+            return manifest
 
         nn_checkpoint.NNCheckpoint.verify = staticmethod(counting_verify)
         if name == "resume_full":
@@ -592,11 +598,14 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             # #502: a changed lr / weight_decay / momentum is refused on every rank.
             changed = name == "resume_hyperparameters"
             configured = replace(sgd_optim(), max_lr=1e-4, weight_decay=0.1, momentum=0.0) if changed else None
+            mode = {"resume_mode": "weights_only"} if name == "resume_republished" else {}
             before = {k: v.clone() for k, v in m.net.state_dict().items()}
             rng_before = torch.get_rng_state()
             try:
                 run = m.train(
-                    params=params(loader, n_epochs=1, data_id="split", resume_from_run_id=first_id, optim=configured),
+                    params=params(
+                        loader, n_epochs=1, data_id="split", resume_from_run_id=first_id, optim=configured, **mode
+                    ),
                     distributed=nnx_dist.DDP(),
                 )
             except BaseException as error:  # noqa: BLE001
