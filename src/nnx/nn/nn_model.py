@@ -430,10 +430,11 @@ def _load_verified_resume_point(run_id: str, ckpt_type: Any, manifest: dict[str,
     """Load the verified resume point (``NNCheckpoint._load_resume_point``,
     #537). Under DDP every rank loads it itself, so a republish landing
     between two ranks' loads is refused by the later one only: the ranks
-    share that refusal, and every rank raises the same
+    share their refusals, and every rank raises the same
     :class:`ResumePointError` (as :func:`_verified_resume_point` does), not
-    a peer's ``DistributedFailure``. Every rank reaches the gather: each
-    one's own failure is caught first, then raised."""
+    a peer's ``DistributedFailure``: the lowest refusing rank's, with a
+    rank's own different failure as its cause. Every rank reaches the
+    gather: each one's own failure is caught first, then raised."""
     if ddp is None:
         return NNCheckpoint._load_resume_point(run_id, ckpt_type, manifest)
     loaded: Any = None
@@ -444,10 +445,10 @@ def _load_verified_resume_point(run_id: str, ckpt_type: Any, manifest: dict[str,
         failure = error
     refusal = str(failure) if isinstance(failure, ResumePointError) else None
     refusals = [message for message in ddp.gather(refusal) if message is not None]
-    if isinstance(failure, ResumePointError):
-        raise failure
-    if refusals:
-        raise ResumePointError(refusals[0])
+    if refusals:  # the same message on every rank, also when several refused
+        if isinstance(failure, ResumePointError) and str(failure) == refusals[0]:
+            raise failure
+        raise ResumePointError(refusals[0]) from failure
     if failure is not None:  # anything else is agreed on by the "resuming the run" block
         raise failure
     return loaded
