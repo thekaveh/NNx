@@ -8,10 +8,11 @@ library must get right on top:
 - **Exact global batches.** Each committed update equals a single process
   training on the union of the ranks' batches: every rank's loss numerator
   is scaled by ``world_size / W`` where ``W`` is the *global* loss
-  denominator of the update window (unequal valid counts included), so
-  DDP's gradient average is the global-batch gradient. Accumulation
-  windows synchronize gradients only at committed updates (``no_sync``
-  otherwise); an all-masked global window is skipped on every rank.
+  denominator of the update window (unequal valid counts included; a
+  sum-reduction loss by ``world_size``), so DDP's gradient average is the
+  global-batch gradient. Accumulation windows synchronize gradients only
+  at committed updates (``no_sync`` otherwise); a task model's window with
+  no valid target on any rank is skipped on every rank.
 - **Agreement, not hangs.** These are decided collectively, so every rank
   raises together (the failing rank its own error, the others usually a
   :class:`DistributedFailure` naming it): the preflight refusals, building
@@ -545,10 +546,11 @@ class _DDPSession:
         finally:
             self.in_step = False
 
-    def sum(self, value: float) -> float:
-        tensor = torch.tensor([float(value)], dtype=torch.float64, device=self._collective_device())
+    def sum(self, *values: float) -> tuple[float, ...]:
+        """Every rank's ``values`` summed elementwise, in one collective."""
+        tensor = torch.tensor([float(value) for value in values], dtype=torch.float64, device=self._collective_device())
         dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
-        return float(tensor.item())
+        return tuple(float(total) for total in tensor.tolist())
 
     def gather(self, value: Any) -> list[Any]:
         return _send(value)
