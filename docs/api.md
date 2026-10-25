@@ -1963,7 +1963,7 @@ Validate saved component metadata against the registered components **without mu
 nnx.components.ComponentRegistry.restore(self, plan: '_Plan') -> 'tuple[str, ...]'
 ```
 
-Load a validated plan transactionally: on any failure every component attempted — the failing one included — gets a deep copy of its pre-call state back, then the original error propagates. A component whose own rollback fails does not stop the others from being rolled back, nor replace the original error; it is reported in a ``RuntimeWarning``.
+Load a validated plan transactionally: on any failure every component attempted — the failing one included — gets a deep copy of its pre-call state back, then the original error propagates. A component whose own rollback fails does not stop the others from being rolled back, nor replace the original error; it is reported in a ``RuntimeWarning`` (dropped under an error filter, which would otherwise replace the original error).
 
 
 #### `nnx.components.ComponentRestoreError`
