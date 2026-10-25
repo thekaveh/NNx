@@ -352,7 +352,8 @@ class ComponentRegistry:
         of its pre-call state back, then the original error propagates. A
         component whose own rollback fails does not stop the others from
         being rolled back, nor replace the original error; it is reported
-        in a ``RuntimeWarning``."""
+        in a ``RuntimeWarning`` (dropped under an error filter, which would
+        otherwise replace the original error)."""
         snapshots = [
             (name, component, deepcopy(component.component_state()), self._components[name][0].version)
             for name, component, _, _ in plan.to_restore
@@ -372,8 +373,12 @@ class ComponentRegistry:
             if failed:
                 from .nn.callbacks import _warn_at_user_frame
 
-                _warn_at_user_frame(
-                    f"component restore failed and could not roll back {', '.join(failed)}; their state is undefined",
-                )
+                try:  # an error filter (-W error) must not replace the original error either (#507)
+                    _warn_at_user_frame(
+                        f"component restore failed and could not roll back {', '.join(failed)}; "
+                        "their state is undefined",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             raise
         return tuple(name for name, _, _, _ in plan.to_restore)

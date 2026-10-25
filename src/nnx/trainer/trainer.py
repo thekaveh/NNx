@@ -85,6 +85,7 @@ from ..nn.nn_model import (
     _plan_component_restore,
     _restore_weights_only,
     _resume_hyperparameters,
+    _ResumeWindow,
     _rollback_resume,
     _saved_hyperparameters,
     _set_loader_epoch,
@@ -650,59 +651,64 @@ class Trainer:
             params, optimizers, schedulers, registry, train_loader, precision=precision, scaler=scaler
         )
 
-        primary = _primary_name(optimizers.keys())
-        ctx = _CallbackContext(
-            model=self.model,
-            run=run,
-            optimizer=optimizers[primary],
-        )
-        # Trainer-aware extensions: existing callbacks reading ctx.optimizer
-        # see the primary; new callbacks can downcast through ctx.optimizers
-        # or ctx.trainer for the multi-optim view.
-        ctx.optimizers = optimizers
-        ctx.trainer = self
-        if engine is not None:
-
-            def _dispatch_and_refuse(event: Any) -> None:
-                _dispatch_update(normalized_callbacks, ctx, event)
-                _refuse_update_listeners(ctx)  # a stop or listener set at an update is refused there
-
-            engine.listeners.append(_dispatch_and_refuse)
-            # After the callbacks, which see the learning rate the update was
-            # taken with; each optimizer's clock then steps its schedule.
-            engine.listeners.append(
-                lambda event: clocks[event.optimizer].committed() if event.optimizer in clocks else None
+        # #507: from here until the first committed update a failure hands the
+        # caller's model and RNG back (the resume's rollback transaction).
+        resume_window = _ResumeWindow(rollback)
+        with resume_window:
+            primary = _primary_name(optimizers.keys())
+            ctx = _CallbackContext(
+                model=self.model,
+                run=run,
+                optimizer=optimizers[primary],
             )
-            ctx.update_count = engine.commits
+            # Trainer-aware extensions: existing callbacks reading ctx.optimizer
+            # see the primary; new callbacks can downcast through ctx.optimizers
+            # or ctx.trainer for the multi-optim view.
+            ctx.optimizers = optimizers
+            ctx.trainer = self
+            if engine is not None:
 
-        def report_update(name: str) -> None:
-            if name not in optimizers:
-                raise ValueError(
-                    f"report_update({name!r}): no optimizer of that name; this Trainer has {sorted(optimizers)}"
+                def _dispatch_and_refuse(event: Any) -> None:
+                    _dispatch_update(normalized_callbacks, ctx, event)
+                    _refuse_update_listeners(ctx)  # a stop or listener set at an update is refused there
+
+                engine.listeners.append(_dispatch_and_refuse)
+                # After the callbacks, which see the learning rate the update was
+                # taken with; each optimizer's clock then steps its schedule.
+                engine.listeners.append(
+                    lambda event: clocks[event.optimizer].committed() if event.optimizer in clocks else None
                 )
-            clock = clocks.get(name)
-            if clock is not None:
-                clock.committed()
+                ctx.update_count = engine.commits
 
-        records = _training_history(run, history)  # FEAT-036: eager list or bounded journal
-        ctx.history_retention = history.retention if history is not None else None
-        ctx.history_records = records
-        # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
-        # Fall back to None so tqdm renders without a total instead of crashing.
-        try:
-            n_iter: Optional[int] = int(params.n_epochs * len(params.train_loader))
-        except TypeError:
-            n_iter = None
-        best_checkpoint: Optional[NNCheckpoint] = NNCheckpoint.load(
-            run=run.id,
-            type=Checkpoints.BEST,
-        )
+            def report_update(name: str) -> None:
+                if name not in optimizers:
+                    raise ValueError(
+                        f"report_update({name!r}): no optimizer of that name; this Trainer has {sorted(optimizers)}"
+                    )
+                resume_window.close()  # an update NNx sees: a resume's rollback window ends (#507)
+                clock = clocks.get(name)
+                if clock is not None:
+                    clock.committed()
 
-        Utils.print_table(
-            header=False,
-            title="Trainer Run Details...",
-            data=Utils.flatten_dict(data=run.state()),
-        )
+            records = _training_history(run, history)  # FEAT-036: eager list or bounded journal
+            ctx.history_retention = history.retention if history is not None else None
+            ctx.history_records = records
+            # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
+            # Fall back to None so tqdm renders without a total instead of crashing.
+            try:
+                n_iter: Optional[int] = int(params.n_epochs * len(params.train_loader))
+            except TypeError:
+                n_iter = None
+            best_checkpoint: Optional[NNCheckpoint] = NNCheckpoint.load(
+                run=run.id,
+                type=Checkpoints.BEST,
+            )
+
+            Utils.print_table(
+                header=False,
+                title="Trainer Run Details...",
+                data=Utils.flatten_dict(data=run.state()),
+            )
 
         idx_iter = 0
         tqdm_disabled = os.environ.get("NNX_TQDM_DISABLE", "").lower() in {"1", "true", "yes"}
@@ -710,26 +716,21 @@ class Trainer:
             torch.set_grad_enabled(True),
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
             _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
+            # Innermost: a failure before the first committed update (a refused
+            # on_train_begin, the component restore, the first epoch's start,
+            # fetch or step) is rolled back before on_train_end runs (#507).
+            resume_window,
         ):
-            try:
-                callback_lifecycle.start()
-                _refuse_update_listeners(ctx)
-            except BaseException:
-                if rollback is not None:  # a resume loaded state: hand it back unchanged
-                    rollback()
-                raise
+            callback_lifecycle.start()
+            _refuse_update_listeners(ctx)
             # FEAT-005: reset hooks have run once; restore the validated
             # component states (all-or-nothing) before the first resumed epoch.
             if component_plan is not None:
-                try:
-                    restored = registry.restore(component_plan)
-                except BaseException:
-                    assert rollback is not None
-                    rollback()
-                    raise
+                restored = registry.restore(component_plan)
                 resume_status = replace(resume_status, restored_components=restored)
             if engine is not None:
                 ctx.update_count = engine.commits  # continues after a stateful resume
+                resume_window.watch(engine)
             run = run.with_resume_status(resume_status).with_precision(precision)
             ctx.run = run
             pre_transform_net_state: Optional[dict[str, Any]] = None
@@ -739,19 +740,14 @@ class Trainer:
             for local_epoch in range(params.n_epochs):
                 idx_epoch = start_epoch + local_epoch
                 ctx.epoch = idx_epoch
-                try:
-                    _set_loader_epoch(params.train_loader, idx_epoch)
-                    for cb in normalized_callbacks:
-                        cb.on_epoch_begin(ctx)
-                    _refuse_update_listeners(ctx)
-                    warn_unowned_trainables(self.model.net, optimizers.values(), unowned_warned)
-                except BaseException:
-                    # Before the first batch nothing has trained: a resume's
-                    # loaded state goes back as it was (a warning raised as an
-                    # error included).
-                    if local_epoch == 0 and rollback is not None:
-                        rollback()
-                    raise
+                # Before the first committed update nothing has trained: a
+                # failure here hands a resume's loaded state back through
+                # resume_window (a warning raised as an error included).
+                _set_loader_epoch(params.train_loader, idx_epoch)
+                for cb in normalized_callbacks:
+                    cb.on_epoch_begin(ctx)
+                _refuse_update_listeners(ctx)
+                warn_unowned_trainables(self.model.net, optimizers.values(), unowned_warned)
 
                 records.begin_epoch()
                 for clock in clocks.values():
@@ -802,6 +798,7 @@ class Trainer:
                             report_update=report_update,
                         )
                         train_edp = trainer_step_fn(step_ctx)
+                    resume_window.close()  # the first step returned: a later failure keeps its training
                     if epoch_summary is not None:
                         epoch_summary.add(train_edp, _batch_sample_count(self.model.net, batch))
 
@@ -1045,7 +1042,8 @@ class Trainer:
         each scheduler's type, restored settings and one-cycle horizon, and
         the component set. Returns ``(start_epoch,
         component_plan, status, rollback)``; ``rollback`` puts the model and
-        RNG back if the later component restore fails.
+        RNG back if the fit fails before its first committed update (the
+        component restore included; see ``_ResumeWindow``).
         """
         if params.resume_from_run_id is None:
             return 0, None, ResumeStatus(), None

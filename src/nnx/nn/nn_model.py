@@ -499,22 +499,66 @@ def _restore_weights_only(
 def _rollback_resume(
     net: torch.nn.Module, net_state: dict[str, Any], rng_state: dict[str, Any], train_loader: Any
 ) -> None:
-    """Put the model and RNG back after a resume fails after its restore
-    (a refused ``on_train_begin`` or first ``on_epoch_begin``, a failed
-    component restore, a warning raised as an error). A callback may have
-    changed the network by then (QAT preparation swaps modules); a rollback
-    that cannot load is reported as a warning instead of replacing the
-    original error."""
+    """Put the model and RNG back after a resume fails after its restore,
+    before its first committed update (:class:`_ResumeWindow`). A callback
+    may have changed the network by then (QAT preparation swaps modules); a
+    rollback that cannot load is reported as a warning instead of replacing
+    the original error, and the RNG streams go back either way."""
     try:
         net.load_state_dict(net_state)
     except Exception as error:
         from .callbacks import _warn_at_user_frame
 
-        _warn_at_user_frame(
-            "the resume failed after its restore and the model could not be rolled back "
-            f"({type(error).__name__}: {error})",
-        )
-    _restore_rng_state(rng_state, train_loader)
+        try:  # an error filter (-W error) must not replace the original error either (#507)
+            _warn_at_user_frame(
+                "the resume failed after its restore and the model could not be rolled back "
+                f"({type(error).__name__}: {error})",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        _restore_rng_state(rng_state, train_loader)
+
+
+class _ResumeWindow:
+    """A resume's rollback transaction (#507), shared by ``NNModel.train`` and
+    ``Trainer.train``. From the restore until the first committed update,
+    nothing has trained from the loaded state: a failure in that window (the
+    post-restore setup, a refused ``on_train_begin`` or first
+    ``on_epoch_begin``, the component restore, the first fetch, an empty
+    first epoch, a first step raising before its update) hands the caller's
+    model and RNG back (``rollback``) before the error propagates. The window
+    closes when the first step returns or NNx sees an update before that
+    (``report_update``, an objective's engine committing); a later failure
+    keeps the trained state, as in a fresh fit. Used as a context manager,
+    as often as the guarded code needs; ``rollback=None`` (no resume) makes
+    it a no-op."""
+
+    def __init__(self, rollback: Optional[Callable[[], None]]) -> None:
+        self._rollback = rollback
+        self._engine: Any = None
+        self._engine_commits = 0
+
+    def watch(self, engine: Any) -> None:
+        """Close at the engine's next commit (counted from now, after a
+        stateful resume restored its counters)."""
+        if engine is not None:
+            self._engine, self._engine_commits = engine, engine.commits
+
+    def close(self) -> None:
+        self._rollback = None
+
+    def __enter__(self) -> _ResumeWindow:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        if exc_type is not None and self._engine is not None and self._engine.commits != self._engine_commits:
+            self.close()  # the objective's update committed before the failure
+        rollback = self._rollback
+        if exc_type is not None and rollback is not None:
+            self.close()
+            rollback()
+        return False
 
 
 def _resume_training_state(
@@ -758,18 +802,24 @@ class _CallbackFinalizer:
             for cleanup_error in cleanup_errors:
                 from .callbacks import _warn_at_user_frame
 
-                _warn_at_user_frame(
-                    f"on_train_end cleanup failed while handling {type(exc).__name__}: {cleanup_error}",
-                )
+                try:  # an error filter (-W error) must not replace the training error (#507)
+                    _warn_at_user_frame(
+                        f"on_train_end cleanup failed while handling {type(exc).__name__}: {cleanup_error}",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             return False
 
         if cleanup_errors:
             for cleanup_error in cleanup_errors[1:]:
                 from .callbacks import _warn_at_user_frame
 
-                _warn_at_user_frame(
-                    f"additional on_train_end cleanup failed: {cleanup_error}",
-                )
+                try:  # nor the first on_train_end error
+                    _warn_at_user_frame(
+                        f"additional on_train_end cleanup failed: {cleanup_error}",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             raise cleanup_errors[0]
         return False
 
@@ -4148,94 +4198,101 @@ class NNModel(_HubMixinBase):
                 _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
             raise
 
-        # Every record in a list (idps.csv), or a bounded window plus the run's
-        # history journal (FEAT-036); either way saved before LAST each epoch.
-        records = _training_history(run, history) if writes else _ReplicaHistory()
-        # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
-        # Fall back to None so tqdm renders without a total instead of crashing.
-        try:
-            n_iter: Optional[int] = int(session_epochs * len(cast(Sized, train_loader)))
-        except TypeError:
-            n_iter = None
-        best_checkpoint: Optional[NNCheckpoint] = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
+        # #507: from here until the first committed update a failure hands the
+        # caller's model and RNG back (the resume's rollback transaction).
+        def _rollback() -> None:
+            assert previous_net_state is not None and previous_rng_state is not None
+            _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
 
-        if writes:
-            Utils.print_table(header=False, title="Run Details...", data=Utils.flatten_dict(data=run.state()))
+        resume_window = _ResumeWindow(_rollback if previous_net_state is not None else None)
+        with resume_window:
+            # Every record in a list (idps.csv), or a bounded window plus the run's
+            # history journal (FEAT-036); either way saved before LAST each epoch.
+            records = _training_history(run, history) if writes else _ReplicaHistory()
+            # `len()` is not defined on iterable-style DataLoaders (IterableDataset).
+            # Fall back to None so tqdm renders without a total instead of crashing.
+            try:
+                n_iter: Optional[int] = int(session_epochs * len(cast(Sized, train_loader)))
+            except TypeError:
+                n_iter = None
+            best_checkpoint: Optional[NNCheckpoint] = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
 
-        ctx = _CallbackContext(model=self, run=run, optimizer=optimizer)
-        ctx.scheduler = scheduler  # read-only view for callbacks (#394)
-        ctx.history_retention = history.retention if history is not None else None
-        ctx.history_records = records
-        # Default to the standard supervised step when the caller doesn't
-        # override. Custom step gets dispatched from inside the batch loop
-        # below so the rest of train() (scheduler, callbacks, checkpoint
-        # cadence, val loop, incremental save) is identical either way.
-        # Explicit None check (not `or`) so a hypothetical callable that
-        # happens to be falsy by __bool__ doesn't silently fall back.
-        step_fn: TrainStepFn = default_train_step if train_step_fn is None else train_step_fn
-        # FEAT-014: a step's committed updates drive an optimizer_update
-        # clock (an objective's engine reports to the clock directly).
-        clock_report: Callable[[], None] = (
-            clock.report_update if clock is not None and engine is None else NO_UPDATE_REPORTER
-        )
+            if writes:
+                Utils.print_table(header=False, title="Run Details...", data=Utils.flatten_dict(data=run.state()))
 
-        def _announce_update() -> None:
-            # FEAT-033: count the committed update and tell the listeners.
-            ctx.committed_updates += 1
-            for listener in list(ctx.update_listeners):
-                listener(ctx)
+            ctx = _CallbackContext(model=self, run=run, optimizer=optimizer)
+            ctx.scheduler = scheduler  # read-only view for callbacks (#394)
+            ctx.history_retention = history.retention if history is not None else None
+            ctx.history_records = records
+            # Default to the standard supervised step when the caller doesn't
+            # override. Custom step gets dispatched from inside the batch loop
+            # below so the rest of train() (scheduler, callbacks, checkpoint
+            # cadence, val loop, incremental save) is identical either way.
+            # Explicit None check (not `or`) so a hypothetical callable that
+            # happens to be falsy by __bool__ doesn't silently fall back.
+            step_fn: TrainStepFn = default_train_step if train_step_fn is None else train_step_fn
+            # FEAT-014: a step's committed updates drive an optimizer_update
+            # clock (an objective's engine reports to the clock directly).
+            clock_report: Callable[[], None] = (
+                clock.report_update if clock is not None and engine is None else NO_UPDATE_REPORTER
+            )
 
-        class _ReportUpdate:
-            """The step's ``report_update``: the clock's (refusing an
-            optimizer name, as ever), then the update listeners. ``listening``
-            says whether anything needs a judged step (``listens``)."""
+            def _announce_update() -> None:
+                # FEAT-033: count the committed update and tell the listeners.
+                ctx.committed_updates += 1
+                for listener in list(ctx.update_listeners):
+                    listener(ctx)
 
-            def __call__(self, *names: Any) -> None:
-                clock_report(*names)
-                _announce_update()
+            class _ReportUpdate:
+                """The step's ``report_update``: the clock's (refusing an
+                optimizer name, as ever), then the update listeners. ``listening``
+                says whether anything needs a judged step (``listens``)."""
 
-            @property
-            def listening(self) -> bool:
-                return listens(clock_report) or bool(ctx.update_listeners)
+                def __call__(self, *names: Any) -> None:
+                    resume_window.close()  # an update NNx sees: a resume's rollback window ends (#507)
+                    clock_report(*names)
+                    _announce_update()
 
-        report_update: Callable[..., None] = _ReportUpdate()
+                @property
+                def listening(self) -> bool:
+                    return listens(clock_report) or bool(ctx.update_listeners)
 
-        if engine is not None:
-            assert objective is not None
-            # Committed updates are announced to every callback.
-            engine.listeners.append(lambda event: _dispatch_update(normalized_callbacks, ctx, event))
-            engine.listeners.append(lambda event: _announce_update())
-            if clock is not None:
-                # After the callbacks: they see the learning rate the update
-                # was taken with; the clock then steps the schedule.
-                engine.listeners.append(lambda event: clock.committed())
-            step_fn = _ObjectiveStep(objective, engine)
-            ctx.update_count = engine.commits
+            report_update: Callable[..., None] = _ReportUpdate()
 
-        # #394: a planned resume continues the logical step and update counters.
-        idx_iter = int(restored_counters.get("global_step") or 0)
-        ctx.committed_updates = int(restored_counters.get("committed_updates") or 0)
-        stopped_mid_epoch = False
-        pre_transform_net_state: Optional[dict[str, Any]] = None
-        final_optimizer_topology = resume_optimizer_topology
-        pre_transform_rng_state: Optional[dict[str, Any]] = None
-        # Respect NNX_TQDM_DISABLE=1 in tests / CI / non-TTY environments so
-        # the progress bar doesn't pollute output. Same env var works as
-        # well in subprocess contexts where the user can't pass a flag.
-        tqdm_disabled = os.environ.get("NNX_TQDM_DISABLE", "").lower() in {"1", "true", "yes"}
+            if engine is not None:
+                assert objective is not None
+                # Committed updates are announced to every callback.
+                engine.listeners.append(lambda event: _dispatch_update(normalized_callbacks, ctx, event))
+                engine.listeners.append(lambda event: _announce_update())
+                if clock is not None:
+                    # After the callbacks: they see the learning rate the update
+                    # was taken with; the clock then steps the schedule.
+                    engine.listeners.append(lambda event: clock.committed())
+                step_fn = _ObjectiveStep(objective, engine)
+                ctx.update_count = engine.commits
+
+            # #394: a planned resume continues the logical step and update counters.
+            idx_iter = int(restored_counters.get("global_step") or 0)
+            ctx.committed_updates = int(restored_counters.get("committed_updates") or 0)
+            stopped_mid_epoch = False
+            pre_transform_net_state: Optional[dict[str, Any]] = None
+            final_optimizer_topology = resume_optimizer_topology
+            pre_transform_rng_state: Optional[dict[str, Any]] = None
+            # Respect NNX_TQDM_DISABLE=1 in tests / CI / non-TTY environments so
+            # the progress bar doesn't pollute output. Same env var works as
+            # well in subprocess contexts where the user can't pass a flag.
+            tqdm_disabled = os.environ.get("NNX_TQDM_DISABLE", "").lower() in {"1", "true", "yes"}
+
         with (
             torch.set_grad_enabled(True),
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
             _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
+            # Innermost: a failure before the first committed update (a refused
+            # on_train_begin, the component restore, the first epoch's start,
+            # fetch or step) is rolled back before on_train_end runs (#507).
+            resume_window,
         ):
-            try:
-                callback_lifecycle.start()
-            except BaseException:
-                # A refused or failing on_train_begin after a resume loaded
-                # state: hand the caller's model and RNG back unchanged.
-                if previous_net_state is not None and previous_rng_state is not None:
-                    _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
-                raise
+            callback_lifecycle.start()
             # FEAT-033: under DDP, whether any rank listens for updates (and
             # may request a stop at one) is agreed once, not per batch.
             ddp_listening = ddp is not None and any(ddp.gather(bool(ctx.update_listeners)))
@@ -4243,16 +4300,12 @@ class NNModel(_HubMixinBase):
             # validated component states are restored, all-or-nothing, before
             # the first resumed epoch.
             if component_plan is not None:
-                try:
-                    with contextlib.nullcontext() if ddp is None else _collectively("restoring components"):
-                        restored = registry.restore(component_plan)
-                except BaseException:
-                    assert previous_net_state is not None and previous_rng_state is not None
-                    _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
-                    raise
+                with contextlib.nullcontext() if ddp is None else _collectively("restoring components"):
+                    restored = registry.restore(component_plan)
                 resume_status = replace(resume_status, restored_components=restored)
             if engine is not None:
                 ctx.update_count = engine.commits  # continues after a stateful resume
+                resume_window.watch(engine)
             run = (
                 run.with_resume_status(resume_status)
                 .with_precision(precision)
@@ -4263,22 +4316,18 @@ class NNModel(_HubMixinBase):
             for local_epoch in range(session_epochs):
                 idx_epoch = start_epoch + local_epoch
                 ctx.epoch = idx_epoch
-                try:
-                    _set_loader_epoch(train_loader, idx_epoch)
-                    if ddp is not None:
-                        # Unequal step counts fail on every rank, never hang.
-                        ddp.check_steps(len(cast(Sized, train_loader)), idx_epoch)
-                    with contextlib.nullcontext() if ddp is None else _collectively(f"epoch {idx_epoch}'s start"):
-                        for cb in normalized_callbacks:
-                            cb.on_epoch_begin(ctx)
-                    warn_unowned_trainables(self.net, [optimizer], unowned_warned)  # unfrozen but never trained
-                except BaseException:
-                    # Before the first batch nothing has trained: a resume's
-                    # loaded state goes back as it was (every rank, after the
-                    # agreement; a warning raised as an error included).
-                    if local_epoch == 0 and previous_net_state is not None and previous_rng_state is not None:
-                        _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
-                    raise
+                # Before the first committed update nothing has trained: a
+                # failure here hands a resume's loaded state back through
+                # resume_window (every rank, after the agreement; a warning
+                # raised as an error included).
+                _set_loader_epoch(train_loader, idx_epoch)
+                if ddp is not None:
+                    # Unequal step counts fail on every rank, never hang.
+                    ddp.check_steps(len(cast(Sized, train_loader)), idx_epoch)
+                with contextlib.nullcontext() if ddp is None else _collectively(f"epoch {idx_epoch}'s start"):
+                    for cb in normalized_callbacks:
+                        cb.on_epoch_begin(ctx)
+                warn_unowned_trainables(self.net, [optimizer], unowned_warned)  # unfrozen but never trained
 
                 records.begin_epoch()
                 accumulation_state = GradientAccumulationState()
@@ -4313,6 +4362,7 @@ class NNModel(_HubMixinBase):
                     if compile_session is not None:
                         compile_session.where = {"phase": "train", "epoch": idx_epoch, "batch": idx_batch}
                     train_edp = step_fn(step_ctx)
+                    resume_window.close()  # the first step returned: a later failure keeps its training
                     if epoch_summary is not None:
                         epoch_summary.add(train_edp, _batch_sample_count(self.net, batch))
 

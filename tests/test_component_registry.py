@@ -203,3 +203,24 @@ def test_a_failing_rollback_neither_masks_the_error_nor_stops_the_others():
             registry.restore(plan)
     assert first.count == 0 and torch.equal(first.weights, torch.zeros(3))
     assert last.count == 0 and torch.equal(last.weights, torch.zeros(3))
+
+
+def test_an_error_filter_never_replaces_the_error_with_the_failed_rollback_warning():
+    """#507: under ``warnings.simplefilter("error")`` the failed-rollback
+    warning is dropped, and the load's own error still propagates."""
+    import warnings
+
+    first, broken, last = Counter("first"), FailsRollback("broken"), Counter("last")
+    registry = ComponentRegistry([first, broken, last])
+    saved = {
+        name: {"version": 1, "required": True, "state": {"count": 5, "weights": torch.ones(3)}}
+        for name in ("first", "broken", "last")
+    }
+    plan = registry.plan(saved)
+    last.fail_next_load = True
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(RuntimeError, match="last cannot load") as raised:
+            registry.restore(plan)
+    assert type(raised.value) is RuntimeError
+    assert first.count == 0 and last.count == 0  # the others were still rolled back
