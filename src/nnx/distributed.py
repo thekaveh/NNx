@@ -12,15 +12,23 @@ library must get right on top:
   DDP's gradient average is the global-batch gradient. Accumulation
   windows synchronize gradients only at committed updates (``no_sync``
   otherwise); an all-masked global window is skipped on every rank.
-- **Agreement, not hangs.** Non-finite losses, step-count mismatches,
-  preflight refusals, resume and component-restore failures, epoch-end
-  callback failures and writer-side commit failures are decided
-  collectively: every rank raises together. Anything else that fails on one
-  rank only (a dataset error mid-epoch, say) ends through the process
-  group's timeout (``init_process_group(timeout_seconds=...)``) and
-  ``torchrun`` stopping the other ranks — bounded, never a silent hang. Records (per batch, per epoch,
-  validation) are global — gathered and computed identically on every
-  rank — so monitors, early stopping, BEST and the plateau scheduler agree.
+- **Agreement, not hangs.** These are decided collectively, so every rank
+  raises together (the failing rank its own error, the others usually a
+  :class:`DistributedFailure` naming it): the preflight refusals, building
+  the DDP wrapper, reserving the run, the writer's provenance attempt start,
+  resume and component-restore failures, ``on_train_begin``, each epoch's
+  step-count check and ``on_epoch_begin``, each default step's loss
+  finiteness and target checks, update listeners registered in
+  ``on_train_begin`` (at each batch's stop decision), ``on_epoch_end``,
+  each epoch's writer-side commit, ``on_train_end`` and the final commit. A
+  writer-only callback failing in any of its hooks therefore stops every
+  rank within seconds. Anything else
+  that fails on one rank only (a dataset error mid-epoch, say) ends through
+  the process group's timeout (``init_process_group(timeout_seconds=...)``)
+  and ``torchrun`` stopping the other ranks — bounded, never a silent hang.
+  Records (per batch, per epoch, validation) are global — gathered and
+  computed identically on every rank — so monitors, early stopping, BEST and
+  the plateau scheduler agree.
 - **Partitions declare their policy.** :func:`train_loader` partitions a
   map-style dataset per epoch (seeded by ``seed`` and the epoch) and pads
   (repeats leading samples) or drops the tail so every rank takes the same
@@ -115,7 +123,7 @@ PARTITION_POLICIES: tuple[str, ...] = ("pad", "drop")
 
 class DistributedFailure(RuntimeError):
     """Raised on every rank when another rank failed (preflight, a
-    non-finite loss, a step-count mismatch, a writer-side commit): the
+    step-count mismatch, a writer-only callback, a writer-side commit): the
     failing rank raises its own error, the others this one naming it."""
 
 
@@ -206,7 +214,10 @@ def init_process_group(backend: Optional[str] = None, *, timeout_seconds: float 
     (``env://``) and return ``(rank, world_size)``. ``backend`` defaults to
     ``nccl`` when CUDA is available, else ``gloo``; ``timeout_seconds``
     bounds every collective, so a rank that dies cannot hang the others
-    forever. With CUDA, each process takes ``cuda:LOCAL_RANK``."""
+    forever. Under ``nccl`` each process takes ``cuda:LOCAL_RANK``
+    (``torch.cuda.set_device``); any other backend selects no device, so a
+    CUDA model under ``gloo`` needs ``torch.cuda.set_device(local_rank)``
+    before it is built (otherwise every rank's model sits on ``cuda:0``)."""
     _check_timeout(timeout_seconds)
     if not dist.is_available():
         raise RuntimeError("this torch build has no torch.distributed")
@@ -435,7 +446,23 @@ def agree(error: Optional[BaseException], what: str) -> None:
     """Collective verdict: every rank calls this at the same point; if any
     rank had an error, every rank raises — its own error, or a
     :class:`DistributedFailure` naming the first failing rank."""
-    verdicts = _send(None if error is None else _summary(error))
+    _raise_verdicts(_send(_verdict(error)), error, what)
+
+
+def agreed_gather(value: Any, error: Optional[BaseException], what: str) -> list[Any]:
+    """:func:`agree` riding on a gather the ranks take anyway (#540): every
+    rank's ``value``, unless some rank had an error — then every rank
+    raises as :func:`agree` does."""
+    gathered = _send((value, _verdict(error)))
+    _raise_verdicts([verdict for _, verdict in gathered], error, what)
+    return [item for item, _ in gathered]
+
+
+def _verdict(error: Optional[BaseException]) -> Optional[tuple[str, str]]:
+    return None if error is None else _summary(error)
+
+
+def _raise_verdicts(verdicts: Sequence[Optional[tuple[str, str]]], error: Optional[BaseException], what: str) -> None:
     failed = [(rank, verdict) for rank, verdict in enumerate(verdicts) if verdict is not None]
     if not failed:
         return
@@ -525,6 +552,9 @@ class _DDPSession:
 
     def gather(self, value: Any) -> list[Any]:
         return _send(value)
+
+    def gather_agreed(self, value: Any, error: Optional[BaseException], what: str) -> list[Any]:
+        return agreed_gather(value, error, what)
 
     def barrier(self) -> None:
         dist.barrier()

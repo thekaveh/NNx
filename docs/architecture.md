@@ -101,6 +101,11 @@ torchrun --standalone --nproc_per_node=2 train.py
                                   (gloo on CPU, nccl with one GPU per rank)
 ```
 
+`init_process_group()` selects `cuda:LOCAL_RANK` under nccl only. To train a
+CUDA model over gloo, call `torch.cuda.set_device(local_rank)` before
+building the model; otherwise every rank's model sits on `cuda:0` and the
+preflight refuses the other ranks.
+
 **Teardown.** `nnx.distributed.shutdown(timeout_seconds=60)` ends the
 recipe. Every rank meets at a teardown barrier, then the group is destroyed.
 No rank therefore tears down its connections while a peer still uses them.
@@ -150,8 +155,8 @@ with huge outputs such as large-vocabulary logits.
 
 **One writer.** Only the writer rank (`DDP(writer_rank=0)`) holds the run
 lease. It alone writes history, LAST / BEST / phase checkpoints, deferred
-callback checkpoints and the provenance attempt. Each epoch's commit is
-agreed, so a failed write stops every rank.
+callback checkpoints and the provenance attempt. Its attempt start and each
+epoch's commit are agreed, so a failed write stops every rank.
 
 Checkpoints hold the canonical module's keys. DDP wraps `model.net` per fit
 and is never assigned to it. Checkpoints also hold the world size, the
@@ -163,10 +168,26 @@ checkpoint; `resume_mode="weights_only"` starts fresh from its weights.
 The writer rank alone verifies the resume point (its files' SHA-256). It
 shares the manifest or the refusal, so the other ranks never hash it. A torn,
 mixed or corrupted point is refused on every rank with the same reason.
-Resume, component restore and epoch-end callback failures are agreed too,
-and so are each default step's loss finiteness and target checks.
-Anything else failing on one rank only ends through the process group's
-timeout and `torchrun` stopping the other ranks.
+
+**Agreed failures.** At each of these points the ranks share their outcome,
+so a failure on one rank makes every rank raise within seconds: the failing
+rank its own error, the others usually a `DistributedFailure` naming it.
+
+- the preflight refusals, building the DDP wrapper and reserving the run;
+- the writer's provenance attempt start (`provenance.json`, `attempt.json`);
+- the resume and the component restore;
+- `on_train_begin`;
+- each epoch's step count and `on_epoch_begin`;
+- each default step's loss finiteness and target checks;
+- update listeners registered in `on_train_begin`, at each batch's stop
+  decision;
+- `on_epoch_end` and each epoch's commit;
+- `on_train_end` and the final commit.
+
+A writer-only callback failing in any of these hooks therefore stops every
+rank; a resume whose `on_train_begin` fails hands every rank's model and RNG
+back. Anything else failing on one rank only ends through the process
+group's timeout and `torchrun` stopping the other ranks.
 
 ```text
             writer rank                        other ranks

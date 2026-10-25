@@ -8,6 +8,7 @@ compare it with a reference computed here in one process.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -378,6 +379,52 @@ def test_a_failing_writer_callback_stops_every_rank_without_waiting_for_the_time
     assert second["seconds"] < 30  # agreed, not a 60 s collective timeout
 
 
+def test_a_writer_only_failure_in_a_hook_listener_or_attempt_start_stops_every_rank(tmp_path, monkeypatch):
+    """#540: a writer-only callback failing in on_train_begin, in on_train_end
+    or in the update listener it registered, and the writer failing to write
+    provenance.json, are agreed: the writer raises its own error, the other
+    rank a DistributedFailure naming it, both well before the group's 30 s
+    timeout, and then every rank leaves together through shutdown()."""
+    monkeypatch.setenv("NNX_DDP_TIMEOUT", "30")
+    out = tmp_path / "writer-hooks"
+    launch("writer_hooks_fail", out)
+    first, second = (rank["cases"] for rank in results(out))
+    agreed = {
+        "on_train_begin": "the callbacks' on_train_begin",
+        "on_train_end": "the callbacks' on_train_end",
+        "listener": "epoch 0's update listeners",
+        "attempt": "starting the provenance attempt",
+    }
+    for hook, what in agreed.items():
+        own = f"OSError: {scenarios.disk_full(hook)}"
+        assert first[hook]["error"] == own, first[hook]
+        assert second[hook]["error"] == f"DistributedFailure: {what} failed on rank 0: {own}", second[hook]
+        for case in (first[hook], second[hook]):
+            assert case["seconds"] < 15, (hook, case)  # agreed, not the 30 s collective timeout
+            assert case["shutdown"] is None, (hook, case)
+
+
+@pytest.mark.parametrize("hook", ["on_train_begin", "on_train_end", "listener", "attempt"])
+def test_without_distributed_a_failing_hook_or_attempt_start_raises_as_before(hook, tmp_path, monkeypatch):
+    """#540 leaves the single-process path alone: the failure is the
+    caller's error, raised where it happens."""
+    from nnx.provenance import ExperimentManifest
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    data = scenarios.train_set()
+    undo = scenarios.unwritable_provenance() if hook == "attempt" else (lambda: None)
+    try:
+        with pytest.raises(OSError, match=re.escape(scenarios.disk_full(hook))):
+            scenarios.model().train(
+                params=scenarios.params([(data.X, data.y)], n_epochs=1),
+                callbacks=[] if hook == "attempt" else [scenarios.FailingWriterHook(hook)],
+                provenance=ExperimentManifest(config={"case": hook}) if hook == "attempt" else None,
+            )
+    finally:
+        undo()
+
+
 def test_the_replay_never_moves_the_real_loss():
     from nnx.nn.nn_model import _Replay
 
@@ -397,6 +444,68 @@ def test_shutdown_without_a_process_group_is_a_no_op():
     for bad in (0, -1.0, float("inf"), float("nan"), True, "5"):
         with pytest.raises(ValueError, match="timeout_seconds"):
             nnx_dist.shutdown(timeout_seconds=bad)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("backend", [None, "gloo"])
+def test_init_process_group_selects_cuda_local_rank_only_under_nccl(backend, monkeypatch):
+    """#540, mocked (no GPU needed; real-GPU evidence stays with #420): rank 1
+    of 2 on a CUDA host takes cuda:1 under the default nccl, and no device
+    under gloo, as the docstring says."""
+    from unittest import mock
+
+    import torch.distributed as dist
+
+    from nnx import distributed as nnx_dist
+
+    for name, value in dict(RANK="1", LOCAL_RANK="1", WORLD_SIZE="2", MASTER_ADDR="127.0.0.1", MASTER_PORT="0").items():
+        monkeypatch.setenv(name, value)
+    calls: list[str] = []
+    with (
+        mock.patch("torch.cuda.is_available", return_value=True),
+        mock.patch("torch.cuda.set_device", side_effect=lambda index: calls.append(f"set_device({index})")),
+        mock.patch.object(dist, "is_initialized", return_value=False),
+        mock.patch.object(dist, "init_process_group", side_effect=lambda backend, timeout: calls.append(backend)),
+        mock.patch.object(dist, "get_rank", return_value=1),
+        mock.patch.object(dist, "get_world_size", return_value=2),
+    ):
+        assert nnx_dist.init_process_group(backend) == (1, 2)
+    assert calls == (["set_device(1)", "nccl"] if backend is None else ["gloo"])
+    doc = " ".join((nnx_dist.init_process_group.__doc__ or "").split())
+    assert "Under ``nccl`` each process takes ``cuda:LOCAL_RANK``" in doc
+    assert "any other backend selects no device" in doc and "torch.cuda.set_device(local_rank)" in doc
+
+
+@pytest.mark.parametrize("backend", ["nccl", "gloo"])
+def test_the_cuda_device_refusal_gives_the_advice_of_the_backend_in_use(backend, monkeypatch):
+    """#540, mocked: a CUDA model on cuda:0 on LOCAL_RANK 1 is refused, with
+    advice that fixes it under the backend in use (gloo selects no device)."""
+    from types import SimpleNamespace
+    from unittest import mock
+
+    from nnx.nn.nn_model import _distributed_scope
+
+    monkeypatch.setenv("LOCAL_RANK", "1")
+    model = SimpleNamespace(net=torch.nn.Linear(2, 2), device=torch.device("cuda", 0))
+    with (
+        mock.patch("torch.distributed.get_backend", return_value=backend),
+        pytest.raises(ValueError, match=r"LOCAL_RANK=1\) holds its model on cuda:0") as refused,
+    ):
+        _distributed_scope(
+            model,
+            None,
+            None,
+            train_step_fn=None,
+            eval_step_fn=None,
+            objective=None,
+            precision=SimpleNamespace(effective="fp32"),  # type: ignore[arg-type]
+            history=None,
+            compile=None,
+            writer=False,
+        )
+    if backend == "nccl":
+        assert "build the model after nnx.distributed.init_process_group()" in str(refused.value)
+    else:
+        assert "selects no device under gloo: call torch.cuda.set_device(1)" in str(refused.value)
 
 
 def test_init_process_group_checks_its_timeout_before_the_environment(monkeypatch):
