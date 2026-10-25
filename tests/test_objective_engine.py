@@ -38,6 +38,7 @@ from nnx._step_helpers import softened_kl
 from nnx._update_engine import UpdateEngine
 from nnx.nn.nn_model import _objective_microbatch
 from nnx.objectives import LossTerm, ObjectiveResult, kd_objective, supervised_objective
+from tests._surgery import SURGERY_FORMS, unrecorded_surgery
 
 RTOL, ATOL = 1e-6, 1e-7
 
@@ -710,18 +711,68 @@ def test_committed_update_counters_continue_across_a_stateful_resume(tmp_path, m
     assert [i.update_count for i in fresh.idps] == [1, 2]  # a weights-only resume starts fresh
 
 
+def _feed_fwd() -> NNModel:
+    return NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+
 def test_objective_runs_keep_the_topology_reconstruction_guard(tmp_path, monkeypatch):
     from nnx import low_rank_factorize
 
     monkeypatch.chdir(tmp_path)
-    model = NNModel(
-        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
-        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
-    )
+    model = _feed_fwd()
     model.net.layers[1] = low_rank_factorize(model.net.layers[1], rank=2)
     with pytest.raises(ValueError, match="no reconstruction recipe"):
         _fit(model, [(torch.randn(2, 4), torch.tensor([0, 1]))], supervised_objective())
     assert not os.path.exists("runs")  # rejected before any run is reserved
+
+
+@pytest.mark.parametrize("form", SURGERY_FORMS)
+def test_trainer_objective_runs_keep_the_topology_reconstruction_guard(form, tmp_path, monkeypatch):
+    """#508: Trainer.train(objective=...) refuses unrecorded surgery with
+    NNModel.train's own message, before any run is reserved."""
+    monkeypatch.chdir(tmp_path)
+    batches = [(torch.randn(2, 4), torch.tensor([0, 1]))]
+    model = _feed_fwd()
+    unrecorded_surgery(model.net, model.net.layers, form)
+    with pytest.raises(ValueError) as from_nnmodel:
+        _fit(model, batches, supervised_objective())
+    params = NNTrainerParams.builder().n_epochs(1).train_loader(batches).optimizer("main", _sgd(1)).build()
+    with pytest.raises(ValueError) as from_trainer:
+        Trainer(model).train(params=params, objective=supervised_objective())
+    assert str(from_trainer.value) == str(from_nnmodel.value)
+    assert not os.path.exists("runs")  # rejected before any run is reserved
+
+
+def test_objective_runs_accept_a_substituted_composite_net(tmp_path, monkeypatch):
+    """The guard checks only reparameterized or replaced versions of the
+    descriptor's own keys: a composite substituted into model.net, even
+    with a spectral-normed submodule, still trains in both loops."""
+
+    class Composite(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.encoder = torch.nn.Linear(4, 8)
+            self.head = torch.nn.utils.parametrizations.spectral_norm(torch.nn.Linear(8, 2))
+
+        def forward(self, x):
+            return self.head(torch.relu(self.encoder(x)))
+
+        def unpack_batch(self, batch):
+            X, Y = batch
+            return (X,), Y
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    batches = [(torch.randn(2, 4), torch.tensor([0, 1]))]
+    model = _feed_fwd()
+    model.net = Composite()
+    _fit(model, batches, supervised_objective(), optim=_sgd(1))
+    params = NNTrainerParams.builder().n_epochs(1).train_loader(batches).optimizer("main", _sgd(1)).build()
+    run = Trainer(model).train(params=params, objective=supervised_objective(), salt="trainer")
+    assert run.idps[-1].update_count == 1
 
 
 def test_trainer_objectives_say_they_run_in_full_precision():

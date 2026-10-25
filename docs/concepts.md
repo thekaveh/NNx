@@ -1110,9 +1110,9 @@ step) do so.
 `kd_objective`'s frozen teacher runs in its own inference precision (its
 explicit policy, or full precision), never in the student's. That holds even
 under the legacy `mixed_precision` flag, which never governs inference. As
-with the default step, `NNModel.train` rejects an objective run on a
-low-rank-surgery topology it cannot reconstruct. Imperative step functions
-and `finalize_step` are unchanged by objectives.
+with the default step, `NNModel.train` and `Trainer.train` reject an
+objective run on a surgery topology they cannot reconstruct. Imperative
+step functions and `finalize_step` are unchanged by objectives.
 
 ## 7. Fine-tuning (transfer learning)
 
@@ -2165,7 +2165,7 @@ Four Tier-2 subpackages are large enough to warrant a dedicated section but smal
 
 **`nnx.prune`** provides `magnitude_prune` (mask-based unstructured, checkpoint-safe) and `semi_structured_24` (2:4 semi-structured via `torchao` for Ampere+ inference). The `bake=True` default keeps `state_dict` keys identical to the un-pruned net, so pruned checkpoints load into stock code under `strict=True`. See [API §10](api.md#10-pruning-nnxprune). `examples/19_prune_synthetic_classifier.py` ships an end-to-end magnitude-prune-and-fine-tune demo on synthetic classification data.
 
-With `bake=False` the masks stay. `NNModel.train` refuses a built-in or registered net that still carries them, or a `weight_norm` / `spectral_norm` parametrization, because its checkpoints could not be reloaded. Remove masks with `torch.nn.utils.prune.remove` and parametrizations with `torch.nn.utils.parametrize.remove_parametrizations` (`remove_weight_norm` / `remove_spectral_norm` for the legacy hooks). Alternatively, train the net as `NNModel(module=...)`.
+With `bake=False` the masks stay. `NNModel.train` (default step or objective) and `Trainer.train(objective=...)` refuse a built-in or registered net that still carries them, or a `weight_norm` / `spectral_norm` parametrization, because its checkpoints could not be reloaded. A custom `train_step_fn` / `trainer_step_fn` owns its topology and is not checked; a recipe model is checked in both loops ([Surgery §8](surgery.md#8-recorded-recipes-surgery-that-checkpoints-can-rebuild)). Remove masks with `torch.nn.utils.prune.remove` and parametrizations with `torch.nn.utils.parametrize.remove_parametrizations` (`remove_weight_norm` / `remove_spectral_norm` for the legacy hooks). Alternatively, train the net as `NNModel(module=...)`.
 
 **`nnx.surgery`** provides `widen` / `deepen`, `drop_layer`, `low_rank_factorize` (SVD truncation, exact at max rank), and `expand_embedding`. Full walkthrough with before/after parameter-count tables in [`docs/surgery.md`](surgery.md).
 

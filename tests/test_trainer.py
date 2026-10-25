@@ -35,6 +35,7 @@ from nnx import (
     TrainerStepContext,
     TrainerStepFn,
 )
+from tests._surgery import SURGERY_FORMS, unrecorded_surgery
 
 
 def _supervised_model() -> NNModel:
@@ -111,6 +112,25 @@ def _supervised_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
         loss=loss_val,
         error=float(1 - (Y_hat == Y).sum().item() / Y.size(0)),
     )
+
+
+@pytest.mark.parametrize("form", SURGERY_FORMS)
+def test_trainer_custom_steps_keep_the_unrecorded_surgery_exemption(form, tmp_path, monkeypatch):
+    """#508 pins the exemption: a trainer_step_fn owns its updates (and any
+    reconstructibility-aware topology), so unrecorded surgery still trains,
+    like NNModel.train(train_step_fn=custom); the GAN composite idiom relies
+    on it. Only objective runs and recipe models are checked."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    model = _supervised_model()
+    unrecorded_surgery(model.net, model.net.layers, form)
+    params = NNTrainerParams(
+        n_epochs=1,
+        train_loader=_supervised_loader(8),
+        optims={"main": NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0)},
+    )
+    run = Trainer(model).train(params=params, trainer_step_fn=_supervised_step)
+    assert run.idps
 
 
 # -------------------------------------------------------------------------

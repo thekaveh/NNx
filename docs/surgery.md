@@ -225,11 +225,13 @@ frozen rows do not change during training while the new rows learn.
 
 ## 8. Recorded recipes: surgery that checkpoints can rebuild
 
-The primitives above edit a module and record nothing, so a model they changed cannot be rebuilt from its descriptor. `NNModel.train` refuses such a net before any run is reserved:
+The primitives above edit a module and record nothing, so a model they changed cannot be rebuilt from its descriptor. When NNx owns the update, it refuses such a net before any run is reserved: `NNModel.train` with the default step or an `objective`, and `Trainer.train(objective=...)`. It refuses:
 
 - unrecorded low-rank surgery;
 - unbaked prune masks;
-- `weight_norm` / `spectral_norm` parametrizations.
+- `weight_norm` / `spectral_norm` parametrizations, and the legacy hooks.
+
+The check covers only reparameterized or replaced versions of the descriptor's own tensors, so a composite net substituted into `model.net` still trains. A custom step (`NNModel.train(train_step_fn=...)`, `Trainer.train(trainer_step_fn=...)`) owns its topology and is not checked, which keeps the GAN composite idiom working. A recipe model is checked in both loops, custom step included (see **Training** below).
 
 Remove masks with `torch.nn.utils.prune.remove` and parametrizations with `torch.nn.utils.parametrize.remove_parametrizations` (`remove_weight_norm` / `remove_spectral_norm` for the legacy hooks). Alternatively, train the net as `NNModel(module=...)`. NNx can replay two topology changes: LoRA on explicit `nn.Linear` targets and SVD low-rank replacement. For these, use a **recipe** (`nnx.transforms`):
 
