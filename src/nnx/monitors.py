@@ -839,9 +839,13 @@ class _TrainEpochSummary:
     The default training step reports each batch's outputs and its loss and
     error denominators through :meth:`observe`; an objective run (FEAT-004)
     reports its loss terms through :meth:`observe_terms`, so the epoch's
-    loss is the objective's own window rule applied to the whole epoch; for
-    custom steps only the returned records are available, weighted by their
-    ``count`` (task records) or by the batch's sample count."""
+    loss is the objective's own window rule applied to the whole epoch
+    (over the terms that train: a weight-0 term never makes an all-masked
+    epoch's loss 0.0), and both its loss and its error cover the windows
+    the engine committed — a window dropped as non-finite is left out of
+    both; for custom steps only the returned records are available,
+    weighted by their ``count`` (task records) or by the batch's sample
+    count."""
 
     def __init__(
         self,
@@ -855,10 +859,13 @@ class _TrainEpochSummary:
         self._error = _WeightedMean()
         self._pending: Optional[tuple[Optional[float], Optional[float]]] = None
         self._records = 0
-        # Objective runs: {(name, reduction): [reduction, Σ weight·numerator, Σ denominator]}.
+        # Objective runs: {(name, reduction): [reduction, Σ weight·numerator, Σ denominator, trained]}.
         self._terms: dict[tuple[str, str], list[Any]] = {}
         self._staged: list[tuple[Any, ...]] = []  # the open window's terms
+        self._staged_errors: list[tuple[Optional[float], float]] = []  # and its records' errors
+        self._closed: Optional[bool] = None  # the open window's fate (dropped?) once it has closed
         self._dropped_windows = 0
+        self._dropped_error = False  # a dropped window's record carried an error
         self._pending_terms = False
 
     def observe(
@@ -883,13 +890,27 @@ class _TrainEpochSummary:
 
     def close_window(self, *, dropped: bool) -> None:
         """Observe the window's staged terms, or discard them when the
-        engine dropped the window (a non-finite term under ``"skip"``)."""
+        engine dropped the window (a non-finite term or non-finite
+        gradients under ``"skip"``). The records' errors follow the same
+        fate in :meth:`add` (the closing microbatch's record comes after)."""
         staged, self._staged = self._staged, []
+        self._closed = dropped
         if dropped:
             self._dropped_windows += 1
             return
         for terms in staged:
             self.observe_terms(terms)
+
+    def _settle_errors(self) -> None:
+        """Pool a closed window's staged errors — or, for a dropped window,
+        only remember that it scored something."""
+        staged, self._staged_errors = self._staged_errors, []
+        dropped, self._closed = self._closed, None
+        for error, weight in staged:
+            if dropped:
+                self._dropped_error = self._dropped_error or error is not None
+            else:
+                self._error.add(error, weight)
 
     def observe_terms(self, terms: Sequence[Any]) -> None:
         """Called for each objective microbatch with its ``LossTerm``s:
@@ -897,18 +918,23 @@ class _TrainEpochSummary:
         weight, so a weight annealed across windows counts as it was
         applied) over its summed denominators; a summed term adds its
         weighted totals. A term is keyed by its name and reduction."""
+        from ._update_engine import trains
+
         for term in terms:
-            entry = self._terms.setdefault((term.name, term.reduction), [term.reduction, 0.0, 0.0])
+            entry = self._terms.setdefault((term.name, term.reduction), [term.reduction, 0.0, 0.0, False])
             entry[1] += float(term.weight) * term._numerator_value
             if term.reduction == "mean":
                 entry[2] += float(term.denominator)
+            entry[3] = entry[3] or trains(term.reduction, term.weight, term.denominator)
         self._pending_terms = True
 
     def _terms_loss(self) -> Optional[float]:
+        # A term counts once it trained (a nonzero weight and samples) in
+        # some microbatch; a weight-0 or all-masked term alone is no loss.
         present = [
             weighted if reduction == "sum" else weighted / denominator
-            for reduction, weighted, denominator in self._terms.values()
-            if reduction == "sum" or denominator
+            for reduction, weighted, denominator, trained in self._terms.values()
+            if trained
         ]
         return sum(present) if present else None
 
@@ -916,10 +942,12 @@ class _TrainEpochSummary:
         fallback = float(edp.count if edp.count is not None else batch_size)
         if self._pending_terms:
             # The loss comes from the observed terms; the error is weighted
-            # like a custom step's.
+            # like a custom step's, and pooled once its window committed.
             self._pending_terms = False
             self._records += 1
-            self._error.add(edp.error, fallback)
+            self._staged_errors.append((edp.error, fallback))
+            if self._closed is not None:
+                self._settle_errors()
             return
         if self._pending is not None:
             loss_weight, error_weight = self._pending
@@ -945,4 +973,7 @@ class _TrainEpochSummary:
             loss = math.nan
         else:
             loss = self._loss.result()
-        return NNEvaluationDataPoint(loss=loss, error=self._error.result(), metrics=self._metrics.results())
+        error = self._error.result()
+        if error is None and self._dropped_error:
+            error = math.nan  # only dropped windows scored: non-finite, as the loss
+        return NNEvaluationDataPoint(loss=loss, error=error, metrics=self._metrics.results())
