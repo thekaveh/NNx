@@ -391,3 +391,28 @@ def test_a_resumed_attempt_links_the_generation_it_restored(loop):
         parent = record.attempt.parent
         assert (parent["epoch"], parent["generation"]) == (5, restored["checkpoint_id"]), parent
         assert parent["attempt_id"] == first.provenance.attempt.attempt_id
+
+
+def test_a_nested_fit_without_a_manifest_leaves_the_enclosing_attempts_parent():
+    """A callback's train() without provenance resumes the same source run
+    from another checkpoint: its resume read is not the enclosing attempt's,
+    whose parent still names the generation the outer resume restored."""
+    first = _model().train(params=_params(2), provenance=PLAN)
+    NNCheckpoint.load(run=first.id, type=Checkpoints.LAST).save(run=first.id, type="weights_e1")
+    assert NNCheckpoint.resume_point(first.id, "weights_e1")["checkpoint_id"] is None
+    inner_runs = []
+
+    class _NestedFit(Callback):
+        def on_epoch_end(self, ctx):
+            params = _params(
+                1, resume_from_run_id=first.id, resume_from_checkpoint="weights_e1", resume_mode="weights_only"
+            )
+            inner_runs.append(_model().train(params=params))
+
+    child = _model().train(params=_params(1, resume_from_run_id=first.id), provenance=PLAN, callbacks=[_NestedFit()])
+    assert len(inner_runs) == 1 and inner_runs[0].provenance is None
+    restored = NNCheckpoint.resume_point(first.id, Checkpoints.LAST)
+    expected = (restored["completed_epoch"], restored["checkpoint_id"])
+    for record in (child.provenance, load_provenance(child.id)):
+        parent = record.attempt.parent
+        assert (parent["epoch"], parent["generation"]) == expected, parent
