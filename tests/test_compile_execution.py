@@ -27,6 +27,7 @@ from nnx import (
     PrecisionPolicy,
 )
 from nnx.compilation import _CompileSession
+from nnx.distributed import writer_only
 from nnx.nn.callbacks import Callback
 from nnx.nn.params.nn_checkpoint import NNCheckpoint
 from nnx.nn.params.nn_run import NNRun
@@ -408,6 +409,27 @@ def test_a_topology_changing_callback_is_refused_before_the_first_batch():
         )
     assert spy.sessions == []
     assert not os.path.exists("runs") or not [name for name in os.listdir("runs") if not name.startswith(".")]
+
+
+class _TopologyChanging(Callback):
+    """Changes model.net's topology as QAT does: it overrides only checkpoint_transforms."""
+
+    def checkpoint_transforms(self):
+        return ()
+
+
+def test_a_writer_only_topology_changing_callback_stays_refused():
+    # #510: writer_only(...) is built before the compile scope is checked, so
+    # the wrapped callback is refused like a direct one.
+    spy = SessionSpy()
+    _refused(
+        _feed_fwd(),
+        ValueError,
+        r"callbacks \['_TopologyChanging'\] change model.net's topology",
+        callbacks=[writer_only(_TopologyChanging), spy],
+        compile=FAST,
+    )
+    assert spy.sessions == []
 
 
 def test_out_of_scope_requests_are_refused_up_front():
