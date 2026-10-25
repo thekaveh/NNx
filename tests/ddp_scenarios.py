@@ -164,12 +164,20 @@ class FailingWriterCallback(Callback):
 
 class TrainEndDraw(Callback):
     """#538: a draw on every rank once training ends (a final test score on a
-    loader without a generator); records each rank's streams before it."""
+    loader without a generator); records each rank's streams before it. A
+    draw in every session's on_train_begin, and a rank-sized one after each
+    epoch, give the ranks streams of their own to restore."""
 
     distributed = "all"
 
     def __init__(self) -> None:
         self.rng_before = None
+
+    def on_train_begin(self, ctx) -> None:
+        torch.rand(1)
+
+    def on_epoch_end(self, ctx) -> None:
+        torch.rand(torch.distributed.get_rank() + 1)
 
     def on_train_end(self, ctx) -> None:
         self.rng_before = torch.get_rng_state()
