@@ -2474,3 +2474,55 @@ def test_trainer_refuses_a_resume_point_republished_after_its_verification(tmp_p
     assert "generation 3 was verified, generation 4 is published" in str(refused.value)
     assert all(torch.equal(before[name], weight) for name, weight in target.net.state_dict().items())
     assert torch.equal(rng, torch.get_rng_state())
+
+
+# --- #538: callbacks drawing from the RNG keep a split run bit-exact --------------------------
+
+
+def _dropout_model() -> NNModel:
+    torch.manual_seed(0)
+    return NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.2, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+
+def _drawing_params(n_epochs: int, **resume) -> NNTrainerParams:
+    return NNTrainerParams(
+        n_epochs=n_epochs,
+        seed=3,
+        train_loader=_supervised_loader(16),
+        optims={"main": NNOptimParams.builder().sgd(max_lr=0.05).build()},
+        **resume,
+    )
+
+
+@pytest.mark.parametrize("hook", ["on_train_begin", "on_train_end"])
+def test_trainer_two_plus_two_equals_four_when_a_callback_draws(hook, tmp_path, monkeypatch):
+    """#538: a draw in on_train_end (a final test score on a loader without a
+    generator) or in a resumed session's on_train_begin is no part of the
+    training: LAST keeps the streams from before on_train_end, and a resume
+    applies its restored streams again after on_train_begin."""
+    from nnx import Callback
+
+    class Draw(Callback):
+        pass
+
+    setattr(Draw, hook, lambda self, ctx: torch.rand(1))
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    whole = _dropout_model()
+    Trainer(whole).train(params=_drawing_params(4), trainer_step_fn=_supervised_step, callbacks=[Draw()])
+    first = Trainer(_dropout_model()).train(
+        params=_drawing_params(2), trainer_step_fn=_supervised_step, callbacks=[Draw()]
+    )
+    resumed = _dropout_model()
+    run = Trainer(resumed).train(
+        params=_drawing_params(2, resume_from_run_id=first.id, resume_mode="stateful"),
+        trainer_step_fn=_supervised_step,
+        callbacks=[Draw()],
+    )
+    assert run.resume_status is not None and run.resume_status.mode == "stateful"
+    for name, weight in whole.net.state_dict().items():
+        assert torch.equal(weight, resumed.net.state_dict()[name]), name

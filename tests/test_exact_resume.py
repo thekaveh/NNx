@@ -178,6 +178,79 @@ def test_interrupting_twice_runs_each_epoch_exactly_once():
         assert torch.equal(weight, last_model.net.state_dict()[name]), name
 
 
+# --- #538: callbacks drawing from the RNG ---------------------------------------------------------
+
+
+class FinalTestScore(Callback):
+    """Score a held-out set once training ends: an unshuffled loader with no
+    generator still draws its base seed from the global RNG."""
+
+    def __init__(self):
+        self.rng_before = None
+
+    def on_train_end(self, ctx):
+        self.rng_before = torch.get_rng_state()
+        ctx.model.evaluate(DataLoader(TensorDataset(X_VAL, Y_VAL), batch_size=9))
+
+
+class BeginDraw(Callback):
+    """Draw in every session's on_train_begin (picking examples to log, or
+    QAT preparation)."""
+
+    def on_train_begin(self, ctx):
+        torch.rand(1)
+
+
+def _same(left: NNModel, right: NNModel) -> bool:
+    return all(torch.equal(weight, right.net.state_dict()[name]) for name, weight in left.net.state_dict().items())
+
+
+def test_a_planned_resume_stays_bit_exact_when_on_train_end_scores_a_test_set():
+    """The §14.3 split-run flow with a final evaluate() in on_train_end: the
+    final LAST keeps the streams from before it, and the resume equals the
+    uninterrupted run."""
+    whole = _model()
+    whole.train(params=_params("sgd"), callbacks=[FinalTestScore()], salt="whole")
+    score = FinalTestScore()
+    first = _model().train(params=_params("sgd"), callbacks=[StopAfter(1, []), score], salt="first")
+    state = NNCheckpoint.load_training_state(first.id, Checkpoints.LAST)
+    assert state is not None and torch.equal(state["rng"]["torch"], score.rng_before)
+    resumed = _model()
+    resumed.train(params=_resume("sgd", first.id), callbacks=[FinalTestScore()])
+    assert _same(whole, resumed)
+
+
+def test_two_plus_two_additional_epochs_equal_four_when_on_train_end_draws():
+    whole = _model()
+    whole.train(params=_params("adam"), callbacks=[FinalTestScore()], salt="whole")
+    first = _model().train(params=_params("adam", n_epochs=2), callbacks=[FinalTestScore()], salt="first")
+    resumed = _model()
+    more = resumed.train(
+        params=_params("adam", n_epochs=2, resume_from_run_id=first.id, resume_mode="stateful"),
+        callbacks=[FinalTestScore()],
+    )
+    assert sorted({idp.epoch_idx for idp in more.idps}) == [2, 3]
+    assert _same(whole, resumed)
+
+
+@pytest.mark.parametrize("planned", [False, True], ids=["additional", "planned"])
+def test_a_resume_stays_bit_exact_when_every_on_train_begin_draws(planned):
+    """A resumed session's on_train_begin runs after the restore: its draw
+    must not shift the epochs that follow."""
+    whole = _model()
+    whole.train(params=_params("sgd", n_epochs=3), callbacks=[BeginDraw()], salt="whole")
+    if planned:
+        first = _model().train(params=_params("sgd", n_epochs=3), callbacks=[StopAfter(1, []), BeginDraw()])
+        resume = _resume("sgd", first.id, n_epochs=3)
+    else:
+        first = _model().train(params=_params("sgd", n_epochs=2), callbacks=[BeginDraw()])
+        resume = _params("sgd", n_epochs=1, resume_from_run_id=first.id, resume_mode="stateful")
+    resumed = _model()
+    more = resumed.train(params=resume, callbacks=[BeginDraw()])
+    assert sorted({idp.epoch_idx for idp in more.idps}) == [2]
+    assert _same(whole, resumed)
+
+
 # --- AC3: torn, mixed or corrupted resume points are refused --------------------------------------
 
 

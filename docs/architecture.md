@@ -57,7 +57,8 @@ Durable state then commits in order: run history, LAST, phase/BEST, and
 deferred callback checkpoints. Finalization calls `on_train_end` in reverse
 callback order. Both `NNModel` and `Trainer` refresh LAST after finalization.
 Callback mutations and topology-transform metadata are therefore present in
-the persisted checkpoint. The exception is an `NNModel` stop at an update
+the persisted checkpoint; its RNG streams are the ones from before
+`on_train_end`, so a draw there never reaches a resume. The exception is an `NNModel` stop at an update
 boundary (`ctx.stop_at_update`): LAST then stays at the last committed epoch.
 
 On failure, callbacks whose begin hook completed are still finalized. Every

@@ -376,3 +376,46 @@ def test_a_converted_recipe_model_resumes_its_own_in_loop_tags(tmp_path, monkeyp
         )
     )
     assert resumed.resume_status is not None and resumed.resume_status.mode == "stateful"
+
+
+def test_a_split_qat_run_with_dropout_equals_the_uninterrupted_run(tmp_path, monkeypatch):
+    """#538: QAT preparation draws from the global RNG in on_train_begin, after
+    a stateful resume has restored it; the resumed session's first epoch must
+    still start from the restored streams, so 2 + 1 equals 3 straight."""
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.chdir(tmp_path)
+    g = torch.Generator().manual_seed(0)
+    X, y = torch.randn(48, 32, generator=g), torch.randint(0, 3, (48,), generator=g)
+    batches = [(X[i : i + 16], y[i : i + 16]) for i in range(0, 48, 16)]
+
+    def model() -> NNModel:
+        torch.manual_seed(7)
+        return NNModel(
+            net_params=NNParams(
+                input_dim=32, output_dim=3, hidden_dims=[64], dropout_prob=0.1, activation=Activations.RELU
+            ),
+            params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        )
+
+    def fit(target: NNModel, n_epochs: int, data_id: str, **resume):
+        return target.train(
+            params=NNTrainParams(
+                n_epochs=n_epochs,
+                data_id=data_id,
+                train_loader=batches,
+                seed=0,
+                optim=NNOptimParams.builder().adam(max_lr=0.01).build(),
+                **resume,
+            ),
+            callbacks=[QATLifecycleCallback()],
+            train_step_fn=qat_train_step_factory(),
+        )
+
+    whole = model()
+    fit(whole, 3, "whole")
+    first = fit(model(), 2, "split")
+    resumed = model()
+    run = fit(resumed, 1, "split", resume_from_run_id=first.id, resume_mode="stateful")
+    assert run.resume_status is not None and run.resume_status.mode == "stateful"
+    for name, weight in whole.net.state_dict().items():
+        assert torch.equal(weight, resumed.net.state_dict()[name]), name
