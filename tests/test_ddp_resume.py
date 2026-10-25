@@ -115,6 +115,27 @@ def test_a_planned_resume_continues_the_plan_on_every_rank(resumed, tmp_path_fac
         assert torch.equal(split["rng_after"], full["rng_after"])
 
 
+def test_an_on_train_end_draw_keeps_one_plus_a_resume_equal_to_two_epochs(tmp_path_factory):
+    """#538: every rank draws in on_train_begin and on_train_end; the final
+    LAST holds each rank's streams from before on_train_end, the resume
+    re-applies this rank's own after on_train_begin, so it equals the
+    straight run."""
+    full = tmp_path_factory.mktemp("ddp-draw-full")
+    launch("train_end_draw_full", full)
+    split = tmp_path_factory.mktemp("ddp-draw-split")
+    launch("train_end_draw_first", split)
+    first = results(split)
+    assert not torch.equal(first[0]["rng_before"], first[1]["rng_before"])  # the ranks' streams differ
+    for rank in first:
+        for saved, ran in zip(rank["rng_by_rank"], first, strict=True):
+            assert torch.equal(saved, ran["rng_before"])  # each rank's own pre-on_train_end streams
+    launch("train_end_draw_second", split)
+    for full_rank, split_rank in zip(results(full), results(split), strict=True):
+        assert split_rank["epochs"] == [1]
+        assert_close_states(split_rank["state"], full_rank["state"])
+        assert torch.equal(split_rank["rng_before"], full_rank["rng_before"])
+
+
 def test_a_changed_world_or_partition_fails_before_anything_is_restored(resumed):
     for rank in resumed["changed"]["partition"]:
         assert "train partition changed" in rank["error"] and rank["unchanged"]

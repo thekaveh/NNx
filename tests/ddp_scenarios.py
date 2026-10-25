@@ -162,6 +162,38 @@ class FailingWriterCallback(Callback):
         raise OSError("disk full (injected on the writer)")
 
 
+class TrainEndDraw(Callback):
+    """#538: a draw on every rank once training ends (a final test score on a
+    loader without a generator); records each rank's streams before it. A
+    draw in every session's on_train_begin, and a rank-sized one after each
+    epoch, give the ranks streams of their own to restore."""
+
+    distributed = "all"
+
+    def __init__(self) -> None:
+        self.rng_before = None
+
+    def on_train_begin(self, ctx) -> None:
+        torch.rand(1)
+
+    def on_epoch_end(self, ctx) -> None:
+        torch.rand(torch.distributed.get_rank() + 1)
+
+    def on_train_end(self, ctx) -> None:
+        self.rng_before = torch.get_rng_state()
+        torch.rand(1)
+
+
+def dropout_model() -> NNModel:
+    torch.manual_seed(0)
+    return NNModel(
+        net_params=NNParams(
+            input_dim=FEATURES, output_dim=CLASSES, hidden_dims=[6], dropout_prob=0.3, activation=Activations.RELU
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=_device(), loss=Losses.CROSS_ENTROPY),
+    )
+
+
 def batchnorm_model() -> NNModel:
     torch.manual_seed(0)
     net = torch.nn.Sequential(torch.nn.Linear(FEATURES, 6), torch.nn.BatchNorm1d(6), torch.nn.Linear(6, CLASSES))
@@ -640,6 +672,34 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
                 handle.write(run.id)
         out["rng_after"] = torch.get_rng_state()
         out["hashed"], out["verified"] = len(hashed), len(verified)
+    elif name in ("train_end_draw_full", "train_end_draw_first", "train_end_draw_second"):
+        # #538: with an on_train_end draw on every rank, 1 epoch + a resume of
+        # 1 equals 2 straight (dropout makes the weights depend on the RNG).
+        loader = nnx_dist.train_loader(train_set(), batch_size=2, seed=3)
+        m, draw = dropout_model(), TrainEndDraw()
+        resume = {}
+        if name == "train_end_draw_second":
+            first_id = open("draw_first_run_id.txt", encoding="utf-8").read().strip()
+            resume = dict(resume_from_run_id=first_id, resume_mode="stateful")
+        run = m.train(
+            params=params(
+                loader,
+                n_epochs=2 if name == "train_end_draw_full" else 1,
+                data_id="draw-full" if name == "train_end_draw_full" else "draw-split",
+                **resume,
+            ),
+            callbacks=[draw],
+            distributed=nnx_dist.DDP(),
+        )
+        out.update(summary(run))
+        out["state"] = {k: v.clone() for k, v in m.net.state_dict().items()}
+        out["rng_before"] = draw.rng_before
+        state = NNCheckpoint.load_training_state(run.id, Checkpoints.LAST)
+        out["rng_by_rank"] = [entry["torch"] for entry in state["distributed"]["rng_by_rank"]]
+        torch.distributed.barrier()  # every rank has read LAST before the writer names the run
+        if name == "train_end_draw_first" and rank == 0:
+            with open("draw_first_run_id.txt", "w", encoding="utf-8") as handle:
+                handle.write(run.id)
     elif name in ("resume_steps_mismatch", "resume_unreadable_rank"):
         # #507: a resume that fails on every rank before its first committed
         # update hands each rank's model and RNG back: the step-count refusal

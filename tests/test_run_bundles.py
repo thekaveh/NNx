@@ -191,6 +191,30 @@ def test_a_built_in_classifier_reproduces_predictions_and_resumes_like_the_conti
     _assert_same_weights(continuous, rebuilt.model)
 
 
+def test_a_bundle_resume_equals_the_continuous_run_when_on_train_end_draws():
+    """#538: the bundle carries the final LAST's streams from before
+    on_train_end, so a draw there (a final test score on a loader without a
+    generator) leaves the bundle resume equal to the continuous run."""
+    from nnx import Callback
+
+    class TrainEndDraw(Callback):
+        def on_train_end(self, ctx):
+            torch.rand(1)
+
+    _, batches = _data()
+    torch.manual_seed(7)
+    continuous = _classifier()
+    continuous.train(params=_params(3, "full", batches), callbacks=[TrainEndDraw()])
+
+    torch.manual_seed(7)
+    first_run = _classifier().train(params=_params(2, "split", batches), callbacks=[TrainEndDraw()])
+    export_bundle(first_run.id, "bundle")
+    rebuilt = reconstruct_bundle("bundle")
+    resumed_run = rebuilt.resume(_params(1, "split", batches), callbacks=[TrainEndDraw()])
+    assert resumed_run.resume_status is not None and resumed_run.resume_status.mode == "stateful"
+    _assert_same_weights(continuous, rebuilt.model)
+
+
 def test_calibrators_keep_their_label_and_model_linkage():
     X, batches = _data()
     torch.manual_seed(7)

@@ -647,7 +647,7 @@ class Trainer:
                 precision=precision,
             )
             registry.register(engine)
-        start_epoch, component_plan, resume_status, rollback = self._resume(
+        start_epoch, component_plan, resume_status, rollback, resumed_rng_state = self._resume(
             params, optimizers, schedulers, registry, train_loader, precision=precision, scaler=scaler
         )
 
@@ -733,6 +733,10 @@ class Trainer:
                 resume_window.watch(engine)
             run = run.with_resume_status(resume_status).with_precision(precision)
             ctx.run = run
+            if resumed_rng_state is not None:
+                # #538: the resumed session's hooks have run; its first epoch
+                # starts from the restored streams, as NNModel.train does.
+                _restore_rng_state(resumed_rng_state, train_loader)
             pre_transform_net_state: Optional[dict[str, Any]] = None
             pre_transform_rng_state: Optional[dict[str, Any]] = None
             pre_transform_topologies: Optional[dict[str, Any]] = None
@@ -968,7 +972,9 @@ class Trainer:
                     ),
                     **({} if pre_transform_topologies is None else {"optimizer_topologies": pre_transform_topologies}),
                 },
-                rng_state=pre_transform_rng_state if keeps_pre_transform else _capture_rng_state(train_loader),
+                # #538: the streams before on_train_end, whose draws are no
+                # part of the training a resume continues.
+                rng_state=pre_transform_rng_state,
                 completed_epoch=records.last.epoch_idx,
                 resume_net_state=pre_transform_net_state if keeps_pre_transform else None,
                 components=registry.collect(),
@@ -1035,7 +1041,7 @@ class Trainer:
         *,
         precision: Optional[ResolvedPrecision] = None,
         scaler: Optional[Any] = None,
-    ) -> tuple[int, Any, ResumeStatus, Optional[Callable[[], None]]]:
+    ) -> tuple[int, Any, ResumeStatus, Optional[Callable[[], None]], Optional[dict[str, Any]]]:
         """Warm-resume a multi-optimizer run (FEAT-005).
 
         Everything is validated before any state is mutated, with the same
@@ -1044,12 +1050,13 @@ class Trainer:
         identity, configured hyperparameters (#502) and parameter topology,
         each scheduler's type, restored settings and one-cycle horizon, and
         the component set. Returns ``(start_epoch,
-        component_plan, status, rollback)``; ``rollback`` puts the model and
+        component_plan, status, rollback, rng)``; ``rollback`` puts the model and
         RNG back if the fit fails before its first committed update (the
-        component restore included; see ``_ResumeWindow``).
+        component restore included; see ``_ResumeWindow``), and ``rng`` holds
+        the restored streams, applied again after ``on_train_begin`` (#538).
         """
         if params.resume_from_run_id is None:
-            return 0, None, ResumeStatus(), None
+            return 0, None, ResumeStatus(), None, None
         from ..optimizers import _canonical_factory_state, optimizer_factory_state
 
         stateful = params.resume_mode != "weights_only"
@@ -1090,7 +1097,7 @@ class Trainer:
             except BaseException:
                 rollback_weights()
                 raise
-            return source.checkpoint.idp.epoch_idx + 1, None, status, rollback_weights
+            return source.checkpoint.idp.epoch_idx + 1, None, status, rollback_weights, None
 
         saved_optimizers = training_state["optimizers"]
         saved_schedulers = training_state.get("schedulers") or {}
@@ -1166,8 +1173,10 @@ class Trainer:
                 scheduler.load_state_dict(saved_schedulers[name])
             if scaler is not None:
                 scaler.load_state_dict(training_state["scaler"])
+            resumed_rng_state: Optional[dict[str, Any]] = None
             if training_state.get("rng") is not None:
                 _restore_rng_state(training_state["rng"], train_loader)
+                resumed_rng_state = _capture_rng_state(train_loader)
         except BaseException:
             net.load_state_dict(previous_net_state)
             _restore_rng_state(previous_rng_state, train_loader)
@@ -1195,4 +1204,4 @@ class Trainer:
         except BaseException:
             rollback()
             raise
-        return start_epoch, component_plan, status, rollback
+        return start_epoch, component_plan, status, rollback, resumed_rng_state
