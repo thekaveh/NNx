@@ -370,6 +370,75 @@ def test_a_global_window_with_no_valid_target_fails_on_every_rank(tmp_path):
     assert [rank["error"] for rank in results(out)] == ["FloatingPointError", "FloatingPointError"]
 
 
+@pytest.fixture(scope="module")
+def sum_masked_windows(tmp_path_factory) -> list[dict]:
+    out = tmp_path_factory.mktemp("ddp-sum-masked")
+    launch("sum_masked_windows", out)
+    return results(out)
+
+
+def sum_task_reference(tmp_path: Path, loss: str, case: str) -> tuple[torch.nn.Module, dict]:
+    """One process training on the union batches of the same case."""
+    data = scenarios.sum_task_rows(loss, scenarios.SUM_MASK_CASES[case][1])
+    model = scenarios.sum_task_model(loss)
+    previous = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        loader = GlobalBatches(data, world_size=2, batch_size=2, seed=0, shuffle=False)
+        with scenarios.CountedSteps() as steps:
+            run = model.train(params=scenarios.sum_task_params(loader, loss, case))
+        return model.net, scenarios.sum_task_summary(run, steps.count)
+    finally:
+        os.chdir(previous)
+
+
+@pytest.mark.parametrize("case", list(scenarios.SUM_MASK_CASES))
+@pytest.mark.parametrize("loss", scenarios.SUM_LOSSES)
+def test_a_sum_loss_window_masked_on_one_rank_trains_like_the_union_batch(sum_masked_windows, loss, case, tmp_path):
+    """#503: a sum-reduction task loss whose window is all-masked on one rank
+    (the writer or not) commits the global batch's update on every rank, and
+    records the global batch's summed loss; a mean task loss and a task-free
+    sum loss are unchanged."""
+    ref_net, ref = sum_task_reference(tmp_path, loss, case)
+    for rank in sum_masked_windows:
+        got = rank["cases"][loss, case]
+        assert got["steps"] == ref["steps"]
+        assert_close_states(got["state"], ref_net.state_dict())
+        assert_close_lists(got["train_loss"], ref["train_loss"])
+        assert_close_lists(got["epoch_loss"], ref["epoch_loss"])
+        assert got["status"] == ref["status"]
+        assert (got["best"] is None) == (ref["best"] is None)
+        if ref["best"] is not None:
+            assert_close_states(got["best"], ref["best"])
+    first, second = (rank["cases"][loss, case] for rank in sum_masked_windows)
+    assert first["train_loss"] == second["train_loss"] and first["epoch_loss"] == second["epoch_loss"]
+    assert_close_states(first["state"], second["state"])
+
+
+@pytest.mark.parametrize("case", ["writer_window_acc2", "nonwriter_window_acc2"])
+@pytest.mark.parametrize("loss", ["cross_entropy", "nll", "mse", "bce"])
+def test_a_sum_loss_epoch_with_one_rank_window_masked_has_a_loss_and_a_best(sum_masked_windows, loss, case):
+    for rank in sum_masked_windows:
+        got = rank["cases"][loss, case]
+        assert all(value is not None for value in got["train_loss"])
+        assert all(value is not None for value in got["epoch_loss"]) and len(got["epoch_loss"]) == 2
+        assert got["status"] == ["ok", "ok"]
+        assert got["best"] is not None
+
+
+@pytest.mark.parametrize(
+    ("case", "skipped", "steps"),
+    [("every_rank_acc1", [0, 3], 4), ("every_rank_acc2", [0, 1, 3, 4], 2)],
+)
+@pytest.mark.parametrize("loss", ["cross_entropy", "nll", "mse", "bce"])
+def test_a_sum_loss_window_masked_on_every_rank_is_still_skipped(sum_masked_windows, loss, case, skipped, steps):
+    """No rank has a valid target in the window: no update and no loss on any rank."""
+    for rank in sum_masked_windows:
+        got = rank["cases"][loss, case]
+        assert got["steps"] == steps
+        assert [index for index, value in enumerate(got["train_loss"]) if value is None] == skipped
+
+
 def test_a_failing_writer_callback_stops_every_rank_without_waiting_for_the_timeout(tmp_path):
     out = tmp_path / "writer-callback"
     launch("writer_callback_fails", out)

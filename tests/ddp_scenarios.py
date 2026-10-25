@@ -251,6 +251,143 @@ def batchnorm_model() -> NNModel:
     return NNModel(module=net, params=NNModelParams(device=Devices.CPU, loss=Losses.CROSS_ENTROPY))
 
 
+# #503: sum-reduction task losses with one rank's optimizer window masked.
+# 12 unshuffled rows give each rank 3 batches of 2: rank r's batch b holds
+# rows 4b + r and 4b + r + 2. Each case: (accumulate_grad_batches, the rows
+# whose targets are masked).
+SUM_ROWS = 12
+SUM_MASK_CASES = {
+    "writer_window_acc1": (1, (0, 2)),
+    "nonwriter_window_acc1": (1, (1, 3)),
+    "writer_window_acc2": (2, (0, 2, 4, 6)),
+    "nonwriter_window_acc2": (2, (1, 3, 5, 7)),
+    "one_batch_of_window_acc2": (2, (1, 3)),
+    "every_rank_acc1": (1, (0, 1, 2, 3)),
+    "every_rank_acc2": (2, (0, 1, 2, 3, 4, 5, 6, 7)),
+}
+# The sum losses of the three task adapters, plus a mean task loss and a
+# task-free sum loss, whose results #503 leaves unchanged.
+SUM_LOSSES = ("cross_entropy", "nll", "mse", "bce", "cross_entropy_mean", "task_free_sum")
+
+
+class TaskRows(torch.utils.data.Dataset):
+    def __init__(self, X: torch.Tensor, y: torch.Tensor) -> None:
+        self.X, self.y = X, y
+
+    def __len__(self) -> int:
+        return len(self.y)
+
+    def __getitem__(self, index: int):
+        return self.X[index], self.y[index]
+
+
+def sum_task_rows(loss: str, masked: tuple[int, ...]) -> TaskRows:
+    """Rows for ``loss``: ``masked`` rows hold IGNORE class targets, or NaN
+    regression targets / multilabel labels."""
+    generator = torch.Generator().manual_seed(5)
+    X = torch.randn(SUM_ROWS, FEATURES, generator=generator)
+    rows = list(masked)
+    if loss == "mse":
+        y = torch.randn(SUM_ROWS, 2, generator=generator) * 0.5
+        y[rows] = float("nan")
+    elif loss == "bce":
+        y = torch.randint(0, 2, (SUM_ROWS, CLASSES), generator=generator).float()
+        y[rows] = float("nan")
+    else:
+        y = torch.randint(0, CLASSES, (SUM_ROWS,), generator=generator)
+        y[rows] = IGNORE
+    return TaskRows(X, y)
+
+
+def sum_task_model(loss: str) -> NNModel:
+    from nnx import TaskSpec
+
+    categorical = TaskSpec.categorical(CLASSES, ignore_index=IGNORE)
+    task, enum, loss_fn, outputs = {
+        "cross_entropy": (
+            categorical,
+            Losses.CROSS_ENTROPY,
+            torch.nn.CrossEntropyLoss(reduction="sum", ignore_index=IGNORE),
+            CLASSES,
+        ),
+        "nll": (
+            categorical,
+            Losses.NEGATIVE_LOG_LIKELIHOOD,
+            torch.nn.NLLLoss(reduction="sum", ignore_index=IGNORE),
+            CLASSES,
+        ),
+        "mse": (TaskSpec.regression(2), Losses.MEAN_SQUARED_ERROR, torch.nn.MSELoss(reduction="sum"), 2),
+        "bce": (
+            TaskSpec.multilabel(CLASSES),
+            Losses.BINARY_CROSS_ENTROPY,
+            torch.nn.BCEWithLogitsLoss(reduction="sum"),
+            CLASSES,
+        ),
+        "cross_entropy_mean": (
+            categorical,
+            Losses.CROSS_ENTROPY,
+            torch.nn.CrossEntropyLoss(ignore_index=IGNORE),
+            CLASSES,
+        ),
+        "task_free_sum": (
+            None,
+            Losses.CROSS_ENTROPY,
+            torch.nn.CrossEntropyLoss(reduction="sum", ignore_index=IGNORE),
+            CLASSES,
+        ),
+    }[loss]
+    torch.manual_seed(0)
+    built = NNModel(
+        net_params=NNParams(
+            input_dim=FEATURES, output_dim=outputs, hidden_dims=[6], dropout_prob=0.0, activation=Activations.RELU
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=_device(), loss=enum, task=task),
+    )
+    built.loss_fn = loss_fn
+    return built
+
+
+def sum_task_params(train_loader, loss: str, case: str) -> NNTrainParams:
+    return params(
+        train_loader,
+        accumulate=SUM_MASK_CASES[case][0],
+        data_id=f"sum-{loss}-{case}",
+        monitor=MonitorSpec(metric="loss", split="train"),
+    )
+
+
+class CountedSteps:
+    """Counts the optimizer updates (``SGD.step`` calls) taken inside it."""
+
+    def __enter__(self) -> CountedSteps:
+        self.count = 0
+        self._step = torch.optim.SGD.step
+        counter = self
+
+        def step(optimizer, *args, **kwargs):
+            counter.count += 1
+            return counter._step(optimizer, *args, **kwargs)
+
+        torch.optim.SGD.step = step  # type: ignore[method-assign]
+        return self
+
+    def __exit__(self, *exc) -> None:
+        torch.optim.SGD.step = self._step  # type: ignore[method-assign]
+
+
+def sum_task_summary(run, steps: int) -> dict:
+    """What a #503 parity case compares: per-batch and epoch losses, monitor
+    statuses, the BEST checkpoint's state and the update count."""
+    best = NNCheckpoint.load(run.id, Checkpoints.BEST)
+    return {
+        "train_loss": [idp.train_edp.loss for idp in run.idps],
+        "epoch_loss": [idp.train_summary.loss for idp in run.idps if idp.train_summary is not None],
+        "status": [idp.selection.status for idp in run.idps if idp.selection is not None],
+        "best": None if best is None else best.net_state,
+        "steps": steps,
+    }
+
+
 def scenario(name: str, rank: int, world_size: int) -> dict:
     out: dict = {"rank": rank, "world_size": world_size}
     if name == "parity":
@@ -536,6 +673,18 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             out["error"] = None
         except BaseException as error:  # noqa: BLE001
             out["error"] = type(error).__name__
+    elif name == "sum_masked_windows":
+        # #503: every SUM_LOSSES x SUM_MASK_CASES fit, monitored on the train loss.
+        out["cases"] = {}
+        for loss in SUM_LOSSES:
+            for case, (_, masked) in SUM_MASK_CASES.items():
+                m = sum_task_model(loss)
+                loader = nnx_dist.train_loader(sum_task_rows(loss, masked), batch_size=2, shuffle=False)
+                with CountedSteps() as steps:
+                    run = m.train(params=sum_task_params(loader, loss, case), distributed=nnx_dist.DDP())
+                result = sum_task_summary(run, steps.count)
+                result["state"] = {k: v.clone() for k, v in m.net.state_dict().items()}
+                out["cases"][loss, case] = result
     elif name == "writer_callback_fails":
         import time
 
