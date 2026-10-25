@@ -490,7 +490,7 @@ class _DDPSession:
         after the group is destroyed (``shutdown()``'s own collection cannot
         free what a live traceback reaches). DDP's own frames in such a
         traceback hold it as ``self``, so the session clears them where they
-        raise (the wrapper's build, ``forward``, ``no_sync``). The session's
+        raise (the wrapper's build, ``forward``). The session's
         collectives (``gather``, ``sum``) keep working."""
         self.module = cast(Any, None)
         self._net = cast(Any, None)
@@ -511,9 +511,6 @@ class _DDPSession:
         try:
             with contextlib.nullcontext() if sync else self.module.no_sync():
                 yield
-        except BaseException as error:
-            _drop_ddp_frames(error)  # no_sync's frame, where contextlib keeps it in the traceback (#539)
-            raise
         finally:
             self.in_step = False
 
