@@ -371,6 +371,43 @@ def test_a_global_window_with_no_valid_target_fails_on_every_rank(tmp_path):
 
 
 @pytest.fixture(scope="module")
+def stock_forward_masked_rank(tmp_path_factory) -> list[dict]:
+    out = tmp_path_factory.mktemp("ddp-stock-forward")
+    launch("stock_forward_masked_rank", out)
+    return results(out)
+
+
+@pytest.mark.parametrize("loss", list(scenarios.STOCK_FORWARD_LOSSES))
+def test_a_stock_forward_subclass_masked_on_one_rank_trains_like_the_union_batch(
+    stock_forward_masked_rank, loss, tmp_path
+):
+    """#512: rank 0's batch is unmasked, rank 1's has one NaN target. A
+    stock-forward ``MSELoss`` subclass weighted rank 0 by its rows, so the
+    update was 2.679e-02 off the union batch's and the recorded loss
+    0.783549; both now match one process on the union batch (0.981019)."""
+    data = scenarios.stock_forward_rows()
+    reference = scenarios.stock_forward_model(scenarios.STOCK_FORWARD_LOSSES[loss]())
+    previous = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        ref_run = reference.train(
+            params=scenarios.params(
+                GlobalBatches(data, world_size=2, batch_size=4, seed=0, shuffle=False),
+                accumulate=1,
+                n_epochs=1,
+                data_id=f"stock-forward-{loss}-reference",
+            )
+        )
+    finally:
+        os.chdir(previous)
+    assert [idp.train_edp.loss for idp in ref_run.idps] == [pytest.approx(0.981019, abs=1e-6)]
+    for rank in stock_forward_masked_rank:
+        got = rank["cases"][loss]
+        assert_close_states(got["state"], reference.net.state_dict())
+        assert_close_lists(got["train_loss"], [idp.train_edp.loss for idp in ref_run.idps])
+
+
+@pytest.fixture(scope="module")
 def sum_masked_windows(tmp_path_factory) -> list[dict]:
     out = tmp_path_factory.mktemp("ddp-sum-masked")
     launch("sum_masked_windows", out)

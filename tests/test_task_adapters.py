@@ -829,3 +829,207 @@ def test_training_on_uint8_labels_ends_where_int64_labels_do(tmp_path, monkeypat
             trained.append(_params_snapshot(model))
         for name, value in trained[0].items():
             torch.testing.assert_close(trained[1][name], value, msg=f"{batch_size}/{accumulate}: {name}")
+
+
+# ------------------------------- #512: stock-forward elementwise loss subclasses
+
+
+class MyMSE(torch.nn.MSELoss):  # the stock forward: only a name
+    pass
+
+
+class MyL1(torch.nn.L1Loss):
+    pass
+
+
+class MySmoothL1(torch.nn.SmoothL1Loss):
+    pass
+
+
+class MyHuber(torch.nn.HuberLoss):
+    pass
+
+
+class Huber05(torch.nn.HuberLoss):  # an __init__-only default, the stock forward
+    def __init__(self) -> None:
+        super().__init__(delta=0.5)
+
+
+class MyBCE(torch.nn.BCEWithLogitsLoss):
+    pass
+
+
+def _regression_rows() -> tuple[torch.Tensor, torch.Tensor]:
+    """The #512 rows: batch 1 (rows 0-3) unmasked, batch 2 (rows 4-7) with one NaN target."""
+    generator = torch.Generator().manual_seed(1)
+    x, y = torch.randn(8, 3, generator=generator), torch.randn(8, 3, generator=generator)
+    y[5, 1] = math.nan
+    return x, y
+
+
+def _multilabel_rows() -> tuple[torch.Tensor, torch.Tensor]:
+    generator = torch.Generator().manual_seed(2)
+    x, y = torch.randn(8, 3, generator=generator), torch.randint(0, 2, (8, 3), generator=generator).float()
+    y[6, 0] = math.nan
+    return x, y
+
+
+_STOCK_FORWARD_TASKS = {
+    "mse": (lambda: TaskSpec.regression(3), Losses.MEAN_SQUARED_ERROR, MyMSE, _regression_rows),
+    "bce": (lambda: TaskSpec.multilabel(3), Losses.BINARY_CROSS_ENTROPY, MyBCE, _multilabel_rows),
+}
+
+
+def _stock_forward_model(case: str, loss_fn: torch.nn.Module | None = None) -> NNModel:
+    task, loss, subclass, _ = _STOCK_FORWARD_TASKS[case]
+    model = _model(task(), loss=loss, output_dim=3)
+    model.loss_fn = loss_fn if loss_fn is not None else subclass()
+    return model
+
+
+def _masked_mean(case: str, model: NNModel, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """The loss over the valid targets of one full batch, from the net directly."""
+    valid = ~torch.isnan(y)
+    if case == "mse":
+        per_element = (model.net(x) - y.nan_to_num()) ** 2
+    else:
+        per_element = torch.nn.functional.binary_cross_entropy_with_logits(
+            model.net(x), y.nan_to_num(), reduction="none"
+        )
+    return per_element[valid].mean()
+
+
+def test_a_stock_forward_mse_subclass_evaluates_to_the_masked_mse(tmp_path, monkeypatch):
+    """#512: a mixed loader's loss weighted the unmasked batch by its rows
+    (0.832098) where its masked batch counted valid elements, so
+    ``evaluate().loss`` and the streaming ``val_edp.loss`` disagreed with
+    ``metrics['mse']`` (0.981019)."""
+    from nnx.streaming import streaming_eval_step
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    x, y = _regression_rows()
+    loader = DataLoader(TensorDataset(x, y), batch_size=4)
+    for loss_fn in (torch.nn.MSELoss(), MyMSE()):
+        model = _stock_forward_model("mse", loss_fn)
+        record = model.evaluate(loader)
+        assert record.loss == pytest.approx(0.981019, abs=1e-6) == pytest.approx(record.metrics["mse"])
+        frozen = NNOptimParams.builder().sgd(max_lr=0.0).build()
+        params = NNTrainParams(
+            n_epochs=1, optim=frozen, train_loader=loader, val_loader=loader, data_id=type(loss_fn).__name__
+        )
+        val = model.train(params=params, eval_step_fn=streaming_eval_step).idps[-1].val_edp
+        assert val.loss == pytest.approx(0.981019, abs=1e-6) == pytest.approx(val.metrics["mse"])
+
+
+def test_a_stock_forward_bce_subclass_evaluates_to_the_masked_bce():
+    """#512: ``MyBCE`` reported 0.699854 on the mixed multilabel loader."""
+    x, y = _multilabel_rows()
+    for loss_fn in (torch.nn.BCEWithLogitsLoss(), MyBCE()):
+        model = _stock_forward_model("bce", loss_fn)
+        record = model.evaluate(DataLoader(TensorDataset(x, y), batch_size=4))
+        with torch.no_grad():
+            assert (
+                record.loss
+                == pytest.approx(0.680013, abs=1e-6)
+                == pytest.approx(float(_masked_mean("bce", model, x, y)))
+            )
+
+
+@pytest.mark.parametrize(
+    "loss_fn",
+    [
+        torch.nn.MSELoss(),
+        MyMSE(),
+        MyL1(),
+        MySmoothL1(),
+        MyHuber(),
+        Huber05(),
+        MySmoothL1(beta=0.5),
+        MyBCE(),
+        MyBCE(pos_weight=torch.tensor([1.0, 2.0, 0.5])),
+    ],
+    ids=lambda fn: type(fn).__name__,
+)
+def test_stock_forward_elementwise_subclasses_weight_unmasked_batches_per_element(loss_fn):
+    """#512: an unmasked ``(4, 3)`` batch weighs its 12 elements (subclasses
+    got 4.0, the rows), a batch with one NaN target its 11 valid ones; the
+    display loss is the module's own mean."""
+    multilabel = isinstance(loss_fn, torch.nn.BCEWithLogitsLoss)
+    adapter = task_adapter(TaskSpec.multilabel(3) if multilabel else TaskSpec.regression(3))
+    generator = torch.Generator().manual_seed(3)
+    output = torch.randn(4, 3, generator=generator)
+    target = torch.randint(0, 2, (4, 3), generator=generator).float() if multilabel else torch.randn(4, 3)
+    display, numerator, weight = adapter.loss_terms(loss_fn, *adapter.prepare(output, target))
+    assert weight == 12.0
+    torch.testing.assert_close(display, loss_fn(output, target))
+    torch.testing.assert_close(numerator, display * 12.0)
+    target[2, 1] = math.nan
+    display, numerator, weight = adapter.loss_terms(loss_fn, *adapter.prepare(output, target))
+    assert weight == 11.0
+    torch.testing.assert_close(display, numerator / 11.0)
+
+
+def _sgd_step_on(loss: torch.Tensor, model: NNModel, lr: float = 0.1) -> dict[str, torch.Tensor]:
+    """The parameters after one plain SGD step on ``loss`` (``model`` is left untouched)."""
+    grads = torch.autograd.grad(loss, list(model.net.parameters()))
+    return {name: (p - lr * g).detach() for (name, p), g in zip(model.net.named_parameters(), grads, strict=True)}
+
+
+@pytest.mark.parametrize("case", list(_STOCK_FORWARD_TASKS))
+def test_a_mixed_window_of_a_stock_forward_subclass_equals_one_full_batch_update(tmp_path, monkeypatch, case):
+    """#512: under the default step, an ``[unmasked, masked]`` window is one
+    step on the valid targets of the full batch (``MyMSE`` was 8.160e-03
+    off, ``MyBCE`` 2.292e-03; tests/test_objective_engine.py covers
+    ``supervised_objective()``)."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    x, y = _STOCK_FORWARD_TASKS[case][3]()
+    initial = _stock_forward_model(case)
+    reference = _sgd_step_on(_masked_mean(case, initial, x, y), initial)
+    model = _stock_forward_model(case)
+    params = NNTrainParams(
+        n_epochs=1, optim=_sgd(accumulate=2), train_loader=DataLoader(TensorDataset(x, y), batch_size=4)
+    )
+    model.train(params=params)
+    for name, value in reference.items():
+        torch.testing.assert_close(dict(model.net.named_parameters())[name].detach(), value, msg=name)
+
+
+def test_task_weights_of_other_losses_and_shapes_are_unchanged():
+    """#512 leaves these alone: categorical CE / NLL subclasses count rows
+    (4.0, 3.0), sum losses are additive (None), an ``(N, 1)`` regression
+    counts its rows (4.0, 3.0), and a ``forward``-overriding subclass keeps
+    row weights on a complete batch and cannot be masked."""
+
+    class MyCE(torch.nn.CrossEntropyLoss):
+        pass
+
+    class MyNLL(torch.nn.NLLLoss):
+        pass
+
+    class OwnForward(torch.nn.MSELoss):
+        def forward(self, output, target):
+            return ((output - target) ** 2).sum(dim=1).mean()
+
+    def weights(spec, loss_fn, output, complete, masked):
+        adapter = task_adapter(spec)
+        return tuple(adapter.loss_terms(loss_fn, *adapter.prepare(output, target))[2] for target in (complete, masked))
+
+    logits = torch.randn(4, 3, generator=torch.Generator().manual_seed(4))
+    categorical = TaskSpec.categorical(3, ignore_index=-100)
+    classes, ignored = torch.tensor([0, 1, 2, 1]), torch.tensor([0, -100, 2, 1])
+    for loss_fn in (MyCE(), MyNLL()):
+        assert weights(categorical, loss_fn, logits, classes, ignored) == (4.0, 3.0)
+    assert weights(categorical, MyCE(reduction="sum"), logits, classes, ignored) == (None, None)
+    values = torch.randn(4, 3, generator=torch.Generator().manual_seed(5))
+    one_masked = values.clone()
+    one_masked[1, 2] = math.nan
+    assert weights(TaskSpec.regression(3), MyMSE(reduction="sum"), logits, values, one_masked) == (None, None)
+    column, column_masked = values[:, :1].clone(), values[:, :1].clone()
+    column_masked[0, 0] = math.nan
+    assert weights(TaskSpec.regression(1), MyMSE(), logits[:, :1], column, column_masked) == (4.0, 3.0)
+    adapter = task_adapter(TaskSpec.regression(3))
+    assert adapter.loss_terms(OwnForward(), *adapter.prepare(logits, values))[2] == 4.0
+    with pytest.raises(TaskValidationError, match="cannot be masked"):
+        adapter.loss_terms(OwnForward(), *adapter.prepare(logits, one_masked))
