@@ -828,7 +828,7 @@ def streaming_eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
     full arrays) or a declared metric that needs every stored score; both are
     rejected when training starts. ``evaluate()`` and the default validation
     step are unchanged."""
-    from .nn.nn_model import _evaluate
+    from .nn.nn_model import _STREAMING_EVAL_SCORING, _evaluate
 
     return _evaluate(
         ctx.model,
@@ -837,6 +837,7 @@ def streaming_eval_step(ctx: EvalStepContext) -> NNEvaluationDataPoint:
         tuple(ctx.metrics),
         bounded=True,
         who="streaming_eval_step()",
+        scoring=_STREAMING_EVAL_SCORING,
     )
 
 

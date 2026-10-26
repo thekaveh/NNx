@@ -58,6 +58,7 @@ from ..history import HistoryJournal, _check_history, _dispatch_epoch_end, _trai
 from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
 from ..nn.enum.checkpoints import Checkpoints
 from ..nn.nn_model import (
+    _TRAINER_VALIDATION_SCORING,
     CallbackLike,
     NNModel,
     _batch_sample_count,
@@ -70,6 +71,7 @@ from ..nn.nn_model import (
     _check_resume_precision,
     _check_scaler_hook,
     _component_type,
+    _default_validation,
     _dispatch_update,
     _enumerate_with_last,
     _final_transforms,
@@ -847,14 +849,7 @@ class Trainer:
 
                 if validate:
                     assert params.val_loader is not None
-                    # `metrics=` only when declared, as in NNModel.train.
-                    val_edp = (
-                        self.model.evaluate(
-                            loader=params.val_loader, extra_metrics=params.extra_metrics, metrics=params.metrics
-                        )
-                        if params.metrics
-                        else self.model.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics)
-                    )
+                    val_edp = _default_validation(self.model, params, _TRAINER_VALIDATION_SCORING)
                 else:
                     val_edp = None
                 records.replace_last(records.last.with_val_edp(val_edp))

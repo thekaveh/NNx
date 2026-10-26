@@ -750,8 +750,9 @@ below):
   `BINARY_CROSS_ENTROPY`, `MEAN_SQUARED_ERROR`), and a declared width must
   equal `output_dim`. `Nets.TRANSFORMER` and `Nets.VIT` are out of scope; language-model,
   ranking, link and structured-prediction tasks are separate work.
-  `NNModel.train` and `Trainer.train` re-check the live `loss_fn` before
-  touching any loader.
+  `NNModel.train`, `Trainer.train` and `NNModel.evaluate()` (the default
+  and streaming validation steps included) re-check the live `loss_fn`
+  before touching any loader.
 - **Masking and loss units.** Categorical targets equal to `ignore_index`
   and NaN multilabel / regression targets are excluded from the loss and
   every metric alike. Integer class targets of any width, unsigned ones

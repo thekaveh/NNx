@@ -306,7 +306,7 @@ class SupervisedObjective(Objective):
     and always for a ``TaskSpec`` model), never NaN."""
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
-        from .nn.nn_model import _classification_edp_for_loss
+        from .nn.nn_model import _SUPERVISED_OBJECTIVE_SCORING, _classification_edp_for_loss
 
         model = ctx.model
         model.net.train()
@@ -330,6 +330,7 @@ class SupervisedObjective(Objective):
             prediction=prediction,
             loss=term.value,
             extra_metrics=ctx.extra_metrics,
+            scoring=_SUPERVISED_OBJECTIVE_SCORING,
         )
         return ObjectiveResult((term,), record)
 
@@ -381,7 +382,7 @@ class KDObjective(Objective):
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
         from ._step_helpers import predicted_labels, require_row_logits, softened_kl
-        from .nn.nn_model import _classification_edp_for_loss, _single_input_batch
+        from .nn.nn_model import _KD_OBJECTIVE_SCORING, _classification_edp_for_loss, _single_input_batch
 
         model = ctx.model
         model.net.train()
@@ -424,6 +425,7 @@ class KDObjective(Objective):
             prediction=predicted_labels(model.loss_fn, student.detach()),
             loss=ObjectiveResult(terms).loss(),
             extra_metrics=ctx.extra_metrics,
+            scoring=_KD_OBJECTIVE_SCORING,
         )
         return ObjectiveResult(terms, record)
 

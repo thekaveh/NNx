@@ -707,5 +707,25 @@ def test_a_batch_one_rank_cannot_score_stops_every_rank(tmp_path):
     errors = results(out)
     assert [rank["error"] for rank in errors] == ["ValueError", "ValueError"]
     messages = [rank["message"] for rank in errors]
-    assert any("default steps score classification" in message for message in messages)  # the refusing rank
+    assert _DDP_DEFAULT_STEP_REFUSAL in messages  # the refusing rank
     assert any("cannot score their batch's targets" in message for message in messages)  # the other rank
+
+
+_DECLARE_TASK = "declare the task, e.g. NNModelParams(task=TaskSpec.regression(...))"
+# distributed= refuses train_step_fn / objective / eval_step_fn: a task is the one remedy (#565).
+_DDP_DEFAULT_STEP_REFUSAL = f"the default steps score classification and cannot score MSELoss targets: {_DECLARE_TASK}"
+
+
+def test_distributed_regression_refusals_advise_only_a_task_declaration(tmp_path):
+    """#565: under DDP the default training step and validation score
+    classification without a task, and custom steps are refused, so every
+    rank's refusal names only the task declaration — which then trains."""
+    out = tmp_path / "unscorable_validation"
+    launch("unscorable_validation", out)
+    for rank in results(out):
+        assert rank["messages"] == {
+            "train": _DDP_DEFAULT_STEP_REFUSAL,
+            "validation": "distributed validation without a task scores classification and cannot score MSELoss "
+            f"targets: {_DECLARE_TASK}",
+            "task": None,
+        }
