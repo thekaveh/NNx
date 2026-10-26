@@ -15617,17 +15617,17 @@ Args:
     z2: ``(B, D)`` embeddings of the second view.
     temperature: divisor on the cosine similarity. Lower T sharpens
         the distribution; 0.5 is the SimCLR default. Must be > 0.
-        A one-element floating tensor (a learnable temperature) is
-        used as a tensor, so gradients flow through it.
+        A one-element real tensor (a learnable temperature) is used
+        as a tensor, so gradients flow through it.
 
 Returns:
     Scalar loss tensor (mean across the 2B positions in the batch).
 
 Raises:
     ValueError: if shapes mismatch, ``temperature`` is not a finite
-        real > 0 (a ``bool`` included) or a one-element floating
-        tensor holding one, or the batch has fewer than 2 pairs (no
-        negatives to contrast).
+        real > 0 (a ``bool`` included) or a one-element real (not
+        bool) tensor holding one, or the batch has fewer than 2
+        pairs (no negatives to contrast).
 ```
 
 
@@ -16058,7 +16058,7 @@ and the optimizer's state empty for those tensors.
 #### `nnx.paradigms.jepa.update_ema`
 
 ```python
-nnx.paradigms.jepa.update_ema(source: 'nn.Module', target: 'nn.Module', momentum: 'float') -> 'None'
+nnx.paradigms.jepa.update_ema(source: 'nn.Module', target: 'nn.Module', momentum: 'float | torch.Tensor') -> 'None'
 ```
 
 In-place EMA update: ``target ← momentum * target + (1 - momentum) * source``.
@@ -16078,11 +16078,13 @@ Args:
     momentum: EMA decay in ``[0, 1)``. Higher = slower target
         tracking. I-JEPA's reference recipe uses 0.996 with a
         cosine schedule up to 1.0 over training; the factory's
-        default matches.
+        default matches. A one-element real tensor (a schedule
+        computed with torch) is taken by its value.
 
 Raises:
     ValueError: when ``momentum`` is not a real in ``[0, 1)`` (a
-        ``bool`` included).
+        ``bool`` included) or a one-element real (not bool) tensor
+        holding one.
     KeyError: when a target parameter has no same-named source
         parameter (the name-keyed update contract).
 ```

@@ -84,6 +84,34 @@ def test_update_ema_is_convex_combination():
         assert torch.allclose(p_tgt, expected, atol=1e-6), f"EMA mismatch on {n}"
 
 
+def test_update_ema_takes_a_one_element_tensor_momentum():
+    # A momentum scheduled with torch (``torch.linspace(0.996, 1.0, n)[i]``)
+    # updates like the same float.
+    src = torch.nn.Linear(3, 3)
+    by_float, by_tensor = build_target_encoder(src), build_target_encoder(src)
+    with torch.no_grad():
+        for p in src.parameters():
+            p.add_(torch.ones_like(p))
+    update_ema(src, by_float, momentum=0.9)
+    update_ema(src, by_tensor, momentum=torch.tensor(0.9))
+    for a, b in zip(by_float.parameters(), by_tensor.parameters(), strict=True):
+        assert torch.allclose(a, b)
+
+
+@pytest.mark.parametrize(
+    "momentum",
+    [torch.tensor(True), torch.tensor([0.9, 0.9]), torch.tensor(1.0), torch.tensor(float("nan"))],
+    ids=["bool", "two-element", "one", "nan"],
+)
+def test_update_ema_refuses_a_bad_tensor_momentum(momentum):
+    src = torch.nn.Linear(3, 3)
+    tgt = build_target_encoder(src)
+    before = [p.clone() for p in tgt.parameters()]
+    with pytest.raises(ValueError, match="update_ema requires momentum"):
+        update_ema(src, tgt, momentum=momentum)
+    assert all(torch.equal(a, b) for a, b in zip(before, tgt.parameters(), strict=True))
+
+
 def test_update_ema_rejects_bad_momentum():
     src = ViTNN(image_size=16, patch_size=4, in_channels=3, d_model=16, n_layers=1, n_heads=4)
     tgt = build_target_encoder(src)

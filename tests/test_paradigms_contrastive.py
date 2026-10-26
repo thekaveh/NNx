@@ -49,10 +49,22 @@ def test_nt_xent_takes_a_learnable_tensor_temperature():
     assert torch.allclose(loss.detach(), nt_xent_loss(z1, z2, temperature=0.5))
 
 
+def test_nt_xent_takes_an_integer_tensor_temperature_like_the_int():
+    # An integer tensor divides as true division, like the Python int.
+    z1, z2 = torch.randn(8, 16), torch.randn(8, 16)
+    assert torch.allclose(nt_xent_loss(z1, z2, temperature=torch.tensor(2)), nt_xent_loss(z1, z2, temperature=2))
+
+
 @pytest.mark.parametrize(
     "temperature",
-    [torch.tensor(True), torch.tensor(2), torch.tensor([0.5, 0.5]), torch.tensor(0.0), torch.tensor(float("nan"))],
-    ids=["bool", "int", "two-element", "zero", "nan"],
+    [
+        torch.tensor(True),
+        torch.tensor(0.5 + 0j),
+        torch.tensor([0.5, 0.5]),
+        torch.tensor(0.0),
+        torch.tensor(float("nan")),
+    ],
+    ids=["bool", "complex", "two-element", "zero", "nan"],
 )
 def test_nt_xent_refuses_a_bad_tensor_temperature(temperature):
     with pytest.raises(ValueError, match="nt_xent_loss requires temperature"):

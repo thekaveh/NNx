@@ -17,7 +17,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from .._step_helpers import finalize_step, imperative_step
+from .._step_helpers import finalize_step, imperative_step, require_real_or_scalar_tensor
 from .._validation import require_finite_real
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -37,34 +37,23 @@ def nt_xent_loss(
         z2: ``(B, D)`` embeddings of the second view.
         temperature: divisor on the cosine similarity. Lower T sharpens
             the distribution; 0.5 is the SimCLR default. Must be > 0.
-            A one-element floating tensor (a learnable temperature) is
-            used as a tensor, so gradients flow through it.
+            A one-element real tensor (a learnable temperature) is used
+            as a tensor, so gradients flow through it.
 
     Returns:
         Scalar loss tensor (mean across the 2B positions in the batch).
 
     Raises:
         ValueError: if shapes mismatch, ``temperature`` is not a finite
-            real > 0 (a ``bool`` included) or a one-element floating
-            tensor holding one, or the batch has fewer than 2 pairs (no
-            negatives to contrast).
+            real > 0 (a ``bool`` included) or a one-element real (not
+            bool) tensor holding one, or the batch has fewer than 2
+            pairs (no negatives to contrast).
     """
     if z1.shape != z2.shape:
         raise ValueError(f"z1 / z2 shape mismatch: {z1.shape} vs {z2.shape}")
-    if torch.is_tensor(temperature):
-        # A learnable temperature (CLIP's logit-scale style) stays a tensor
-        # so gradients reach it; only its value is checked. A bool or
-        # integer tensor would divide as 1 / 0 or truncate, so refuse it.
-        if not temperature.is_floating_point() or temperature.numel() != 1:
-            raise ValueError(
-                "nt_xent_loss requires temperature to be a finite real number > 0 or a one-element "
-                f"floating tensor, got a {temperature.dtype} tensor of shape {tuple(temperature.shape)}"
-            )
-        require_finite_real(
-            float(temperature.detach()), "temperature", owner="nt_xent_loss", minimum=0, exclusive_min=True
-        )
-    else:
-        require_finite_real(temperature, "temperature", owner="nt_xent_loss", minimum=0, exclusive_min=True)
+    # A tensor temperature (a learnable one, CLIP's logit-scale style) stays
+    # a tensor below so gradients reach it; only its value is checked.
+    require_real_or_scalar_tensor(temperature, "temperature", owner="nt_xent_loss", minimum=0, exclusive_min=True)
     if z1.shape[0] < 2:
         # With a single pair there are no negatives: after the diagonal
         # mask each row has exactly one finite logit (its positive), so
