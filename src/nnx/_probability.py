@@ -4,8 +4,16 @@ Internal; NumPy only.
 One implementation of each piece, so the modules that use it cannot drift
 apart:
 
-- ``softmax_`` — the max-shifted softmax of ``nnx.prediction``; a
-  temperature-1 calibrator (``nnx.calibration``) repeats it bit for bit.
+- ``softmax_`` — the max-shifted softmax of ``nnx.prediction`` and
+  ``nnx.calibration``. A temperature-1 calibrator repeats
+  ``prediction_from_logits`` bit for bit for float64 (and integer) logits
+  only: the calibrator always computes in float64, ``prediction_from_logits``
+  in the logits' own precision (float16 in float32). For float32, float16
+  and bfloat16 logits the two differ by that precision's rounding, so a
+  two-class float32 top probability is exactly 1 from a logit gap of about
+  16.6 on, a float64 one only from about 36.7.
+- ``logit_probabilities`` — that float64 softmax of ``(N, C)`` logits, the
+  one precision ``nnx.abstention`` scores every prediction in.
 - ``nll_terms`` / ``brier_terms`` — the per-row (categorical) or
   per-output (Bernoulli) terms of the named ``nll`` / ``brier`` metrics
   (``nnx.monitors``) and of ``nnx.calibration``'s
@@ -60,6 +68,24 @@ def softmax_(work: np.ndarray, axis: int) -> np.ndarray:
     np.exp(work, out=work)
     work /= work.sum(axis=axis, keepdims=True)
     return work
+
+
+def logit_probabilities(logits: Any, *, error: type[Exception]) -> Optional[tuple[np.ndarray, float]]:
+    """The float64 softmax over axis 1 of ``(N, C)`` real logits — bit for
+    bit a calibrator's raw view and ``prediction_from_logits`` over the
+    logits cast to float64 — and the machine epsilon of the logits' own
+    dtype (bfloat16's for a bfloat16 tensor, float64's for integers).
+    ``None`` for any other shape or dtype: the caller reads its
+    probabilities as given. ``error`` for an unreadable array; the input is
+    never modified."""
+    # bfloat16 tensors arrive upcast to float32; their rounding is bfloat16's.
+    source_eps = 2.0**-7 if is_tensor(logits) and str(logits.dtype) == "torch.bfloat16" else None
+    array = read_array(logits, copy=False, error=error)
+    if array.ndim != 2 or array.shape[1] < 2 or array.dtype.kind not in "fiu":
+        return None
+    eps = float(np.finfo(array.dtype if array.dtype.kind == "f" else np.float64).eps)
+    with np.errstate(over="ignore", invalid="ignore"):  # non-finite logits give NaN: the caller refuses them
+        return softmax_(array.astype(np.float64, copy=True), 1), source_eps if source_eps is not None else eps
 
 
 def is_categorical(target: np.ndarray, probabilities: np.ndarray) -> bool:

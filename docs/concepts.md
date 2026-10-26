@@ -2399,6 +2399,20 @@ test probabilities ──► policy.apply(...) ──► AbstentionResult (accep
 - **Float scores.** Scores are float64, so a margin of `0.7 - 0.2` is
   `0.49999999999999994`, and a hand-picked threshold of 0.5 abstains on it.
   Thresholds from `select_threshold` are actual scores.
+- **One precision for every producer.** A `PredictionResult` (from
+  `predict_proba`, `iter_predict` or a task model) is scored from its
+  logits, recomputed in float64. Its own `probabilities` keep the logits'
+  precision and are not read. A `CalibratedPrediction`'s raw view and
+  `FixedHeadProvider` compute the same float64 softmax. So one policy makes
+  the same decisions on the same logits through `apply`, `select_threshold`,
+  `risk_coverage_curve`, `decide`, `decide_result`, `DecisionJob` and the
+  benchmark, and a threshold tuned on one producer reproduces its recorded
+  counts on another. This matters near 1: a two-class float32 top
+  probability rounds to exactly 1 from a logit gap of 16.6 (float16 from
+  8.3), a float64 one only from 36.7. Bare arrays are scored as given, in
+  your precision, so pass the prediction itself rather than its float32
+  `probabilities`. Other providers' distributions are scored as they serve
+  them.
 - **Inputs.** For arrays, the prediction is the first class of maximal
   probability, so ties break by label order. Policies are pure functions
   over categorical `[N, C]` probabilities (`C >= 2`) with ordered labels and

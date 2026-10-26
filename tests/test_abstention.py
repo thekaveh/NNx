@@ -1127,3 +1127,136 @@ def test_round_twenty_malformed_ids_fail_before_the_probabilities_are_read():
     assert Probabilities.reads == 0
     with pytest.raises(AbstentionError, match="one integer id per row \\(4\\)"):
         _policy().apply(Probabilities(), labels=LABELS, model_id="m", sample_ids=[1, 2])  # the count, after
+
+
+# ------------------------------------------- FIX-047 (#514): one precision on every producer
+
+TWO = ("a", "b")
+
+
+def _producers(gaps, dtype):
+    """Two-class logits ``[0, gap]`` in ``dtype`` and three producers of their
+    ``"probabilities"``: a ``PredictionResult`` (computed in the logits' own
+    precision), a temperature-1 calibrator's float64 raw view, and the float64
+    rows ``FixedHeadProvider`` recomputes — given as a bare array."""
+    from nnx.calibration import TemperatureCalibrator
+    from nnx.prediction import ProbabilitySpec, prediction_from_logits
+
+    logits = np.stack([np.zeros_like(gaps), gaps], axis=1).astype(dtype)
+    spec = ProbabilitySpec("categorical", labels=TWO)
+    calibrator = TemperatureCalibrator(temperature=1.0, labels=TWO, model_id="m", split_id="cal")
+    head = prediction_from_logits(logits.astype(np.float64), spec).probabilities
+    return {
+        "prediction": prediction_from_logits(logits, spec),
+        "raw_view": calibrator.transform(logits, labels=TWO, model_id="m"),
+        "head": head,
+    }
+
+
+def _declare(name):
+    return {"labels": TWO, "model_id": "m"} if name == "head" else {"model_id": "m"} if name == "prediction" else {}
+
+
+SATURATING = [
+    pytest.param(np.float32, 17.0, 30.0, 20.0, id="float32-gaps-17-30"),  # float32 rounds to 1 from a gap of 16.6
+    pytest.param(np.float16, 8.0, 12.0, 9.0, id="float16-gaps-8-12"),  # float16 from a gap of 8.3
+]
+
+
+@pytest.mark.parametrize("kind", ["max_probability", "margin"])
+@pytest.mark.parametrize(("dtype", "low", "high", "wrong_high"), SATURATING)
+def test_saturating_logits_decide_alike_through_every_producer(kind, dtype, low, high, wrong_high):
+    from nnx.decisions import ChoiceResult
+
+    rng = np.random.default_rng(0)
+    gaps = np.concatenate([rng.uniform(low, high, 40), rng.uniform(low, wrong_high, 10)])  # 40 right, 10 wrong
+    y = np.array([1] * 40 + [0] * 10)
+    tuning = _producers(gaps, dtype)
+    selections = {
+        name: select_threshold(
+            source, y, kind=kind, risk_ceiling=0.0, split_id="val", input_field="probabilities", **_declare(name)
+        )
+        for name, source in tuning.items()
+    }
+    assert selections["prediction"] == selections["raw_view"] == selections["head"]  # one threshold, one curve
+    selection = selections["prediction"]
+    policy = selection.require()
+    chosen = next(point for point in selection.points if point.threshold == policy.threshold)
+    assert chosen.incorrect == 0
+    curves = {
+        name: risk_coverage_curve(source, y, kind=kind, input_field="probabilities") for name, source in tuning.items()
+    }
+    assert curves["prediction"] == curves["raw_view"] == curves["head"] == selection.points
+    for name, source in tuning.items():  # each producer's report repeats the counts the selection recorded
+        report = policy.apply(source, **_declare(name)).report(y)
+        assert (report.accepted, report.incorrect) == (chosen.accepted, chosen.incorrect), name
+
+    serving = _producers(rng.uniform(low, high, 20), dtype)
+    accepted = {name: policy.apply(source, **_declare(name)).accepted for name, source in serving.items()}
+    accepted["decide"] = np.array(
+        [
+            decide(
+                ChoiceResult(question_digest="q", distribution=(("a", row[0]), ("b", row[1]))), policy, model_id="m"
+            ).accepted
+            for row in serving["head"]
+        ]
+    )
+    reference = accepted["head"]
+    assert 0 < reference.sum() < 20  # the threshold splits rows the lower precision rounds to the same score
+    for name, mask in accepted.items():
+        np.testing.assert_array_equal(mask, reference, err_msg=name)
+
+
+def test_a_saturated_float32_threshold_reads_float64_scores():
+    from nnx.prediction import ProbabilitySpec, prediction_from_logits
+
+    prediction = _producers(np.array([17.0, 25.0]), np.float32)["prediction"]
+    assert prediction.probabilities.dtype == np.float32 and (prediction.probabilities[:, 1] == 1.0).all()
+    saturated = AbstentionPolicy("max_probability", 1.0, labels=TWO, model_id="m", tuning_split_id="val")
+    result = saturated.apply(prediction, model_id="m")
+    assert result.probabilities.dtype == np.float64 and (result.score < 1.0).all()
+    assert not result.accepted.any()  # as the float64 producers decide: no float32 rounding reaches 1
+    float64 = prediction_from_logits(prediction.logits.astype(np.float64), ProbabilitySpec("categorical", labels=TWO))
+    np.testing.assert_array_equal(result.probabilities, float64.probabilities)
+    assert prediction.probabilities.dtype == np.float32  # the prediction itself is untouched
+
+
+def test_float64_logits_score_as_before_and_saved_policies_keep_their_ids():
+    from nnx.prediction import ProbabilitySpec, prediction_from_logits
+
+    prediction = prediction_from_logits(np.log(P), ProbabilitySpec("categorical", labels=LABELS))
+    for kind in ("max_probability", "margin"):
+        on_prediction = _policy(kind, 0.3).apply(prediction, model_id="m")
+        on_array = _apply(_policy(kind, 0.3), prediction.probabilities)
+        np.testing.assert_array_equal(on_prediction.probabilities, prediction.probabilities)
+        np.testing.assert_array_equal(on_prediction.score, on_array.score)
+        assert risk_coverage_curve(prediction, Y, kind=kind) == risk_coverage_curve(
+            prediction.probabilities, Y, kind=kind
+        )
+    # Policies written before the fix (pinned at e69fd74) load with the same id.
+    written = {
+        "sha256:30eb5ee87bd787dc97ec769cd8f426b44a8df5c56f0ba0e8424ba183a88edbf8": (
+            '{"artifact":"policy","calibrator_id":null,"format":"nnx.abstention/1","input_field":"probabilities",'
+            '"kind":"max_probability","labels":["a","b"],"model_id":"m","threshold":1.0,"tuning_split_id":"val"}'
+        ),
+        "sha256:51b78458d5dd7287b314ae1f9beb7b42ee9c390f288e2c5ae006b5e771be21cf": (
+            '{"artifact":"policy","calibrator_id":null,"format":"nnx.abstention/1","input_field":"probabilities",'
+            '"kind":"margin","labels":["a","b"],"model_id":"m","threshold":0.9999999710665861,"tuning_split_id":"val"}'
+        ),
+    }
+    for policy_id, text in written.items():
+        assert AbstentionPolicy.from_json(text).id == policy_id
+        selection = {
+            "artifact": "threshold_selection", "basis": "empirical", "calibration_override": None, "calibrator_id": None,
+            "format": "nnx.abstention/1", "input_field": "probabilities", "kind": json.loads(text)["kind"],
+            "labels": ["a", "b"], "model_id": "m", "policy": json.loads(text), "risk_ceiling": 0.0, "split_id": "val",
+            "status": "ok", "test_split_id": None,
+            "points": [
+                {"accepted": 1, "coverage": 1.0, "incorrect": 0, "risk": 0.0, "status": "ok",
+                 "threshold": json.loads(text)["threshold"], "total": 1},
+                {"accepted": 0, "coverage": 0.0, "incorrect": 0, "risk": None, "status": "accept_none",
+                 "threshold": None, "total": 1},
+            ],
+        }  # fmt: skip
+        loaded = abstention.ThresholdSelection.from_json(json.dumps(selection))
+        assert loaded.require().id == policy_id and loaded.state() == selection

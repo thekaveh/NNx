@@ -140,8 +140,13 @@ what it can answer:
   `unsupported`, never answered with the head's probability.
 - **Columns.** Logits come from `model.predict_proba` (the prediction
   contract). Probabilities are recomputed from them in float64, so a
-  half-precision head still meets the `1e-6` tolerance. They are reordered
-  into the request's option order and passed through `validate_response`.
+  half-precision head still meets the `1e-6` tolerance. These are the
+  probabilities an abstention policy reads from the head's own
+  `PredictionResult`, so a policy tuned on `model.predict_proba` decides
+  the same rows through this provider
+  ([concepts §19](concepts.md#19-abstention-and-risk-coverage-nnxabstention)).
+  They are reordered into the request's option order and passed through
+  `validate_response`.
   Each row's logits (a copy) become `raw`. An empty batch returns `[]`
   without calling the model.
 - **Modes.** Prediction runs in eval mode and restores every submodule's

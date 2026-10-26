@@ -252,6 +252,26 @@ def test_temperature_one_reproduces_uncalibrated_probabilities():
     np.testing.assert_allclose(result.probabilities, P[:3], atol=1e-15)
 
 
+def test_temperature_one_repeats_float32_logits_in_float64_only():
+    """#514: the calibrator computes in float64 whatever the logits' dtype;
+    ``prediction_from_logits`` in theirs. Bit for bit they agree once the
+    float32 logits are cast to float64 — not on the float32 logits, whose top
+    probability already rounds to exactly 1 at a two-class gap of 17."""
+    from nnx.prediction import ProbabilitySpec, prediction_from_logits
+
+    logits = np.array([[0.0, 17.0], [0.0, 2.5], [1.0, -3.0]], dtype=np.float32)
+    spec = ProbabilitySpec(kind="categorical", labels=BINARY)
+    identity = TemperatureCalibrator(temperature=1.0, labels=BINARY, model_id="m", split_id="calib")
+    result = identity.transform(logits, labels=BINARY, model_id="m")
+    assert result.probabilities.dtype == np.float64
+    np.testing.assert_array_equal(
+        result.probabilities, prediction_from_logits(logits.astype(np.float64), spec).probabilities
+    )
+    native = prediction_from_logits(logits, spec).probabilities
+    assert native.dtype == np.float32 and native[0, 1] == 1.0 and result.probabilities[0, 1] < 1.0
+    np.testing.assert_allclose(result.probabilities, native, rtol=0, atol=float(np.finfo(np.float32).eps))
+
+
 def test_nll_matches_the_hand_computed_fixture():
     exact = negative_log_likelihood(P[:3], Y[:3], epsilon=None)
     assert exact == pytest.approx(-(math.log(0.7) + math.log(0.3) + math.log(0.4)) / 3, rel=1e-15)

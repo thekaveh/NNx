@@ -318,3 +318,104 @@ def test_a_bernoulli_head_refuses_categorical_settings_and_labels_must_be_iterab
             FixedHeadProvider(bce, question=Boolean("Is it a cat?"), **extra)
     with pytest.raises(InvalidDecisionRequest, match="sequence of strings, got int"):
         FixedHeadProvider(_classifier(3, Losses.CROSS_ENTROPY), labels=3)
+
+
+# ------------------------------------------- FIX-047 (#514): one precision on every producer
+
+TWO = ("a", "b")
+AB = Choice("Which class?", (("a", "class a"), ("b", "class b")))
+
+
+def _gap_head(dtype: torch.dtype) -> NNModel:
+    """A categorical task head whose logits are ``[0, x]``: the input is the
+    logit gap, in ``dtype`` (float16 runs on the CPU too)."""
+    model = NNModel(
+        net_params=NNParams(input_dim=1, output_dim=2, hidden_dims=[], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, task=TaskSpec.categorical(2, labels=TWO)
+        ),
+    )
+    with torch.no_grad():
+        model.net.layers[0].weight.copy_(torch.tensor([[0.0], [1.0]]))
+        model.net.layers[0].bias.zero_()
+    model.net.to(dtype)
+    return model
+
+
+def _streamed(model: NNModel, X: torch.Tensor, spec, batch_size: int) -> list:
+    from torch.utils.data import DataLoader, TensorDataset
+
+    with model.iter_predict(DataLoader(TensorDataset(X), batch_size=batch_size), spec) as stream:
+        return list(stream)
+
+
+@pytest.mark.parametrize("kind", ["max_probability", "margin"])
+@pytest.mark.parametrize(
+    ("dtype", "low", "high", "wrong_high"),
+    [
+        pytest.param(torch.float32, 17.0, 30.0, 20.0, id="float32-gaps-17-30"),
+        pytest.param(torch.float16, 8.0, 12.0, 9.0, id="float16-gaps-8-12"),
+    ],
+)
+def test_a_policy_tuned_on_any_producer_decides_alike_on_every_path(kind, dtype, low, high, wrong_high):
+    """A policy tuned on any producer of the head's ``"probabilities"`` accepts
+    the same rows through every path that scores them: all compute in float64
+    from the same logits, so the saturation band of the head's own precision
+    (float32 rounds to 1 from a logit gap of 16.6, float16 from 8.3) moves no
+    decision."""
+    from nnx.abstention import select_threshold
+    from nnx.calibration import TemperatureCalibrator
+    from nnx.decisions import DecisionJob
+    from nnx.decisions.benchmark import Budget, Sample, collect, evaluate
+    from nnx.prediction import ProbabilitySpec
+    from nnx.result import decide_result
+
+    model = _gap_head(dtype)
+    provider = FixedHeadProvider(model)
+    spec = ProbabilitySpec("categorical", labels=TWO)
+    calibrator = TemperatureCalibrator(temperature=1.0, labels=TWO, model_id="m", split_id="cal")
+    rng = np.random.default_rng(0)
+    column = lambda gaps: torch.tensor(gaps, dtype=dtype).unsqueeze(1)  # noqa: E731
+    x_val = column(np.concatenate([rng.uniform(low, high, 40), rng.uniform(low, wrong_high, 10)]))
+    y_val = np.array([1] * 40 + [0] * 10)  # 40 right, 10 wrong
+    raw = model.predict_proba(x_val, spec)
+    assert raw.logits.dtype == np.dtype(str(dtype).removeprefix("torch."))
+    head_rows = np.array([[p for _, p in result.distribution] for result in provider.decide(AB, x_val)])
+    tuning = {
+        "predict_proba": (raw, {"model_id": "m"}),
+        "task predict_proba": (model.predict_proba(x_val), {"model_id": "m"}),
+        "iter_predict": (_streamed(model, x_val, spec, batch_size=50)[0], {"model_id": "m"}),
+        "raw view": (calibrator.transform(raw.logits, labels=TWO, model_id="m"), {"input_field": "probabilities"}),
+        "FixedHeadProvider": (head_rows, {"labels": TWO, "model_id": "m"}),
+    }
+    selections = {
+        name: select_threshold(source, y_val, kind=kind, risk_ceiling=0.0, split_id="val", **declared)
+        for name, (source, declared) in tuning.items()
+    }
+    policy = selections["predict_proba"].require()
+    for name, selection in selections.items():
+        assert selection == selections["predict_proba"], name
+
+    x_new = column(rng.uniform(low, high, 20))
+    new = model.predict_proba(x_new, spec)
+    accepted = {
+        "predict_proba": policy.apply(new, model_id="m").accepted,
+        "task predict_proba": policy.apply(model.predict_proba(x_new), model_id="m").accepted,
+        "iter_predict": np.concatenate(
+            [policy.apply(chunk, model_id="m").accepted for chunk in _streamed(model, x_new, spec, batch_size=7)]
+        ),
+        "raw view": policy.apply(calibrator.transform(new.logits, labels=TWO, model_id="m")).accepted,
+        "decide_result": np.array(
+            [d.accepted for d in decide_result(provider, AB, x_new, policy=policy, model_id="m").unwrap()]
+        ),
+    }
+    rows = DecisionJob.ask(AB, id="q", policy=policy, model_id="m").run(provider, state=x_new).outcomes["q"].rows
+    accepted["DecisionJob"] = np.array([row.kind == "answered" for row in rows])
+    reference = accepted["predict_proba"]
+    assert 0 < reference.sum() < 20  # the threshold lies inside the head's saturation band
+    for name, mask in accepted.items():
+        np.testing.assert_array_equal(mask, reference, err_msg=name)
+    samples = [Sample(id=f"s{i}", question=AB, input=x_new[i], label="b") for i in range(20)]
+    records = collect(provider, samples, provider_id="head", budget=Budget(max_calls=20)).records
+    report = evaluate(samples, records, split="test", policy=policy, model_id="m")
+    assert report.slices["in_family"].metrics["selective_coverage"].value == reference.mean()
