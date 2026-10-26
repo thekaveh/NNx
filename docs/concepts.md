@@ -541,7 +541,13 @@ runs/<id>/history/
 - **Refused callbacks.** A plain function callback (`callbacks=[lambda idps: ...]`) by contract receives the full list. With a journal, such a callback or an unknown `history_access` is refused with a `ValueError` before any run is reserved. Without a journal, `ctx.idps` is the plain running list.
 - **Continuations.** A resumed run owns its own run directory and chunk files and never writes to the source run, which stays byte-for-byte unchanged. `iter_history(run_id, lineage=True)` and `export_history_csv(..., lineage=True)` first yield the committed records of the run the child resumed from. They stop at the epoch the child resumed from, then yield the child's records, recursively. Each epoch appears once, never the parent's later epochs.
 - **The branch epoch.** The child's resume status records the epoch it resumed from (`ResumeStatus.source_epoch`, in `metadata.yaml`). For runs recorded without it, NNx uses the epoch of that checkpoint now. The cut also holds when the child resumed from an earlier checkpoint than the parent's last, or has no committed record yet. The cut never passes the child's first record.
-- **Lineage fallbacks.** The branch epoch may be unknowable, because the checkpoint or the parent's LAST is unreadable. Then the parent's records before the child's first record are used, with a `RuntimeWarning`. The lineage starts at the child, with a `RuntimeWarning`, in three cases. Neither is known, the parent run is gone, or the child resumed through the `runs/best` pointer (which may name another run by now).
+- **Lineage fallbacks.** The branch epoch may be unknowable, because the checkpoint or the parent's LAST is unreadable. Then the parent's records before the child's first record are used, with a `RuntimeWarning`. The lineage starts at the child, with a `RuntimeWarning`, in five cases:
+    - neither is known;
+    - the parent run is gone;
+    - the child resumed through the `runs/best` pointer, which may name another run by now;
+    - the parent has been retrained in place since the child resumed from it, so another attempt holds its id;
+    - the child resumed from a run bundle, whose parent lives in the bundle.
+- **Parent attempts.** Run ids derive from the configuration, so another attempt can hold a parent's id: a retrain with `overwrite_existing=True`, or an unrelated same-configuration run beside a bundle's child. Every `train()` records a fresh `ResumeStatus.attempt_token`, and a resumed child records its parent's as `source_attempt_token`. Lineage stitches the parent only while it holds that attempt. The parent's own LAST, FIRST and BEST rewrites keep its token, so a still-training parent stays stitched. A bundle child records `bundle-<generation>` and is never stitched to a run in its runs root, not even the bundle's unchanged source run: the bundle does not record which attempt it was exported from. A child recorded without a token (before this check, or resumed from a parent recorded without one) is stitched to the run holding the parent's id, as before.
 - **Lineage follows resumes.** A run that started fresh starts its own epochs, and its lineage is its own history. One example is a born-again generation naming its teacher's run as `parent_run_id`.
 - **Export.** `export_history_csv` writes the same columns, order and index `NNRun.save` writes for an eager run. It holds the records in memory while it builds the table; stream `iter_history` for larger histories.
 - **Migration.** `migrate_history(run_id, spec=...)` moves an existing run's `idps.csv` into a journal explicitly, keeping `run.yaml` and the run id. Floats are parsed round-trip. The journal is read back and checked before it is published and the CSV removed. An unpublished leftover of an interrupted migration is replaced, and one interrupted after publishing is finished.
@@ -1950,7 +1956,7 @@ Sidecars written before component state existed still load. The model, optimizer
 
 Any other resume of a one-cycle or warmup-decay schedule needs one *shared horizon*. That is an explicit `total_steps` covering the original and the resumed epochs (updates, on the `optimizer_update` clock). A warmup-decay schedule on the epoch clock also needs an explicit `warmup_steps`, unless the resume uses `resume_epochs="planned"`. Its default is a tenth of each session's `n_epochs`. Both are checked before the checkpoint is read.
 
-The returned run reports what happened in `run.resume_status`, a `ResumeStatus`. It holds `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint, that checkpoint's epoch (`source_epoch`), and the restored and freshly started component names. `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
+The returned run reports what happened in `run.resume_status`, a `ResumeStatus`. It holds `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint, that checkpoint's epoch (`source_epoch`), and the restored and freshly started component names. It also holds the session's `attempt_token` (fresh for every `train()`, and the same on every DDP rank) and, on a resume, the source's (`source_attempt_token`), which history lineage checks (§4.5). `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
 
 ### 14.3. Exact resume to the planned horizon
 
@@ -2097,7 +2103,7 @@ verification, it takes the source checkpoint's lock file. The resumed
 session's run id hashes its parent (`parent_run_id`, `parent_checkpoint`).
 `run.resume_status` records the source run, checkpoint, epoch,
 `source_generation` and `source_checkpoint_id`, all of the generation the
-resume restored. It is stored in
+resume restored, and the source's attempt token (`source_attempt_token`). It is stored in
 `metadata.yaml` under `resume`, never in `run.yaml`, whose content *is* the
 run id.
 
@@ -2857,7 +2863,9 @@ export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bund
 - **Resume lineage.** The resumed run records `resume_checkpoint`
   (`"bundle-<generation[:16]>_e<epoch>"`, the generation's first 16 hex characters) as its parent checkpoint. With
   `provenance=...`, its attempt links the bundle's run, epoch and generation
-  without reading anything from disk.
+  without reading anything from disk. Its history lineage
+  (`iter_history(..., lineage=True)`) starts at the resumed run with a
+  `RuntimeWarning`: the parent lives in the bundle (§4.5).
 - **Resume refusals.** These raise `BundleCapabilityError` before anything
   changes. They are an `"inference"` bundle, a `Trainer` run's bundle (named
   optimizers), or a topology converted at train end (a QAT checkpoint). A

@@ -232,8 +232,13 @@ def _resume_outcome(loop: str, case: str, monkeypatch: pytest.MonkeyPatch) -> di
         "model_unchanged": all(torch.equal(after_model[key], value) for key, value in before_model.items()),
         "rng_unchanged": _same_rng(before_rng, after_rng),
         # The two loops resume different source runs (their checkpoints only resume
-        # through the loop that wrote them): compare everything but the source's identity.
-        "status": None if status is None else replace(status, source_run_id=None, source_checkpoint_id=None),
+        # through the loop that wrote them): compare everything but the source's
+        # identity and the attempt tokens, fresh for every fit (#553).
+        "status": None
+        if status is None
+        else replace(
+            status, source_run_id=None, source_checkpoint_id=None, attempt_token=None, source_attempt_token=None
+        ),
     }
 
 

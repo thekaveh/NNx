@@ -1266,3 +1266,94 @@ def test_a_run_stopped_before_its_first_committed_epoch_loads_with_no_records(tm
     )
     assert list(iter_history(run.id)) == []
     assert NNRun.load(run.id).idps == []
+
+
+# --- #553: lineage follows the parent attempt the child resumed from --------------------------------
+
+
+def _recorded(read):
+    """What ``read()`` returns and the RuntimeWarnings it issued."""
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = read()
+    return result, [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
+
+
+@pytest.mark.parametrize("journal", [False, True], ids=["idps.csv", "journal"])
+@pytest.mark.parametrize(
+    ("entry", "resume_mode"),
+    [("model", "stateful"), ("model", "weights_only"), ("trainer", "stateful"), ("trainer", "weights_only")],
+)
+def test_a_parent_retrained_in_place_is_not_spliced_into_the_childs_lineage(entry, resume_mode, journal, tmp_path):
+    spec = HistoryJournal(retention=3, chunk_size=2) if journal else None
+    parent = _fit(entry, spec, n_epochs=2)
+    child = _fit(entry, spec, n_epochs=1, resume_from_run_id=parent.id, resume_mode=resume_mode)
+    assert child.resume_status is not None and child.resume_status.mode == resume_mode
+    assert parent.resume_status is not None and parent.resume_status.attempt_token is not None
+    assert child.resume_status.source_attempt_token == parent.resume_status.attempt_token
+    own = _states(iter_history(child.id))
+    # The parent attempt the child resumed from: stitched, with no warning.
+    intact, messages = _recorded(lambda: _states(iter_history(child.id, lineage=True)))
+    assert intact == _states(iter_history(parent.id)) + own and messages == []
+
+    retrained = _fit(entry, spec, n_epochs=2, overwrite_existing=True)  # same configuration: same run id
+    assert retrained.id == parent.id
+    lineage, messages = _recorded(lambda: _states(iter_history(child.id, lineage=True)))
+    assert lineage == own
+    assert len(messages) == 1 and parent.id in messages[0] and "retrained in place" in messages[0]
+    count, messages = _recorded(lambda: export_history_csv(child.id, tmp_path / "lineage.csv", lineage=True))
+    assert count == len(own) and len(messages) == 1 and "retrained in place" in messages[0]
+    export_history_csv(child.id, tmp_path / "own.csv")
+    assert filecmp.cmp(tmp_path / "lineage.csv", tmp_path / "own.csv", shallow=False)
+
+
+def test_a_parent_whose_checkpoints_and_metadata_are_rewritten_by_its_own_attempt_stays_stitched():
+    parent = _fit("model", n_epochs=3)
+    child = _fit("model", n_epochs=1, resume_from_run_id=parent.id)
+    expected = _states(iter_history(child.id, lineage=True))
+    # LAST and FIRST published again, and metadata.yaml rewritten, as a still-training parent does.
+    for tag in (Checkpoints.LAST, Checkpoints.FIRST):
+        checkpoint = NNCheckpoint.load(run=parent.id, type=tag)
+        assert checkpoint is not None
+        checkpoint.save(run=parent.id, type=tag)
+    NNRun.load(parent.id).save()
+    lineage, messages = _recorded(lambda: _states(iter_history(child.id, lineage=True)))
+    assert lineage == expected and messages == []
+
+
+def test_a_child_recorded_without_an_attempt_token_stitches_as_before():
+    import yaml
+
+    spec = HistoryJournal(retention=3, chunk_size=2)
+    parent = _fit("model", spec, n_epochs=2)
+    child = _fit("model", spec, n_epochs=1, resume_from_run_id=parent.id)
+    expected = _states(iter_history(child.id, lineage=True))
+    metadata = os.path.join("runs", child.id, "metadata.yaml")
+    state = yaml.safe_load(open(metadata, encoding="utf-8"))
+    del state["resume"]["source_attempt_token"]  # status recorded before attempt tokens
+    with open(metadata, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(state, handle, sort_keys=True)
+    _fit("model", spec, n_epochs=2, overwrite_existing=True)  # an untokened child cannot tell the attempts apart
+    lineage, messages = _recorded(lambda: _states(iter_history(child.id, lineage=True)))
+    assert lineage == expected and messages == []
+    del state["resume"]["source_epoch"]  # the branch epoch is then read from the parent's checkpoint
+    with open(metadata, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(state, handle, sort_keys=True)
+    lineage, messages = _recorded(lambda: _states(iter_history(child.id, lineage=True)))
+    assert lineage == expected and messages == []
+
+
+def test_the_attempt_tokens_are_omitted_from_state_when_unset_and_validated():
+    from nnx import ResumeStatus
+
+    assert "attempt_token" not in ResumeStatus().state()
+    assert "source_attempt_token" not in ResumeStatus().state()
+    status = ResumeStatus(mode="stateful", source_run_id="x", attempt_token="a" * 32, source_attempt_token="b" * 32)
+    assert status.state()["attempt_token"] == "a" * 32 and status.state()["source_attempt_token"] == "b" * 32
+    assert ResumeStatus.from_state(status.state()) == status
+    for field in ("attempt_token", "source_attempt_token"):
+        for bad in ("", 3):
+            with pytest.raises(ValueError, match=field):
+                ResumeStatus(**{field: bad})  # type: ignore[arg-type]

@@ -580,6 +580,14 @@ def _load_resume_status(metadata: Optional[Mapping[str, Any]]) -> Optional[Resum
         return None
 
 
+def _recorded_attempt_token(run_path: str) -> Optional[str]:
+    """The attempt token the run at ``run_path`` records in its
+    ``metadata.yaml`` (#553); ``None`` for a run recorded without one, or
+    when unreadable."""
+    status = _load_resume_status(_read_metadata(os.path.join(run_path, "metadata.yaml")))
+    return None if status is None else status.attempt_token
+
+
 def _load_compile(metadata: Optional[Mapping[str, Any]]) -> Optional[CompileRecord]:
     """The compile record in ``metadata.yaml`` (FEAT-029); ``None`` for an
     eager run, runs written before it, or when unreadable."""
