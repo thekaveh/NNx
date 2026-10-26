@@ -14,7 +14,16 @@ imports Optuna or creates a study.
   plan's own ``NNTrainParams.monitor`` so the BEST checkpoint is chosen the
   same way) and the plan (validation data, data and callbacks as factories)
   are checked before any trial; reopening a stored study whose space,
-  monitor or plan identity differs is refused before any trial too.
+  monitor or plan identity differs is refused before any trial too. A
+  resuming plan's identity includes its effective resume (source run,
+  checkpoint, mode and epochs); a plan without one keeps its identity.
+- **Weights-only resumes.** A plan (or a plan ``apply`` returns) that
+  resumes in any mode but ``"weights_only"`` — the default ``"auto"``,
+  ``"stateful"``, or ``resume_epochs="planned"`` — is refused before any
+  trial, set by ``resuming()`` or by the training parameters: a stateful
+  resume restores the source's monitor best, so BEST, and the trial's
+  value, would come only from an epoch that beats the source's. A
+  weights-only resume scores each trial by its own validated epochs.
 - **The budget counts every trial.** Completed, failed, pruned and orphaned
   (left running by a crashed process) trials all count against
   ``SearchBudget.trials``: a study holding two trials, searched with a
@@ -374,7 +383,10 @@ class _TrialControl(Callback):
 
 
 def _plan_identity(plan: Any) -> str:
-    """The plan configuration a stored study belongs to."""
+    """The plan configuration a stored study belongs to. The effective
+    resume (source run, checkpoint, mode and epochs, from ``resuming()`` or
+    the training parameters) is part of it only when the plan resumes, so a
+    plan without one keeps the identity its stored studies were made with."""
     parts = {
         "net": None if plan.net is None else plan.net.state(),
         "model": None if plan.model is None else plan.model.state(),
@@ -382,6 +394,9 @@ def _plan_identity(plan: Any) -> str:
         "seed": plan.seed,
         "data": None if plan.data_identity is None else str(plan.data_identity),
     }
+    resume = plan._effective_resume()
+    if resume is not None:
+        parts["resume"] = resume
     return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
@@ -399,6 +414,7 @@ def _check_plan(plan: Any, monitor: Any, budget: Optional[SearchBudget] = None) 
             "value"
         )
     plan.validate().raise_for_errors()
+    _check_resume(plan)
     train = plan.train
     assert train is not None  # a valid plan has training parameters
     declared = tuple(train.metrics or ())
@@ -430,6 +446,29 @@ def _check_plan(plan: Any, monitor: Any, budget: Optional[SearchBudget] = None) 
             "not report them (ctx.report_update()); use an objective, the default step, or no update cap"
         )
     return resolved
+
+
+def _check_resume(plan: Any) -> None:
+    """Refuse a resume that is not weights-only. A stateful resume (``"auto"``
+    from a checkpoint with training state, ``"stateful"``, and every
+    ``resume_epochs="planned"`` one) restores the source's monitor best, so
+    a trial's BEST checkpoint and value would come only from an epoch that
+    beats the source's, and a trial that validated finite epochs could have
+    nothing to score."""
+    resume = plan._effective_resume()
+    if resume is None or resume["mode"] == "weights_only":
+        return
+    mode = resume["mode"]
+    when = " (stateful when the checkpoint holds its training state)" if mode == "auto" else ""
+    planned = ""
+    if resume["epochs"] == "planned":
+        planned = ", with epochs='additional' ('planned' continues the source's training state)"
+    raise ValueError(
+        f"search scores each trial by its own validated epochs, and a resume_mode={mode!r} resume of run "
+        f"{resume['run_id']!r}{when} restores the source's training state, monitor best included: BEST would be "
+        "written only on an epoch that beats the source's. Resume with mode='weights_only' (resuming(run_id, "
+        f"mode='weights_only') or NNTrainParams(resume_mode='weights_only')){planned}"
+    )
 
 
 class _TrialFailed(Exception):
