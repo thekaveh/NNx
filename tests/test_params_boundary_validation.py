@@ -2092,9 +2092,11 @@ def test_train_validation_advises_a_task_or_an_eval_step_fn(hook, tmp_path, monk
     monkeypatch.chdir(tmp_path)
     classes, continuous = _scorable_and_continuous_batches()
     train = continuous if hook == "train_step_fn" else classes  # the custom step trains on regression targets
-    hooks = {"default": {}, "train_step_fn": {"train_step_fn": _mse_step}, "objective": {}}[hook]
-    if hook == "objective":
-        hooks = {"objective": supervised_objective()}
+    hooks = {
+        "default": {},
+        "train_step_fn": {"train_step_fn": _mse_step},
+        "objective": {"objective": supervised_objective()},
+    }[hook]
     with pytest.raises(ValueError) as caught:
         _task_free_mse_model().train(params=_train_params(train, continuous), **hooks)
     assert str(caught.value) == (
