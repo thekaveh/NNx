@@ -984,9 +984,11 @@ class ExperimentPlan:
         """The schedule's own refusals of its horizon and warm-up (#506), as
         building it in train() would raise them. An optimizer_update clock's
         horizon over a data factory's loader is checked when fit() calls
-        it."""
+        it, and one over a source the data check refuses is left to that
+        diagnostic (its len() counts samples or rows, not batches)."""
         source = self._sources(train)[0]
-        loader = _UNKNOWN_LOADER if source is None or _is_factory(source) else source
+        unknown = source is None or _is_factory(source) or _loader_problem(source) is not None
+        loader = _UNKNOWN_LOADER if unknown else source
         problem = _schedule_horizon_problem(train, self.train_step_fn, loader)
         if problem is not None:
             report("train.scheduler", problem)

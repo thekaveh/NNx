@@ -972,6 +972,19 @@ def test_a_custom_step_leaves_an_update_clock_horizon_to_the_loop():
     assert plan.with_step_fns(train_step_fn=lambda ctx: None).validate().ok
 
 
+@pytest.mark.parametrize(
+    "source",
+    [TensorDataset(torch.randn(32, 4), torch.arange(32) % 3), torch.randn(32, 4)],
+    ids=["dataset", "tensor"],
+)
+def test_a_refused_train_source_leaves_the_update_clock_horizon_to_its_diagnostic(source):
+    """A source the data check refuses has a len() that counts samples or
+    rows, not batches: no update-clock horizon is planned from it."""
+    scheduler = _schedule("ONE_CYCLE", max_lr=0.05, total_steps=4, clock="optimizer_update")
+    report = _plan().with_train(NNTrainParams(n_epochs=1, scheduler=scheduler)).with_data(source).validate()
+    assert report.paths == ("data.train",)
+
+
 def _resuming(plan: ExperimentPlan, how: str, **resume: Any) -> ExperimentPlan:
     """Resume ``plan`` through resuming() or the training parameters."""
     if how == "resuming":
