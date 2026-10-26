@@ -1024,3 +1024,34 @@ def test_a_net_whose_default_path_reads_link_batches_still_validates_without_the
             objective=objective,
         )
         assert run.idps[-1].val_edp.count == len(task.split.candidate_ids("val"))
+
+
+class _ReadingPredictor(LinkPredictor):
+    """A link predictor whose own unpack_batch reads link batches."""
+
+    def unpack_batch(self, batch):
+        return (batch.x, batch.edge_index, batch.edge_label_index), batch.edge_label.unsqueeze(1)
+
+    def forward(self, *args):
+        out = super().forward(*args)
+        return out if self.training else out.unsqueeze(1)
+
+
+def test_a_link_predictor_that_reads_link_batches_itself_still_validates_without_the_task_evaluator():
+    edge_index, x = _sbm()
+    task = LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=4))
+    model = NNModel(
+        module=_ReadingPredictor(_LinearEncoder(torch.nn.Linear(2, 8))),
+        params=NNModelParams(loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression()),
+    )
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=task.loader("train", x, batch_size=8, seed=0),
+            val_loader=task.loader("val", x, batch_size=8),
+            optim=NNOptimParams.builder().adam(max_lr=1e-2).build(),
+            overwrite_existing=True,
+        ),
+        objective=task.objective(),
+    )
+    assert run.idps[-1].val_edp.count == len(task.split.candidate_ids("val"))

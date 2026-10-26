@@ -1381,8 +1381,12 @@ def _link_eval_preflight(
     from .models import _UnpackBatch
 
     adapter = getattr(model, "_batch_adapter", None)
-    link_net = isinstance(getattr(model, "net", None), LinkPredictor) and (
-        adapter is None or isinstance(adapter, _UnpackBatch)
+    net = getattr(model, "net", None)
+    # A subclass that overrides unpack_batch to read link batches validates on the default path.
+    link_net = (
+        isinstance(net, LinkPredictor)
+        and type(net).unpack_batch is LinkPredictor.unpack_batch
+        and (adapter is None or isinstance(adapter, _UnpackBatch))
     )
     problems = _link_eval_problems(
         val_loader, eval_step_fn, link_net=link_net, trainer=trainer, default_train_step=default_train_step
