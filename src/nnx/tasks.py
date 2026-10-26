@@ -281,13 +281,14 @@ class _StepTasks:
         )
 
 
-def _check_step_task(step: Any, task: Optional[TaskSpec]) -> None:
+def _check_step_task(step: Any, task: Optional[TaskSpec], *, hint: Optional[str] = None) -> None:
     """Refuse ``step`` (a step function or an objective) for a declared task
     whose kind its :data:`STEP_TASKS` marker does not list; an unmarked step
-    is the caller's own and passes."""
+    is the caller's own and passes. ``hint`` replaces the NNModel-oriented
+    advice that ends the message (Trainer has its own hooks)."""
     marker = getattr(step, STEP_TASKS, None)
     if isinstance(marker, _StepTasks):
-        marker.check(task)
+        marker.check(task, hint=hint)
 
 
 # ---------------------------------------------------------------- adapters

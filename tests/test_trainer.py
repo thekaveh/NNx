@@ -2557,13 +2557,13 @@ def test_trainer_two_plus_two_equals_four_when_a_callback_draws(hook, tmp_path, 
 # --- Trainer.train(objective=kd_objective(...)) and a declared TaskSpec (#513) ---------------
 
 
-def _trainer_fit(base: NNModel, Y: torch.Tensor, objective) -> tuple[NNModel, NNRun]:
+def _trainer_fit(base: NNModel, Y: torch.Tensor, objective, *, weight_decay: float = 0.0) -> tuple[NNModel, NNRun]:
     trained = copy.deepcopy(base)
     params = (
         NNTrainerParams.builder()
         .n_epochs(1)
         .train_loader([(task_steps.X, Y)])
-        .optimizer("default", NNOptimParams.builder().sgd(max_lr=0.5, momentum=0.0).build())
+        .optimizer("default", NNOptimParams.builder().sgd(max_lr=0.5, momentum=0.0, weight_decay=weight_decay).build())
         .build()
     )
     return trained, Trainer(trained).train(params, objective=objective, salt=type(objective).__name__)
@@ -2572,7 +2572,9 @@ def _trainer_fit(base: NNModel, Y: torch.Tensor, objective) -> tuple[NNModel, NN
 def test_trainer_kd_objective_takes_no_update_on_an_all_ignored_batch(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     base, teacher = task_steps.categorical(), task_steps.categorical(seed=1)
-    trained, run = _trainer_fit(base, task_steps.ALL_IGNORED, kd_objective(teacher, alpha=0.0))
+    trained, run = _trainer_fit(
+        base, task_steps.ALL_IGNORED, kd_objective(teacher, alpha=0.0), weight_decay=task_steps.DECAY
+    )
     assert task_steps.moved(trained, base) == 0.0
     record = task_steps.record(run)
     assert (record.kind, record.count, record.status, record.loss) == ("categorical", 0, "empty", None)
@@ -2593,6 +2595,10 @@ def test_trainer_refuses_kd_objective_for_a_regression_task_before_any_run(tmp_p
     regression = dict(loss=Losses.MEAN_SQUARED_ERROR, output_dim=2)
     base = task_steps.model(TaskSpec.regression(2), **regression)
     teacher = task_steps.model(TaskSpec.regression(2), seed=1, **regression)
-    with pytest.raises(TaskValidationError, match="kd_objective.*regression task"):
+    with pytest.raises(TaskValidationError, match="kd_objective.*regression task") as caught:
         _trainer_fit(base, torch.randn(6, 2), kd_objective(teacher))
+    message = str(caught.value)
+    # Trainer's own hooks: it has no default step and no train_step_fn.
+    assert "supervised_objective() or a custom trainer_step_fn" in message
+    assert "default step" not in message and "train_step_fn" not in message
     assert task_steps.no_run_left(tmp_path)

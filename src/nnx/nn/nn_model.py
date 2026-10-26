@@ -2978,15 +2978,16 @@ class NNModel(_HubMixinBase):
             self._precision = cached
         return cached[1]
 
-    def _check_task_preflight(self, step: Any = None) -> None:
+    def _check_task_preflight(self, step: Any = None, *, hint: Optional[str] = None) -> None:
         """Reject a runtime ``loss_fn`` the declared task cannot score, and a
         built-in paradigm step or objective (``step``) that does not train
         the task's kind (#513) — before any loader is iterated or run is
-        reserved (NNModel.train and Trainer.train)."""
+        reserved (NNModel.train and Trainer.train, which passes its own
+        ``hint``)."""
         adapter = getattr(self, "task_adapter", None)
         if adapter is not None:
             adapter.check_loss_fn(self.loss_fn)
-            _check_step_task(step, adapter.spec)
+            _check_step_task(step, adapter.spec, hint=hint)
 
     def _base_state(self) -> Optional[Mapping[str, Optional[tuple[int, ...]]]]:
         """``{key: shape}`` of the tensors the descriptor rebuilds, recorded
