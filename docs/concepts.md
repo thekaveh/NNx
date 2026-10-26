@@ -1956,7 +1956,7 @@ Sidecars written before component state existed still load. The model, optimizer
 
 Any other resume of a one-cycle or warmup-decay schedule needs one *shared horizon*. That is an explicit `total_steps` covering the original and the resumed epochs (updates, on the `optimizer_update` clock). A warmup-decay schedule on the epoch clock also needs an explicit `warmup_steps`, unless the resume uses `resume_epochs="planned"`. Its default is a tenth of each session's `n_epochs`. Both are checked before the checkpoint is read.
 
-The returned run reports what happened in `run.resume_status`, a `ResumeStatus`. It holds `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint, that checkpoint's epoch (`source_epoch`), and the restored and freshly started component names. It also holds the session's `attempt_token` (fresh for every `train()`) and, on a resume, the source's (`source_attempt_token`), which history lineage checks (§4.5). `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
+The returned run reports what happened in `run.resume_status`, a `ResumeStatus`. It holds `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint, that checkpoint's epoch (`source_epoch`), and the restored and freshly started component names. It also holds the session's `attempt_token` (fresh for every `train()`, and the same on every DDP rank) and, on a resume, the source's (`source_attempt_token`), which history lineage checks (§4.5). `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
 
 ### 14.3. Exact resume to the planned horizon
 

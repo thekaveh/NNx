@@ -161,8 +161,9 @@ class ResumeStatus:
             generation ordinal and checkpoint id from its manifest;
             ``None`` for a checkpoint without a manifest.
         attempt_token: this session's attempt token, a fresh id for every
-            ``train()`` call that a later resume records as its source's
-            (#553); ``None`` for status recorded without it.
+            ``train()`` call (under DDP, the same on every rank) that a later
+            resume records as its source's (#553); ``None`` for status
+            recorded without it.
         source_attempt_token: the source run's ``attempt_token`` when the
             session resumed from it, or ``"bundle-<generation>"`` for a run
             bundle; history lineage stitches the source only while it still

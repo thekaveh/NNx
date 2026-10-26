@@ -1016,6 +1016,8 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
                 return out
         out.update(summary(run))
         out["state"] = {k: v.clone() for k, v in m.net.state_dict().items()}
+        out["attempt_token"] = run.resume_status.attempt_token  # #553
+        out["source_attempt_token"] = run.resume_status.source_attempt_token
         if name == "resume_first" and rank == 0:
             with open("first_run_id.txt", "w", encoding="utf-8") as handle:
                 handle.write(run.id)
