@@ -1548,14 +1548,21 @@ def test_kd_objective_refuses_a_regression_task_before_any_run(tmp_path, monkeyp
     assert tasks.no_run_left(tmp_path)
 
 
-def test_kd_objective_alpha_1_returns_only_the_distillation_term():
+@pytest.mark.parametrize("task", [None, "categorical", "multilabel"])
+def test_kd_objective_alpha_1_returns_only_the_distillation_term(task):
     from nnx.objectives import ObjectiveContext
 
-    base, teacher = tasks.model(None), tasks.model(None, seed=1)
+    if task is None:  # no declared task: placeholder labels
+        base, Y = tasks.model(None), torch.full((6,), -1)
+    elif task == "categorical":
+        base, Y = tasks.categorical(), tasks.MIXED
+    else:
+        base, Y = tasks.model(TaskSpec.multilabel(3), loss=Losses.BINARY_CROSS_ENTROPY), tasks.multilabel_targets()
+    teacher = tasks.model(None, seed=1)
     result = kd_objective(teacher, alpha=1.0)(
-        ObjectiveContext(model=base, batch=(tasks.X, torch.full((6,), -1)), epoch_idx=0, batch_idx=0)
+        ObjectiveContext(model=base, batch=(tasks.X, Y), epoch_idx=0, batch_idx=0)
     )
-    assert [term.name for term in result.terms] == ["distillation"]
+    assert tuple(term.name for term in result.terms) == ("distillation",)
 
 
 @pytest.mark.parametrize("nonfinite", ["fail", "skip"])
