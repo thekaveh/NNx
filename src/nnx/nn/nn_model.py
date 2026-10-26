@@ -180,18 +180,21 @@ def _named_training_state(
     schedulers: Mapping[str, Any],
     optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
     hyperparameters: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    topologies: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """A ``Trainer``'s name-keyed optimizer / scheduler bundle, as
     ``NNCheckpoint.save`` keyword arguments (FEAT-005): states, types,
-    parameter topologies, registered-factory identities and configured
-    hyperparameters (#502, ``_resume_hyperparameters`` by name), so a
-    resume can validate each optimizer as ``NNModel.train`` validates its
-    one."""
+    parameter ``topologies`` (now, unless given), registered-factory
+    identities and configured hyperparameters (#502,
+    ``_resume_hyperparameters`` by name), so a resume can validate each
+    optimizer as ``NNModel.train`` validates its one."""
     configured = hyperparameters or {}
+    if topologies is None:
+        topologies = {name: _optimizer_topology(opt, net) for name, opt in optimizers.items()}
     return {
         "optimizers_state": {name: opt.state_dict() for name, opt in optimizers.items()},
         "optimizer_types": {name: _component_type(opt) for name, opt in optimizers.items()},
-        "optimizer_topologies": {name: _optimizer_topology(opt, net) for name, opt in optimizers.items()},
+        "optimizer_topologies": dict(topologies),
         "optimizer_factories": {name: (optimizer_factories or {}).get(name) for name in optimizers},
         "optimizer_configs": {name: configured[name]["optimizer"] for name in optimizers if name in configured} or None,
         "scheduler_configs": {name: configured[name]["scheduler"] for name in optimizers if name in configured} or None,
@@ -668,8 +671,9 @@ class _Optimization:
         states, types and parameter ``topologies`` (now, unless given)."""
         topologies = self.topologies(net) if topologies is None else topologies
         if self.named:
-            state = _named_training_state(net, self.optimizers, self.schedulers, self.factories, self.hyperparameters)
-            return {**state, "optimizer_topologies": dict(topologies)}
+            return _named_training_state(
+                net, self.optimizers, self.schedulers, self.factories, self.hyperparameters, topologies
+            )
         optimizer, scheduler = self.optimizers[""], self.schedulers[""]
         return {
             "optimizer_state": optimizer.state_dict(),
