@@ -253,7 +253,7 @@ scenarios:
       - tests/test_plan_execution.py::test_a_resuming_plan_refuses_an_optimizer_edit_it_would_not_train
       - tests/test_search.py::test_a_search_over_lr_on_a_resuming_plan_never_ranks_trials_that_trained_alike
       - tests/test_run_bundles.py::test_resume_refuses_changed_optimizer_hyperparameters_from_the_bundle_itself
-    rationale: Executed negative tests through NNModel.train, Trainer.train, ExperimentPlan.resuming, nnx.search and RunBundle.resume; weights, RNG and the runs on disk asserted unchanged.
+    rationale: Executed negative tests through NNModel.train, Trainer.train, ExperimentPlan.resuming and RunBundle.resume; weights, RNG and the runs on disk asserted unchanged. nnx.search refuses a stateful resume before this check (CR-11); its weights-only trials are asserted to train their own lr.
     status: unsupported
   - id: CR-10
     group: checkpoint-resume
@@ -264,6 +264,19 @@ scenarios:
     tests:
       - tests/test_ddp_resume.py::test_a_stateful_ddp_resume_with_changed_optimizer_hyperparameters_is_refused_on_every_rank
     rationale: Executed two-rank negative test; each rank's message, weights and RNG asserted, and no child run written.
+    status: unsupported
+  - id: CR-11
+    group: checkpoint-resume
+    features: [budgeted search, stateful resume]
+    entry_point: nnx.search.search(ExperimentPlan.resuming(...) | NNTrainParams(resume_from_run_id=...))
+    profile: {device: cpu, dtype: fp32, dependencies: [optuna]}
+    expected: A resume in any mode but weights_only ("auto", "stateful", resume_epochs="planned") is refused with a ValueError naming the mode and the weights_only alternative before any trial, factory or study; a weights-only resume scores each trial by its own epochs, and the effective resume is part of the stored study's identity.
+    tests:
+      - tests/test_search.py::test_a_stateful_resume_is_refused_before_any_trial
+      - tests/test_search.py::test_a_planned_resume_is_refused_before_any_trial
+      - tests/test_search.py::test_a_trial_plan_that_resumes_statefully_stops_the_search
+      - tests/test_search.py::test_a_stored_study_over_another_resume_is_refused_before_any_trial
+    rationale: Executed negative tests through resuming() and the training parameters; no factory call, run or study is made, and the weights-only searches' values and BEST epochs are asserted.
     status: unsupported
   - id: MT-01
     group: model-transformations

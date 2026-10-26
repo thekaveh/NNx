@@ -221,6 +221,154 @@ def test_a_changed_search_identity_is_refused_before_any_trial(tmp_path):
     assert len(optuna.load_study(study_name="id", storage=storage).trials) == 1
 
 
+def test_a_plan_without_a_resume_keeps_its_stored_identity():
+    """#505: the resume joins the study identity only when the plan resumes,
+    so a study stored before it reopens unchanged (the e69fd74 digest)."""
+    from nnx.search import _plan_identity
+
+    assert _plan_identity(plan()) == "7a6811c4d14139c6551356fccfda1a8efdc89cbc8697e43428135c2f558844f3"
+    assert _plan_identity(plan().resuming("source", mode="weights_only").without_resume()) == _plan_identity(plan())
+
+
+class StopAfterEpoch(Callback):
+    """Interrupts a fit after epoch 1 (zero-based), leaving the rest of its plan."""
+
+    def on_epoch_end(self, ctx) -> None:
+        if ctx.epoch >= 1:
+            ctx.should_stop = True
+
+
+def epochs_search(base: ExperimentPlan, *, name: str, storage=None):
+    return run(
+        base,
+        space=SearchSpace(CategoricalParam(name="epochs", choices=(1, 2))),
+        apply=lambda p, q: p.with_epochs(q["epochs"]),
+        sampler=optuna.samplers.GridSampler({"epochs": [1, 2]}),
+        name=name,
+        storage=storage,
+    )
+
+
+def with_resume(base: ExperimentPlan, **changes) -> ExperimentPlan:
+    """The resume set on the training parameters, not with resuming()."""
+    return base.with_train(replace(base.train, **changes))
+
+
+def resumed(base: ExperimentPlan, run_id: str, how: str, mode: str | None = None) -> ExperimentPlan:
+    """``base`` resuming ``run_id`` through ``resuming()`` or the training
+    parameters, in ``mode`` (else the default ``"auto"``)."""
+    if how == "resuming":
+        return base.resuming(run_id) if mode is None else base.resuming(run_id, mode=mode)
+    return with_resume(base, resume_from_run_id=run_id, **({} if mode is None else {"resume_mode": mode}))
+
+
+@pytest.mark.parametrize("mode", [None, "stateful"], ids=["auto", "stateful"])
+@pytest.mark.parametrize("how", ["resuming", "train"])
+def test_a_stateful_resume_is_refused_before_any_trial(tmp_path, how, mode):
+    """#505: a stateful resume restores the parent's monitor best, so BEST
+    (and the trial's value) would come only from an epoch that beats the
+    parent's; trials that validated finite epochs failed as
+    no_validated_epoch. The search refuses the plan before any trial, naming
+    the weights-only resume, which scores each trial by its own epochs."""
+    parent = plan(n_epochs=6).fit().run  # its best epoch is 4: no resumed epoch beats it
+    calls = Calls()
+    before = runs_on_disk()
+    storage = f"sqlite:///{tmp_path / 'stateful.db'}"
+    with pytest.raises(ValueError, match=rf"resume_mode={mode or 'auto'!r}.*mode='weights_only'"):
+        epochs_search(resumed(plan(calls), parent.id, how, mode), name="stateful", storage=storage)
+    assert (calls.train, calls.val, calls.callbacks) == (0, 0, 0)
+    assert runs_on_disk() == before
+    assert optuna.study.get_all_study_names(storage) == []
+    # What a trial would have been: validated epochs, but no BEST (no value).
+    child = resumed(plan(), parent.id, how, mode).fit().run
+    assert child.resume_status.mode == "stateful" and any(idp.val_edp is not None for idp in child.idps)
+    assert NNCheckpoint.load(run=child.id, type=Checkpoints.BEST) is None
+
+    weights = epochs_search(resumed(plan(), parent.id, how, "weights_only"), name="weights")
+    assert weights.best is not None and len(weights.outcomes) == 2
+    for outcome in weights.outcomes:  # each trial is scored by its own validated epochs
+        assert outcome.state == "completed" and outcome.observations
+        assert outcome.monitor_value == min(value for _, value in outcome.observations)
+        best_epoch = min(outcome.observations, key=lambda item: item[1])[0]
+        best = NNCheckpoint.load(run=outcome.run_id, type=Checkpoints.BEST)
+        assert best is not None and best.idp.epoch_idx == best_epoch
+
+
+@pytest.mark.parametrize("on_train", [False, True], ids=["resuming", "train"])
+def test_a_planned_resume_is_refused_before_any_trial(on_train):
+    """#505: ``resume_epochs="planned"`` continues the source's training
+    state, monitor best included, so the search refuses it too."""
+    source = plan(n_epochs=3).with_callback_factories(StopAfterEpoch).fit().run
+    calls = Calls()
+    before = runs_on_disk()
+    base = plan(calls, n_epochs=3)
+    planned = (
+        with_resume(base, resume_from_run_id=source.id, resume_epochs="planned")
+        if on_train
+        else base.resuming(source.id, epochs="planned")
+    )
+    with pytest.raises(ValueError, match=r"resume_mode='auto'.*mode='weights_only'.*'additional'"):
+        run(planned, space=SearchSpace(CategoricalParam(name="noop", choices=(0,))), apply=lambda p, q: p)
+    assert (calls.train, calls.val, calls.callbacks) == (0, 0, 0)
+    assert runs_on_disk() == before
+
+
+def test_a_trial_plan_that_resumes_statefully_stops_the_search(tmp_path):
+    """#505: apply() returning a stateful resume is a configuration error:
+    the trial is recorded failed and counts against the budget, and no fit
+    runs."""
+    parent = plan().fit().run
+    storage = f"sqlite:///{tmp_path / 'resume.db'}"
+    before = runs_on_disk()
+    with pytest.raises(ValueError, match="resume_mode='auto'"):
+        run(
+            apply=lambda p, q: with_lr(p, q).resuming(parent.id),
+            storage=storage,
+            name="resume",
+            budget=SearchBudget(trials=3),
+        )
+    (trial,) = optuna.load_study(study_name="resume", storage=storage).trials  # one trial spent, then stopped
+    assert trial.state == optuna.trial.TrialState.FAIL
+    assert trial.user_attrs["reason"] == "config_error:ValueError"
+    assert runs_on_disk() == before
+
+
+def test_a_stored_study_over_another_resume_is_refused_before_any_trial(tmp_path):
+    """#505: the study identity includes the effective resume (source run,
+    checkpoint, mode and epochs), so a study over a fine-tune of run A is
+    never continued with a fine-tune of B, of A's BEST or with no resume."""
+    run_a = plan().fit().run.id
+    run_b = plan(n_epochs=3).fit().run.id
+    storage = f"sqlite:///{tmp_path / 'resume.db'}"
+
+    def trials(name: str) -> int:
+        return len(optuna.load_study(study_name=name, storage=storage).trials)
+
+    first = run(plan().resuming(run_a, mode="weights_only"), storage=storage, name="finetune")
+    assert first.asked == 2 and trials("finetune") == 2
+    for other in (
+        plan().resuming(run_b, mode="weights_only"),
+        plan().resuming(run_a, checkpoint="best", mode="weights_only"),
+        plan(),
+        with_resume(plan(), resume_from_run_id=run_a, resume_mode="weights_only"),
+    ):
+        with pytest.raises(ValueError, match=r"belongs to a different search \(plan differ\)"):
+            run(other, storage=storage, name="finetune", budget=SearchBudget(trials=5))
+        assert trials("finetune") == 2
+    # ... and a study without a resume is never continued with one.
+    run(plan(), storage=storage, name="fresh", budget=SearchBudget(trials=1))
+    with pytest.raises(ValueError, match=r"belongs to a different search \(plan differ\)"):
+        run(plan().resuming(run_a, mode="weights_only"), storage=storage, name="fresh", budget=SearchBudget(trials=3))
+    assert trials("fresh") == 1
+    # The same resume continues its study.
+    assert (
+        run(
+            plan().resuming(run_a, mode="weights_only"), storage=storage, name="finetune", budget=SearchBudget(trials=3)
+        ).asked
+        == 1
+    )
+
+
 # ---------------- per-trial caps ----------------
 
 
@@ -471,8 +619,9 @@ def test_an_exhausted_grid_stops_the_search_without_spending_budget():
 def test_a_search_over_lr_on_a_resuming_plan_never_ranks_trials_that_trained_alike():
     """#502: on a stateful resuming plan every trial would train with the
     source's learning rate (the checkpoint's param groups) while its run.yaml
-    recorded the trial's own, so the search would rank identical runs. Each
-    trial is refused instead; a weights-only resume trains each at its lr."""
+    recorded the trial's own, so the search would rank identical runs. The
+    search refuses a stateful resume before any trial (#505); a weights-only
+    resume trains each at its lr."""
     from nnx.nn.params.nn_run import NNRun
 
     source = plan(n_epochs=1).fit().run
@@ -481,11 +630,10 @@ def test_a_search_over_lr_on_a_resuming_plan_never_ranks_trials_that_trained_ali
     def grid():
         return optuna.samplers.GridSampler({"lr": [0.5, 1e-7]}, seed=0)
 
-    stateful = run(plan().resuming(source.id), space=space, sampler=grid(), name="stateful")
-    assert stateful.asked == 2 and {o.state for o in stateful.outcomes} == {"failed"} and stateful.best is None
-    for outcome in stateful.outcomes:
-        assert outcome.error is not None and "resume hyperparameter mismatch" in outcome.error
-        assert f"max_lr (checkpoint 0.05, configuration {outcome.params['lr']!r})" in outcome.error
+    before = runs_on_disk()
+    with pytest.raises(ValueError, match=r"resume_mode='auto'.*mode='weights_only'"):
+        run(plan().resuming(source.id), space=space, sampler=grid(), name="stateful")
+    assert runs_on_disk() == before
     weights = run(plan().resuming(source.id, mode="weights_only"), space=space, sampler=grid(), name="weights")
     completed = [o for o in weights.outcomes if o.state == "completed"]
     assert len(completed) == 2

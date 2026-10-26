@@ -5095,7 +5095,16 @@ imports Optuna or creates a study.
   plan's own ``NNTrainParams.monitor`` so the BEST checkpoint is chosen the
   same way) and the plan (validation data, data and callbacks as factories)
   are checked before any trial; reopening a stored study whose space,
-  monitor or plan identity differs is refused before any trial too.
+  monitor or plan identity differs is refused before any trial too. A
+  resuming plan's identity includes its effective resume (source run,
+  checkpoint, mode and epochs); a plan without one keeps its identity.
+- **Weights-only resumes.** A plan (or a plan ``apply`` returns) that
+  resumes in any mode but ``"weights_only"`` — the default ``"auto"``,
+  ``"stateful"``, or ``resume_epochs="planned"`` — is refused before any
+  trial, set by ``resuming()`` or by the training parameters: a stateful
+  resume restores the source's monitor best, so BEST, and the trial's
+  value, would come only from an epoch that beats the source's. A
+  weights-only resume scores each trial by its own validated epochs.
 - **The budget counts every trial.** Completed, failed, pruned and orphaned
   (left running by a crashed process) trials all count against
   ``SearchBudget.trials``: a study holding two trials, searched with a

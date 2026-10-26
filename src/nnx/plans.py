@@ -800,12 +800,12 @@ class ExperimentPlan:
         training parameters)."""
         explicit_epochs = resume is not None and resume.epochs is not None
         explicit_mode = resume is not None and resume.mode is not None
-        epochs = resume.epochs if resume is not None and explicit_epochs else getattr(train, "resume_epochs", None)
-        mode = resume.mode if resume is not None and explicit_mode else getattr(train, "resume_mode", None)
+        fields = ExperimentPlan._resume_fields(train, resume)
+        epochs, mode = fields["resume_epochs"], fields["resume_mode"]
         if not (isinstance(epochs, str) and epochs == "planned"):
             return
         epochs_path = "resume.epochs" if explicit_epochs else "train.resume_epochs"
-        if resume is None and getattr(train, "resume_from_run_id", None) is None:
+        if resume is None and fields["resume_from_run_id"] is None:
             report(
                 epochs_path,
                 "'planned' continues a run's plan, and this plan resumes none — resume one with "
@@ -986,16 +986,52 @@ class ExperimentPlan:
         """The data identity: the plan's own, else the training parameters'."""
         return getattr(train, "data_id", None) if self.data_identity is _INHERIT else self.data_identity
 
+    @staticmethod
+    def _resume_changes(resume: Optional[_Resume]) -> dict[str, Any]:
+        """The resume fields ``resuming()`` sets on the compiled training
+        parameters (none without it)."""
+        if resume is None:
+            return {}
+        changes: dict[str, Any] = {"resume_from_run_id": resume.run_id, "resume_from_checkpoint": resume.checkpoint}
+        if resume.mode is not None:  # else the training parameters' own resume_mode
+            changes["resume_mode"] = resume.mode
+        if resume.epochs is not None:  # else the training parameters' own resume_epochs
+            changes["resume_epochs"] = resume.epochs
+        return changes
+
+    @staticmethod
+    def _resume_fields(train: Any, resume: Optional[_Resume]) -> dict[str, Any]:
+        """The four resume fields a fit runs with: ``resuming()``'s over the
+        training parameters' own, else ``NNTrainParams``' defaults. The one
+        merge the validation, the search refusal and its study identity
+        read."""
+        return {
+            "resume_from_run_id": getattr(train, "resume_from_run_id", None),
+            "resume_from_checkpoint": getattr(train, "resume_from_checkpoint", "last"),
+            "resume_mode": getattr(train, "resume_mode", "auto"),
+            "resume_epochs": getattr(train, "resume_epochs", "additional"),
+            **ExperimentPlan._resume_changes(resume),
+        }
+
+    def _effective_resume(self) -> Optional[dict[str, Any]]:
+        """The resume a fit performs — ``resuming()`` over the training
+        parameters' own — as its ``run_id``, ``checkpoint``, ``mode`` and
+        ``epochs``; ``None`` when the plan resumes nothing."""
+        fields = self._resume_fields(self.train, self.resume)
+        if fields["resume_from_run_id"] is None:
+            return None
+        return {
+            "run_id": fields["resume_from_run_id"],
+            "checkpoint": fields["resume_from_checkpoint"],
+            "mode": fields["resume_mode"],
+            "epochs": fields["resume_epochs"],
+        }
+
     def _compile_train(self, train_loader: Any, val_loader: Any) -> NNTrainParams:
         assert isinstance(self.train, NNTrainParams)
         changes: dict[str, Any] = {"seed": self._seed(), "train_loader": train_loader, "val_loader": val_loader}
         changes["data_id"] = self._identity(self.train)
-        if self.resume is not None:
-            changes.update(resume_from_run_id=self.resume.run_id, resume_from_checkpoint=self.resume.checkpoint)
-            if self.resume.mode is not None:  # else the training parameters' own resume_mode
-                changes["resume_mode"] = self.resume.mode
-            if self.resume.epochs is not None:  # else the training parameters' own resume_epochs
-                changes["resume_epochs"] = self.resume.epochs
+        changes.update(self._resume_changes(self.resume))
         return replace(self.train, **changes)
 
     # --- probing (effectful, restored) -------------------------------------------------------
