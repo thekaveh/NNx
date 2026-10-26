@@ -383,6 +383,34 @@ def sum_task_summary(run, steps: int) -> dict:
     }
 
 
+class MyMSE(torch.nn.MSELoss):
+    """#512: a stock-forward ``MSELoss`` subclass (only a name)."""
+
+
+def stock_forward_rows() -> TaskRows:
+    """The #512 rows: unshuffled batches of 4 give rank 0 rows 0, 2, 4, 6
+    (unmasked) and rank 1 rows 1, 3, 5, 7 (row 5 has one NaN target)."""
+    generator = torch.Generator().manual_seed(1)
+    X, y = torch.randn(8, 3, generator=generator), torch.randn(8, 3, generator=generator)
+    y[5, 1] = float("nan")
+    return TaskRows(X, y)
+
+
+def stock_forward_model(loss_fn: torch.nn.Module) -> NNModel:
+    torch.manual_seed(0)
+    built = NNModel(
+        net_params=NNParams(input_dim=3, output_dim=3, hidden_dims=[6], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD, device=_device(), loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression(3)
+        ),
+    )
+    built.loss_fn = loss_fn
+    return built
+
+
+STOCK_FORWARD_LOSSES = {"mse": torch.nn.MSELoss, "my_mse": MyMSE}
+
+
 def scenario(name: str, rank: int, world_size: int) -> dict:
     out: dict = {"rank": rank, "world_size": world_size}
     if name == "parity":
@@ -680,6 +708,20 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
                 result = sum_task_summary(run, steps.count)
                 result["state"] = {k: v.clone() for k, v in m.net.state_dict().items()}
                 out["cases"][loss, case] = result
+    elif name == "stock_forward_masked_rank":
+        # #512: one unmasked and one masked rank batch, one update each.
+        out["cases"] = {}
+        for loss, loss_cls in STOCK_FORWARD_LOSSES.items():
+            m = stock_forward_model(loss_cls())
+            loader = nnx_dist.train_loader(stock_forward_rows(), batch_size=4, shuffle=False)
+            run = m.train(
+                params=params(loader, accumulate=1, n_epochs=1, data_id=f"stock-forward-{loss}"),
+                distributed=nnx_dist.DDP(),
+            )
+            out["cases"][loss] = {
+                "train_loss": [idp.train_edp.loss for idp in run.idps],
+                "state": {k: v.clone() for k, v in m.net.state_dict().items()},
+            }
     elif name == "writer_callback_fails":
         import time
 

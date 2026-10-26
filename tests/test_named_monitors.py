@@ -35,6 +35,7 @@ from nnx import (
     NNSchedulerParams,
     NNTrainerParams,
     NNTrainParams,
+    TaskSpec,
     Trainer,
     TrainerStepContext,
     set_seed,
@@ -960,3 +961,43 @@ def test_an_epoch_dropping_every_window_has_a_nonfinite_error(tmp_path, monkeypa
     assert summary is not None and summary.error is not None and math.isnan(summary.error)
     assert summary.loss is not None and math.isnan(summary.loss)
     assert (last.selection.status, last.selection.improved) == ("nonfinite", False)
+
+
+class _MyMSE(torch.nn.MSELoss):  # the stock forward: only a name
+    pass
+
+
+def test_a_train_loss_monitor_on_a_stock_forward_mse_subclass_reads_the_masked_mse(tmp_path, monkeypatch):
+    """#512: with frozen weights, an epoch of an unmasked and a masked batch
+    summarized ``_MyMSE``'s loss as 0.832098 (the unmasked batch weighted by
+    its rows) against its own ``mse`` of 0.981019, and the monitor selected
+    on it."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    generator = torch.Generator().manual_seed(1)
+    X, Y = torch.randn(8, 3, generator=generator), torch.randn(8, 3, generator=generator)
+    Y[5, 1] = math.nan
+    for loss_fn in (torch.nn.MSELoss(), _MyMSE()):
+        set_seed(0)
+        model = NNModel(
+            net_params=NNParams(
+                input_dim=3, output_dim=3, hidden_dims=[6], dropout_prob=0.0, activation=Activations.RELU
+            ),
+            params=NNModelParams(
+                net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression(3)
+            ),
+        )
+        model.loss_fn = loss_fn
+        run = model.train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=_batches(X, Y, [4, 4]),
+                optim=NNOptimParams.builder().sgd(max_lr=0.0).build(),
+                metrics=[MetricSpec("mse")],
+                monitor=MonitorSpec(metric="loss", split="train"),
+                data_id=type(loss_fn).__name__,
+            )
+        )
+        summary = run.idps[-1].train_summary
+        assert summary.loss == pytest.approx(0.981019, abs=1e-6) == pytest.approx(summary.metrics["mse"])
+        assert run.idps[-1].selection.value == pytest.approx(summary.metrics["mse"])

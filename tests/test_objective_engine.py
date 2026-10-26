@@ -34,7 +34,9 @@ from nnx import (
     NNTrainerParams,
     NNTrainParams,
     Optims,
+    TaskSpec,
     Trainer,
+    set_seed,
 )
 from nnx._step_helpers import softened_kl
 from nnx._update_engine import UpdateEngine
@@ -1413,3 +1415,60 @@ def test_early_stopping_on_the_training_loss_trains_through_an_all_masked_tail(t
     )
     assert len({i.epoch_idx for i in default.idps}) == 3
     assert len({i.epoch_idx for i in run.idps}) == 3
+
+
+# --- #512: stock-forward elementwise loss subclasses -------------------------
+
+
+class _MyMSE(torch.nn.MSELoss):  # the stock forward: only a name
+    pass
+
+
+class _MyBCE(torch.nn.BCEWithLogitsLoss):
+    pass
+
+
+def _stock_forward_case(case: str) -> tuple[NNModel, torch.Tensor, torch.Tensor]:
+    """The #512 model and rows: rows 0-3 unmasked, rows 4-7 with one NaN target."""
+    generator = torch.Generator().manual_seed(1 if case == "mse" else 2)
+    x = torch.randn(8, 3, generator=generator)
+    if case == "mse":
+        y = torch.randn(8, 3, generator=generator)
+        y[5, 1] = math.nan
+        task, loss, loss_fn = TaskSpec.regression(3), Losses.MEAN_SQUARED_ERROR, _MyMSE()
+    else:
+        y = torch.randint(0, 2, (8, 3), generator=generator).float()
+        y[6, 0] = math.nan
+        task, loss, loss_fn = TaskSpec.multilabel(3), Losses.BINARY_CROSS_ENTROPY, _MyBCE()
+    set_seed(0)
+    model = NNModel(
+        net_params=NNParams(input_dim=3, output_dim=3, hidden_dims=[6], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=loss, task=task),
+    )
+    model.loss_fn = loss_fn
+    return model, x, y
+
+
+def _masked_full_batch_loss(case: str, model: NNModel, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    valid = ~torch.isnan(y)
+    if case == "mse":
+        per_element = (model.net(x) - y.nan_to_num()) ** 2
+    else:
+        per_element = F.binary_cross_entropy_with_logits(model.net(x), y.nan_to_num(), reduction="none")
+    return per_element[valid].mean()
+
+
+@pytest.mark.parametrize("via", ["model", "trainer"])
+@pytest.mark.parametrize("case", ["mse", "bce"])
+def test_supervised_objective_weights_a_stock_forward_subclass_per_element(tmp_path, monkeypatch, case, via):
+    """#512: an ``[unmasked, masked]`` window of a stock-forward ``MSELoss`` /
+    ``BCEWithLogitsLoss`` subclass is one step on the full batch's valid
+    targets; the unmasked microbatch was weighted by its rows (a gap of
+    8.160e-03 for ``MyMSE``)."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    reference, x, y = _stock_forward_case(case)
+    _reference_step(reference, lambda m: _masked_full_batch_loss(case, m, x, y))
+    model, _, _ = _stock_forward_case(case)
+    _train_via(via, model, [(x[:4], y[:4]), (x[4:], y[4:])], objective=supervised_objective(), optim=_sgd(2))
+    _assert_same_weights(reference, model)
