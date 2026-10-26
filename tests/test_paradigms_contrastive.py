@@ -38,6 +38,27 @@ def test_nt_xent_validates_temperature():
         nt_xent_loss(torch.randn(8, 16), torch.randn(8, 16), temperature=0.0)
 
 
+def test_nt_xent_takes_a_learnable_tensor_temperature():
+    # A learnable temperature (CLIP's logit-scale style) stays a tensor so
+    # its gradient flows, and scores the batch like the same float.
+    z1, z2 = torch.randn(8, 16), torch.randn(8, 16)
+    t = torch.nn.Parameter(torch.tensor(0.5))
+    loss = nt_xent_loss(z1, z2, temperature=t)
+    loss.backward()
+    assert t.grad is not None and torch.isfinite(t.grad)
+    assert torch.allclose(loss.detach(), nt_xent_loss(z1, z2, temperature=0.5))
+
+
+@pytest.mark.parametrize(
+    "temperature",
+    [torch.tensor(True), torch.tensor(2), torch.tensor([0.5, 0.5]), torch.tensor(0.0), torch.tensor(float("nan"))],
+    ids=["bool", "int", "two-element", "zero", "nan"],
+)
+def test_nt_xent_refuses_a_bad_tensor_temperature(temperature):
+    with pytest.raises(ValueError, match="nt_xent_loss requires temperature"):
+        nt_xent_loss(torch.randn(8, 16), torch.randn(8, 16), temperature=temperature)
+
+
 def test_nt_xent_finite_and_scalar():
     z1 = torch.randn(8, 16)
     z2 = torch.randn(8, 16)

@@ -15604,7 +15604,7 @@ Raises:
 #### `nnx.paradigms.contrastive.nt_xent_loss`
 
 ```python
-nnx.paradigms.contrastive.nt_xent_loss(z1: 'torch.Tensor', z2: 'torch.Tensor', *, temperature: 'float' = 0.5) -> 'torch.Tensor'
+nnx.paradigms.contrastive.nt_xent_loss(z1: 'torch.Tensor', z2: 'torch.Tensor', *, temperature: 'float | torch.Tensor' = 0.5) -> 'torch.Tensor'
 ```
 
 SimCLR's Normalized Temperature-scaled cross-entropy loss.
@@ -15617,14 +15617,17 @@ Args:
     z2: ``(B, D)`` embeddings of the second view.
     temperature: divisor on the cosine similarity. Lower T sharpens
         the distribution; 0.5 is the SimCLR default. Must be > 0.
+        A one-element floating tensor (a learnable temperature) is
+        used as a tensor, so gradients flow through it.
 
 Returns:
     Scalar loss tensor (mean across the 2B positions in the batch).
 
 Raises:
     ValueError: if shapes mismatch, ``temperature`` is not a finite
-        real > 0 (a ``bool`` included), or the
-        batch has fewer than 2 pairs (no negatives to contrast).
+        real > 0 (a ``bool`` included) or a one-element floating
+        tensor holding one, or the batch has fewer than 2 pairs (no
+        negatives to contrast).
 ```
 
 

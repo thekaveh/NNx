@@ -1479,7 +1479,7 @@ step_fn = simclr_train_step_factory(temperature=0.5)
 model.train(params=..., train_step_fn=step_fn)
 ```
 
-`nt_xent_loss(z1, z2, temperature=0.5)` is exposed as a standalone for users wanting to compose the loss into other pipelines. Pass `temperature` by keyword. The augmentation that produces `(view1, view2)` is the caller's responsibility — a paired-view `Dataset` is the common pattern.
+`nt_xent_loss(z1, z2, temperature=0.5)` is exposed as a standalone for users wanting to compose the loss into other pipelines. Pass `temperature` by keyword, as a positive float or as a one-element floating tensor for a learnable temperature (gradients flow through it). The augmentation that produces `(view1, view2)` is the caller's responsibility — a paired-view `Dataset` is the common pattern.
 
 ### 10.3. Mixup / CutMix
 
