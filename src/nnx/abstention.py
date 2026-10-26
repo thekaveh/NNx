@@ -23,6 +23,19 @@ a score of exactly 1. Scores are float64: a margin of ``0.7 - 0.2`` is
 :func:`select_threshold` are actual scores. Malformed probabilities raise
 :class:`AbstentionError` — they are never silently abstained on.
 
+**One precision for every producer.** A ``PredictionResult`` (from
+``predict_proba``, ``iter_predict`` or a task model) is scored from its
+``logits``, recomputed in float64 — not from its ``probabilities``, which
+keep the logits' precision. A ``CalibratedPrediction``'s raw view and
+``FixedHeadProvider`` (whose rows :func:`decide` scores) compute the same
+float64 softmax, so one policy makes the same decisions on the same logits
+through every producer, and a threshold tuned on one reproduces its
+recorded counts on another. That matters near 1: a two-class float32 top
+probability rounds to exactly 1 from a logit gap of 16.6 (float16 from
+8.3), a float64 one only from 36.7. Bare arrays are scored as given, in the
+caller's precision: pass the prediction itself, not its float32
+``probabilities``, to keep the guarantee.
+
 Every outcome is one of three kinds:
 
 - **accepted** — the prediction stands;
@@ -65,6 +78,7 @@ from ._probability import (
     class_targets,
     is_prediction,
     is_tensor,
+    logit_probabilities,
     prediction_labels,
     read_array,
     rounding_tolerance,
@@ -283,6 +297,7 @@ class _Declared:
     sample_ids: Any
     decoded: Optional[np.ndarray] = None
     override: Optional[Mapping[str, Any]] = None
+    logits: Any = None  # a PredictionResult's: its probabilities are recomputed from them
 
 
 def _declared(
@@ -368,6 +383,7 @@ def _declared(
             calibrator_id=None,
             sample_ids=source.sample_ids,
             decoded=np.asarray(source.decoded),
+            logits=source.logits,
         )
     if labels is None or model_id is None:
         raise AbstentionError("for bare probabilities pass labels=[...] and model_id=... to declare their schema")
@@ -416,13 +432,28 @@ def _decoded(decoded: Optional[np.ndarray], p: np.ndarray, tolerance: float) -> 
     return classes
 
 
+def _probabilities(probabilities: Any, logits: Any, *, copy: bool) -> tuple[np.ndarray, float]:
+    """Validated float64 probabilities and the machine epsilon of the
+    rounding they carry. A prediction's are recomputed from its ``logits``
+    in float64 — the precision of a calibrator's raw view and of
+    ``FixedHeadProvider`` — so a policy decides alike on the same logits
+    through every producer, whatever their dtype: a float32 top probability
+    already rounds to exactly 1 at a two-class logit gap of 16.6. Bare
+    arrays (``logits=None``) are read as given, in the caller's precision."""
+    recomputed = None if logits is None else logit_probabilities(logits, error=AbstentionError)
+    if recomputed is None:  # bare arrays, or logits of a shape the probabilities' own check refuses
+        return categorical_probabilities_eps(probabilities, error=AbstentionError, allow_empty=True, copy=copy)
+    p, eps = recomputed  # a fresh array: never shared with the prediction
+    return categorical_probabilities(p, error=AbstentionError, allow_empty=True), eps
+
+
 def _read(declared: _Declared, *, copy: bool) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """``(probabilities, sample_ids, decoded)``, validated. Ids may repeat,
     as a ``PredictionResult``'s may (an oversampled split, say): a policy
     decides each row on its own. Malformed ids fail before the
     probabilities are read; their count is checked after."""
     given = None if declared.sample_ids is None else row_ids(declared.sample_ids, None, error=AbstentionError)
-    p, eps = categorical_probabilities_eps(declared.probabilities, error=AbstentionError, allow_empty=True, copy=copy)
+    p, eps = _probabilities(declared.probabilities, declared.logits, copy=copy)
     _check_width(declared.labels, p)
     decoded = _decoded(declared.decoded, p, rounding_tolerance(eps, floor=0.0))  # one entry's rounding, its dtype
     ids = row_ids(given, p.shape[0], error=AbstentionError)  # 0..N-1 by default; the count checked here
@@ -506,13 +537,13 @@ class AbstentionPolicy(JsonArtifact):
 
         ``source`` is a ``CalibratedPrediction`` (the policy's
         ``input_field`` picks its raw or calibrated view), a categorical
-        ``PredictionResult`` (raw; pass ``model_id=``), or ``(N, C)``
-        probabilities with ``labels=`` / ``model_id=`` (and
-        ``input_field=`` / ``calibrator_id=`` for calibrated ones). The
-        declared schema must equal the policy's — otherwise
-        :class:`AbstentionSchemaError`, before any probability is read.
-        Malformed probabilities raise :class:`AbstentionError`. The input is
-        never modified.
+        ``PredictionResult`` (raw, scored from its logits in float64; pass
+        ``model_id=``), or ``(N, C)`` probabilities with ``labels=`` /
+        ``model_id=`` (and ``input_field=`` / ``calibrator_id=`` for
+        calibrated ones), scored as given. The declared schema must equal
+        the policy's — otherwise :class:`AbstentionSchemaError`, before any
+        probability is read. Malformed probabilities raise
+        :class:`AbstentionError`. The input is never modified.
         """
         declared = _declared(
             source,
@@ -628,7 +659,8 @@ class AcceptedRows:
 class AbstentionResult:
     """A policy applied to ``N`` rows.
 
-    ``probabilities`` is a float64 copy of the field the policy read;
+    ``probabilities`` is a float64 copy of the field the policy read (for a
+    ``PredictionResult``, recomputed in float64 from its logits);
     ``prediction`` the first class of maximal probability (a prediction's
     own ``decoded`` class, for a prediction); ``score`` the
     policy score; ``accepted`` whether the row was accepted. The policy's
@@ -1059,10 +1091,11 @@ def _points(
     return _curve(score, prediction != y, candidates)
 
 
-def _view(source: Any, input_field: Optional[str]) -> tuple[Any, Optional[np.ndarray], Optional[tuple[str, ...]]]:
-    """The probabilities a curve reads, a prediction's own decoded classes
-    and its labels: a ``CalibratedPrediction``'s ``input_field`` view, a
-    categorical ``PredictionResult``'s probabilities, or bare arrays."""
+def _view(source: Any, input_field: Optional[str]) -> tuple[Any, Optional[np.ndarray], Optional[tuple[str, ...]], Any]:
+    """The probabilities a curve reads, a prediction's own decoded classes,
+    its labels and the logits its probabilities are recomputed from: a
+    ``CalibratedPrediction``'s ``input_field`` view, a categorical
+    ``PredictionResult``'s logits, or bare arrays."""
     from .calibration import CalibratedPrediction
 
     if isinstance(source, CalibratedPrediction):
@@ -1071,7 +1104,7 @@ def _view(source: Any, input_field: Optional[str]) -> tuple[Any, Optional[np.nda
                 "a CalibratedPrediction holds raw and calibrated probabilities; pass input_field="
                 "'probabilities' or 'calibrated_probabilities'"
             )
-        return getattr(source, _field(input_field)), np.asarray(source.decoded), _labels(source.labels)
+        return getattr(source, _field(input_field)), np.asarray(source.decoded), _labels(source.labels), None
     if is_prediction(source):
         labels = prediction_labels(
             source, None, error=AbstentionError, conflict_error=AbstentionSchemaError, what="a curve", minimum=2
@@ -1079,13 +1112,13 @@ def _view(source: Any, input_field: Optional[str]) -> tuple[Any, Optional[np.nda
         if input_field is not None and _field(input_field) != "probabilities":
             raise AbstentionSchemaError("a PredictionResult holds raw probabilities only")
         _require_prediction_arrays(source)
-        return source.probabilities, np.asarray(source.decoded), labels
+        return source.probabilities, np.asarray(source.decoded), labels, source.logits
     if input_field is not None and _field(input_field) != "probabilities":
         raise AbstentionError(
             "input_field= picks a CalibratedPrediction's view; bare probabilities are read as given (pass no "
             "input_field, or 'probabilities')"
         )
-    return source, None, None
+    return source, None, None, None
 
 
 def risk_coverage_curve(
@@ -1108,8 +1141,8 @@ def risk_coverage_curve(
     point is the accept-none endpoint.
     """
     policy_kind = _kind(kind)  # before any probability is read
-    probabilities, decoded, labels = _view(source, input_field)
-    p, eps = categorical_probabilities_eps(probabilities, error=AbstentionError, allow_empty=True)
+    probabilities, decoded, labels, logits = _view(source, input_field)
+    p, eps = _probabilities(probabilities, logits, copy=False)
     if labels is not None:
         _check_width(labels, p)
     classes = _decoded(decoded, p, rounding_tolerance(eps, floor=0.0))
@@ -1386,9 +1419,12 @@ def decide(result: Any, policy: AbstentionPolicy, *, model_id: str) -> Selective
 
     ``result`` is a ``ChoiceResult`` or ``ScoreResult``; its option ids, in
     order, are the labels. A provider's distribution is raw, so the policy
-    must read ``"probabilities"``; labels and ``model_id`` must equal the
-    policy's (:class:`AbstentionSchemaError` otherwise). The result is
-    returned unchanged inside a :class:`SelectiveDecision`, accepted or not.
+    must read ``"probabilities"``, and it is scored as served:
+    ``FixedHeadProvider``'s is the float64 softmax of the head's logits,
+    what a policy reads from that head's ``PredictionResult``. Labels and
+    ``model_id`` must equal the policy's (:class:`AbstentionSchemaError`
+    otherwise). The result is returned unchanged inside a
+    :class:`SelectiveDecision`, accepted or not.
     """
     from .decisions.schema import ChoiceResult, ScoreResult
 

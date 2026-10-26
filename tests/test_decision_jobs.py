@@ -1053,3 +1053,50 @@ def test_round_six_edges():
     with pytest.raises(InvalidJob, match="duplicate question id 'a'") as refused:
         dup.run(TextProvider(), state=TEXTS)
     assert {q: o.kind for q, o in refused.value.outcomes.items()} == {"a": "answered", "b": "skipped", "c": "skipped"}
+
+
+def _gap_head() -> NNModel:
+    """A float32 two-class head whose logits are ``[0, x]``: the input is the gap."""
+    model = NNModel(
+        net_params=NNParams(input_dim=1, output_dim=2, hidden_dims=[], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
+            task=TaskSpec.categorical(2, labels=("a", "b")),
+        ),
+    )
+    with torch.no_grad():
+        model.net.layers[0].weight.copy_(torch.tensor([[0.0], [1.0]]))
+        model.net.layers[0].bias.zero_()
+    return model
+
+
+@pytest.mark.parametrize("kind", ["max_probability", "margin"])
+def test_a_job_decides_saturating_float32_logits_as_the_policy_applied_to_predict_proba(kind):
+    """#514: tuned on float32 ``predict_proba``, where every gap above 16.6 is
+    a top probability of exactly 1, a policy's float32 threshold accepted
+    nothing a job scored from ``FixedHeadProvider``'s float64 rows. Both now
+    score the same float64 probabilities of the same logits."""
+    from nnx.abstention import select_threshold
+
+    model = _gap_head()
+    question = Choice("Which class?", (("a", "class a"), ("b", "class b")))
+    rng = np.random.default_rng(0)
+    column = lambda gaps: torch.tensor(gaps, dtype=torch.float32).unsqueeze(1)  # noqa: E731
+    x_val = column(np.concatenate([rng.uniform(17, 30, 40), rng.uniform(4, 9, 10)]))  # 40 right, 10 wrong
+    y_val = np.array([1] * 40 + [0] * 10)
+    selection = select_threshold(
+        model.predict_proba(x_val), y_val, kind=kind, risk_ceiling=0.0, split_id="v", model_id="m"
+    )
+    policy = selection.require()
+    x_new = column(rng.uniform(17, 30, 20))
+    expected = policy.apply(model.predict_proba(x_new), model_id="m").accepted
+    assert expected.all()
+    rows = (
+        Job.ask(question, id="q", policy=policy, model_id="m")
+        .run(FixedHeadProvider(model), state=x_new)
+        .outcomes["q"]
+        .rows
+    )
+    assert [row.kind == "answered" for row in rows] == expected.tolist()
