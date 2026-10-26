@@ -21,6 +21,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from ._validation import require_finite_real
 from .nn.nn_model import TrainStepContext
 
 # Marks an imperative paradigm step (it steps the optimizer itself) with its
@@ -168,6 +169,21 @@ def finalize_step(
         report_update()
 
     return loss_val
+
+
+def require_real_or_scalar_tensor(value: object, field: str, *, owner: str, **domain: Any) -> float:
+    """``require_finite_real`` for a per-step helper's setting that may also
+    arrive as a one-element tensor (a learnable or torch-scheduled value):
+    the tensor's value is checked against the same domain and returned as a
+    float. A bool, complex or multi-element tensor is refused like a bool."""
+    if not torch.is_tensor(value):
+        return require_finite_real(value, field, owner=owner, **domain)
+    if value.dtype == torch.bool or value.is_complex() or value.numel() != 1:
+        raise ValueError(
+            f"{owner} requires {field} to be a finite real number or a one-element real tensor, "
+            f"got a {value.dtype} tensor of shape {tuple(value.shape)}"
+        )
+    return require_finite_real(float(value.detach()), field, owner=owner, **domain)
 
 
 def require_row_logits(logits: torch.Tensor, paradigm: str) -> None:

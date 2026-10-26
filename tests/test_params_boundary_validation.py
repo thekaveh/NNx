@@ -1383,6 +1383,59 @@ def test_every_classification_paradigm_step_refuses_sequence_output(paradigm, tm
         )
 
 
+def test_mixup_refuses_transformer_token_ids_before_mixing(tmp_path, monkeypatch):
+    """Mixing token ids gives float "ids" that crashed inside nn.Embedding
+    after the λ / permutation draws; the step refuses them up front."""
+    from pathlib import Path
+
+    import torch
+
+    from nnx import Devices, Losses, Nets, NNModel, NNModelParams, NNOptimParams, NNTrainParams, NNTransformerParams
+    from nnx.nn.net.transformer_nn import TransformerNN
+    from nnx.paradigms.augmentation import mixup_train_step_factory
+
+    monkeypatch.chdir(tmp_path)
+    model = NNModel(
+        net_params=NNTransformerParams(
+            input_dim=16,
+            output_dim=16,
+            dropout_prob=0.0,
+            vocab_size=16,
+            n_layers=1,
+            n_heads=2,
+            d_model=16,
+            ffn_mult=2,
+            max_seq_len=8,
+        ),
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    before = {name: p.detach().clone() for name, p in model.net.named_parameters()}
+    tokens = torch.randint(0, 16, (4, 6))
+
+    def no_draw(*args, **kwargs):
+        raise AssertionError("drew from the global RNG before the refusal")
+
+    def no_forward(*args, **kwargs):
+        raise AssertionError("ran the forward before the refusal")
+
+    step = mixup_train_step_factory()
+    monkeypatch.setattr(torch, "randperm", no_draw)
+    monkeypatch.setattr(torch.distributions.Beta, "sample", no_draw)
+    monkeypatch.setattr(TransformerNN, "forward", no_forward)
+    with pytest.raises(ValueError, match=r"mixup step.*nnx\.lm_tasks\.CausalLMTask"):
+        model.train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=[(tokens[:, :-1], tokens[:, 1:])],
+                optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+            ),
+            train_step_fn=step,
+        )
+    assert all(torch.equal(p, before[name]) for name, p in model.net.named_parameters())
+    runs = Path("runs")
+    assert not runs.exists() or not [p for p in runs.iterdir() if not p.name.startswith(".")]
+
+
 def test_a_prefix_tuner_places_prefixes_on_a_factorized_projection():
     import torch
 

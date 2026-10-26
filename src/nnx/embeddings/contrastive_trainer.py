@@ -43,6 +43,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from .._step_helpers import finalize_step, imperative_step
+from .._validation import require_finite_real
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..paradigms.contrastive import nt_xent_loss
@@ -274,10 +275,12 @@ def text_contrastive_train_step_factory(*, temperature: float = 0.5) -> TrainSte
         A ``TrainStepFn`` suitable for ``NNModel.train(..., train_step_fn=...)``.
 
     Raises:
-        ValueError: at factory-build time if ``temperature`` ≤ 0.
+        ValueError: at factory-build time if ``temperature`` is not a
+            finite real > 0 (a ``bool`` included).
     """
-    if not math.isfinite(temperature) or temperature <= 0:
-        raise ValueError(f"temperature must be positive and finite, got {temperature}")
+    require_finite_real(
+        temperature, "temperature", owner="text_contrastive_train_step_factory", minimum=0, exclusive_min=True
+    )
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
@@ -384,8 +387,9 @@ def train_contrastive(
 
     Raises:
         ValueError: on a dataset of fewer than 2 pairs, batch_size < 2,
-            non-positive epochs, non-positive temperature or ``lr``, or a
-            non-positive ``grad_clip_norm`` — NT-Xent needs at least one
+            non-positive epochs, a ``temperature``, ``lr`` or
+            ``grad_clip_norm`` that is not a finite positive real (a
+            ``bool`` included) — NT-Xent needs at least one
             negative, so both the dataset and every batch must carry
             >= 2 pairs.
         FloatingPointError: when the contrastive loss goes non-finite
@@ -398,18 +402,24 @@ def train_contrastive(
         # itself raises on B < 2 as the backstop; rejecting here gives
         # the error before any training work happens).
         raise ValueError(f"batch_size must be >= 2 for NT-Xent (got {batch_size}) — each batch needs a negative.")
-    if not math.isfinite(temperature) or temperature <= 0:
-        raise ValueError(f"temperature must be positive and finite, got {temperature}")
+    require_finite_real(temperature, "temperature", owner="train_contrastive", minimum=0, exclusive_min=True)
     if isinstance(lr, bool) or not isinstance(lr, numbers.Real) or not math.isfinite(lr) or lr <= 0:
         # AdamW accepts lr=0.0: every epoch would run and leave the backbone untouched.
         raise ValueError(f"lr must be positive and finite, got {lr!r}")
-    if grad_clip_norm is not None and (not math.isfinite(grad_clip_norm) or grad_clip_norm <= 0):
+    if grad_clip_norm is not None:
         # `None` disables clipping; a non-positive norm would otherwise slip
         # past the `is not None` guard below and clip_grad_norm_(..., 0.0)
         # scales every gradient by 0.0/total_norm == 0, silently zeroing all
         # grads so the backbone never learns. Same footgun NNOptimParams
         # guards against; fail fast here before any training work happens.
-        raise ValueError(f"grad_clip_norm must be positive and finite, or None to disable, got {grad_clip_norm}")
+        require_finite_real(
+            grad_clip_norm,
+            "grad_clip_norm",
+            owner="train_contrastive",
+            minimum=0,
+            exclusive_min=True,
+            domain_message=f"grad_clip_norm must be positive and finite, or None to disable, got {grad_clip_norm}",
+        )
 
     if isinstance(dataset, list):
         dataset = ContrastiveTextDataset(dataset)
