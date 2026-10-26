@@ -1003,3 +1003,70 @@ def test_a_train_loss_monitor_on_a_stock_forward_mse_subclass_reads_the_masked_m
         summary = run.idps[-1].train_summary
         assert summary.loss == pytest.approx(0.981019, abs=1e-6) == pytest.approx(summary.metrics["mse"])
         assert run.idps[-1].selection.value == pytest.approx(summary.metrics["mse"])
+
+
+def test_monitor_spec_stores_numpy_strings_as_plain_str():
+    """A numpy.str_ field (a DataFrame cell, an np.array element) passed
+    every check but failed the first run.yaml write (#515)."""
+    np = pytest.importorskip("numpy")
+    s = np.str_
+    fields = dict(metric="acc", split="train", mode="max", on_missing="error", on_nonfinite="error")
+    spec = MonitorSpec(**{name: s(value) for name, value in fields.items()})
+    assert spec == MonitorSpec(**fields)
+    state = spec.state()
+    assert all(type(state[name]) is str for name in fields)
+    resolved = MonitorSpec(metric=s("acc"), split=s("val")).resolve([MetricSpec("accuracy", name=s("acc"))])
+    assert (type(resolved.metric), type(resolved.split), type(resolved.mode)) == (str, str, str)
+
+
+def test_trainer_runs_with_numpy_string_configs_save_reload_and_keep_the_plain_run_id(tmp_path, monkeypatch):
+    """Trainer.train twins of #515 Example 2: a numpy.str_ salt, data_id,
+    optimizer / scheduler name, param-group pattern and number, metric name
+    and monitor trained one epoch, then run.yaml failed to save."""
+    import numpy as np
+
+    from nnx import NNParamGroupSpec, Optims
+    from nnx.trainer.trainer import _representative_train_params
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    X, Y = _data()
+
+    def params(text, number):
+        group = NNParamGroupSpec(name_pattern=text("layers.*"), lr_multiplier=number(0.5), weight_decay=number(0.0))
+        optim = NNOptimParams(name=Optims.SGD, max_lr=0.05, momentum=0.0, weight_decay=0.0, param_groups=[group])
+        return NNTrainerParams(
+            n_epochs=2,
+            train_loader=_batches(X, Y, [3, 2]),
+            val_loader=_batches(X, Y, [5]),
+            optims={text("main"): optim},
+            schedulers={text("main"): _plateau()},
+            data_id=text("ds-1"),
+            metrics=(MetricSpec(text("accuracy"), name=text("acc")),),
+            monitor=MonitorSpec(metric=text("acc"), split=text("val"), mode=text("max"), on_missing=text("error")),
+        )
+
+    numpy_params = params(np.str_, np.float64)
+    state = numpy_params.state()
+    assert all(type(name) is str for name in (*state["optims"], *state["schedulers"]))
+    assert type(state["data_id"]) is str
+    assert all(type(value) is str for value in state["monitor"].values() if not isinstance(value, float))
+    (group,) = state["optims"]["main"]["param_groups"]
+    assert (type(group["name_pattern"]), type(group["lr_multiplier"]), type(group["weight_decay"])) == (
+        str,
+        float,
+        float,
+    )
+    run = Trainer(_model()).train(params=numpy_params, trainer_step_fn=_trainer_step, salt=np.str_("exp-a"))
+    assert len({idp.epoch_idx for idp in run.idps}) == 2
+    loaded = NNRun.load(run.id)
+    assert loaded.id == run.id and type(loaded.salt) is str and type(run.salt) is str
+    plain = params(str, float)
+    expected = NNRun(
+        net=_model().net_params,
+        model=_model().params,
+        train=_representative_train_params(plain),
+        trainer=plain,
+        salt="exp-a",
+    )
+    assert run.id == expected.id

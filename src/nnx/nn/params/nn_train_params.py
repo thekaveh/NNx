@@ -4,7 +4,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Optional, Union
 
-from ..._validation import require_count
+from ..._validation import plain_str, require_count
 from ...monitors import MetricSpec, MonitorSpec, _unique_metrics
 from ..enum.optims import Optims
 from ..params.nn_optim_params import NNOptimParams
@@ -39,18 +39,53 @@ def _checkpoint_tag(value: object, owner: str, *, resuming: bool) -> Any:
 
     if isinstance(value, Checkpoints):
         return value.value
+    # A str subclass (numpy.str_) is kept as the plain str it equals (#515).
     if not resuming:
         if value is not None and not isinstance(value, str):  # run.yaml stores a tag string or null
             raise ValueError(f"{owner}.resume_from_checkpoint must be a tag string, got {value!r}")
-        return value
+        return plain_str(value)
     if isinstance(value, str) and (
         value in {c.value for c in Checkpoints} or re.fullmatch(rf"{_MODEL_CHECKPOINT_TAG}_e[0-9]+", value)
     ):
-        return value
+        return plain_str(value)
     raise ValueError(
         f"{owner}.resume_from_checkpoint must be a Checkpoints tag "
         f"({', '.join(c.value for c in Checkpoints)}) or a ModelCheckpoint file stem '<tag>_e<epoch>', got {value!r}"
     )
+
+
+def _is_run_id_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _parent_run_id(value: object, owner: str) -> Optional[str]:
+    """``parent_run_id`` as the plain lineage string ``state()`` records.
+
+    ``None`` (no lineage) passes; anything but a non-empty string fails at
+    construction, before an epoch trains: an ``int`` was recorded as the
+    lineage, an :class:`NNRun` (a forgotten ``.id``) failed the first
+    ``run.yaml`` write, and ``""`` was dropped from ``state()`` silently. A
+    ``numpy.str_`` becomes the plain ``str`` (#515)."""
+    if value is None or _is_run_id_text(value):
+        return plain_str(value)
+    from .nn_run import NNRun
+
+    got = (
+        f"an NNRun; pass its .id ({value.id!r})"
+        if isinstance(value, NNRun)
+        else f"{value!r} of type {type(value).__name__}"
+    )
+    raise ValueError(f"{owner}.parent_run_id must be a non-empty run id string when provided, got {got}")
+
+
+def _restore_saved_lineage(params: Any, lineage: object) -> Any:
+    """Put a saved ``parent_run_id`` that the constructor now refuses back
+    on ``params`` (built without it): ``run.yaml`` files written before #515
+    may hold one (``parent_run_id: 12345``), and the run must still load
+    with its id."""
+    if lineage is not None and not _is_run_id_text(lineage):
+        object.__setattr__(params, "parent_run_id", lineage)
+    return params
 
 
 def _validate_resume_epochs(epochs: object, owner: str) -> None:
@@ -147,7 +182,8 @@ class NNTrainParams:
     # its model weights and complete stateful training bundle when available.
     # The source run and checkpoint are serialized as parent lineage, so a
     # resumed session receives a distinct run id and cannot silently replace
-    # the source run's history.
+    # the source run's history. `parent_run_id`, when set, is a non-empty run
+    # id string (`run.id`, not the NNRun).
     resume_from_run_id: Optional[str] = field(repr=False, default=None)
     resume_from_checkpoint: Optional[str] = field(repr=False, default="last")
     parent_run_id: Optional[str] = field(repr=False, default=None)
@@ -199,6 +235,11 @@ class NNTrainParams:
             )
         if self.data_id is not None and (not isinstance(self.data_id, str) or not self.data_id.strip()):
             raise ValueError(f"NNTrainParams.data_id must be a non-empty string when provided, got {self.data_id!r}")
+        # Identity and lineage strings are stored as plain str: a numpy.str_
+        # failed the first run.yaml write after an epoch trained (#515).
+        object.__setattr__(self, "data_id", plain_str(self.data_id))
+        object.__setattr__(self, "resume_from_run_id", plain_str(self.resume_from_run_id))
+        object.__setattr__(self, "parent_run_id", _parent_run_id(self.parent_run_id, "NNTrainParams"))
         # Flags are real bools: a truthy string would act as True while
         # run.yaml recorded the string (and shifted the run id).
         for flag in ("save_phase_checkpoints", "overwrite_existing"):
@@ -213,6 +254,7 @@ class NNTrainParams:
             raise ValueError("set resume_from_run_id or parent_run_id, not both")
         _validate_resume_mode(self.resume_mode, "NNTrainParams")
         _validate_resume_epochs(self.resume_epochs, "NNTrainParams")
+        object.__setattr__(self, "resume_epochs", plain_str(self.resume_epochs))
         _validate_monitoring(self, "NNTrainParams")
 
     def with_train_loader(self, value: Iterable[Any]) -> NNTrainParams:
@@ -258,16 +300,19 @@ class NNTrainParams:
         # Lazy import: nnx.optimizers imports this package's params.
         from ...optimizers import optim_params_from_state
 
-        return NNTrainParams(
+        lineage = state.get("parent_run_id")
+        params = NNTrainParams(
             n_epochs=state["n_epochs"],
             optim=optim_params_from_state(state["optim"]),
             scheduler=NNSchedulerParams.from_state(state["scheduler"]),
             seed=state.get("seed"),
             data_id=state.get("data_id"),
-            parent_run_id=state.get("parent_run_id"),
+            # A saved lineage the constructor now refuses is restored below.
+            parent_run_id=lineage if lineage is None or _is_run_id_text(lineage) else None,
             resume_from_checkpoint=state.get("parent_checkpoint", "last"),
             save_phase_checkpoints=state.get("save_phase_checkpoints", True),
             resume_epochs=state.get("resume_epochs", "additional"),
             metrics=tuple(MetricSpec.from_state(m) for m in state.get("metrics") or ()),
             monitor=MonitorSpec.from_state(state["monitor"]) if state.get("monitor") is not None else None,
         )
+        return _restore_saved_lineage(params, lineage)

@@ -316,3 +316,20 @@ def test_the_declared_metric_mask_compares_ignore_index_on_int64_targets():
     assert kept.tolist() == [156, 3, 255]
     kept, _ = _batch_inputs("categorical", target, logits, None, 255, frozenset({"labels"}))
     assert kept.tolist() == [156, 3]
+
+
+def test_numpy_string_ids_and_names_are_stored_as_plain_str():
+    """`MetricSpec(np.str_("accuracy"), name=np.str_("acc"))` passed the
+    slug checks but its state() failed yaml.safe_dump (#515)."""
+    import yaml
+
+    spec = MetricSpec(np.str_("accuracy"), version=np.int64(1), name=np.str_("acc"))
+    assert (type(spec.id), type(spec.name), type(spec.label)) == (str, str, str)
+    assert spec == MetricSpec("accuracy", name="acc") and spec.state() == {
+        "id": "accuracy",
+        "version": 1,
+        "name": "acc",
+    }
+    assert all(type(spec.state()[key]) is str for key in ("id", "name"))
+    yaml.safe_dump(spec.state())
+    assert spec.definition.id == "accuracy"  # the registry lookup is unchanged

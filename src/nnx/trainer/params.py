@@ -21,11 +21,18 @@ from typing import TYPE_CHECKING, Generic, Optional, TypeVar, Union
 
 from torch.utils.data import DataLoader
 
-from .._validation import require_count
+from .._validation import plain_str, require_count
 from ..monitors import MetricSpec, MonitorSpec
 from ..nn.params.nn_optim_params import NNOptimParams
 from ..nn.params.nn_scheduler_params import NNSchedulerParams
-from ..nn.params.nn_train_params import _checkpoint_tag, _validate_monitoring, _validate_resume_mode
+from ..nn.params.nn_train_params import (
+    _checkpoint_tag,
+    _is_run_id_text,
+    _parent_run_id,
+    _restore_saved_lineage,
+    _validate_monitoring,
+    _validate_resume_mode,
+)
 
 if TYPE_CHECKING:
     from ..optimizers import NNOptimFactoryParams
@@ -179,6 +186,12 @@ class NNTrainerParams:
             value = getattr(self, name)
             if value is not None and not isinstance(value, _FrozenMapping):
                 object.__setattr__(self, name, _FrozenMapping(value))
+        # Optimizer / scheduler names are serialized as state() keys: a
+        # numpy.str_ name becomes the plain str (#515).
+        for name in ("optims", "schedulers"):
+            value = getattr(self, name)
+            if any(type(key) is not str for key in value):
+                object.__setattr__(self, name, _FrozenMapping({plain_str(key): item for key, item in value.items()}))
         # Fail-fast: `n_epochs` drives `range(params.n_epochs)` in Trainer.train,
         # so a value < 1 silently makes training a no-op. Symmetric with
         # NNTrainParams.__post_init__.
@@ -200,6 +213,10 @@ class NNTrainerParams:
             )
         if self.data_id is not None and (not isinstance(self.data_id, str) or not self.data_id.strip()):
             raise ValueError(f"NNTrainerParams.data_id must be a non-empty string when provided, got {self.data_id!r}")
+        # Plain str identity and lineage, as on NNTrainParams (#515).
+        object.__setattr__(self, "data_id", plain_str(self.data_id))
+        object.__setattr__(self, "resume_from_run_id", plain_str(self.resume_from_run_id))
+        object.__setattr__(self, "parent_run_id", _parent_run_id(self.parent_run_id, "NNTrainerParams"))
         # Flags are real bools: a truthy string would act as True while
         # run.yaml recorded the string (and shifted the run id).
         for flag in ("save_phase_checkpoints", "auto_step_schedulers", "overwrite_existing"):
@@ -270,19 +287,22 @@ class NNTrainerParams:
     def from_state(state: dict) -> NNTrainerParams:
         from ..optimizers import optim_params_from_state
 
-        return NNTrainerParams(
+        lineage = state.get("parent_run_id")
+        params = NNTrainerParams(
             n_epochs=state["n_epochs"],
             optims={k: optim_params_from_state(v) for k, v in state["optims"].items()},
             schedulers={k: NNSchedulerParams.from_state(v) for k, v in state.get("schedulers", {}).items()},
             seed=state.get("seed"),
             data_id=state.get("data_id"),
-            parent_run_id=state.get("parent_run_id"),
+            # A saved lineage the constructor now refuses is restored below.
+            parent_run_id=lineage if lineage is None or _is_run_id_text(lineage) else None,
             resume_from_checkpoint=state.get("parent_checkpoint", "last"),
             save_phase_checkpoints=state.get("save_phase_checkpoints", True),
             auto_step_schedulers=state.get("auto_step_schedulers", True),
             metrics=tuple(MetricSpec.from_state(m) for m in state.get("metrics") or ()),
             monitor=MonitorSpec.from_state(state["monitor"]) if state.get("monitor") is not None else None,
         )
+        return _restore_saved_lineage(params, lineage)
 
     @classmethod
     def builder(cls) -> NNTrainerParamsBuilder:
