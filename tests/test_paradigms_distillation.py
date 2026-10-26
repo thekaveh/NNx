@@ -350,6 +350,22 @@ def test_kd_alpha_0_takes_no_update_on_an_all_ignored_batch(tmp_path, monkeypatc
     assert (record.kind, record.count, record.status, record.loss) == ("categorical", 0, "empty", None)
 
 
+@pytest.mark.parametrize("alpha", [0.5, 1.0])
+def test_kd_soft_term_trains_on_an_all_ignored_batch(alpha, tmp_path, monkeypatch):
+    # alpha > 0: the soft term keeps every row, so the batch still trains
+    # (pure distillation on placeholder labels equal to ignore_index included).
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(), tasks.categorical(seed=1)
+    step = kd_train_step_factory(teacher, alpha=alpha, temperature=2.0)
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, train_step_fn=step)
+    assert tasks.moved(trained, base) > 0.0
+    record = tasks.record(run)
+    with torch.no_grad():
+        expected = alpha * softened_kl(base.net(tasks.X), teacher.net(tasks.X), 2.0)
+    assert (record.count, record.status) == (0, "empty")
+    assert record.loss == pytest.approx(float(expected), rel=1e-5)
+
+
 @pytest.mark.parametrize("ignore_index", [-1, 255])
 def test_kd_masks_an_out_of_range_ignore_index(ignore_index, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
