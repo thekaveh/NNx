@@ -353,7 +353,7 @@ class KDObjective(Objective):
         from .paradigms.distillation import _check_kd_weights, _freeze_teacher
 
         super().__init__(nonfinite=nonfinite)
-        _check_kd_weights(alpha, temperature)
+        _check_kd_weights(alpha, temperature, owner="KDObjective")
         self.teacher = teacher
         self.alpha = float(alpha)
         self.temperature = float(temperature)

@@ -222,8 +222,55 @@ def test_cutmix_rejects_non_image_input():
         batch_idx=0,
         epoch_idx=0,
     )
-    with pytest.raises(ValueError, match="4D image input"):
+    with pytest.raises(ValueError, match="4D image input") as raised:
         step_fn(ctx)
+    assert "Use Mixup" in str(raised.value)  # a floating lower-rank input can be mixed
+
+
+def test_cutmix_sends_rank_2_token_ids_to_the_causal_lm_task():
+    """Mixup refuses integer input, so CutMix's rank refusal must not
+    recommend it for token ids."""
+    from nnx.nn.nn_model import TrainStepContext
+
+    model = _supervised_model()
+    ctx = TrainStepContext(
+        model=model,
+        batch=(torch.randint(0, 8, (4, 8)), torch.randint(0, 3, (4,))),
+        optimizer=Optims.ADAM(net=model.net, lr_start=1e-3, momentum=(0.9, 0.999), weight_decay=0.0),
+        scaler=None,
+        grad_clip_norm=None,
+        extra_metrics=None,
+        accumulate_grad_batches=1,
+        batch_idx=0,
+        epoch_idx=0,
+    )
+    with pytest.raises(ValueError, match="4D image input") as raised:
+        cutmix_train_step_factory()(ctx)
+    assert "nnx.lm_tasks.CausalLMTask" in str(raised.value)
+    assert "Cast integer features to float" in str(raised.value)  # integer features that are not tokens
+    assert "Mixup" not in str(raised.value)
+
+
+def test_mixup_tells_integer_features_to_cast_to_float():
+    """Integer features need not be token ids (uint8 pixels or tabular
+    codes): the refusal tells them to cast, and token ids where to go."""
+    from nnx.nn.nn_model import TrainStepContext
+
+    model = _supervised_model()
+    ctx = TrainStepContext(
+        model=model,
+        batch=(torch.randint(0, 255, (4, 8), dtype=torch.uint8), torch.randint(0, 3, (4,))),
+        optimizer=Optims.ADAM(net=model.net, lr_start=1e-3, momentum=(0.9, 0.999), weight_decay=0.0),
+        scaler=None,
+        grad_clip_norm=None,
+        extra_metrics=None,
+        accumulate_grad_batches=1,
+        batch_idx=0,
+        epoch_idx=0,
+    )
+    with pytest.raises(ValueError, match=r"mixup step.*torch\.uint8.*cast integer features to float") as raised:
+        mixup_train_step_factory()(ctx)
+    assert "nnx.lm_tasks.CausalLMTask" in str(raised.value)
 
 
 def test_cutmix_train_loop_runs_on_4d_images(tmp_path, monkeypatch):

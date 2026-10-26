@@ -37,7 +37,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .._step_helpers import finalize_step, first_input, imperative_step
+from .._step_helpers import finalize_step, first_input, imperative_step, require_real_or_scalar_tensor
+from .._validation import require_finite_real
 from ..components import ComponentSpec
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -60,7 +61,7 @@ def build_target_encoder(source: nn.Module) -> nn.Module:
     return target
 
 
-def update_ema(source: nn.Module, target: nn.Module, momentum: float) -> None:
+def update_ema(source: nn.Module, target: nn.Module, momentum: float | torch.Tensor) -> None:
     """In-place EMA update: ``target ← momentum * target + (1 - momentum) * source``.
 
     Called once per training step from inside the JEPA train_step_fn.
@@ -75,15 +76,19 @@ def update_ema(source: nn.Module, target: nn.Module, momentum: float) -> None:
         momentum: EMA decay in ``[0, 1)``. Higher = slower target
             tracking. I-JEPA's reference recipe uses 0.996 with a
             cosine schedule up to 1.0 over training; the factory's
-            default matches.
+            default matches. A one-element real tensor (a schedule
+            computed with torch) is taken by its value.
 
     Raises:
-        ValueError: when ``momentum`` is outside ``[0, 1)``.
+        ValueError: when ``momentum`` is not a real in ``[0, 1)`` (a
+            ``bool`` included) or a one-element real (not bool) tensor
+            holding one.
         KeyError: when a target parameter has no same-named source
             parameter (the name-keyed update contract).
     """
-    if not (0.0 <= momentum < 1.0):
-        raise ValueError(f"EMA momentum must be in [0, 1), got {momentum}")
+    momentum = require_real_or_scalar_tensor(
+        momentum, "momentum", owner="update_ema", minimum=0, maximum=1, exclusive_max=True
+    )
     # Walk by named-parameter so the EMA continues to work when the
     # *source* has been augmented with extra submodules (typical
     # idiom: register the JEPA predictor under ``model.net`` so a
@@ -148,7 +153,8 @@ def random_block_mask(
     Raises:
         ValueError: when ``grid_size**2 != n_patches``; when
             ``block_scale`` is not an ordered pair in ``(0, 1)`` or
-            ``block_aspect`` not an ordered pair of finite positive ratios; or
+            ``block_aspect`` not an ordered pair of finite positive real
+            ratios (a ``bool`` is refused); or
             for a 1x1 grid (no room for a context). A block is never
             empty and never the whole grid: each side is at least one
             patch, a side longer than the grid is clipped to it, and a
@@ -158,7 +164,11 @@ def random_block_mask(
         raise ValueError(f"grid_size**2 ({grid_size**2}) != n_patches ({n_patches})")
     if not 0.0 < block_scale[0] <= block_scale[1] < 1.0:
         raise ValueError(f"block_scale must be an ordered (min, max) pair in (0, 1), got {block_scale}")
-    if not (math.isfinite(block_aspect[1]) and 0.0 < block_aspect[0] <= block_aspect[1]):
+    for i in (0, 1):
+        require_finite_real(
+            block_aspect[i], f"block_aspect[{i}]", owner="random_block_mask", minimum=0, exclusive_min=True
+        )
+    if not block_aspect[0] <= block_aspect[1]:
         raise ValueError(f"block_aspect must be an ordered (min, max) pair of positive ratios, got {block_aspect}")
 
     # Sample block scale and aspect. ``torch.rand`` accepts a
@@ -366,12 +376,14 @@ def jepa_train_step_factory(
         A ``TrainStepFn`` for ``NNModel.train(..., train_step_fn=...)``.
 
     Raises:
-        ValueError: when ``ema_momentum`` is outside ``[0, 1)``; at the
+        ValueError: when ``ema_momentum`` is not a real in ``[0, 1)`` (a
+            ``bool`` included); at the
             first step, when the predictor is not a submodule of
             ``model.net`` (it would never be updated).
     """
-    if not (0.0 <= ema_momentum < 1.0):
-        raise ValueError(f"ema_momentum must be in [0, 1), got {ema_momentum}")
+    require_finite_real(
+        ema_momentum, "ema_momentum", owner="jepa_train_step_factory", minimum=0, maximum=1, exclusive_max=True
+    )
 
     # Defensive freeze in case the caller built the target encoder by
     # hand without going through ``build_target_encoder``.

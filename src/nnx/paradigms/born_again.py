@@ -28,6 +28,7 @@ from typing import Any
 
 import torch
 
+from .._validation import require_count
 from ..nn.enum.nets import Nets
 from ..nn.nn_model import NNModel
 from ..nn.params.nn_run import NNRun
@@ -77,15 +78,16 @@ def born_again_train(
         KD run that used generation ``k-1``'s model as teacher.
 
     Raises:
-        ValueError: if ``generations < 1``; if ``generations > 1`` and the
-            optimizer accumulates gradients, ``alpha`` / ``temperature``
-            are out of range, the head has a single output with
-            ``alpha > 0`` (no class distribution to distill; the width is
-            read from the net's ``params.output_dim`` or from the last layer
-            of an ``nn.Sequential``), or the net is a ``TransformerNN``
-            (sequence output). Nothing is trained then. Another module's
-            single-output head is refused by the KD step at generation 1,
-            after generation 0 trained.
+        ValueError: if ``generations`` is not an integer ``>= 1`` (a
+            ``bool`` included); if ``generations > 1`` and the optimizer
+            accumulates gradients, ``alpha`` / ``temperature`` are out of
+            range or not real numbers (a ``bool`` included), the head has a
+            single output with ``alpha > 0`` (no class distribution to
+            distill; the width is read from the net's ``params.output_dim``
+            or from the last layer of an ``nn.Sequential``), or the net is a
+            ``TransformerNN`` (sequence output). Nothing is trained then.
+            Another module's single-output head is refused by the KD step
+            at generation 1, after generation 0 trained.
         TypeError: if the training loader holds stored teacher records
             (for any ``generations``), or if ``generations > 1`` and a
             keyword is not a :func:`kd_train_step_factory` parameter.
@@ -93,8 +95,7 @@ def born_again_train(
             precision is reduced: the KD generations run in full
             precision only, so nothing is trained.
     """
-    if generations < 1:
-        raise ValueError(f"generations must be >= 1, got {generations}")
+    generations = require_count(generations, "generations", owner="born_again_train", minimum=1)
     from .offline_distillation import _is_teacher_records
 
     if _is_teacher_records(train_params.train_loader):
@@ -128,7 +129,7 @@ def born_again_train(
 
         bound = inspect.signature(distillation.kd_train_step_factory).bind(teacher=model, **kd_kwargs)
         bound.apply_defaults()
-        _check_kd_weights(bound.arguments["alpha"], bound.arguments["temperature"])
+        _check_kd_weights(bound.arguments["alpha"], bound.arguments["temperature"], owner="born_again_train")
         # A single-logit head has no class distribution to distill: the KD
         # step would refuse it at generation 1, after generation 0 trained.
         width = getattr(getattr(model.net, "params", None), "output_dim", None)

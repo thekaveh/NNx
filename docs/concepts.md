@@ -1479,19 +1479,19 @@ step_fn = simclr_train_step_factory(temperature=0.5)
 model.train(params=..., train_step_fn=step_fn)
 ```
 
-`nt_xent_loss(z1, z2, temperature=0.5)` is exposed as a standalone for users wanting to compose the loss into other pipelines. Pass `temperature` by keyword. The augmentation that produces `(view1, view2)` is the caller's responsibility — a paired-view `Dataset` is the common pattern.
+`nt_xent_loss(z1, z2, temperature=0.5)` is exposed as a standalone for users wanting to compose the loss into other pipelines. Pass `temperature` by keyword, as a positive number or as a one-element real tensor (a learnable temperature, with gradients flowing through it); a bool tensor is refused like a bool. The augmentation that produces `(view1, view2)` is the caller's responsibility — a paired-view `Dataset` is the common pattern.
 
 ### 10.3. Mixup / CutMix
 
 Both interpolate within the batch and re-weight the loss. They're train_step factories (not `collate_fn`s) because mixing labels with arbitrary loss functions needs label-aware computation that doesn't fit the standard `(X, Y)` batch contract:
 
 ```python
-mixup = mixup_train_step_factory(alpha=0.4)              # any input shape
+mixup = mixup_train_step_factory(alpha=0.4)              # floating input, any shape
 cutmix = cutmix_train_step_factory(alpha=1.0)            # 4D (B, C, H, W) only
 model.train(params=..., train_step_fn=mixup)
 ```
 
-`λ ~ Beta(α, α)` is the mixing coefficient. The loss is `λ · L(f(x'), y_a) + (1-λ) · L(f(x'), y_b)`. The reported `accuracy` is the λ-weighted correctness (so `accuracy + error == 1`). It is useful as a signal for `EarlyStopping` / `ReduceLROnPlateau`. CutMix raises on lower-rank input — its spatial cut isn't well-defined without H and W.
+`λ ~ Beta(α, α)` is the mixing coefficient. The loss is `λ · L(f(x'), y_a) + (1-λ) · L(f(x'), y_b)`. The reported `accuracy` is the λ-weighted correctness (so `accuracy + error == 1`). It is useful as a signal for `EarlyStopping` / `ReduceLROnPlateau`. CutMix raises on lower-rank input — its spatial cut isn't well-defined without H and W. Mixup refuses integer input before it mixes anything: cast integer features to float; for token ids, train a sequence model with `nnx.lm_tasks.CausalLMTask`.
 
 ## 11. Parameter-efficient fine-tuning (LoRA, DoRA, IA3, Prefix, Prompt, Adapters)
 

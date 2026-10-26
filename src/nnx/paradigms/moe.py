@@ -24,11 +24,10 @@ as the KD / SimCLR / Mixup / CutMix paradigm factories.
 
 from __future__ import annotations
 
-import math
-
 import torch
 
 from .._step_helpers import finalize_step, imperative_step, predicted_labels, require_row_logits
+from .._validation import require_finite_real
 from ..nn.moe import MoELinear
 from ..nn.nn_model import (
     TrainStepContext,
@@ -69,10 +68,10 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
         aux loss is 0 and the step is exactly supervised.
 
     Raises:
-        ValueError: if ``aux_loss_weight < 0``.
+        ValueError: if ``aux_loss_weight`` is not a finite real ``>= 0``
+            (a ``bool`` included).
     """
-    if not math.isfinite(aux_loss_weight) or aux_loss_weight < 0:
-        raise ValueError(f"aux_loss_weight must be non-negative and finite, got {aux_loss_weight}")
+    require_finite_real(aux_loss_weight, "aux_loss_weight", owner="moe_train_step_factory", minimum=0)
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
