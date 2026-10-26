@@ -4258,6 +4258,11 @@ class NNModel(_HubMixinBase):
         Raises:
             ValueError: If required training inputs are missing or invalid,
                 the model is fully frozen, or resume state is incompatible.
+                A misconfigured link-task validation raises ``LinkTaskError``
+                before any run is reserved: a link ``val_loader`` that is not
+                ``'val'`` or is built on another split, a val split beyond the
+                evaluator's ``max_candidates``, or a link predictor with a
+                ``val_loader`` but without ``eval_step_fn=task.eval_step()``.
             FileExistsError: If the content-addressed run already exists and
                 ``overwrite_existing`` is false.
             FloatingPointError: If the default step encounters non-finite loss.
@@ -4304,6 +4309,18 @@ class NNModel(_HubMixinBase):
             from ..streaming import _streaming_preflight
 
             _streaming_preflight(self, params)
+        if params.val_loader is not None:
+            from ..link_tasks import _link_eval_preflight
+
+            # ... as does a link task's evaluator (task.eval_step()): its role,
+            # split and max_candidates refusals, and a link predictor's
+            # default evaluate path, which refuses every batch (#548).
+            _link_eval_preflight(
+                self,
+                params.val_loader,
+                eval_step_fn,
+                default_train_step=objective is None and train_step_fn in (None, default_train_step),
+            )
         if params.train_loader is None:
             raise ValueError(
                 "params.train_loader is required — set it directly or via with_train_loader(...) before train()."

@@ -1239,7 +1239,9 @@ class LinkEval:
     never per-batch averages — from the float64 logits, never rounded
     probabilities (:func:`link_metrics` with ``from_logits=True``). The
     record (``kind="link"``) counts the candidates; its ``loss`` is the BCE
-    (or NLL)."""
+    (or NLL). With a :meth:`LinkTask.loader` as ``val_loader``,
+    ``NNModel.train`` and ``ExperimentPlan.validate()`` make its role,
+    split and ``max_candidates`` refusals before any run is reserved."""
 
     def __init__(self, task: LinkTask) -> None:
         if not isinstance(task, LinkTask):
@@ -1271,6 +1273,126 @@ class LinkEval:
             values["negatives"] = float((prediction.targets == 0).sum())
         loss = values.get("bce", values.get("nll"))
         return NNEvaluationDataPoint(loss=loss, kind=KIND, count=k, status="ok", metrics=values)
+
+
+# --- pre-run checks ----------------------------------------------------------------------------------------
+
+
+def _same_split(a: LinkSplit, b: LinkSplit) -> bool:
+    """Splits, not tasks, are compared: two tasks on one split serve the
+    same candidates and message graph. The ``seed`` is provenance only (a
+    manifest reloaded without it, or the same edges given explicitly, is
+    the same split): every other manifest field shapes the batches."""
+
+    def identity(split: LinkSplit) -> str:
+        state = {k: v for k, v in split.state().items() if k != "seed"}
+        return hashlib.sha256(json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    return a is b or a._cached("identity", lambda: identity(a)) == b._cached("identity", lambda: identity(b))
+
+
+def _link_eval_problems(
+    val_loader: Any, eval_step_fn: Any, *, link_net: bool, trainer: bool = False, default_train_step: bool = False
+) -> list[tuple[str, str]]:
+    """What validation would refuse after the first epoch, found from the
+    configuration alone: no loader is iterated. ``link_net``: the net is a
+    :class:`LinkPredictor` reading batches through its own
+    ``unpack_batch``, so the default evaluate path refuses every batch
+    (another net, or a user batch adapter, may validate link batches
+    there); ``trainer``: ``Trainer.train``, which validates through the
+    default path only; ``default_train_step``: NNx's default training
+    step runs, which refuses link batches too, so the hint names the
+    objective as well. A generic iterable keeps the checks
+    :class:`LinkEval` makes when it reads it."""
+    if val_loader is None:
+        return []
+    link_loader = isinstance(val_loader, _Loader)
+    if trainer:
+        if not link_net:
+            return []
+        return [
+            (
+                "val_loader",
+                "Trainer.train() validates through the default evaluate path, which cannot check link batches "
+                "against their split: drop val_loader and score with task.predict() and link_metrics() after "
+                "training, or train with NNModel.train() and the task's evaluator (task.eval_step())",
+            )
+        ]
+    if eval_step_fn is None:
+        if not link_net:
+            return []
+        if default_train_step:
+            return [
+                (
+                    "eval_step_fn",
+                    "a link predictor trains and validates through its LinkTask, which checks every batch against "
+                    "the split: train with objective=task.objective() and eval_step_fn=task.eval_step(), or drop "
+                    "val_loader, train with objective=task.objective() and score with task.predict() and "
+                    "link_metrics() after training",
+                )
+            ]
+        return [
+            (
+                "eval_step_fn",
+                "a link task validates through its evaluator, which checks every batch against the split: pass "
+                "eval_step_fn=task.eval_step(), or drop val_loader and score with task.predict() and "
+                "link_metrics() after training",
+            )
+        ]
+    if not (isinstance(eval_step_fn, LinkEval) and link_loader):
+        return []
+    task, found = eval_step_fn.task, []
+    if not _same_split(val_loader.task.split, task.split):
+        found.append(
+            (
+                "val_loader",
+                "the val_loader is built on another split than the evaluator's task: its message graph and "
+                "candidates would be checked against the wrong split; build it with the evaluator's split "
+                "(task.loader('val', ...))",
+            )
+        )
+    elif val_loader.name != "val":
+        found.append(
+            (
+                "val_loader",
+                f"the training evaluator reads the 'val' split, got a {val_loader.name!r} loader: selecting on "
+                "'train' or 'test' would leak; score 'test' with task.predict() and link_metrics() after training",
+            )
+        )
+    else:
+        split = task.split
+        candidates = len(split._cached("ids:val", lambda: split.candidate_ids("val")))
+        if candidates > task.max_candidates:
+            found.append(
+                (
+                    "eval_step_fn",
+                    f"more than max_candidates={task.max_candidates} candidates: the 'val' split holds "
+                    f"{candidates}, all materialised by evaluation; raise the task's max_candidates",
+                )
+            )
+    return found
+
+
+def _link_eval_preflight(
+    model: Any, val_loader: Any, eval_step_fn: Any, *, trainer: bool = False, default_train_step: bool = False
+) -> None:
+    """Refuse, before any run is reserved, what :func:`_link_eval_problems`
+    finds (the first problem is the error)."""
+    from .models import _UnpackBatch
+
+    adapter = getattr(model, "_batch_adapter", None)
+    net = getattr(model, "net", None)
+    # A subclass that overrides unpack_batch to read link batches validates on the default path.
+    link_net = (
+        isinstance(net, LinkPredictor)
+        and type(net).unpack_batch is LinkPredictor.unpack_batch
+        and (adapter is None or isinstance(adapter, _UnpackBatch))
+    )
+    problems = _link_eval_problems(
+        val_loader, eval_step_fn, link_net=link_net, trainer=trainer, default_train_step=default_train_step
+    )
+    if problems:
+        raise LinkTaskError(problems[0][1])
 
 
 class _Unavailable:
