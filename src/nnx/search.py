@@ -43,8 +43,16 @@ imports Optuna or creates a study.
   the value of the epoch its BEST checkpoint holds (``min_delta`` included).
 - **Errors.** A fit that raises fails its trial (``TrialOutcome.error``
   keeps the message) and the search continues; a configuration error —
-  ``apply`` raising or returning a plan the search cannot score — stops the
-  search. An exhausted sampler ends it (``stop_reason="exhausted"``).
+  ``apply`` raising or returning a plan the search cannot score, or a
+  :class:`~nnx.plans.PlanError` from the trial's ``fit()`` — fails that
+  trial (``reason="config_error:<type>"``) and stops the search. A
+  ``PlanError`` from ``fit()`` reports what the factories made (data and
+  callback factory output, a factory-made callback's monitor, the update
+  budget or scheduler horizon over a factory's loader), so it would fail
+  every trial alike. An ``apply`` that varies ``n_epochs``,
+  ``warmup_steps`` or ``total_steps`` into a combination the scheduler
+  refuses, or swaps in a factory whose output is invalid, stops the search
+  at that trial. An exhausted sampler ends it (``stop_reason="exhausted"``).
 - **Outcomes.** Every trial's :class:`TrialOutcome` keeps its parameters,
   state and terminal reason, resource counters (epochs, committed updates,
   seconds), best monitor value, attempt id, run id and BEST checkpoint path.
@@ -586,7 +594,8 @@ def search(
         # One trial per call: Optuna records its state (a failure, a prune,
         # an interruption) and the sampler's own bookkeeping.
         # A failed fit is a failed trial and the search goes on; anything else
-        # (a broken ``apply``, a plan the search cannot score) stops it.
+        # (a broken ``apply``, a plan the search cannot score or fit() refuses)
+        # stops it.
         study.optimize(objective, n_trials=1, catch=(_TrialFailed,), gc_after_trial=False)
         if getattr(study, "_stop_flag", False):  # a sampler (a GridSampler, exhausted) stopped the study
             stop_reason = "exhausted"
@@ -639,7 +648,7 @@ def _run_trial(
     ``TrialPruned`` / an exception (recorded as failed by ``optimize``)."""
     from .nn.enum.checkpoints import Checkpoints
     from .nn.params.nn_checkpoint import _checkpoint_path
-    from .plans import ExperimentPlan
+    from .plans import ExperimentPlan, PlanError
 
     attempt_id = f"search-{trial.number}-{uuid.uuid4().hex}"
     control = _TrialControl(trial=trial, monitor=monitor, budget=budget, deadline=deadline, clock=clock)
@@ -674,6 +683,14 @@ def _run_trial(
     try:
         trial_plan = trial_plan.with_callback_factories(*trial_plan.callback_factories, lambda: control)
         fitted = trial_plan.fit(attempt=attempt_id)
+    except PlanError as error:
+        # #506: a plan fit() refuses — what a data or callback factory
+        # returned, a factory-made callback's monitor, the update budget or
+        # horizon over a factory's loader — is a configuration error, as
+        # when validate() reports it: it fails every trial alike, so the
+        # search stops (fit() raises it before a model or run exists).
+        record(reason=f"config_error:{type(error).__name__}", error=f"{type(error).__name__}: {error}")
+        raise
     except Exception as error:
         # A fit that raised is a failed trial, recorded with its message; the
         # search goes on.
