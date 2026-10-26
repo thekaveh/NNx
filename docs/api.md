@@ -15205,9 +15205,9 @@ Raises:
         single output with ``alpha > 0`` (no class distribution to
         distill; the width is read from the net's ``params.output_dim``
         or from the last layer of an ``nn.Sequential``), or the net is a
-        ``TransformerNN`` (sequence output). Nothing is trained then. Another module's
-        single-output head is refused by the KD step at generation 1,
-        after generation 0 trained.
+        ``TransformerNN`` (sequence output). Nothing is trained then.
+        Another module's single-output head is refused by the KD step
+        at generation 1, after generation 0 trained.
     TypeError: if the training loader holds stored teacher records
         (for any ``generations``), or if ``generations > 1`` and a
         keyword is not a :func:`kd_train_step_factory` parameter.
