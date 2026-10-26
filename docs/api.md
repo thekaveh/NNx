@@ -915,7 +915,10 @@ Raises:
         weight_norm / spectral_norm parametrization or legacy hook),
         or a recipe model's topology is not its base plus its recipe.
         A trainer_step_fn run on a model without a recipe is not
-        checked.
+        checked. A link task's ``val_loader`` (or a link predictor
+        with any ``val_loader``) raises ``LinkTaskError`` before any
+        run is reserved: the default evaluate path cannot check its
+        batches.
     RuntimeError: in a process group of more than one rank.
 ```
 
@@ -7355,7 +7358,8 @@ reserving a run. It constructs the built-in loss module, as
 ``NNModel`` does first, and resolves each borrowed callback's monitor
 on a shallow copy; with ``nnx.streaming.streaming_eval_step`` it also
 builds each declared metric's accumulator to check that it is
-bounded.
+bounded, and a link task's validation loader is checked against its
+evaluator (``nnx.link_tasks``: role, split and ``max_candidates``).
 ```
 
 ##### `nnx.plans.ExperimentPlan.probe`
@@ -9890,7 +9894,7 @@ The manifest is configuration (checked, not restored). The training negatives' s
 class nnx.link_tasks.LinkEval(task: 'LinkTask') -> 'None'
 ```
 
-The task's ``eval_step_fn``: every validation candidate materialised (at most ``max_candidates``), then exact metrics over the whole set — never per-batch averages — from the float64 logits, never rounded probabilities (`link_metrics` with ``from_logits=True``). The record (``kind="link"``) counts the candidates; its ``loss`` is the BCE (or NLL).
+The task's ``eval_step_fn``: every validation candidate materialised (at most ``max_candidates``), then exact metrics over the whole set — never per-batch averages — from the float64 logits, never rounded probabilities (`link_metrics` with ``from_logits=True``). The record (``kind="link"``) counts the candidates; its ``loss`` is the BCE (or NLL). With a `LinkTask.loader` as ``val_loader``, ``NNModel.train`` and ``ExperimentPlan.validate()`` make its role, split and ``max_candidates`` refusals before any run is reserved.
 
 
 #### `nnx.link_tasks.MetricValue`
