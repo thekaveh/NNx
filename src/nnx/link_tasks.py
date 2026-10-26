@@ -1292,7 +1292,7 @@ def _same_split(a: LinkSplit, b: LinkSplit) -> bool:
 
 
 def _link_eval_problems(
-    val_loader: Any, eval_step_fn: Any, *, link_net: bool, trainer: bool = False
+    val_loader: Any, eval_step_fn: Any, *, link_net: bool, trainer: bool = False, default_train_step: bool = False
 ) -> list[tuple[str, str]]:
     """What validation would refuse after the first epoch, found from the
     configuration alone: no loader is iterated. ``link_net``: the net is a
@@ -1300,7 +1300,9 @@ def _link_eval_problems(
     ``unpack_batch``, so the default evaluate path refuses every batch
     (another net, or a user batch adapter, may validate link batches
     there); ``trainer``: ``Trainer.train``, which validates through the
-    default path only. A generic iterable keeps the checks
+    default path only; ``default_train_step``: NNx's default training
+    step runs, which refuses link batches too, so the hint names the
+    objective as well. A generic iterable keeps the checks
     :class:`LinkEval` makes when it reads it."""
     if val_loader is None:
         return []
@@ -1319,6 +1321,16 @@ def _link_eval_problems(
     if eval_step_fn is None:
         if not link_net:
             return []
+        if default_train_step:
+            return [
+                (
+                    "eval_step_fn",
+                    "a link predictor trains and validates through its LinkTask, which checks every batch against "
+                    "the split: train with objective=task.objective() and eval_step_fn=task.eval_step(), or drop "
+                    "val_loader, train with objective=task.objective() and score with task.predict() and "
+                    "link_metrics() after training",
+                )
+            ]
         return [
             (
                 "eval_step_fn",
@@ -1361,7 +1373,9 @@ def _link_eval_problems(
     return found
 
 
-def _link_eval_preflight(model: Any, val_loader: Any, eval_step_fn: Any, *, trainer: bool = False) -> None:
+def _link_eval_preflight(
+    model: Any, val_loader: Any, eval_step_fn: Any, *, trainer: bool = False, default_train_step: bool = False
+) -> None:
     """Refuse, before any run is reserved, what :func:`_link_eval_problems`
     finds (the first problem is the error)."""
     from .models import _UnpackBatch
@@ -1370,7 +1384,9 @@ def _link_eval_preflight(model: Any, val_loader: Any, eval_step_fn: Any, *, trai
     link_net = isinstance(getattr(model, "net", None), LinkPredictor) and (
         adapter is None or isinstance(adapter, _UnpackBatch)
     )
-    problems = _link_eval_problems(val_loader, eval_step_fn, link_net=link_net, trainer=trainer)
+    problems = _link_eval_problems(
+        val_loader, eval_step_fn, link_net=link_net, trainer=trainer, default_train_step=default_train_step
+    )
     if problems:
         raise LinkTaskError(problems[0][1])
 

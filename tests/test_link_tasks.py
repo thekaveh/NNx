@@ -909,9 +909,8 @@ def _refused(task, x, val_loader, match, **steps):
                 val_loader=val_loader,
                 optim=NNOptimParams.builder().adam(max_lr=1e-2).build(),
             ),
-            objective=task.objective(),
             callbacks=[counter],
-            **steps,
+            **{"objective": task.objective(), **steps},
         )
     assert counter.updates == 0
     assert all(torch.equal(before[k], v) for k, v in model.net.state_dict().items())
@@ -944,6 +943,9 @@ def test_a_link_val_loader_without_the_task_evaluator_is_refused_before_the_firs
     _refused(task, x, task.loader("val", x, batch_size=8), "pass eval_step_fn=task.eval_step\\(\\)")
     # A link predictor's default evaluate refuses any batch, a generic iterable too.
     _refused(task, x, list(task.loader("val", x, batch_size=8)), "pass eval_step_fn=task.eval_step\\(\\)")
+    # Under NNx's default training step the hint names the objective too: that step refuses link batches as well.
+    both = "train with objective=task.objective\\(\\) and eval_step_fn=task.eval_step\\(\\)"
+    _refused(task, x, task.loader("val", x, batch_size=8), both, objective=None)
 
 
 def test_a_val_loader_of_another_split_is_refused_but_another_task_on_the_same_split_trains():
