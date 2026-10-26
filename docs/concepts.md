@@ -1491,7 +1491,7 @@ cutmix = cutmix_train_step_factory(alpha=1.0)            # 4D (B, C, H, W) only
 model.train(params=..., train_step_fn=mixup)
 ```
 
-`λ ~ Beta(α, α)` is the mixing coefficient. The loss is `λ · L(f(x'), y_a) + (1-λ) · L(f(x'), y_b)`. The reported `accuracy` is the λ-weighted correctness (so `accuracy + error == 1`). It is useful as a signal for `EarlyStopping` / `ReduceLROnPlateau`. CutMix raises on lower-rank input — its spatial cut isn't well-defined without H and W. Mixup refuses integer input such as token ids before it mixes anything; train a sequence model with `nnx.lm_tasks.CausalLMTask`.
+`λ ~ Beta(α, α)` is the mixing coefficient. The loss is `λ · L(f(x'), y_a) + (1-λ) · L(f(x'), y_b)`. The reported `accuracy` is the λ-weighted correctness (so `accuracy + error == 1`). It is useful as a signal for `EarlyStopping` / `ReduceLROnPlateau`. CutMix raises on lower-rank input — its spatial cut isn't well-defined without H and W. Mixup refuses integer input before it mixes anything: cast integer features to float; for token ids, train a sequence model with `nnx.lm_tasks.CausalLMTask`.
 
 ## 11. Parameter-efficient fine-tuning (LoRA, DoRA, IA3, Prefix, Prompt, Adapters)
 
