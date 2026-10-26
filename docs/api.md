@@ -6493,7 +6493,8 @@ Accept or abstain on every row of ``source``.
 ```text
 ``source`` is a ``CalibratedPrediction`` (the policy's
 ``input_field`` picks its raw or calibrated view), a categorical
-``PredictionResult`` (raw, scored from its logits in float64; pass
+``PredictionResult`` (raw, scored from its logits in float64 — its
+own ``probabilities`` are neither read nor validated; pass
 ``model_id=``), or ``(N, C)`` probabilities with ``labels=`` /
 ``model_id=`` (and ``input_field=`` / ``calibrator_id=`` for
 calibrated ones), scored as given. The declared schema must equal
@@ -6827,7 +6828,8 @@ Choose a ``kind`` threshold on the validation split ``split_id``.
 **Details**
 
 ```text
-``source`` is declared as for :meth:`AbstentionPolicy.apply`; a
+``source`` is declared and read as for :meth:`AbstentionPolicy.apply`
+(a ``PredictionResult`` from its logits in float64); a
 ``CalibratedPrediction`` needs ``input_field=`` to say which of its two
 views to tune on. Every candidate threshold is evaluated: by default
 every distinct score, or, beyond :data:`MAX_DEFAULT_CANDIDATES` of them,
@@ -6944,7 +6946,9 @@ Coverage and selective risk at each candidate threshold, ascending.
 ``source`` is ``(N, C)`` probabilities (the prediction is each row's
 first class of maximal probability), a categorical ``PredictionResult``
 or a ``CalibratedPrediction`` with ``input_field=`` (their own
-``decoded`` classes, as :func:`select_threshold` reads them). By default
+``decoded`` classes, as :func:`select_threshold` reads them; a
+``PredictionResult`` is scored from its logits in float64, its own
+``probabilities`` neither read nor validated). By default
 the candidates are the distinct scores (bounded by
 :data:`MAX_DEFAULT_CANDIDATES`). Coverage never rises as the threshold
 rises; risk is measured at each point, never assumed monotone. The last

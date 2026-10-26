@@ -32,9 +32,11 @@ float64 softmax, so one policy makes the same decisions on the same logits
 through every producer, and a threshold tuned on one reproduces its
 recorded counts on another. That matters near 1: a two-class float32 top
 probability rounds to exactly 1 from a logit gap of 16.6 (float16 from
-8.3), a float64 one only from 36.7. Bare arrays are scored as given, in the
-caller's precision: pass the prediction itself, not its float32
-``probabilities``, to keep the guarantee.
+8.3), a float64 one only from 36.7. Its own ``probabilities`` are neither
+read nor validated, so pass probabilities changed after the fact (by
+``dataclasses.replace``, say) as a bare array. Bare arrays are scored as
+given, in the caller's precision: pass the prediction itself, not its
+float32 ``probabilities``, to keep the guarantee.
 
 Every outcome is one of three kinds:
 
@@ -537,7 +539,8 @@ class AbstentionPolicy(JsonArtifact):
 
         ``source`` is a ``CalibratedPrediction`` (the policy's
         ``input_field`` picks its raw or calibrated view), a categorical
-        ``PredictionResult`` (raw, scored from its logits in float64; pass
+        ``PredictionResult`` (raw, scored from its logits in float64 — its
+        own ``probabilities`` are neither read nor validated; pass
         ``model_id=``), or ``(N, C)`` probabilities with ``labels=`` /
         ``model_id=`` (and ``input_field=`` / ``calibrator_id=`` for
         calibrated ones), scored as given. The declared schema must equal
@@ -1134,7 +1137,9 @@ def risk_coverage_curve(
     ``source`` is ``(N, C)`` probabilities (the prediction is each row's
     first class of maximal probability), a categorical ``PredictionResult``
     or a ``CalibratedPrediction`` with ``input_field=`` (their own
-    ``decoded`` classes, as :func:`select_threshold` reads them). By default
+    ``decoded`` classes, as :func:`select_threshold` reads them; a
+    ``PredictionResult`` is scored from its logits in float64, its own
+    ``probabilities`` neither read nor validated). By default
     the candidates are the distinct scores (bounded by
     :data:`MAX_DEFAULT_CANDIDATES`). Coverage never rises as the threshold
     rises; risk is measured at each point, never assumed monotone. The last
@@ -1333,7 +1338,8 @@ def select_threshold(
 ) -> ThresholdSelection:
     """Choose a ``kind`` threshold on the validation split ``split_id``.
 
-    ``source`` is declared as for :meth:`AbstentionPolicy.apply`; a
+    ``source`` is declared and read as for :meth:`AbstentionPolicy.apply`
+    (a ``PredictionResult`` from its logits in float64); a
     ``CalibratedPrediction`` needs ``input_field=`` to say which of its two
     views to tune on. Every candidate threshold is evaluated: by default
     every distinct score, or, beyond :data:`MAX_DEFAULT_CANDIDATES` of them,
