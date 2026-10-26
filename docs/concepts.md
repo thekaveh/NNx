@@ -1486,12 +1486,12 @@ model.train(params=..., train_step_fn=step_fn)
 Both interpolate within the batch and re-weight the loss. They're train_step factories (not `collate_fn`s) because mixing labels with arbitrary loss functions needs label-aware computation that doesn't fit the standard `(X, Y)` batch contract:
 
 ```python
-mixup = mixup_train_step_factory(alpha=0.4)              # any input shape
+mixup = mixup_train_step_factory(alpha=0.4)              # floating input, any shape
 cutmix = cutmix_train_step_factory(alpha=1.0)            # 4D (B, C, H, W) only
 model.train(params=..., train_step_fn=mixup)
 ```
 
-`λ ~ Beta(α, α)` is the mixing coefficient. The loss is `λ · L(f(x'), y_a) + (1-λ) · L(f(x'), y_b)`. The reported `accuracy` is the λ-weighted correctness (so `accuracy + error == 1`). It is useful as a signal for `EarlyStopping` / `ReduceLROnPlateau`. CutMix raises on lower-rank input — its spatial cut isn't well-defined without H and W.
+`λ ~ Beta(α, α)` is the mixing coefficient. The loss is `λ · L(f(x'), y_a) + (1-λ) · L(f(x'), y_b)`. The reported `accuracy` is the λ-weighted correctness (so `accuracy + error == 1`). It is useful as a signal for `EarlyStopping` / `ReduceLROnPlateau`. CutMix raises on lower-rank input — its spatial cut isn't well-defined without H and W. Mixup refuses integer input such as token ids before it mixes anything; train a sequence model with `nnx.lm_tasks.CausalLMTask`.
 
 ## 11. Parameter-efficient fine-tuning (LoRA, DoRA, IA3, Prefix, Prompt, Adapters)
 

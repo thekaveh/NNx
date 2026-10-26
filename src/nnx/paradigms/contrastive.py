@@ -14,12 +14,11 @@ via a paired-view :class:`Dataset` whose ``__getitem__`` returns
 
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn.functional as F
 
 from .._step_helpers import finalize_step, imperative_step
+from .._validation import require_finite_real
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
@@ -43,13 +42,13 @@ def nt_xent_loss(
         Scalar loss tensor (mean across the 2B positions in the batch).
 
     Raises:
-        ValueError: if shapes mismatch, ``temperature`` ≤ 0, or the
+        ValueError: if shapes mismatch, ``temperature`` is not a finite
+            real > 0 (a ``bool`` included), or the
             batch has fewer than 2 pairs (no negatives to contrast).
     """
     if z1.shape != z2.shape:
         raise ValueError(f"z1 / z2 shape mismatch: {z1.shape} vs {z2.shape}")
-    if not math.isfinite(temperature) or temperature <= 0:
-        raise ValueError(f"temperature must be positive and finite, got {temperature}")
+    require_finite_real(temperature, "temperature", owner="nt_xent_loss", minimum=0, exclusive_min=True)
     if z1.shape[0] < 2:
         # With a single pair there are no negatives: after the diagonal
         # mask each row has exactly one finite logit (its positive), so
@@ -117,10 +116,10 @@ def simclr_train_step_factory(*, temperature: float = 0.5) -> TrainStepFn:
         ``__getitem__`` returns ``(view1, view2)`` instead.
 
     Raises:
-        ValueError: if ``temperature`` <= 0.
+        ValueError: if ``temperature`` is not a finite real > 0 (a
+            ``bool`` included).
     """
-    if not math.isfinite(temperature) or temperature <= 0:
-        raise ValueError(f"temperature must be positive and finite, got {temperature}")
+    require_finite_real(temperature, "temperature", owner="simclr_train_step_factory", minimum=0, exclusive_min=True)
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model

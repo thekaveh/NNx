@@ -9,8 +9,10 @@ keeps the contract identical and the augmentation visible at the
 training-loop level rather than buried in the dataloader.
 
 **Mixup** (zhang:mixup): ``x' = λ x_a + (1−λ) x_b``;
-``L = λ L(f(x'), y_a) + (1−λ) L(f(x'), y_b)``. Works for any input
-shape — tabular, image, sequence.
+``L = λ L(f(x'), y_a) + (1−λ) L(f(x'), y_b)``. Works for floating
+inputs of any shape — tabular, image, sequence features. Integer inputs
+(token ids) cannot be interpolated and are refused before any mixing:
+train a sequence model with ``nnx.lm_tasks.CausalLMTask``.
 
 **CutMix** (yun:cutmix): copies a random rectangular region from
 ``x_b`` into ``x_a``, then re-weights the loss by the area ratio.
@@ -19,11 +21,10 @@ Requires 4D ``(B, C, H, W)`` image tensors; raises on lower-rank input.
 
 from __future__ import annotations
 
-import math
-
 import torch
 
 from .._step_helpers import finalize_step, imperative_step, predicted_labels, require_row_logits
+from .._validation import require_finite_real
 from ..nn.nn_model import (
     TrainStepContext,
     TrainStepFn,
@@ -83,10 +84,11 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
         classification loss, not just CrossEntropy).
 
     Raises:
-        ValueError: if ``alpha`` <= 0.
+        ValueError: if ``alpha`` is not a finite real ``> 0`` (a ``bool``
+            included). At step time, before any mixing or RNG draw, on
+            non-floating input such as token ids.
     """
-    if not math.isfinite(alpha) or alpha <= 0:
-        raise ValueError(f"alpha must be positive and finite, got {alpha}")
+    require_finite_real(alpha, "alpha", owner="mixup_train_step_factory", minimum=0, exclusive_min=True)
     # Lambda (and the CutMix box) come from torch's global RNG at step time,
     # like the batch permutation: NNTrainParams.seed controls them, and a
     # stateful resume restores that stream, so a split run continues the
@@ -99,6 +101,12 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
         m.net.zero_grad()
 
         X, Y = _unpack_supervised(ctx)
+        if not X.is_floating_point():
+            # Before the draws: a refused batch leaves the RNG stream as it was.
+            raise ValueError(
+                f"the mixup step interpolates floating inputs, got {X.dtype} input: token ids cannot be mixed; "
+                "train a sequence model with nnx.lm_tasks.CausalLMTask"
+            )
         B = X.shape[0]
 
         lam = float(beta.sample())
@@ -143,10 +151,10 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
         spatial cut isn't well-defined without H and W.
 
     Raises:
-        ValueError: if ``alpha`` <= 0.
+        ValueError: if ``alpha`` is not a finite real ``> 0`` (a ``bool``
+            included). At step time, on input that is not 4D.
     """
-    if not math.isfinite(alpha) or alpha <= 0:
-        raise ValueError(f"alpha must be positive and finite, got {alpha}")
+    require_finite_real(alpha, "alpha", owner="cutmix_train_step_factory", minimum=0, exclusive_min=True)
     # Lambda (and the CutMix box) come from torch's global RNG at step time,
     # like the batch permutation: NNTrainParams.seed controls them, and a
     # stateful resume restores that stream, so a split run continues the
@@ -160,10 +168,13 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
 
         X, Y = _unpack_supervised(ctx)
         if X.dim() != 4:
-            raise ValueError(
-                f"CutMix requires 4D image input (B, C, H, W), got rank {X.dim()}. "
+            # Mixup refuses integer input (token ids), so it is no alternative there.
+            hint = (
                 "Use Mixup for tabular / lower-rank data."
+                if X.is_floating_point()
+                else "Train a sequence model on token ids with nnx.lm_tasks.CausalLMTask."
             )
+            raise ValueError(f"CutMix requires 4D image input (B, C, H, W), got rank {X.dim()}. {hint}")
         B, _, H, W = X.shape
 
         lam = float(beta.sample())
