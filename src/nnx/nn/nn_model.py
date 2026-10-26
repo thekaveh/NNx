@@ -4410,7 +4410,15 @@ class NNModel(_HubMixinBase):
             class _ReportUpdate:
                 """The step's ``report_update``: the clock's (refusing an
                 optimizer name, as ever), then the update listeners. ``listening``
-                says whether anything needs a judged step (``listens``)."""
+                says whether anything needs a judged step (``listens``), and
+                ``skip_window()`` counts a built-in step's window with nothing to
+                learn from, which reports no update (#513)."""
+
+                def __init__(self) -> None:
+                    self.skipped_windows = 0
+
+                def skip_window(self) -> None:
+                    self.skipped_windows += 1
 
                 def __call__(self, *names: Any) -> None:
                     # A refused report is no update: refuse before the window
@@ -4424,7 +4432,8 @@ class NNModel(_HubMixinBase):
                 def listening(self) -> bool:
                     return listens(clock_report) or bool(ctx.update_listeners)
 
-            report_update: Callable[..., None] = _ReportUpdate()
+            update_reporter = _ReportUpdate()
+            report_update: Callable[..., None] = update_reporter
 
             if engine is not None:
                 assert objective is not None
@@ -4514,6 +4523,7 @@ class NNModel(_HubMixinBase):
                 if clock is not None:
                     clock.trace.clear()
                     updates_before_epoch = clock.count
+                    skips_before_epoch = update_reporter.skipped_windows
                 epoch_summary = (
                     _TrainEpochSummary(train_metrics, metric_domain, metric_ignore_index, metric_threshold)
                     if summarize
@@ -4647,7 +4657,9 @@ class NNModel(_HubMixinBase):
 
                 if clock is not None:
                     # FEAT-014: stepped on committed updates, not here.
-                    if clock.count == updates_before_epoch and not owns_windows and engine is None:
+                    # A built-in step's skipped window (#513) is a reason for no update, as the default step's.
+                    skipped = update_reporter.skipped_windows != skips_before_epoch
+                    if clock.count == updates_before_epoch and not owns_windows and engine is None and not skipped:
                         from .callbacks import _warn_at_user_frame
 
                         _warn_at_user_frame(

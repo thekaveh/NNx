@@ -239,11 +239,17 @@ def finalize_task_step(loss: torch.Tensor, ctx: TrainStepContext, *, trains: boo
     when the batch has nothing to learn from (``trains`` false: every target
     masked and every other term of weight 0) — no backward, no optimizer
     step and no reported update, as the default step's masked window
-    (``None``). The knobs :func:`finalize_step` refuses are refused either way."""
+    (``None``). The skip is told to ``NNModel.train`` instead, so an
+    ``optimizer_update``-clock epoch of such windows does not warn that the
+    step reported no update. The knobs :func:`finalize_step` refuses are
+    refused either way."""
     if trains:
         return finalize_step(loss, ctx, paradigm=paradigm)
     _refuse_unsupported_knobs(ctx, paradigm)
     ctx.model.net.zero_grad()
+    skip_window = getattr(ctx.report_update, "skip_window", None)  # absent on a context built by hand
+    if skip_window is not None:
+        skip_window()
     return None
 
 
