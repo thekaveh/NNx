@@ -378,6 +378,35 @@ def test_the_trainer_commits_epochs_and_the_final_last_through_the_shared_helper
     assert set(state["optimizer_topologies"]) == {"main"} and state["optimizer"] is None
 
 
+def test_a_named_save_walks_each_optimizer_topology_once(monkeypatch):
+    """A Trainer's per-epoch save reads each optimizer's parameter topology
+    once, and the final LAST's pre-transform topologies are saved as given."""
+    net = _model().net
+    optimizers = {name: torch.optim.SGD(net.parameters(), lr=0.1) for name in ("a", "b")}
+    optimization = nn_model._Optimization(
+        optimizers=optimizers,
+        schedulers={},
+        factories={name: None for name in optimizers},
+        hyperparameters={},
+        named=True,
+    )
+    walked: list[int] = []
+    real_topology = nn_model._optimizer_topology
+
+    def counting_topology(optimizer: torch.optim.Optimizer, module: torch.nn.Module) -> Any:
+        walked.append(id(optimizer))
+        return real_topology(optimizer, module)
+
+    monkeypatch.setattr(nn_model, "_optimizer_topology", counting_topology)
+    state = optimization.save_state(net)
+    assert sorted(walked) == sorted(id(opt) for opt in optimizers.values())
+    assert state["optimizer_topologies"] == {name: real_topology(opt, net) for name, opt in optimizers.items()}
+
+    walked.clear()
+    given = {"a": ["given a"], "b": ["given b"]}
+    assert optimization.save_state(net, given)["optimizer_topologies"] == given and walked == []
+
+
 # --- one topology preflight ----------------------------------------------------------------------------------
 
 
