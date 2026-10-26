@@ -545,7 +545,7 @@ class _CategoricalAdapter(TaskAdapter):
         flat_target = target.reshape(-1).long()
         ignore = self.spec.ignore_index
         valid = (
-            _not_ignored(target.reshape(-1), ignore)
+            _not_ignored(flat_target, ignore, unsigned=not target.dtype.is_signed)
             if ignore is not None
             else torch.ones_like(flat_target, dtype=torch.bool)
         )
