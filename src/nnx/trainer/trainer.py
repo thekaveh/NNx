@@ -387,10 +387,10 @@ class Trainer:
                 weight_norm / spectral_norm parametrization or legacy hook),
                 or a recipe model's topology is not its base plus its recipe.
                 A trainer_step_fn run on a model without a recipe is not
-                checked. A link task's ``val_loader`` (or a link predictor
-                with any ``val_loader``) raises ``LinkTaskError`` before any
-                run is reserved: the default evaluate path cannot check its
-                batches.
+                checked. A link predictor (reading batches through its own
+                ``unpack_batch``) with a ``val_loader`` raises
+                ``LinkTaskError`` before any run is reserved: the default
+                evaluate path refuses its batches.
             RuntimeError: in a process group of more than one rank.
         """
         from ..distributed import _refuse_multi_rank
@@ -509,7 +509,8 @@ class Trainer:
             from ..link_tasks import _link_eval_preflight
 
             # Validation runs the default evaluate path, which refuses every
-            # link batch: refused here, not after the first epoch (#548).
+            # batch of a link predictor: refused here, not after the first
+            # epoch (#548).
             _link_eval_preflight(self.model, params.val_loader, None, trainer=True)
 
         optimizers = {

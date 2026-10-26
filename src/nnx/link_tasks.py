@@ -1280,8 +1280,15 @@ class LinkEval:
 
 def _same_split(a: LinkSplit, b: LinkSplit) -> bool:
     """Splits, not tasks, are compared: two tasks on one split serve the
-    same candidates and message graph."""
-    return a is b or a._cached("digest", a.digest) == b._cached("digest", b.digest)
+    same candidates and message graph. The ``seed`` is provenance only (a
+    manifest reloaded without it, or the same edges given explicitly, is
+    the same split): every other manifest field shapes the batches."""
+
+    def identity(split: LinkSplit) -> str:
+        state = {k: v for k, v in split.state().items() if k != "seed"}
+        return hashlib.sha256(json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    return a is b or a._cached("identity", lambda: identity(a)) == b._cached("identity", lambda: identity(b))
 
 
 def _link_eval_problems(
@@ -1289,14 +1296,17 @@ def _link_eval_problems(
 ) -> list[tuple[str, str]]:
     """What validation would refuse after the first epoch, found from the
     configuration alone: no loader is iterated. ``link_net``: the net is a
-    :class:`LinkPredictor`; ``trainer``: ``Trainer.train``, which validates
-    through the default path only. A generic iterable keeps the checks
+    :class:`LinkPredictor` reading batches through its own
+    ``unpack_batch``, so the default evaluate path refuses every batch
+    (another net, or a user batch adapter, may validate link batches
+    there); ``trainer``: ``Trainer.train``, which validates through the
+    default path only. A generic iterable keeps the checks
     :class:`LinkEval` makes when it reads it."""
     if val_loader is None:
         return []
     link_loader = isinstance(val_loader, _Loader)
     if trainer:
-        if not (link_net or link_loader):
+        if not link_net:
             return []
         return [
             (
@@ -1307,7 +1317,7 @@ def _link_eval_problems(
             )
         ]
     if eval_step_fn is None:
-        if not (link_net or link_loader):
+        if not link_net:
             return []
         return [
             (
@@ -1354,9 +1364,13 @@ def _link_eval_problems(
 def _link_eval_preflight(model: Any, val_loader: Any, eval_step_fn: Any, *, trainer: bool = False) -> None:
     """Refuse, before any run is reserved, what :func:`_link_eval_problems`
     finds (the first problem is the error)."""
-    problems = _link_eval_problems(
-        val_loader, eval_step_fn, link_net=isinstance(getattr(model, "net", None), LinkPredictor), trainer=trainer
+    from .models import _UnpackBatch
+
+    adapter = getattr(model, "_batch_adapter", None)
+    link_net = isinstance(getattr(model, "net", None), LinkPredictor) and (
+        adapter is None or isinstance(adapter, _UnpackBatch)
     )
+    problems = _link_eval_problems(val_loader, eval_step_fn, link_net=link_net, trainer=trainer)
     if problems:
         raise LinkTaskError(problems[0][1])
 

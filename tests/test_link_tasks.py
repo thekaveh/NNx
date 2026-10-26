@@ -8,6 +8,7 @@ forward pass; evaluation materialises every candidate for exact AUROC / AP.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from pathlib import Path
 
@@ -26,7 +27,9 @@ from nnx.link_tasks import (
     link_predictor_spec,
     split_links,
 )
+from nnx.models import BatchAdapter
 from nnx.nn.enum.checkpoints import Checkpoints
+from nnx.tasks import TaskSpec
 from tests import _task_steps as task_steps
 
 
@@ -949,16 +952,73 @@ def test_a_val_loader_of_another_split_is_refused_but_another_task_on_the_same_s
     task, other = LinkTask(split), LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=5))
     _refused(task, x, other.loader("val", x, batch_size=8), "another split", eval_step_fn=task.eval_step())
     twin = LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=4))  # an equal split, another object
-    assert twin.split is not task.split
-    model = _model()
-    run = model.train(
-        params=NNTrainParams(
-            n_epochs=1,
-            train_loader=task.loader("train", x, batch_size=8, seed=0),
-            val_loader=twin.loader("val", x, batch_size=8),
-            optim=NNOptimParams.builder().adam(max_lr=1e-2).build(),
+    # The same edges without the seed (a manifest given explicitly) are the same split: the seed is provenance.
+    unseeded = LinkTask(LinkSplit.from_state({**split.state(), "seed": None}))
+    assert twin.split is not task.split and unseeded.split.digest() != split.digest()
+    for same in (twin, unseeded):
+        model = _model()
+        run = model.train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=task.loader("train", x, batch_size=8, seed=0),
+                val_loader=same.loader("val", x, batch_size=8),
+                optim=NNOptimParams.builder().adam(max_lr=1e-2).build(),
+                overwrite_existing=True,
+            ),
+            objective=task.objective(),
+            eval_step_fn=task.eval_step(),
+        )
+        assert run.idps[-1].val_edp.count == len(split.candidate_ids("val"))
+
+
+class _Scorer(torch.nn.Module):
+    """A custom link scorer: one logit per candidate, from a linear embedding."""
+
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(2, 8)
+
+    def forward(self, x, edge_index, edge_label_index):
+        h = self.linear(x)
+        return (h[edge_label_index[0]] * h[edge_label_index[1]]).sum(dim=-1)
+
+
+class _LinkColumns(BatchAdapter):
+    """Reads a link batch for the default path: column outputs and targets."""
+
+    def split(self, batch):
+        return (batch.x, batch.edge_index, batch.edge_label_index), {}, batch.edge_label.unsqueeze(1)
+
+    def output(self, raw):
+        return raw.unsqueeze(1)
+
+
+def _adapted_models():
+    """Nets whose default evaluate path reads link batches (a custom module,
+    a link predictor under a user batch adapter): not refused up front."""
+    params = NNModelParams(loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression())
+    spec = link_predictor_spec(input_dim=2, hidden_dims=[16], seed=0)
+    return {
+        "custom module": lambda: NNModel(module=_Scorer(), params=params, batch_adapter=_LinkColumns()),
+        "link predictor, user adapter": lambda: NNModel(
+            params=dataclasses.replace(params, net=spec), batch_adapter=_LinkColumns()
         ),
-        objective=task.objective(),
-        eval_step_fn=task.eval_step(),
-    )
-    assert run.idps[-1].val_edp.count == len(split.candidate_ids("val"))
+    }
+
+
+@pytest.mark.parametrize("net", ["custom module", "link predictor, user adapter"])
+def test_a_net_whose_default_path_reads_link_batches_still_validates_without_the_task_evaluator(net):
+    edge_index, x = _sbm()
+    task = LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=4))
+    for objective in (None, task.objective()):  # the default step, or the task's objective
+        run = _adapted_models()[net]().train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=task.loader("train", x, batch_size=8, seed=0),
+                val_loader=task.loader("val", x, batch_size=8),
+                optim=NNOptimParams.builder().adam(max_lr=1e-2).build(),
+                overwrite_existing=True,
+            ),
+            objective=objective,
+        )
+        assert run.idps[-1].val_edp.count == len(task.split.candidate_ids("val"))

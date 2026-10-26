@@ -2714,3 +2714,42 @@ def test_trainer_refuses_a_link_val_loader_before_the_first_update(tmp_path, mon
         ),
         objective=task.objective(),
     )
+
+
+def test_trainer_validates_link_batches_through_a_batch_adapter_that_reads_them(tmp_path, monkeypatch):
+    """#548: only a link predictor reading its own batches is refused up
+    front; a module whose batch adapter reads link batches validates
+    through the default evaluate path, as before."""
+    from nnx.link_tasks import LinkTask, link_predictor_spec, split_links
+    from nnx.models import BatchAdapter
+    from nnx.tasks import TaskSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    g = torch.Generator().manual_seed(0)
+    edges = [(u, v) for u in range(30) for v in range(u + 1, 30) if torch.rand(1, generator=g).item() < 0.2]
+    x = torch.randn(30, 2, generator=g)
+    task = LinkTask(split_links(torch.tensor(edges).t().contiguous(), 30, val=0.1, test=0.1, seed=0))
+
+    class Columns(BatchAdapter):
+        def split(self, batch):
+            return (batch.x, batch.edge_index, batch.edge_label_index), {}, batch.edge_label.unsqueeze(1)
+
+        def output(self, raw):
+            return raw.unsqueeze(1)
+
+    spec = link_predictor_spec(input_dim=2)
+    model = NNModel(
+        params=NNModelParams(net=spec, loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression()),
+        batch_adapter=Columns(),
+    )
+    Trainer(model).train(
+        params=NNTrainerParams(
+            n_epochs=1,
+            train_loader=task.loader("train", x, batch_size=8, seed=0),
+            val_loader=task.loader("val", x, batch_size=8),
+            optims={"main": NNOptimParams.builder().adam(max_lr=1e-2).build()},
+            save_phase_checkpoints=False,
+        ),
+        objective=task.objective(),
+    )

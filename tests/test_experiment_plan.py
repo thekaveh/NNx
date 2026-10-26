@@ -1149,4 +1149,6 @@ def test_validate_reports_link_validation_that_train_would_refuse_after_an_epoch
     assert plan(task, task.loader("val", x, 8), task.eval_step()).validate().ok
     assert plan(task, LinkTask(split).loader("val", x, 8), task.eval_step()).validate().ok  # same split
     assert plan(task, None, None).validate().ok  # train-only
+    # A user batch adapter replaces the net's unpack_batch: left to the default path, as train() leaves it.
+    assert plan(task, task.loader("val", x, 8), None).with_batch_adapter(nnx.models.PositionalInputs(3)).validate().ok
     assert not (tmp_path / "runs").exists()  # nothing trained
