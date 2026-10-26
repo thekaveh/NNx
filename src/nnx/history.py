@@ -1016,15 +1016,6 @@ def _parent(run_id: str, root: Optional[str]) -> tuple[Optional[str], Any, Optio
     return None, None, None, None
 
 
-def _attempt_token(run_path: str) -> Optional[str]:
-    """The attempt token a run's ``metadata.yaml`` records (#553), ``None``
-    without one."""
-    from .nn.params.nn_run import _load_resume_status, _read_metadata
-
-    status = _load_resume_status(_read_metadata(os.path.join(run_path, "metadata.yaml")))
-    return None if status is None else status.attempt_token
-
-
 def _resume_epoch(
     parent_id: str, checkpoint: Any, root: Optional[str], parent_committed: Optional[int]
 ) -> Optional[int]:
@@ -1128,7 +1119,7 @@ def _parent_prefix(
     and only from the parent attempt it resumed from, when it recorded one
     (#553)."""
     from .components import _BUNDLE_ATTEMPT_PREFIX
-    from .nn.params.nn_run import _committed_epoch
+    from .nn.params.nn_run import _committed_epoch, _recorded_attempt_token
 
     if parent == "best":
         from .nn.callbacks import _warn_at_user_frame
@@ -1156,7 +1147,7 @@ def _parent_prefix(
             f"run {run_id} resumed from run {parent}, which is no longer saved: its lineage starts at {run_id}",
         )
         return
-    current = None if source_attempt is None else _attempt_token(parent_path)
+    current = None if source_attempt is None else _recorded_attempt_token(parent_path)
     if source_attempt is not None and current != source_attempt:
         from .nn.callbacks import _warn_at_user_frame
 

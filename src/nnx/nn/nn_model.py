@@ -95,7 +95,14 @@ from .params.nn_iteration_data_point import NNIterationDataPoint
 from .params.nn_model_params import NNModelParams
 from .params.nn_optim_params import NNOptimParams
 from .params.nn_params import NNParams
-from .params.nn_run import NNRun, _best_err, _print_run_saved, _runs_root, _validate_run_id
+from .params.nn_run import (
+    NNRun,
+    _best_err,
+    _print_run_saved,
+    _recorded_attempt_token,
+    _runs_root,
+    _validate_run_id,
+)
 from .params.nn_train_params import NNTrainParams
 
 if TYPE_CHECKING:
@@ -338,22 +345,10 @@ class _ResumeSource:
 
 def _new_attempt_token() -> str:
     """A fresh attempt token: one per ``train()`` call (#553), recorded in
-    the run's ``ResumeStatus``. Drawn from the OS, never from a seeded
-    random stream."""
+    the run's ``ResumeStatus`` (under DDP, the writer rank's, shared by
+    :func:`_resume_fit`). Drawn from the OS, never from a seeded random
+    stream."""
     return uuid.uuid4().hex
-
-
-def _recorded_attempt_token(run_id: str) -> Optional[str]:
-    """The attempt token a saved run's ``metadata.yaml`` records (#553);
-    ``None`` for a run recorded without one, or when unreadable."""
-    from .params.nn_run import _load_resume_status, _read_metadata
-
-    try:
-        path = os.path.join(_runs_root(), _validate_run_id(run_id), "metadata.yaml")
-    except ValueError:
-        return None
-    status = _load_resume_status(_read_metadata(path))
-    return None if status is None else status.attempt_token
 
 
 # A checkpoint and its training state held in memory under (run id, label) for
@@ -510,7 +505,10 @@ def _load_resume_source(
         # #553: the source's attempt, read before its checkpoint: a source
         # retrained in place in between is then recorded as the earlier
         # attempt, which its lineage no longer stitches.
-        attempt = _recorded_attempt_token(run_id)
+        try:
+            attempt = _recorded_attempt_token(os.path.join(_runs_root(), _validate_run_id(run_id)))
+        except ValueError:  # an invalid run id is refused below, as itself
+            attempt = None
         # #394: a torn, mixed or corrupted resume point is refused here, with
         # its reason, before anything is restored from it — and #537: one
         # published again since it was verified, on every rank (the load
@@ -815,11 +813,15 @@ def _resume_fit(
     epochs. ``planned_session`` (``NNModel.train`` only) is told a planned
     resume's remaining epochs before the components are validated, which
     check the update budget."""
+    # #553: this session's attempt — under DDP the writer rank's on every
+    # rank, the one its metadata.yaml records. First in the "resuming the
+    # run" block, so every rank reaches the gather.
+    attempt_token = _new_attempt_token()
+    if ddp is not None:
+        attempt_token = ddp.gather(attempt_token)[ddp.spec.writer_rank]
     run_id = params.resume_from_run_id
     if run_id is None:
-        return _Resumed(
-            start_epoch=0, session_epochs=params.n_epochs, status=ResumeStatus(attempt_token=_new_attempt_token())
-        )
+        return _Resumed(start_epoch=0, session_epochs=params.n_epochs, status=ResumeStatus(attempt_token=attempt_token))
     planned = getattr(params, "resume_epochs", "additional") == "planned"
     where = f"resume_from_run_id={run_id!r}"
     net = model.net
@@ -837,7 +839,7 @@ def _resume_fit(
         "source_epoch": source.checkpoint.idp.epoch_idx,
         **_manifest_lineage(source.manifest),
         # #553: this session's attempt, and the source attempt it resumed from.
-        "attempt_token": _new_attempt_token(),
+        "attempt_token": attempt_token,
         "source_attempt_token": source.attempt,
     }
     training_state = source.training_state
