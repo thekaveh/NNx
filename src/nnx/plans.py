@@ -489,7 +489,8 @@ class ExperimentPlan:
         ``NNModel`` does first, and resolves each borrowed callback's monitor
         on a shallow copy; with ``nnx.streaming.streaming_eval_step`` it also
         builds each declared metric's accumulator to check that it is
-        bounded.
+        bounded, and a link task's validation loader is checked against its
+        evaluator (``nnx.link_tasks``: role, split and ``max_candidates``).
         """
         found: list[Diagnostic] = []
 
@@ -517,13 +518,25 @@ class ExperimentPlan:
         return has_val and _is_streaming_eval_step(self.eval_step_fn)
 
     def _check_eval_step(self, report: Callable[[str, str], None], train: NNTrainParams, has_val: bool) -> None:
-        """What the streaming validation step reports it cannot compute, as
+        """What the streaming validation step reports it cannot compute, and
+        what a link task's validation would refuse (#548), as
         ``NNModel.train`` checks before reserving a run."""
         if self._streaming_validation(has_val):
             from .streaming import _streaming_problems
 
             for path, message in _streaming_problems(train):
                 report(path, message)
+        if has_val:
+            from .link_tasks import FACTORY_ID, _link_eval_problems
+            from .models import ModelSpec
+
+            net = self.model.net if isinstance(self.model, NNModelParams) else None
+            for path, message in _link_eval_problems(
+                self._sources(train)[1],  # read, never iterated (nor a factory called)
+                self.eval_step_fn,
+                link_net=isinstance(net, ModelSpec) and net.id == FACTORY_ID,
+            ):
+                report("data.val" if path == "val_loader" else path, message)
 
     def _check_model(self, report: Callable[[str, str], None]) -> None:
         from .models import MissingModelFactoryError

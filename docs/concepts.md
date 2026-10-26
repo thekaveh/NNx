@@ -3238,7 +3238,16 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
       named);
     - a candidate outside its split, or with the wrong target or id;
     - a barred self-loop;
-    - a training negative that is a fixed validation / test negative.
+    - a training negative that is a fixed validation / test negative;
+    - on the validation side, before any run is reserved (and reported by
+      `ExperimentPlan.validate()`): a `train` / `test` loader, or one built
+      on another split, as `val_loader` with `task.eval_step()` (another
+      `LinkTask` on the same split is fine);
+    - a `val` split with more candidates than `max_candidates`;
+    - a link `val_loader` without `task.eval_step()`, or under
+      `Trainer.train`, which validates through the default evaluate path
+      only. Validate with `NNModel.train(..., eval_step_fn=task.eval_step())`,
+      or drop `val_loader` and score after training.
 - **Batch roles.** Batches are bound to their role. The objective trains on
   `train` batches only. The training evaluator reads the `val` split, every
   candidate exactly once. Score `test` after training with

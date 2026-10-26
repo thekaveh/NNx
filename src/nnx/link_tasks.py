@@ -1239,7 +1239,9 @@ class LinkEval:
     never per-batch averages — from the float64 logits, never rounded
     probabilities (:func:`link_metrics` with ``from_logits=True``). The
     record (``kind="link"``) counts the candidates; its ``loss`` is the BCE
-    (or NLL)."""
+    (or NLL). With a :meth:`LinkTask.loader` as ``val_loader``,
+    ``NNModel.train`` and ``ExperimentPlan.validate()`` make its role,
+    split and ``max_candidates`` refusals before any run is reserved."""
 
     def __init__(self, task: LinkTask) -> None:
         if not isinstance(task, LinkTask):
@@ -1271,6 +1273,92 @@ class LinkEval:
             values["negatives"] = float((prediction.targets == 0).sum())
         loss = values.get("bce", values.get("nll"))
         return NNEvaluationDataPoint(loss=loss, kind=KIND, count=k, status="ok", metrics=values)
+
+
+# --- pre-run checks ----------------------------------------------------------------------------------------
+
+
+def _same_split(a: LinkSplit, b: LinkSplit) -> bool:
+    """Splits, not tasks, are compared: two tasks on one split serve the
+    same candidates and message graph."""
+    return a is b or a._cached("digest", a.digest) == b._cached("digest", b.digest)
+
+
+def _link_eval_problems(
+    val_loader: Any, eval_step_fn: Any, *, link_net: bool, trainer: bool = False
+) -> list[tuple[str, str]]:
+    """What validation would refuse after the first epoch, found from the
+    configuration alone: no loader is iterated. ``link_net``: the net is a
+    :class:`LinkPredictor`; ``trainer``: ``Trainer.train``, which validates
+    through the default path only. A generic iterable keeps the checks
+    :class:`LinkEval` makes when it reads it."""
+    if val_loader is None:
+        return []
+    link_loader = isinstance(val_loader, _Loader)
+    if trainer:
+        if not (link_net or link_loader):
+            return []
+        return [
+            (
+                "val_loader",
+                "Trainer.train() validates through the default evaluate path, which cannot check link batches "
+                "against their split: drop val_loader and score with task.predict() and link_metrics() after "
+                "training, or train with NNModel.train() and the task's evaluator (task.eval_step())",
+            )
+        ]
+    if eval_step_fn is None:
+        if not (link_net or link_loader):
+            return []
+        return [
+            (
+                "eval_step_fn",
+                "a link task validates through its evaluator, which checks every batch against the split: pass "
+                "eval_step_fn=task.eval_step(), or drop val_loader and score with task.predict() and "
+                "link_metrics() after training",
+            )
+        ]
+    if not (isinstance(eval_step_fn, LinkEval) and link_loader):
+        return []
+    task, found = eval_step_fn.task, []
+    if not _same_split(val_loader.task.split, task.split):
+        found.append(
+            (
+                "val_loader",
+                "the val_loader is built on another split than the evaluator's task: its message graph and "
+                "candidates would be checked against the wrong split; build it with the evaluator's split "
+                "(task.loader('val', ...))",
+            )
+        )
+    elif val_loader.name != "val":
+        found.append(
+            (
+                "val_loader",
+                f"the training evaluator reads the 'val' split, got a {val_loader.name!r} loader: selecting on "
+                "'train' or 'test' would leak; score 'test' with task.predict() and link_metrics() after training",
+            )
+        )
+    else:
+        split = task.split
+        candidates = len(split._cached("ids:val", lambda: split.candidate_ids("val")))
+        if candidates > task.max_candidates:
+            found.append(
+                (
+                    "eval_step_fn",
+                    f"more than max_candidates={task.max_candidates} candidates: the 'val' split holds "
+                    f"{candidates}, all materialised by evaluation; raise the task's max_candidates",
+                )
+            )
+    return found
+
+
+def _link_eval_preflight(model: Any, val_loader: Any, eval_step_fn: Any, *, trainer: bool = False) -> None:
+    """Refuse, before any run is reserved, what :func:`_link_eval_problems`
+    finds (the first problem is the error)."""
+    problems = _link_eval_problems(
+        val_loader, eval_step_fn, link_net=isinstance(getattr(model, "net", None), LinkPredictor), trainer=trainer
+    )
+    if problems:
+        raise LinkTaskError(problems[0][1])
 
 
 class _Unavailable:

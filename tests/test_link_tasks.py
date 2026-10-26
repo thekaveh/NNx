@@ -9,12 +9,13 @@ forward pass; evaluation materialises every candidate for exact AUROC / AP.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
 
-from nnx import Losses, MonitorSpec, NNCheckpoint, NNModel, NNModelParams, NNOptimParams, NNTrainParams
+from nnx import Callback, Losses, MonitorSpec, NNCheckpoint, NNModel, NNModelParams, NNOptimParams, NNTrainParams
 from nnx.components import ComponentRestoreError
 from nnx.link_tasks import (
     LinkPredictor,
@@ -26,6 +27,7 @@ from nnx.link_tasks import (
     split_links,
 )
 from nnx.nn.enum.checkpoints import Checkpoints
+from tests import _task_steps as task_steps
 
 
 @pytest.fixture(autouse=True)
@@ -878,3 +880,85 @@ class _LinearEncoder(torch.nn.Module):
 
     def forward(self, x, edge_index):
         return self.linear(x)
+
+
+# --- #548: validation misconfigurations are refused before the first update -----------------------------------
+
+
+class _CountUpdates(Callback):
+    def __init__(self):
+        self.updates = 0
+
+    def on_optimizer_update(self, ctx, event):
+        self.updates += 1
+
+
+def _refused(task, x, val_loader, match, **steps):
+    """A 2-epoch fit that must be refused with no update, weights unchanged
+    and no run reserved."""
+    model, counter = _model(), _CountUpdates()
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    with pytest.raises(LinkTaskError) as caught:
+        model.train(
+            params=NNTrainParams(
+                n_epochs=2,
+                train_loader=task.loader("train", x, batch_size=8, seed=0),
+                val_loader=val_loader,
+                optim=NNOptimParams.builder().adam(max_lr=1e-2).build(),
+            ),
+            objective=task.objective(),
+            callbacks=[counter],
+            **steps,
+        )
+    assert counter.updates == 0
+    assert all(torch.equal(before[k], v) for k, v in model.net.state_dict().items())
+    assert task_steps.no_run_left(Path.cwd())
+    caught.match(match)
+
+
+@pytest.mark.parametrize("name", ["train", "test"])
+def test_a_train_or_test_loader_as_val_loader_is_refused_before_the_first_update(name):
+    edge_index, x = _sbm()
+    task = LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=4))
+    loader = task.loader(name, x, batch_size=8)
+    _refused(task, x, loader, f"reads the 'val' split, got a '{name}' loader", eval_step_fn=task.eval_step())
+
+
+def test_a_val_split_beyond_max_candidates_is_refused_before_the_first_update():
+    edge_index, x = _sbm()
+    split = split_links(edge_index, 30, val=0.2, test=0.1, seed=4)
+    small = LinkTask(split, max_candidates=len(split.candidate_ids("val")) - 1)
+    _refused(
+        small, x, small.loader("val", x, batch_size=8), "more than max_candidates=", eval_step_fn=small.eval_step()
+    )
+    exact = LinkTask(split, max_candidates=len(split.candidate_ids("val")))  # the limit itself is served
+    _train(exact, x, epochs=1)
+
+
+def test_a_link_val_loader_without_the_task_evaluator_is_refused_before_the_first_update():
+    edge_index, x = _sbm()
+    task = LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=4))
+    _refused(task, x, task.loader("val", x, batch_size=8), "pass eval_step_fn=task.eval_step\\(\\)")
+    # A link predictor's default evaluate refuses any batch, a generic iterable too.
+    _refused(task, x, list(task.loader("val", x, batch_size=8)), "pass eval_step_fn=task.eval_step\\(\\)")
+
+
+def test_a_val_loader_of_another_split_is_refused_but_another_task_on_the_same_split_trains():
+    edge_index, x = _sbm()
+    split = split_links(edge_index, 30, val=0.1, test=0.1, seed=4)
+    task, other = LinkTask(split), LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=5))
+    _refused(task, x, other.loader("val", x, batch_size=8), "another split", eval_step_fn=task.eval_step())
+    twin = LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=4))  # an equal split, another object
+    assert twin.split is not task.split
+    model = _model()
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=task.loader("train", x, batch_size=8, seed=0),
+            val_loader=twin.loader("val", x, batch_size=8),
+            optim=NNOptimParams.builder().adam(max_lr=1e-2).build(),
+        ),
+        objective=task.objective(),
+        eval_step_fn=task.eval_step(),
+    )
+    assert run.idps[-1].val_edp.count == len(split.candidate_ids("val"))

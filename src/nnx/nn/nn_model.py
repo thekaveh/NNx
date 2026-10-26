@@ -4304,6 +4304,13 @@ class NNModel(_HubMixinBase):
             from ..streaming import _streaming_preflight
 
             _streaming_preflight(self, params)
+        if params.val_loader is not None:
+            from ..link_tasks import _link_eval_preflight
+
+            # ... as does a link task's evaluator (task.eval_step()): its role,
+            # split and max_candidates refusals, and a link predictor's
+            # default evaluate path, which refuses every batch (#548).
+            _link_eval_preflight(self, params.val_loader, eval_step_fn)
         if params.train_loader is None:
             raise ValueError(
                 "params.train_loader is required — set it directly or via with_train_loader(...) before train()."
