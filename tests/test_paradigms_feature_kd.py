@@ -467,6 +467,19 @@ def test_feature_kd_takes_no_update_on_an_all_ignored_batch(tmp_path, monkeypatc
     assert (tasks.record(run).status, tasks.record(run).loss) == ("empty", None)
 
 
+@pytest.mark.parametrize(("alpha", "beta"), [(0.0, 0.5), (0.5, 0.0)])
+def test_feature_kd_soft_or_feature_term_trains_on_an_all_ignored_batch(alpha, beta, tmp_path, monkeypatch):
+    # Either term keeps every row, so a fully masked batch still trains.
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(), tasks.categorical(seed=1)
+    step = feature_kd_train_step_factory(teacher, auxiliary_layers=PAIRS, alpha=alpha, beta=beta)
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, train_step_fn=step)
+    assert tasks.moved(trained, base) > 0.0
+    record = tasks.record(run)
+    assert (record.count, record.status) == (0, "empty")
+    assert record.loss is not None and record.loss > 0.0
+
+
 @pytest.mark.parametrize("ignore_index", [-1, 255])
 def test_feature_kd_masks_an_out_of_range_ignore_index(ignore_index, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
