@@ -761,7 +761,7 @@ def test_an_unfed_monitor_warns_again_on_a_second_run_in_the_same_session(tmp_pa
 
 @pytest.mark.parametrize("mode", ["stateful", "weights_only"])
 def test_a_trainer_failure_right_after_the_resume_restore_hands_the_model_back(tmp_path, monkeypatch, mode):
-    import nnx.trainer.trainer as trainer_module
+    import nnx.nn.nn_model as resume_module  # the Trainer resumes through NNModel's shared resume (#536)
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
@@ -772,14 +772,14 @@ def test_a_trainer_failure_right_after_the_resume_restore_hands_the_model_back(t
     before = {k: v.clone() for k, v in model.net.state_dict().items()}
     torch.manual_seed(5)
     rng_before = torch.get_rng_state()
-    real = trainer_module.ResumeStatus
+    real = resume_module.ResumeStatus
 
     def refuse(**fields):  # stands in for a warnings-as-errors filter after the restore
         if fields.get("mode") == mode:
             raise RuntimeError("after the restore")
         return real(**fields)
 
-    monkeypatch.setattr(trainer_module, "ResumeStatus", refuse)
+    monkeypatch.setattr(resume_module, "ResumeStatus", refuse)
     with pytest.raises(RuntimeError, match="after the restore"):
         Trainer(model).train(params=_trainer_params(loader, run_id=source.id, mode=mode), trainer_step_fn=_trainer_step)
     for key, value in model.net.state_dict().items():
@@ -810,7 +810,9 @@ def test_a_trainer_resume_failing_before_the_first_batch_hands_the_model_back(tm
 
         monkeypatch.setattr(trainer_module, "warn_unowned_trainables", warn)
     if fault == "worker_rng_warning":
-        monkeypatch.setattr(trainer_module, "_loader_num_workers", lambda _loader: 1)
+        import nnx.nn.nn_model as resume_module  # the Trainer resumes through NNModel's shared resume (#536)
+
+        monkeypatch.setattr(resume_module, "_loader_num_workers", lambda _loader: 1)
     model = _model(seed=3)
     before = {k: v.clone() for k, v in model.net.state_dict().items()}
     torch.manual_seed(5)

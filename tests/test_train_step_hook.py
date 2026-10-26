@@ -170,8 +170,8 @@ def test_train_step_context_carries_batch_and_epoch_idx(tmp_path, monkeypatch):
 def test_custom_step_without_error_field_doesnt_crash_best_compare(tmp_path, monkeypatch):
     """A custom train_step_fn that returns an EDP with error=None must not
     crash the BEST-checkpoint comparison. The shared `_best_err` helper
-    (imported by both NNModel._save_checkpoints and the inline
-    best_checkpoint tracking) falls through val→train and error→loss before +inf
+    (evaluated only inside NNModel._save_checkpoints, whose report is each
+    loop's in-memory best) falls through val→train and error→loss before +inf
     so missing .error fields are tolerated. Custom hooks shouldn't be
     required to populate the error field (the supervised proxy doesn't
     apply to all paradigms)."""
