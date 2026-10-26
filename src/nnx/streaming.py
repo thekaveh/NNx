@@ -65,6 +65,7 @@ from .monitors import (
     MetricSpec,
     _batch_inputs,
     _check_metric_inputs,
+    _not_ignored,
     _unique_metrics,
 )
 from .prediction import PredictionResult, ProbabilitySpec
@@ -592,6 +593,9 @@ class StreamingMetrics:
             valid_t = self._target_mask(target_t, valid)
             if categorical and target_t.is_floating_point():
                 integers(target_t[valid_t].cpu().numpy(), "categorical targets")  # float class indices
+            if categorical and target_t.dtype == torch.uint64 and bool((target_t[valid_t].long() < 0).any()):
+                # update()'s refusal (integers()); _batch_inputs' int64 cast would wrap it negative.
+                raise ValueError("categorical targets above 2**63 - 1 do not fit int64 class labels")
         truth, inputs = _batch_inputs(
             self._semantics,
             target_t,
@@ -760,7 +764,10 @@ def _target_rule(target: Any, mask: Any, ignore_index: Optional[int]) -> Any:
     elif target.dtype.kind == "f":
         mask = mask & ~np.isnan(target)
     if ignore_index is not None:
-        mask = mask & (target != ignore_index)
+        # NumPy compares an out-of-range int exactly; a tensor would wrap it (FIX-044).
+        mask = mask & (
+            _not_ignored(target, ignore_index) if isinstance(target, torch.Tensor) else target != ignore_index
+        )
     return mask
 
 
