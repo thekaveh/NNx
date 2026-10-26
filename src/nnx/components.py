@@ -133,6 +133,12 @@ class StatefulComponent(Protocol):
     def load_component_state(self, state: Mapping[str, Any], *, version: int) -> None: ...
 
 
+# #553: a run bundle's child records the bundle generation it resumed from as
+# its parent attempt, under this prefix: its parent lives in the bundle, never
+# in the child's runs root (history lineage reads it).
+_BUNDLE_ATTEMPT_PREFIX = "bundle-"
+
+
 @dataclass(frozen=True, slots=True)
 class ResumeStatus:
     """How a training session started.
@@ -154,6 +160,14 @@ class ResumeStatus:
         source_generation / source_checkpoint_id: the resume point's
             generation ordinal and checkpoint id from its manifest;
             ``None`` for a checkpoint without a manifest.
+        attempt_token: this session's attempt token, a fresh id for every
+            ``train()`` call that a later resume records as its source's
+            (#553); ``None`` for status recorded without it.
+        source_attempt_token: the source run's ``attempt_token`` when the
+            session resumed from it, or ``"bundle-<generation>"`` for a run
+            bundle; history lineage stitches the source only while it still
+            holds that attempt. ``None`` for a fresh run, a source recorded
+            without a token and status recorded before tokens.
     """
 
     mode: str = "fresh"
@@ -164,6 +178,8 @@ class ResumeStatus:
     source_epoch: Optional[int] = None
     source_generation: Optional[int] = None
     source_checkpoint_id: Optional[str] = None
+    attempt_token: Optional[str] = None
+    source_attempt_token: Optional[str] = None
 
     def state(self) -> dict[str, Any]:
         state: dict[str, Any] = {
@@ -179,6 +195,10 @@ class ResumeStatus:
             state["source_generation"] = self.source_generation
         if self.source_checkpoint_id is not None:
             state["source_checkpoint_id"] = self.source_checkpoint_id
+        if self.attempt_token is not None:
+            state["attempt_token"] = self.attempt_token
+        if self.source_attempt_token is not None:
+            state["source_attempt_token"] = self.source_attempt_token
         return state
 
     @staticmethod
@@ -192,6 +212,8 @@ class ResumeStatus:
             source_epoch=state.get("source_epoch"),
             source_generation=state.get("source_generation"),
             source_checkpoint_id=state.get("source_checkpoint_id"),
+            attempt_token=state.get("attempt_token"),
+            source_attempt_token=state.get("source_attempt_token"),
         )
 
     def __post_init__(self) -> None:
@@ -200,6 +222,10 @@ class ResumeStatus:
         epoch = self.source_epoch
         if epoch is not None and (isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0):
             raise ValueError(f"ResumeStatus source_epoch must be a non-negative integer or None, got {epoch!r}")
+        for name in ("attempt_token", "source_attempt_token"):
+            token = getattr(self, name)
+            if token is not None and (not isinstance(token, str) or not token):
+                raise ValueError(f"ResumeStatus {name} must be a non-empty string or None, got {token!r}")
 
 
 @dataclass

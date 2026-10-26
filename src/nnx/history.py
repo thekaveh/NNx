@@ -49,7 +49,10 @@ parent is never written. ``iter_history(run_id, lineage=True)`` yields the
 parent's committed records up to the checkpoint the child resumed from
 (following the recorded resume, recursively; runs recorded before resume
 status fall back to ``parent_run_id``), then
-the child's — never the parent's later epochs, never an epoch twice.
+the child's — never the parent's later epochs, never an epoch twice. The
+parent is stitched only while it holds the attempt the child resumed from
+(``ResumeStatus.source_attempt_token``): not after it was retrained in
+place, and never for a run bundle's child, whose parent lives in the bundle.
 """
 
 from __future__ import annotations
@@ -982,14 +985,15 @@ def _first_epoch(
     return None if committed is not None and first > committed else first
 
 
-def _parent(run_id: str, root: Optional[str]) -> tuple[Optional[str], Any, Optional[int]]:
+def _parent(run_id: str, root: Optional[str]) -> tuple[Optional[str], Any, Optional[int], Optional[str]]:
     """The run a run resumed from and the checkpoint it resumed from — from
     its recorded resume status (``metadata.yaml``); a run that started fresh
     has none, even when it names a parent (a born-again generation starts
     its own epochs). The status also records the epoch of the checkpoint
-    resumed from (``None`` before it did). Runs written before resume
-    status fall back to the lineage in their ``run.yaml``. No checkpoint
-    and no history is read."""
+    resumed from (``None`` before it did) and the parent attempt it resumed
+    from (#553; ``None`` before it did). Runs written before resume status
+    fall back to the lineage in their ``run.yaml``. No checkpoint and no
+    history is read."""
     import yaml
 
     from .nn.params.nn_run import _load_resume_status, _read_metadata
@@ -998,8 +1002,9 @@ def _parent(run_id: str, root: Optional[str]) -> tuple[Optional[str], Any, Optio
     status = _load_resume_status(_read_metadata(os.path.join(run_path, "metadata.yaml")))
     if status is not None:
         if status.mode == "fresh" or status.source_run_id is None:
-            return None, None, None
-        return status.source_run_id, status.source_checkpoint or "last", status.source_epoch
+            return None, None, None, None
+        source = status.source_run_id, status.source_checkpoint or "last"
+        return (*source, status.source_epoch, status.source_attempt_token)
     path = os.path.join(run_path, "run.yaml")
     with open(path, encoding="utf-8") as handle:
         state = yaml.safe_load(handle)
@@ -1007,8 +1012,17 @@ def _parent(run_id: str, root: Optional[str]) -> tuple[Optional[str], Any, Optio
         raise ValueError(f"malformed run.yaml at {path}: expected a mapping")
     for section in (state.get("trainer"), state.get("train")):
         if isinstance(section, dict) and section.get("parent_run_id") is not None:
-            return str(section["parent_run_id"]), section.get("parent_checkpoint") or "last", None
-    return None, None, None
+            return str(section["parent_run_id"]), section.get("parent_checkpoint") or "last", None, None
+    return None, None, None, None
+
+
+def _attempt_token(run_path: str) -> Optional[str]:
+    """The attempt token a run's ``metadata.yaml`` records (#553), ``None``
+    without one."""
+    from .nn.params.nn_run import _load_resume_status, _read_metadata
+
+    status = _load_resume_status(_read_metadata(os.path.join(run_path, "metadata.yaml")))
+    return None if status is None else status.attempt_token
 
 
 def _resume_epoch(
@@ -1044,9 +1058,15 @@ def iter_history(run_id: str, root: Optional[str] = None, *, lineage: bool = Fal
     unreadable), the parent's records before the run's first record are
     used, with a ``RuntimeWarning``; when neither is known, or the parent
     run is gone, the lineage starts at the run, with a ``RuntimeWarning``.
-    Lineage follows resumes: a run that started fresh (a born-again
-    generation naming its teacher's run as ``parent_run_id``, say) starts
-    its own epochs, and its lineage is its own history.
+    A run that recorded the parent attempt it resumed from (#553) is
+    stitched only to that attempt: when the parent has been retrained in
+    place since, or the run resumed from a run bundle (whose parent lives
+    in the bundle, not under ``root``), the lineage starts at the run, with
+    a ``RuntimeWarning``; a run recorded without one is stitched to the run
+    holding the parent's id. Lineage follows resumes: a run that started
+    fresh (a born-again generation naming its teacher's run as
+    ``parent_run_id``, say) starts its own epochs, and its lineage is its
+    own history.
     """
     yield from _lineage(run_id, root, lineage, seen=set(), until=None, committed=_UNKNOWN, readers={})
 
@@ -1070,13 +1090,14 @@ def _lineage(
     if committed is _UNKNOWN:
         committed = _committed_epoch(run_id, _run_path(run_id, root), root)
     if lineage:
-        parent, checkpoint, source_epoch = _parent(run_id, root)
+        parent, checkpoint, source_epoch, source_attempt = _parent(run_id, root)
         if parent is not None and parent not in seen:
             yield from _parent_prefix(
                 run_id,
                 parent,
                 checkpoint,
                 source_epoch,
+                source_attempt,
                 root,
                 seen=seen,
                 until=until,
@@ -1094,6 +1115,7 @@ def _parent_prefix(
     parent: str,
     checkpoint: Any,
     source_epoch: Optional[int],
+    source_attempt: Optional[str],
     root: Optional[str],
     *,
     seen: set[str],
@@ -1102,7 +1124,10 @@ def _parent_prefix(
     readers: dict[str, Optional[_JournalReader]],
 ) -> Iterator[NNIterationDataPoint]:
     """The parent's records that precede ``run_id``: up to the epoch it
-    resumed from, never past its own first record or a descendant's cut."""
+    resumed from, never past its own first record or a descendant's cut —
+    and only from the parent attempt it resumed from, when it recorded one
+    (#553)."""
+    from .components import _BUNDLE_ATTEMPT_PREFIX
     from .nn.params.nn_run import _committed_epoch
 
     if parent == "best":
@@ -1113,6 +1138,16 @@ def _parent_prefix(
             f"starts at {run_id}",
         )
         return
+    if source_attempt is not None and source_attempt.startswith(_BUNDLE_ATTEMPT_PREFIX):
+        from .nn.callbacks import _warn_at_user_frame
+
+        # A same-id run under this root is another attempt, or at best one the
+        # bundle cannot prove it was exported from: never stitched.
+        _warn_at_user_frame(
+            f"run {run_id} resumed from a run bundle of run {parent}: its parent lives in the bundle, not under "
+            f"this runs root, so its lineage starts at {run_id}",
+        )
+        return
     parent_path = _run_path(parent, root)
     if not os.path.isfile(os.path.join(parent_path, "run.yaml")):
         from .nn.callbacks import _warn_at_user_frame
@@ -1120,6 +1155,20 @@ def _parent_prefix(
         _warn_at_user_frame(
             f"run {run_id} resumed from run {parent}, which is no longer saved: its lineage starts at {run_id}",
         )
+        return
+    current = None if source_attempt is None else _attempt_token(parent_path)
+    if source_attempt is not None and current != source_attempt:
+        from .nn.callbacks import _warn_at_user_frame
+
+        # The parent's attempt survives its own LAST / FIRST / BEST rewrites;
+        # only another train() under its id (overwrite_existing) replaces it.
+        why = (
+            "which has been retrained in place since (another attempt now holds its id)"
+            if current is not None
+            else "which no longer records the attempt it resumed from (retrained in place, or its metadata.yaml is "
+            "unreadable)"
+        )
+        _warn_at_user_frame(f"run {run_id} resumed from run {parent}, {why}: its lineage starts at {run_id}")
         return
     try:
         parent_committed: Optional[int] = _committed_epoch(parent, parent_path, root)
