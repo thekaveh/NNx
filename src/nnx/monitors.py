@@ -811,17 +811,20 @@ def _ignore_index(loss_fn: torch.nn.Module) -> Optional[int]:
     return None
 
 
-def _not_ignored(target: torch.Tensor, ignore_index: int) -> torch.Tensor:
+def _not_ignored(target: torch.Tensor, ignore_index: int, *, unsigned: Optional[bool] = None) -> torch.Tensor:
     """Which class targets differ from ``ignore_index``, compared exactly
     (FIX-044). An integer target is compared as int64, as the loss reads it:
     in its own narrow dtype a Python int wraps (-100 is 156 in uint8). An
     unsigned target never equals a negative ``ignore_index``, even a uint64
-    one beyond int64 that the cast wraps negative."""
+    one beyond int64 that the cast wraps negative. ``unsigned`` names the
+    source dtype when ``target`` is already its int64 cast (no second copy)."""
     if target.is_floating_point():
         return target != ignore_index
+    if unsigned is None:
+        unsigned = not target.dtype.is_signed
     indices = target.long()
     valid = indices != ignore_index
-    if not target.dtype.is_signed:
+    if unsigned:
         valid |= indices < 0
     return valid
 

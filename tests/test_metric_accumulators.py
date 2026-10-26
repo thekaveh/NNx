@@ -604,3 +604,17 @@ def test_update_and_update_logits_score_the_same_uint8_rows(as_array):
         other = StreamingMetrics([MetricSpec("accuracy")], "categorical", ignore_index=-100, num_outputs=200)
         values = [-100 if dtype.is_signed else 156, 3, 7]
         assert other.update_logits(torch.tensor(values, dtype=dtype), logits) == (2 if dtype.is_signed else 3), dtype
+    # A wide unsigned target equal to the wrapped -100 is a class, refused as
+    # out of range like int64 65436, not masked; a uint64 above 2**63 - 1 gets
+    # update()'s refusal, not a wrapped negative range.
+    wide = StreamingMetrics([MetricSpec("accuracy")], "categorical", ignore_index=-100, num_outputs=200)
+    for dtype, bits in ((torch.uint16, 16), (torch.uint32, 32)):
+        with pytest.raises(ValueError, match=rf"in \[0, 200\), got values in \[3, {2**bits - 100}\]"):
+            wide.update_logits(torch.tensor([2**bits - 100, 3, 7], dtype=dtype), logits)
+    above = np.array([2**64 - 100, 3, 7], dtype=np.uint64)
+    for given_above in (torch.from_numpy(above), above):
+        with pytest.raises(ValueError, match=r"above 2\*\*63 - 1 do not fit int64"):
+            wide.update_logits(given_above, logits)
+    with pytest.raises(ValueError, match=r"above 2\*\*63 - 1 do not fit int64"):
+        wide.update(above, probabilities=probabilities)
+    assert wide.count == 0
