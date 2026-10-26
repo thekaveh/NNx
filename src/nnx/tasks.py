@@ -59,6 +59,7 @@ import numpy as np
 import torch
 
 from ._confusion import ConfusionCounts, average_scores, record_scores
+from .monitors import _not_ignored
 from .nn.enum.losses import Losses
 from .nn.enum.nets import Nets
 from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -539,20 +540,27 @@ class _CategoricalAdapter(TaskAdapter):
             )
         # (N, C, *rest) -> (M, C) rows, one per target position.
         flat_output = output.movedim(1, -1).reshape(-1, n_classes)
-        flat_target = target.reshape(-1)
+        # int64 first, as the loss needs (int32 / int16 fail there): in a narrow
+        # dtype ignore_index would wrap (-100 is class 156 in uint8, FIX-044).
+        flat_target = target.reshape(-1).long()
         ignore = self.spec.ignore_index
-        valid = flat_target != ignore if ignore is not None else torch.ones_like(flat_target, dtype=torch.bool)
+        valid = (
+            _not_ignored(flat_target, ignore, unsigned=not target.dtype.is_signed)
+            if ignore is not None
+            else torch.ones_like(flat_target, dtype=torch.bool)
+        )
         valid_targets = flat_target[valid]
         if valid_targets.numel():
             low, high = torch.stack(torch.aminmax(valid_targets)).tolist()  # one device sync
+            if low < 0 and not target.dtype.is_signed:  # a uint64 the cast wrapped
+                raise TaskValidationError("categorical targets above 2**63 - 1 do not fit int64 class indices")
             if low < 0 or high >= n_classes:
                 raise TaskValidationError(
                     f"categorical targets must be class indices in [0, {n_classes})"
                     + (f" or ignore_index={ignore}" if ignore is not None else "")
                     + f", got values in [{low}, {high}]"
                 )
-        # Range-checked class indices: an exact cast, as the loss needs int64 (int32 / int16 fail there).
-        return flat_output, flat_target.long(), valid
+        return flat_output, flat_target, valid
 
     def _masked_loss_terms(self, loss_fn, output, target, valid, n_valid):
         # Rows are masked by selection: (M', C) keeps the class axis, so class
