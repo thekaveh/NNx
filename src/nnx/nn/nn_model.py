@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass, field, replace
@@ -36,7 +37,7 @@ from .._scheduler_clock import (
 )
 from .._update_engine import gradients_finite, scaler_step, warn_unowned_trainables
 from ..compilation import CompileSpec, _CompileHolder, _CompileSession
-from ..components import ComponentRegistry, ComponentRestoreError, ResumeStatus
+from ..components import _BUNDLE_ATTEMPT_PREFIX, ComponentRegistry, ComponentRestoreError, ResumeStatus
 from ..history import (
     HistoryJournal,
     _check_history,
@@ -331,6 +332,28 @@ class _ResumeSource:
     # (#537; None for a checkpoint written before manifests, or an in-memory
     # source).
     manifest: Optional[dict[str, Any]] = None
+    # #553: the attempt the resume reads from (ResumeStatus.source_attempt_token).
+    attempt: Optional[str] = None
+
+
+def _new_attempt_token() -> str:
+    """A fresh attempt token: one per ``train()`` call (#553), recorded in
+    the run's ``ResumeStatus``. Drawn from the OS, never from a seeded
+    random stream."""
+    return uuid.uuid4().hex
+
+
+def _recorded_attempt_token(run_id: str) -> Optional[str]:
+    """The attempt token a saved run's ``metadata.yaml`` records (#553);
+    ``None`` for a run recorded without one, or when unreadable."""
+    from .params.nn_run import _load_resume_status, _read_metadata
+
+    try:
+        path = os.path.join(_runs_root(), _validate_run_id(run_id), "metadata.yaml")
+    except ValueError:
+        return None
+    status = _load_resume_status(_read_metadata(path))
+    return None if status is None else status.attempt_token
 
 
 # A checkpoint and its training state held in memory under (run id, label) for
@@ -482,7 +505,12 @@ def _load_resume_source(
     manifest: Optional[dict[str, Any]] = None
     if in_memory is not None and in_memory[:2] == (run_id, str(ckpt_type)):
         ckpt, training_state = in_memory[2], in_memory[3]
+        attempt: Optional[str] = f"{_BUNDLE_ATTEMPT_PREFIX}{ckpt.training_state_id or 'unknown'}"
     else:
+        # #553: the source's attempt, read before its checkpoint: a source
+        # retrained in place in between is then recorded as the earlier
+        # attempt, which its lineage no longer stitches.
+        attempt = _recorded_attempt_token(run_id)
         # #394: a torn, mixed or corrupted resume point is refused here, with
         # its reason, before anything is restored from it — and #537: one
         # published again since it was verified, on every rank (the load
@@ -520,7 +548,7 @@ def _load_resume_source(
     listener = _RESUME_SOURCE_LISTENER.get()
     if listener is not None:  # the attempt's parent is the checkpoint read here (#537)
         listener(run_id, ckpt)
-    return _ResumeSource(ckpt, training_state, resume_net_state or ckpt.net_state, label, manifest)
+    return _ResumeSource(ckpt, training_state, resume_net_state or ckpt.net_state, label, manifest, attempt)
 
 
 def _rollback_resume(
@@ -789,7 +817,9 @@ def _resume_fit(
     check the update budget."""
     run_id = params.resume_from_run_id
     if run_id is None:
-        return _Resumed(start_epoch=0, session_epochs=params.n_epochs)
+        return _Resumed(
+            start_epoch=0, session_epochs=params.n_epochs, status=ResumeStatus(attempt_token=_new_attempt_token())
+        )
     planned = getattr(params, "resume_epochs", "additional") == "planned"
     where = f"resume_from_run_id={run_id!r}"
     net = model.net
@@ -806,6 +836,9 @@ def _resume_fit(
         "source_checkpoint": source.label,
         "source_epoch": source.checkpoint.idp.epoch_idx,
         **_manifest_lineage(source.manifest),
+        # #553: this session's attempt, and the source attempt it resumed from.
+        "attempt_token": _new_attempt_token(),
+        "source_attempt_token": source.attempt,
     }
     training_state = source.training_state
     if training_state is None:
