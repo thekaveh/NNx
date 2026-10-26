@@ -4258,6 +4258,12 @@ class NNModel(_HubMixinBase):
         Raises:
             ValueError: If required training inputs are missing or invalid,
                 the model is fully frozen, or resume state is incompatible.
+                A misconfigured link-task validation raises ``LinkTaskError``
+                before any run is reserved: a link ``val_loader`` that is not
+                ``'val'`` or is built on another split, a val split beyond the
+                evaluator's ``max_candidates``, or a link ``val_loader`` (or
+                link predictor with any ``val_loader``) without
+                ``eval_step_fn=task.eval_step()``.
             FileExistsError: If the content-addressed run already exists and
                 ``overwrite_existing`` is false.
             FloatingPointError: If the default step encounters non-finite loss.
