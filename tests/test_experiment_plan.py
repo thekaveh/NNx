@@ -952,6 +952,29 @@ def test_validate_accepts_a_schedule_horizon_that_trains_today(fields, n_epochs)
     assert plan.with_data(_batches()).validate().ok
 
 
+@pytest.mark.parametrize(
+    ("accumulate", "total_steps", "planned"),
+    [(2, 2, None), (3, 2, None), (2, 1, 2)],  # 4 batches commit ceil(4 / window) updates an epoch
+    ids=["window-2-covered", "window-3-short-final-window", "window-2-short-total"],
+)
+def test_the_update_clock_horizon_counts_the_accumulation_windows(accumulate, total_steps, planned):
+    """The planned updates are the committed windows, not the batches: a
+    total_steps that covers them validates, a shorter one is refused with
+    the build's own message."""
+    train = NNTrainParams(
+        n_epochs=1, scheduler=_schedule("ONE_CYCLE", max_lr=0.05, total_steps=total_steps, clock="optimizer_update")
+    )
+    train = dataclasses.replace(train, optim=dataclasses.replace(train.optim, accumulate_grad_batches=accumulate))
+    report = _plan().with_train(train).with_data(_batches()).validate()
+    if planned is None:
+        assert report.ok
+    else:
+        assert report.paths == ("train.scheduler",)
+        message = report.diagnostics[0].message
+        assert f"planned optimizer updates ({planned})" in message
+        assert message == _built_refusal(train.scheduler, n_epochs=1, n_updates=planned)
+
+
 def test_the_build_and_the_plan_share_one_horizon_check(monkeypatch):
     """Schedulers.__call__ and validate() run the same refusal: replacing it
     changes both."""
