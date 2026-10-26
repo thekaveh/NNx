@@ -265,6 +265,19 @@ scenarios:
       - tests/test_ddp_resume.py::test_a_stateful_ddp_resume_with_changed_optimizer_hyperparameters_is_refused_on_every_rank
     rationale: Executed two-rank negative test; each rank's message, weights and RNG asserted, and no child run written.
     status: unsupported
+  - id: CR-11
+    group: checkpoint-resume
+    features: [budgeted search, stateful resume]
+    entry_point: nnx.search.search(ExperimentPlan.resuming(...) | NNTrainParams(resume_from_run_id=...))
+    profile: {device: cpu, dtype: fp32, dependencies: [optuna]}
+    expected: A resume in any mode but weights_only ("auto", "stateful", resume_epochs="planned") is refused with a ValueError naming the mode and the weights_only alternative before any trial, factory or study; a weights-only resume scores each trial by its own epochs, and the effective resume is part of the stored study's identity.
+    tests:
+      - tests/test_search.py::test_a_stateful_resume_is_refused_before_any_trial
+      - tests/test_search.py::test_a_planned_resume_is_refused_before_any_trial
+      - tests/test_search.py::test_a_trial_plan_that_resumes_statefully_stops_the_search
+      - tests/test_search.py::test_a_stored_study_over_another_resume_is_refused_before_any_trial
+    rationale: Executed negative tests through resuming() and the training parameters; no factory call, run or study is made, and the weights-only searches' values and BEST epochs are asserted.
+    status: unsupported
   - id: MT-01
     group: model-transformations
     features: [torch.compile, QAT (topology-changing callback)]

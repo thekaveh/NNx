@@ -2014,9 +2014,9 @@ resume:
   epoch.
 - `"planned"` continues the run's **own plan** and trains up to `n_epochs` in
   total. It carries on the logical step counter (`iter_idx`), the committed
-  updates (`ctx.committed_updates`) and the phase-checkpoint cadence. A
-  budgeted search's update cap therefore counts the source's updates too. An
+  updates (`ctx.committed_updates`) and the phase-checkpoint cadence. An
   `optimizer_update` scheduler keeps its one horizon over the whole plan.
+  A budgeted search refuses it, as it refuses every stateful resume (§29).
 
 `"planned"` needs a stateful resume from a checkpoint that records its plan.
 NNx refuses these cases before anything is restored:
@@ -2602,6 +2602,8 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
       `validate()` checks both as `NNTrainParams` does. It reports a
       `"planned"` horizon with a `"weights_only"` mode or with no run to
       resume, on the field the caller set.
+    - `nnx.search` accepts only a `mode="weights_only"` resume, and the
+      resume is part of a stored study's identity (§29).
     - A plan of epochs 0–3 stopped after epoch 1 (zero-based) and resumed with
       `resuming(first.run.id, mode="stateful", epochs="planned")` trains epochs
       2–3. It equals the uninterrupted plan bit for bit.
@@ -3392,7 +3394,7 @@ callbacks must therefore be factories.
 
 ```text
 refuse a multi-rank process group (torchrun) ── before anything below
-validate (space, budget, monitor = plan's val monitor, factories, stored identity)
+validate (space, budget, monitor = plan's val monitor, factories, weights-only resume, stored identity)
   └─ while trials so far < budget.trials and the deadline has not passed:
         Study.optimize(objective, n_trials=1)
            params = sampler.ask → plan = apply(base, params) → plan.fit(attempt)
@@ -3406,22 +3408,38 @@ validate (space, budget, monitor = plan's val monitor, factories, stored identit
   plan `apply` returns. A trial's value is the run's own monitor decision:
   the value of the epoch its BEST checkpoint holds, `min_delta` and ties
   included. A training or last-batch value never scores a trial; a missing
-  or non-finite value fails it.
+  or non-finite value fails it. The value comes from the trial's own epochs
+  only: a resuming plan resumes weights-only (next item).
+- **Weights-only resumes.** A resuming plan must resume with
+  `mode="weights_only"`, which scores each trial by its own validated epochs.
+  Any other resume is refused with a `ValueError` before any trial, whether
+  `resuming()` or the training parameters set it: the default `"auto"`,
+  `"stateful"`, and every `resume_epochs="planned"` resume. A stateful resume
+  restores the source's monitor best (§6.4), so BEST, and the trial's value,
+  would come only from an epoch that beats the source's. The search re-checks
+  this on every plan `apply` returns.
 - **Errors.** A fit that raises is a failed trial, recorded with its
   message (`TrialOutcome.error`), and the search goes on.
 - **Configuration errors.** A configuration error fails that trial and stops
   the search with the error. The failed trial counts against a stored
   study's budget. Configuration errors are `apply` raising, `apply`
   returning something other than a plan, or a plan the search cannot score
-  (borrowed callbacks, another monitor). `updates_per_trial` is refused for
-  a plan with its own `train_step_fn`, which may not report updates.
+  (borrowed callbacks, another monitor, a resume that is not weights-only).
+  `updates_per_trial` is refused for a plan with its own `train_step_fn`,
+  which may not report updates.
 - **The budget counts every trial**: completed, failed, pruned and orphaned
   ones (left running by a crashed process). Only enqueued, never-run trials
   do not count. A sampler that runs out of points (an exhausted
   `GridSampler`) ends the search with `stop_reason="exhausted"`, spending no
   budget.
 - **Stored studies.** Reopening a stored study continues it. A study whose
-  space, monitor or plan identity differs is refused before any trial.
+  space, monitor or plan identity differs is refused before any trial. A
+  resuming plan's identity includes its effective resume: the source run,
+  checkpoint, mode and epochs. A study over a fine-tune of one run is
+  therefore never continued with a fine-tune of another, of another
+  checkpoint, or with no resume. A plan without a resume keeps its earlier
+  identity. A study over a resuming plan stored before this rule is refused
+  when reopened.
 - **Caps.** `SearchBudget(updates_per_trial=N)` stops a trial right after its
   N-th committed optimizer update; a partial accumulation window is not one.
   `deadline_seconds` starts no trial once expired. It stops a running trial

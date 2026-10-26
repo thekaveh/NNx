@@ -986,16 +986,46 @@ class ExperimentPlan:
         """The data identity: the plan's own, else the training parameters'."""
         return getattr(train, "data_id", None) if self.data_identity is _INHERIT else self.data_identity
 
+    def _resume_changes(self) -> dict[str, Any]:
+        """The resume fields ``resuming()`` sets on the compiled training
+        parameters (none without it)."""
+        if self.resume is None:
+            return {}
+        changes: dict[str, Any] = {
+            "resume_from_run_id": self.resume.run_id,
+            "resume_from_checkpoint": self.resume.checkpoint,
+        }
+        if self.resume.mode is not None:  # else the training parameters' own resume_mode
+            changes["resume_mode"] = self.resume.mode
+        if self.resume.epochs is not None:  # else the training parameters' own resume_epochs
+            changes["resume_epochs"] = self.resume.epochs
+        return changes
+
+    def _effective_resume(self) -> Optional[dict[str, Any]]:
+        """The resume a fit performs — ``resuming()`` over the training
+        parameters' own — as its ``run_id``, ``checkpoint``, ``mode`` and
+        ``epochs``; ``None`` when the plan resumes nothing."""
+        fields = {
+            "resume_from_run_id": getattr(self.train, "resume_from_run_id", None),
+            "resume_from_checkpoint": getattr(self.train, "resume_from_checkpoint", "last"),
+            "resume_mode": getattr(self.train, "resume_mode", "auto"),
+            "resume_epochs": getattr(self.train, "resume_epochs", "additional"),
+            **self._resume_changes(),
+        }
+        if fields["resume_from_run_id"] is None:
+            return None
+        return {
+            "run_id": fields["resume_from_run_id"],
+            "checkpoint": fields["resume_from_checkpoint"],
+            "mode": fields["resume_mode"],
+            "epochs": fields["resume_epochs"],
+        }
+
     def _compile_train(self, train_loader: Any, val_loader: Any) -> NNTrainParams:
         assert isinstance(self.train, NNTrainParams)
         changes: dict[str, Any] = {"seed": self._seed(), "train_loader": train_loader, "val_loader": val_loader}
         changes["data_id"] = self._identity(self.train)
-        if self.resume is not None:
-            changes.update(resume_from_run_id=self.resume.run_id, resume_from_checkpoint=self.resume.checkpoint)
-            if self.resume.mode is not None:  # else the training parameters' own resume_mode
-                changes["resume_mode"] = self.resume.mode
-            if self.resume.epochs is not None:  # else the training parameters' own resume_epochs
-                changes["resume_epochs"] = self.resume.epochs
+        changes.update(self._resume_changes())
         return replace(self.train, **changes)
 
     # --- probing (effectful, restored) -------------------------------------------------------
