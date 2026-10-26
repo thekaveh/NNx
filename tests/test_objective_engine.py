@@ -1604,3 +1604,51 @@ def test_kd_alpha_1_still_validates_the_labels_of_a_declared_task(hook, tmp_path
     trained, run = tasks.fit(base, placeholders, **hooks())
     assert tasks.moved(trained, base) > 0.0
     assert (tasks.record(run).count, tasks.record(run).status) == (0, "empty")
+
+
+# --- the task-free regression-loss refusal names a remedy that works (#565) -----------------------
+
+
+def _task_free_mse(task: TaskSpec | None = None) -> NNModel:
+    torch.manual_seed(0)
+    return NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[6], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR, task=task),
+    )
+
+
+def _continuous_batches() -> list[tuple[torch.Tensor, torch.Tensor]]:
+    generator = torch.Generator().manual_seed(1)
+    return [(torch.randn(4, 4, generator=generator), torch.rand(4, 2, generator=generator)) for _ in range(2)]
+
+
+@pytest.mark.parametrize("via", ["model", "trainer"])
+def test_task_free_supervised_objective_advises_a_task_declaration(via, tmp_path, monkeypatch):
+    """The objective is already passed and is not "the default steps": the
+    refusal names only the task declaration that makes it score regression."""
+    monkeypatch.chdir(tmp_path)
+    model = _task_free_mse()
+    before = {k: v.clone() for k, v in model.net.state_dict().items()}
+    with pytest.raises(ValueError) as caught:
+        _train_via(via, model, _continuous_batches(), objective=supervised_objective())
+    assert str(caught.value) == (
+        "supervised_objective() without a task scores classification and cannot score MSELoss targets: "
+        "declare the task, e.g. NNModelParams(task=TaskSpec.regression(...))"
+    )
+    assert all(torch.equal(v, before[k]) for k, v in model.net.state_dict().items())  # refused before the update
+
+
+@pytest.mark.parametrize("via", ["model", "trainer"])
+def test_task_free_kd_objective_refuses_like_the_distillation_step(via, tmp_path, monkeypatch):
+    """Distillation scores classification: no task declaration makes it
+    score regression, so the refusal suggests none (as kd_train_step_factory's)."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError) as caught:
+        _train_via(via, _task_free_mse(), _continuous_batches(), objective=kd_objective(_task_free_mse()))
+    assert str(caught.value) == "kd_objective scores classification only and cannot score MSELoss targets"
+
+
+def test_supervised_objective_with_a_declared_regression_task_trains(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    run = _fit(_task_free_mse(TaskSpec.regression(2)), _continuous_batches(), supervised_objective(), optim=_sgd(1))
+    assert run.idps[-1].train_edp.kind == "regression"
