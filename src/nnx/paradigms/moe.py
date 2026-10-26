@@ -26,7 +26,16 @@ from __future__ import annotations
 
 import torch
 
-from .._step_helpers import finalize_step, imperative_step, predicted_labels, require_row_logits
+from .._step_helpers import (
+    finalize_step,
+    finalize_task_step,
+    imperative_step,
+    predicted_labels,
+    require_row_logits,
+    task_record,
+    task_step,
+    task_term,
+)
 from .._validation import require_finite_real
 from ..nn.moe import MoELinear
 from ..nn.nn_model import (
@@ -39,6 +48,7 @@ from ..nn.nn_model import (
 )
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
+from ..tasks import _StepTasks
 
 
 def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
@@ -61,6 +71,15 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
             tutorial value; small enough not to dominate the main
             loss, large enough to prevent expert collapse.
 
+    A model that declares a ``TaskSpec`` scores the supervised term
+    through its task adapter, as the default step does: categorical
+    targets equal to ``ignore_index`` and NaN multilabel labels are left
+    out, each batch is validated before any backward pass, and the record
+    carries the task's ``kind`` / ``count`` / ``status``. A batch with
+    nothing to learn from (every target masked, and no weighted aux loss)
+    takes no update and records ``status="empty"``. A regression task is
+    refused before any run is reserved.
+
     Returns:
         A ``TrainStepFn`` for :meth:`NNModel.train`. Works on any
         single-input supervised net that contains ≥ 0
@@ -69,7 +88,9 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
 
     Raises:
         ValueError: if ``aux_loss_weight`` is not a finite real ``>= 0``
-            (a ``bool`` included).
+            (a ``bool`` included). ``NNModel.train`` refuses a model that
+            declares a regression task (``TaskValidationError``) before any
+            run is reserved.
     """
     require_finite_real(aux_loss_weight, "aux_loss_weight", owner="moe_train_step_factory", minimum=0)
 
@@ -96,7 +117,10 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
         # ``.last_aux_loss`` as a side effect.
         Y_hat_logits = m._net_forward((X,), {})
         require_row_logits(Y_hat_logits, "moe")
-        supervised_loss = m.loss_fn(_loss_input(m.loss_fn, Y_hat_logits), Y)
+        adapter = m.task_adapter
+        # A declared task scores the labels over its valid targets (#513), validated before any backward.
+        hard = task_term(adapter, m.loss_fn, Y_hat_logits, Y) if adapter is not None else None
+        supervised_loss = hard.loss if hard is not None else m.loss_fn(_loss_input(m.loss_fn, Y_hat_logits), Y)
 
         # Sum the per-layer aux losses across every MoE layer in the
         # net. ``.last_aux_loss`` is set by every MoELinear forward;
@@ -106,11 +130,19 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
         # same device as the supervised loss so the add below stays
         # device-coherent regardless of model placement.
         aux_loss: torch.Tensor = torch.zeros((), device=supervised_loss.device)
+        routed = False  # an MoE layer ran: its aux loss trains the router
         for module in m.net.modules():
             if isinstance(module, MoELinear) and module.last_aux_loss is not None:
                 aux_loss = aux_loss + module.last_aux_loss
+                routed = True
 
         loss = supervised_loss + aux_loss_weight * aux_loss
+        if adapter is not None:
+            assert hard is not None
+            # Every target masked and no weighted aux loss: nothing to learn from.
+            trains = hard.trains or (aux_loss_weight > 0 and routed)
+            loss_val = finalize_task_step(loss, ctx, trains=trains, paradigm="moe")
+            return task_record(adapter, [(1.0, hard)], loss=loss_val, extra_metrics=ctx.extra_metrics)
         _check_scorable_target(m.loss_fn, Y, paradigm="moe")  # before the update: a refused batch changes nothing
         loss_val = finalize_step(loss, ctx, paradigm="moe")
 
@@ -122,4 +154,5 @@ def moe_train_step_factory(*, aux_loss_weight: float = 0.01) -> TrainStepFn:
             extra_metrics=ctx.extra_metrics,
         )
 
-    return full_precision_only(imperative_step(step, paradigm="moe"))  # finalize_step: full precision
+    # finalize_step: full precision
+    return full_precision_only(imperative_step(task_step(step, _StepTasks("moe_train_step_factory")), paradigm="moe"))

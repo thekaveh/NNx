@@ -29,7 +29,17 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from .._step_helpers import finalize_step, imperative_step, predicted_labels, require_row_logits, softened_kl
+from .._step_helpers import (
+    finalize_step,
+    finalize_task_step,
+    imperative_step,
+    predicted_labels,
+    require_row_logits,
+    softened_kl,
+    task_record,
+    task_step,
+    task_term,
+)
 from .._validation import require_finite_real
 from ..nn.nn_model import (
     NNModel,
@@ -42,6 +52,11 @@ from ..nn.nn_model import (
 )
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
+from ..tasks import _StepTasks
+
+# The task kinds the KD steps score their hard term for (#513); born_again_train
+# refuses any other before generation 0 trains.
+_KD_STEP_TASKS = _StepTasks("kd_train_step_factory")
 
 
 def _check_kd_weights(alpha: float, temperature: float, *, owner: str) -> None:
@@ -86,15 +101,25 @@ def kd_train_step_factory(
             parameters are frozen (``requires_grad=False``) and its
             net is set to eval mode on factory call.
         alpha: weight on the distillation (soft) loss. The hard-label
-            loss gets ``1 − α``. ``α=1.0`` is pure distillation;
-            ``α=0.0`` collapses to standard supervised training (the
-            teacher is loaded but unused). 0.5 is the common default.
+            loss gets ``1 − α``. ``α=1.0`` is pure distillation (the
+            labels are not scored); ``α=0.0`` collapses to standard
+            supervised training (the teacher is loaded but unused), as the
+            default step trains it. 0.5 is the common default.
         temperature: softmax temperature applied to BOTH student and
             teacher logits before the KL. Higher T flattens the
             distribution and exposes more dark knowledge; the
             ``× T²`` factor in front of the KL keeps gradient
             magnitude comparable to the hard-label term across T.
             4.0 is the classical Hinton choice.
+
+    A model that declares a ``TaskSpec`` scores the hard term through its
+    task adapter, as the default step does: categorical targets equal to
+    ``ignore_index`` and NaN multilabel labels are left out of it (the soft
+    term keeps every row), each batch is validated before any backward
+    pass, and the record carries the task's ``kind`` / ``count`` /
+    ``status``. A batch with nothing to learn from (every target masked at
+    ``alpha=0``) takes no update and records ``status="empty"``. A
+    regression task is refused before any run is reserved.
 
     Returns:
         A ``TrainStepFn`` suitable for ``NNModel.train(..., train_step_fn=...)``.
@@ -104,6 +129,8 @@ def kd_train_step_factory(
             not a finite real > 0 (a ``bool`` is refused). At the first
             step: a single-logit head with ``alpha > 0`` (no class
             distribution to distill), or a teacher of another shape.
+            ``NNModel.train`` refuses a model that declares a regression
+            task (``TaskValidationError``) before any run is reserved.
         TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
             records train through ``TeacherDataset.objective()``).
     """
@@ -130,6 +157,15 @@ def kd_train_step_factory(
         # Hinton direction (see softened_kl for the F.kl_div contract).
         # alpha=0 is plain supervised training: no soft term (a binary head has none).
         soft_loss = softened_kl(student_logits, teacher_logits, temperature) if alpha > 0 else 0.0
+        adapter = m.task_adapter
+        if adapter is not None:
+            # A declared task scores the labels over its valid targets (#513), validated before any backward.
+            hard = task_term(adapter, m.loss_fn, student_logits, Y)
+            loss = alpha * soft_loss + (1.0 - alpha) * hard.loss if alpha < 1 else soft_loss
+            assert isinstance(loss, torch.Tensor)
+            trains = alpha > 0 or hard.trains  # every target masked at alpha=0: nothing to learn from
+            loss_val = finalize_task_step(loss, ctx, trains=trains, paradigm="distillation")
+            return task_record(adapter, [(1.0, hard)], loss=loss_val, extra_metrics=ctx.extra_metrics)
         # alpha=1 is pure distillation: no hard term (an all-ignored batch would make it NaN).
         hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y) if alpha < 1 else 0.0
         loss = alpha * soft_loss + (1.0 - alpha) * hard_loss
@@ -147,7 +183,8 @@ def kd_train_step_factory(
             extra_metrics=ctx.extra_metrics,
         )
 
-    return full_precision_only(imperative_step(step, paradigm="kd"))  # finalize_step: full precision
+    # finalize_step: full precision
+    return full_precision_only(imperative_step(task_step(step, _KD_STEP_TASKS), paradigm="kd"))
 
 
 def feature_kd_train_step_factory(
@@ -192,6 +229,11 @@ def feature_kd_train_step_factory(
         temperature: softmax temperature for the logit-KL term —
             identical contract to :func:`kd_train_step_factory`.
 
+    A declared ``TaskSpec`` is treated as by :func:`kd_train_step_factory`:
+    the hard term scores the valid targets only, a batch with nothing to
+    learn from (every target masked at ``alpha=0, beta=0``) takes no
+    update, and a regression task is refused before any run is reserved.
+
     Returns:
         A ``TrainStepFn`` suitable for ``NNModel.train(...,
         train_step_fn=...)``.
@@ -203,6 +245,8 @@ def feature_kd_train_step_factory(
             On the first batch, if any paired teacher/student
             activation shapes disagree, or if the head has a single logit
             and ``alpha > 0`` (no class distribution to distill).
+            ``NNModel.train`` refuses a model that declares a regression
+            task (``TaskValidationError``) before any run is reserved.
         TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
             records train through ``TeacherDataset.objective()``).
     """
@@ -296,6 +340,14 @@ def feature_kd_train_step_factory(
 
         # alpha=0 is plain supervised training: no soft term (a binary head has none).
         soft_loss = softened_kl(student_logits, teacher_logits, temperature) if alpha > 0 else 0.0
+        adapter = m.task_adapter
+        if adapter is not None:
+            # As kd_train_step_factory: the labels over the task's valid targets (#513).
+            hard = task_term(adapter, m.loss_fn, student_logits, Y)
+            loss = alpha * soft_loss + beta * feature_loss + ((1.0 - alpha) * hard.loss if alpha < 1 else 0.0)
+            trains = alpha > 0 or beta > 0 or hard.trains  # all masked at alpha=0, beta=0: nothing to learn from
+            loss_val = finalize_task_step(loss, ctx, trains=trains, paradigm="feature_distillation")
+            return task_record(adapter, [(1.0, hard)], loss=loss_val, extra_metrics=ctx.extra_metrics)
         # alpha=1 is pure distillation: no hard term (an all-ignored batch would make it NaN).
         hard_loss = m.loss_fn(_loss_input(m.loss_fn, student_logits), Y) if alpha < 1 else 0.0
         loss = alpha * soft_loss + beta * feature_loss + (1.0 - alpha) * hard_loss
@@ -310,4 +362,7 @@ def feature_kd_train_step_factory(
             extra_metrics=ctx.extra_metrics,
         )
 
-    return full_precision_only(imperative_step(step, paradigm="feature_kd"))  # finalize_step: full precision
+    # finalize_step: full precision
+    return full_precision_only(
+        imperative_step(task_step(step, _StepTasks("feature_kd_train_step_factory")), paradigm="feature_kd")
+    )

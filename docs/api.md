@@ -1596,7 +1596,9 @@ record carries accuracy / f1 / recall / precision. A :class:`TaskSpec` on
     params = NNModelParams(net=Nets.FEED_FWD, loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression(2))
 
 The task's adapter then owns, for the default step, ``evaluate()``,
-``predict()`` and ``predict_proba()``:
+``predict()`` and ``predict_proba()`` (and for the hard-label term of the
+built-in KD, feature-KD, Mixup, CutMix and MoE steps and ``kd_objective``,
+which train categorical and multilabel tasks and refuse a regression one):
 
 * **validation** — each batch's outputs and targets are checked for the
   declared shape, dtype and value range *before* any backward pass or
@@ -2571,8 +2573,16 @@ the student's loss on the labels with its own denominator (weight
 the rows are split into microbatches or targets are ignored. The teacher
 is frozen and put in eval mode once, as ``kd_train_step_factory`` does,
 and never updated. At ``alpha=0`` only the ``"supervised"`` term is
-returned. An all-masked microbatch at ``alpha=0`` records like
-:class:`SupervisedObjective`'s, never NaN.
+returned, and at ``alpha=1`` only the ``"distillation"`` term (the
+labels are not scored, so placeholder labels train as with
+``kd_train_step_factory(alpha=1)``). An all-masked microbatch at
+``alpha=0`` records like :class:`SupervisedObjective`'s, never NaN.
+
+A model that declares a categorical or multilabel ``TaskSpec`` scores the
+``"supervised"`` term through its task adapter, as
+:class:`SupervisedObjective` does: ignored and NaN targets are masked, and
+the record is the task's. A regression task is refused before any run
+is reserved.
 ```
 
 
@@ -15073,15 +15083,25 @@ Args:
         parameters are frozen (``requires_grad=False``) and its
         net is set to eval mode on factory call.
     alpha: weight on the distillation (soft) loss. The hard-label
-        loss gets ``1 − α``. ``α=1.0`` is pure distillation;
-        ``α=0.0`` collapses to standard supervised training (the
-        teacher is loaded but unused). 0.5 is the common default.
+        loss gets ``1 − α``. ``α=1.0`` is pure distillation (the
+        labels are not scored); ``α=0.0`` collapses to standard
+        supervised training (the teacher is loaded but unused), as the
+        default step trains it. 0.5 is the common default.
     temperature: softmax temperature applied to BOTH student and
         teacher logits before the KL. Higher T flattens the
         distribution and exposes more dark knowledge; the
         ``× T²`` factor in front of the KL keeps gradient
         magnitude comparable to the hard-label term across T.
         4.0 is the classical Hinton choice.
+
+A model that declares a ``TaskSpec`` scores the hard term through its
+task adapter, as the default step does: categorical targets equal to
+``ignore_index`` and NaN multilabel labels are left out of it (the soft
+term keeps every row), each batch is validated before any backward
+pass, and the record carries the task's ``kind`` / ``count`` /
+``status``. A batch with nothing to learn from (every target masked at
+``alpha=0``) takes no update and records ``status="empty"``. A
+regression task is refused before any run is reserved.
 
 Returns:
     A ``TrainStepFn`` suitable for ``NNModel.train(..., train_step_fn=...)``.
@@ -15091,6 +15111,8 @@ Raises:
         not a finite real > 0 (a ``bool`` is refused). At the first
         step: a single-logit head with ``alpha > 0`` (no class
         distribution to distill), or a teacher of another shape.
+        ``NNModel.train`` refuses a model that declares a regression
+        task (``TaskValidationError``) before any run is reserved.
     TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
         records train through ``TeacherDataset.objective()``).
 ```
@@ -15139,6 +15161,11 @@ Args:
     temperature: softmax temperature for the logit-KL term —
         identical contract to :func:`kd_train_step_factory`.
 
+A declared ``TaskSpec`` is treated as by :func:`kd_train_step_factory`:
+the hard term scores the valid targets only, a batch with nothing to
+learn from (every target masked at ``alpha=0, beta=0``) takes no
+update, and a regression task is refused before any run is reserved.
+
 Returns:
     A ``TrainStepFn`` suitable for ``NNModel.train(...,
     train_step_fn=...)``.
@@ -15150,6 +15177,8 @@ Raises:
         On the first batch, if any paired teacher/student
         activation shapes disagree, or if the head has a single logit
         and ``alpha > 0`` (no class distribution to distill).
+        ``NNModel.train`` refuses a model that declares a regression
+        task (``TaskValidationError``) before any run is reserved.
     TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
         records train through ``TeacherDataset.objective()``).
 ```
@@ -15192,6 +15221,11 @@ Args:
         generations ≥ 1 (``alpha``, ``temperature``). Ignored on
         generation 0 (no teacher).
 
+A model that declares a categorical or multilabel ``TaskSpec`` keeps its
+task in every generation: generation 0's default step and the later
+generations' KD step both leave ignored and NaN targets out of the
+hard-label loss, and a batch with nothing to learn from takes no update.
+
 Returns:
     A list of :class:`NNRun` objects, one per generation, in order.
     ``runs[0]`` is the plain run; ``runs[k]`` for ``k > 0`` is the
@@ -15208,6 +15242,10 @@ Raises:
         ``TransformerNN`` (sequence output). Nothing is trained then.
         Another module's single-output head is refused by the KD step
         at generation 1, after generation 0 trained.
+    TaskValidationError: (a ``ValueError``) if ``generations > 1`` and
+        the model declares a task the KD step does not train (a
+        ``TaskSpec.regression``): refused before generation 0 trains, so
+        no run directory or ``runs/best`` is written.
     TypeError: if the training loader holds stored teacher records
         (for any ``generations``), or if ``generations > 1`` and a
         keyword is not a :func:`kd_train_step_factory` parameter.
@@ -15660,7 +15698,9 @@ Returns:
 Raises:
     ValueError: if ``alpha`` is not a finite real ``> 0`` (a ``bool``
         included). At step time, before any mixing or RNG draw, on
-        non-floating input such as token ids.
+        non-floating input such as token ids. ``NNModel.train`` refuses
+        a model that declares a regression task (``TaskValidationError``)
+        before any run is reserved.
 ```
 
 
@@ -15689,6 +15729,8 @@ Returns:
 Raises:
     ValueError: if ``alpha`` is not a finite real ``> 0`` (a ``bool``
         included). At step time, on input that is not 4D.
+        ``NNModel.train`` refuses a model that declares a regression
+        task (``TaskValidationError``) before any run is reserved.
 ```
 
 
@@ -15724,6 +15766,15 @@ Args:
         tutorial value; small enough not to dominate the main
         loss, large enough to prevent expert collapse.
 
+A model that declares a ``TaskSpec`` scores the supervised term
+through its task adapter, as the default step does: categorical
+targets equal to ``ignore_index`` and NaN multilabel labels are left
+out, each batch is validated before any backward pass, and the record
+carries the task's ``kind`` / ``count`` / ``status``. A batch with
+nothing to learn from (every target masked, and no weighted aux loss)
+takes no update and records ``status="empty"``. A regression task is
+refused before any run is reserved.
+
 Returns:
     A ``TrainStepFn`` for :meth:`NNModel.train`. Works on any
     single-input supervised net that contains ≥ 0
@@ -15732,7 +15783,9 @@ Returns:
 
 Raises:
     ValueError: if ``aux_loss_weight`` is not a finite real ``>= 0``
-        (a ``bool`` included).
+        (a ``bool`` included). ``NNModel.train`` refuses a model that
+        declares a regression task (``TaskValidationError``) before any
+        run is reserved.
 ```
 
 

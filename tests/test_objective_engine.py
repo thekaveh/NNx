@@ -35,6 +35,7 @@ from nnx import (
     NNTrainParams,
     Optims,
     TaskSpec,
+    TaskValidationError,
     Trainer,
     set_seed,
 )
@@ -42,6 +43,7 @@ from nnx._step_helpers import softened_kl
 from nnx._update_engine import UpdateEngine
 from nnx.nn.nn_model import _objective_microbatch
 from nnx.objectives import LossTerm, ObjectiveResult, kd_objective, supervised_objective
+from tests import _task_steps as tasks
 from tests._surgery import SURGERY_FORMS, unrecorded_surgery
 
 RTOL, ATOL = 1e-6, 1e-7
@@ -1472,3 +1474,99 @@ def test_supervised_objective_weights_a_stock_forward_subclass_per_element(tmp_p
     model, _, _ = _stock_forward_case(case)
     _train_via(via, model, [(x[:4], y[:4]), (x[4:], y[4:])], objective=supervised_objective(), optim=_sgd(2))
     _assert_same_weights(reference, model)
+
+
+# --- kd_objective and a declared TaskSpec (#513) -------------------------------------------------
+
+
+def test_kd_objective_alpha_0_masks_ignored_rows_as_the_default_step(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(), tasks.categorical(seed=1)
+    reference, reference_run = tasks.fit(base, tasks.MIXED)
+    trained, run = tasks.fit(base, tasks.MIXED, objective=kd_objective(teacher, alpha=0.0))
+    torch.testing.assert_close(tasks.weights(trained), tasks.weights(reference))
+    got = tasks.record(run)
+    assert (got.kind, got.count, got.status) == ("categorical", 4, "ok")
+    assert got.loss == pytest.approx(tasks.record(reference_run).loss)
+
+
+def test_kd_objective_hard_term_scores_only_the_non_ignored_rows(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(), tasks.categorical(seed=1)
+    _, run = tasks.fit(base, tasks.MIXED, objective=kd_objective(teacher, alpha=0.5, temperature=2.0))
+    with torch.no_grad():
+        student = base.net(tasks.X)
+        keep = tasks.MIXED != 0
+        hard = F.cross_entropy(student[keep], tasks.MIXED[keep])
+        expected = 0.5 * softened_kl(student, teacher.net(tasks.X), 2.0) + 0.5 * hard
+    assert tasks.record(run).loss == pytest.approx(float(expected), rel=1e-5)
+
+
+def test_kd_objective_alpha_0_takes_no_update_on_an_all_ignored_batch(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(), tasks.categorical(seed=1)
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, objective=kd_objective(teacher, alpha=0.0))
+    assert tasks.moved(trained, base) == 0.0
+    assert (tasks.record(run).status, tasks.record(run).loss) == ("empty", None)
+
+
+@pytest.mark.parametrize("ignore_index", [-1, 255])
+def test_kd_objective_masks_an_out_of_range_ignore_index(ignore_index, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(ignore_index), tasks.categorical(ignore_index, seed=1)
+    Y = torch.tensor([ignore_index, 1, 2, ignore_index, 1, 2])
+    reference, _ = tasks.fit(base, Y)
+    trained, _ = tasks.fit(base, Y, objective=kd_objective(teacher, alpha=0.0))
+    torch.testing.assert_close(tasks.weights(trained), tasks.weights(reference))
+    _, run = tasks.fit(base, Y, objective=kd_objective(teacher, alpha=0.5))  # no IndexError
+    assert tasks.record(run).count == 4
+
+
+def test_kd_objective_masks_nan_multilabel_targets(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    task = TaskSpec.multilabel(3)
+    base = tasks.model(task, loss=Losses.BINARY_CROSS_ENTROPY)
+    teacher = tasks.model(task, loss=Losses.BINARY_CROSS_ENTROPY, seed=1)
+    Y = tasks.multilabel_targets()
+    _, reference = tasks.fit(base, Y)
+    _, run = tasks.fit(base, Y, objective=kd_objective(teacher, alpha=0.0))  # no non-finite term
+    assert tasks.record(run).loss == pytest.approx(tasks.record(reference).loss)
+
+
+def test_kd_objective_refuses_a_regression_task_before_any_run(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    regression = dict(loss=Losses.MEAN_SQUARED_ERROR, output_dim=2)
+    base = tasks.model(TaskSpec.regression(2), **regression)
+    teacher = tasks.model(TaskSpec.regression(2), seed=1, **regression)
+    with pytest.raises(TaskValidationError) as caught:
+        tasks.fit(base, torch.randn(6, 2), objective=kd_objective(teacher, alpha=0.0))
+    message = str(caught.value)
+    assert "kd_objective" in message and "regression task" in message
+    assert "declare the task" not in message and "NNModelParams(task=" not in message
+    assert tasks.no_run_left(tmp_path)
+
+
+def test_kd_objective_alpha_1_returns_only_the_distillation_term():
+    from nnx.objectives import ObjectiveContext
+
+    base, teacher = tasks.model(None), tasks.model(None, seed=1)
+    result = kd_objective(teacher, alpha=1.0)(
+        ObjectiveContext(model=base, batch=(tasks.X, torch.full((6,), -1)), epoch_idx=0, batch_idx=0)
+    )
+    assert [term.name for term in result.terms] == ["distillation"]
+
+
+@pytest.mark.parametrize("nonfinite", ["fail", "skip"])
+@pytest.mark.parametrize("placeholder", ["-1", "nan"])
+def test_kd_objective_alpha_1_trains_like_the_kd_step_on_placeholder_labels(
+    placeholder, nonfinite, tmp_path, monkeypatch
+):
+    from nnx import kd_train_step_factory
+
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.model(None), tasks.model(None, seed=1)
+    Y = torch.full((6,), -1) if placeholder == "-1" else torch.full((6, 3), float("nan"))
+    step, _ = tasks.fit(base, Y, lr=0.1, train_step_fn=kd_train_step_factory(teacher, alpha=1.0))
+    objective, _ = tasks.fit(base, Y, lr=0.1, objective=kd_objective(teacher, alpha=1.0, nonfinite=nonfinite))
+    assert tasks.moved(objective, base) > 0.0
+    torch.testing.assert_close(tasks.weights(objective), tasks.weights(step))
