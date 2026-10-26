@@ -15087,9 +15087,10 @@ Returns:
     A ``TrainStepFn`` suitable for ``NNModel.train(..., train_step_fn=...)``.
 
 Raises:
-    ValueError: if ``alpha`` is not in [0, 1], or ``temperature`` ≤ 0.
-        At the first step: a single-logit head with ``alpha > 0`` (no
-        class distribution to distill), or a teacher of another shape.
+    ValueError: if ``alpha`` is not a real in [0, 1], or ``temperature``
+        not a finite real > 0 (a ``bool`` is refused). At the first
+        step: a single-logit head with ``alpha > 0`` (no class
+        distribution to distill), or a teacher of another shape.
     TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
         records train through ``TeacherDataset.objective()``).
 ```
@@ -15143,8 +15144,9 @@ Returns:
     train_step_fn=...)``.
 
 Raises:
-    ValueError: if ``alpha`` or ``beta`` is not in [0, 1], if
-        ``temperature`` ≤ 0, or if ``auxiliary_layers`` is empty.
+    ValueError: if ``alpha`` or ``beta`` is not a real in [0, 1], if
+        ``temperature`` is not a finite real > 0 (a ``bool`` is refused),
+        or if ``auxiliary_layers`` is empty.
         On the first batch, if any paired teacher/student
         activation shapes disagree, or if the head has a single logit
         and ``alpha > 0`` (no class distribution to distill).
@@ -15196,13 +15198,14 @@ Returns:
     KD run that used generation ``k-1``'s model as teacher.
 
 Raises:
-    ValueError: if ``generations < 1``; if ``generations > 1`` and the
-        optimizer accumulates gradients, ``alpha`` / ``temperature``
-        are out of range, the head has a single output with
-        ``alpha > 0`` (no class distribution to distill; the width is
-        read from the net's ``params.output_dim`` or from the last layer
-        of an ``nn.Sequential``), or the net is a ``TransformerNN``
-        (sequence output). Nothing is trained then. Another module's
+    ValueError: if ``generations`` is not an integer ``>= 1`` (a
+        ``bool`` included); if ``generations > 1`` and the optimizer
+        accumulates gradients, ``alpha`` / ``temperature`` are out of
+        range or not real numbers (a ``bool`` included), the head has a
+        single output with ``alpha > 0`` (no class distribution to
+        distill; the width is read from the net's ``params.output_dim``
+        or from the last layer of an ``nn.Sequential``), or the net is a
+        ``TransformerNN`` (sequence output). Nothing is trained then. Another module's
         single-output head is refused by the KD step at generation 1,
         after generation 0 trained.
     TypeError: if the training loader holds stored teacher records
@@ -15593,7 +15596,8 @@ Returns:
     ``__getitem__`` returns ``(view1, view2)`` instead.
 
 Raises:
-    ValueError: if ``temperature`` <= 0.
+    ValueError: if ``temperature`` is not a finite real > 0 (a
+        ``bool`` included).
 ```
 
 
@@ -15618,7 +15622,8 @@ Returns:
     Scalar loss tensor (mean across the 2B positions in the batch).
 
 Raises:
-    ValueError: if shapes mismatch, ``temperature`` ≤ 0, or the
+    ValueError: if shapes mismatch, ``temperature`` is not a finite
+        real > 0 (a ``bool`` included), or the
         batch has fewer than 2 pairs (no negatives to contrast).
 ```
 
@@ -15650,7 +15655,9 @@ Returns:
     classification loss, not just CrossEntropy).
 
 Raises:
-    ValueError: if ``alpha`` <= 0.
+    ValueError: if ``alpha`` is not a finite real ``> 0`` (a ``bool``
+        included). At step time, before any mixing or RNG draw, on
+        non-floating input such as token ids.
 ```
 
 
@@ -15677,7 +15684,8 @@ Returns:
     spatial cut isn't well-defined without H and W.
 
 Raises:
-    ValueError: if ``alpha`` <= 0.
+    ValueError: if ``alpha`` is not a finite real ``> 0`` (a ``bool``
+        included). At step time, on input that is not 4D.
 ```
 
 
@@ -15720,7 +15728,8 @@ Returns:
     aux loss is 0 and the step is exactly supervised.
 
 Raises:
-    ValueError: if ``aux_loss_weight < 0``.
+    ValueError: if ``aux_loss_weight`` is not a finite real ``>= 0``
+        (a ``bool`` included).
 ```
 
 
@@ -15780,7 +15789,8 @@ Returns:
     A ``TrainStepFn`` for ``NNModel.train(..., train_step_fn=...)``.
 
 Raises:
-    ValueError: when ``ema_momentum`` is outside ``[0, 1)``; at the
+    ValueError: when ``ema_momentum`` is not a real in ``[0, 1)`` (a
+        ``bool`` included); at the
         first step, when the predictor is not a submodule of
         ``model.net`` (it would never be updated).
 ```
@@ -16068,7 +16078,8 @@ Args:
         default matches.
 
 Raises:
-    ValueError: when ``momentum`` is outside ``[0, 1)``.
+    ValueError: when ``momentum`` is not a real in ``[0, 1)`` (a
+        ``bool`` included).
     KeyError: when a target parameter has no same-named source
         parameter (the name-keyed update contract).
 ```
@@ -16118,7 +16129,8 @@ Returns:
 Raises:
     ValueError: when ``grid_size**2 != n_patches``; when
         ``block_scale`` is not an ordered pair in ``(0, 1)`` or
-        ``block_aspect`` not an ordered pair of finite positive ratios; or
+        ``block_aspect`` not an ordered pair of finite positive real
+        ratios (a ``bool`` is refused); or
         for a 1x1 grid (no room for a context). A block is never
         empty and never the whole grid: each side is at least one
         patch, a side longer than the grid is clipped to it, and a
@@ -16287,8 +16299,9 @@ Returns:
 
 Raises:
     ValueError: on a dataset of fewer than 2 pairs, batch_size < 2,
-        non-positive epochs, non-positive temperature or ``lr``, or a
-        non-positive ``grad_clip_norm`` — NT-Xent needs at least one
+        non-positive epochs, a ``temperature``, ``lr`` or
+        ``grad_clip_norm`` that is not a finite positive real (a
+        ``bool`` included) — NT-Xent needs at least one
         negative, so both the dataset and every batch must carry
         >= 2 pairs.
     FloatingPointError: when the contrastive loss goes non-finite
@@ -16368,7 +16381,8 @@ Returns:
     A ``TrainStepFn`` suitable for ``NNModel.train(..., train_step_fn=...)``.
 
 Raises:
-    ValueError: at factory-build time if ``temperature`` ≤ 0.
+    ValueError: at factory-build time if ``temperature`` is not a
+        finite real > 0 (a ``bool`` included).
 ```
 
 

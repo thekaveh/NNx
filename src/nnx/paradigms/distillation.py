@@ -26,12 +26,11 @@ stays one.
 
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn.functional as F
 
 from .._step_helpers import finalize_step, imperative_step, predicted_labels, require_row_logits, softened_kl
+from .._validation import require_finite_real
 from ..nn.nn_model import (
     NNModel,
     TrainStepContext,
@@ -45,13 +44,13 @@ from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
 
 
-def _check_kd_weights(alpha: float, temperature: float) -> None:
+def _check_kd_weights(alpha: float, temperature: float, *, owner: str) -> None:
     """Validate Hinton KD's mixing weight and temperature — shared by
-    :func:`kd_train_step_factory` and ``nnx.objectives.KDObjective``."""
-    if not (0.0 <= alpha <= 1.0):
-        raise ValueError(f"alpha must be in [0, 1], got {alpha}")
-    if not math.isfinite(temperature) or temperature <= 0:
-        raise ValueError(f"temperature must be positive and finite, got {temperature}")
+    :func:`kd_train_step_factory`, ``nnx.objectives.KDObjective`` and
+    ``born_again_train``. A ``bool`` is refused: ``True`` would pass both
+    ranges and train as ``1.0``."""
+    require_finite_real(alpha, "alpha", owner=owner, minimum=0, maximum=1)
+    require_finite_real(temperature, "temperature", owner=owner, minimum=0, exclusive_min=True)
 
 
 def _freeze_teacher(teacher: NNModel) -> None:
@@ -101,13 +100,14 @@ def kd_train_step_factory(
         A ``TrainStepFn`` suitable for ``NNModel.train(..., train_step_fn=...)``.
 
     Raises:
-        ValueError: if ``alpha`` is not in [0, 1], or ``temperature`` ≤ 0.
-            At the first step: a single-logit head with ``alpha > 0`` (no
-            class distribution to distill), or a teacher of another shape.
+        ValueError: if ``alpha`` is not a real in [0, 1], or ``temperature``
+            not a finite real > 0 (a ``bool`` is refused). At the first
+            step: a single-logit head with ``alpha > 0`` (no class
+            distribution to distill), or a teacher of another shape.
         TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
             records train through ``TeacherDataset.objective()``).
     """
-    _check_kd_weights(alpha, temperature)
+    _check_kd_weights(alpha, temperature, owner="kd_train_step_factory")
     _freeze_teacher(teacher)
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
@@ -197,20 +197,19 @@ def feature_kd_train_step_factory(
         train_step_fn=...)``.
 
     Raises:
-        ValueError: if ``alpha`` or ``beta`` is not in [0, 1], if
-            ``temperature`` ≤ 0, or if ``auxiliary_layers`` is empty.
+        ValueError: if ``alpha`` or ``beta`` is not a real in [0, 1], if
+            ``temperature`` is not a finite real > 0 (a ``bool`` is refused),
+            or if ``auxiliary_layers`` is empty.
             On the first batch, if any paired teacher/student
             activation shapes disagree, or if the head has a single logit
             and ``alpha > 0`` (no class distribution to distill).
         TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
             records train through ``TeacherDataset.objective()``).
     """
-    if not (0.0 <= alpha <= 1.0):
-        raise ValueError(f"alpha must be in [0, 1], got {alpha}")
-    if not (0.0 <= beta <= 1.0):
-        raise ValueError(f"beta must be in [0, 1], got {beta}")
-    if not math.isfinite(temperature) or temperature <= 0:
-        raise ValueError(f"temperature must be positive and finite, got {temperature}")
+    owner = "feature_kd_train_step_factory"
+    require_finite_real(alpha, "alpha", owner=owner, minimum=0, maximum=1)
+    require_finite_real(beta, "beta", owner=owner, minimum=0, maximum=1)
+    require_finite_real(temperature, "temperature", owner=owner, minimum=0, exclusive_min=True)
     if not auxiliary_layers:
         raise ValueError(
             "auxiliary_layers must be a non-empty mapping of teacher_layer_name -> student_layer_name; got empty dict"
