@@ -313,11 +313,24 @@ def test_a_planned_resume_is_refused_before_any_trial(on_train):
     assert runs_on_disk() == before
 
 
-def test_a_trial_plan_that_resumes_statefully_stops_the_search():
-    """#505: apply() returning a stateful resume is a configuration error."""
+def test_a_trial_plan_that_resumes_statefully_stops_the_search(tmp_path):
+    """#505: apply() returning a stateful resume is a configuration error:
+    the trial is recorded failed and counts against the budget, and no fit
+    runs."""
     parent = plan().fit().run
+    storage = f"sqlite:///{tmp_path / 'resume.db'}"
+    before = runs_on_disk()
     with pytest.raises(ValueError, match="resume_mode='auto'"):
-        run(apply=lambda p, q: with_lr(p, q).resuming(parent.id))
+        run(
+            apply=lambda p, q: with_lr(p, q).resuming(parent.id),
+            storage=storage,
+            name="resume",
+            budget=SearchBudget(trials=3),
+        )
+    (trial,) = optuna.load_study(study_name="resume", storage=storage).trials  # one trial spent, then stopped
+    assert trial.state == optuna.trial.TrialState.FAIL
+    assert trial.user_attrs["reason"] == "config_error:ValueError"
+    assert runs_on_disk() == before
 
 
 def test_a_stored_study_over_another_resume_is_refused_before_any_trial(tmp_path):
