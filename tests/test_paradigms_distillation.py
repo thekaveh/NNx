@@ -343,7 +343,8 @@ def test_kd_hard_term_scores_only_the_non_ignored_rows(tmp_path, monkeypatch):
 def test_kd_alpha_0_takes_no_update_on_an_all_ignored_batch(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     base, teacher = tasks.categorical(), tasks.categorical(seed=1)
-    trained, run = tasks.fit(base, tasks.ALL_IGNORED, train_step_fn=kd_train_step_factory(teacher, alpha=0.0))
+    step = kd_train_step_factory(teacher, alpha=0.0)
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, weight_decay=tasks.DECAY, train_step_fn=step)
     assert tasks.moved(trained, base) == 0.0
     record = tasks.record(run)
     assert (record.kind, record.count, record.status, record.loss) == ("categorical", 0, "empty", None)

@@ -2,6 +2,8 @@
 
 Each test deep-copies one base model, trains it for one epoch on one batch
 with plain SGD and compares the weights and records with the default step's.
+The no-update tests add weight decay (:data:`DECAY`), which moves the weights
+on any optimizer step, so they catch a step taken on zero gradients.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ X = torch.randn(6, 4, generator=torch.Generator().manual_seed(0))
 IMAGES = torch.randn(6, 1, 8, 8, generator=torch.Generator().manual_seed(1))
 MIXED = torch.tensor([0, 1, 2, 0, 1, 2])  # rows 0 and 3 are ignored with ignore_index=0
 ALL_IGNORED = torch.zeros(6, dtype=torch.long)
+DECAY = 0.1  # SGD weight decay for the no-update tests
 _RUNS = itertools.count()  # a distinct run id per fit (a freed step function's repr can recur)
 
 
@@ -62,15 +65,28 @@ def categorical(ignore_index: int = 0, **kw: Any) -> NNModel:
     return model(TaskSpec.categorical(3, ignore_index=ignore_index), **kw)
 
 
-def fit(base: NNModel, Y: torch.Tensor, *, inputs: torch.Tensor = X, lr: float = 0.5, **kw: Any) -> tuple[NNModel, Any]:
-    """Train a deep copy of ``base`` for one epoch on ``(inputs, Y)``; ``kw``
-    are the ``NNModel.train`` hooks (``train_step_fn`` / ``objective``)."""
+def fit(
+    base: NNModel,
+    Y: torch.Tensor | tuple[torch.Tensor, ...],
+    *,
+    inputs: torch.Tensor = X,
+    lr: float = 0.5,
+    momentum: float = 0.0,
+    weight_decay: float = 0.0,
+    **kw: Any,
+) -> tuple[NNModel, Any]:
+    """Train a deep copy of ``base`` for one epoch on ``(inputs, Y)`` (one
+    batch per target when ``Y`` is a tuple); ``kw`` are the ``NNModel.train``
+    hooks (``train_step_fn`` / ``objective``). ``weight_decay > 0`` moves the
+    weights on any optimizer step, even one with zero gradients, so a
+    no-update test can tell a skipped step from a zero-gradient one."""
     trained = copy.deepcopy(base)
+    targets = Y if isinstance(Y, tuple) else (Y,)
     run = trained.train(
         params=NNTrainParams(
             n_epochs=1,
-            train_loader=[(inputs, Y)],
-            optim=NNOptimParams.builder().sgd(max_lr=lr, momentum=0.0).build(),
+            train_loader=[(inputs, target) for target in targets],
+            optim=NNOptimParams.builder().sgd(max_lr=lr, momentum=momentum, weight_decay=weight_decay).build(),
         ),
         salt=f"task-steps-{next(_RUNS)}",
         **kw,

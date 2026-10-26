@@ -519,9 +519,27 @@ def test_moe_step_at_weight_0_masks_ignored_rows_as_the_default_step(net, tmp_pa
 def test_moe_step_at_weight_0_takes_no_update_on_an_all_ignored_batch(net, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     base = tasks.categorical(net=net)
-    trained, run = tasks.fit(base, tasks.ALL_IGNORED, train_step_fn=moe_train_step_factory(aux_loss_weight=0.0))
+    step = moe_train_step_factory(aux_loss_weight=0.0)
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, weight_decay=tasks.DECAY, train_step_fn=step)
     assert tasks.moved(trained, base) == 0.0
     assert (tasks.record(run).status, tasks.record(run).loss) == ("empty", None)
+
+
+def test_moe_step_without_moe_layers_takes_no_update_on_an_all_ignored_batch(tmp_path, monkeypatch):
+    # The default aux_loss_weight > 0 on a net with no MoE layer: no router
+    # ran, so no aux loss trains and the all-masked batch takes no step.
+    monkeypatch.chdir(tmp_path)
+    base = tasks.categorical(net=Nets.FEED_FWD)
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, weight_decay=tasks.DECAY, train_step_fn=moe_train_step_factory())
+    assert tasks.moved(trained, base) == 0.0
+    assert (tasks.record(run).status, tasks.record(run).loss) == ("empty", None)
+    # After a mixed batch the momentum buffer is non-zero: a step on the
+    # masked batch would still move the weights away from the default step's.
+    batches = (tasks.MIXED, tasks.ALL_IGNORED)
+    reference, reference_run = tasks.fit(base, batches, momentum=0.9)
+    trained, run = tasks.fit(base, batches, momentum=0.9, train_step_fn=moe_train_step_factory())
+    torch.testing.assert_close(tasks.weights(trained), tasks.weights(reference))
+    assert tasks.record(run).loss == pytest.approx(tasks.record(reference_run).loss)
 
 
 def test_moe_step_trains_its_router_on_an_all_ignored_batch(tmp_path, monkeypatch):

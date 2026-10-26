@@ -462,7 +462,7 @@ def test_feature_kd_takes_no_update_on_an_all_ignored_batch(tmp_path, monkeypatc
     monkeypatch.chdir(tmp_path)
     base, teacher = tasks.categorical(), tasks.categorical(seed=1)
     step = feature_kd_train_step_factory(teacher, auxiliary_layers=PAIRS, alpha=0.0, beta=0.0)
-    trained, run = tasks.fit(base, tasks.ALL_IGNORED, train_step_fn=step)
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, weight_decay=tasks.DECAY, train_step_fn=step)
     assert tasks.moved(trained, base) == 0.0
     assert (tasks.record(run).status, tasks.record(run).loss) == ("empty", None)
 

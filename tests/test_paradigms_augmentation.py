@@ -435,8 +435,10 @@ def test_mixing_takes_no_update_on_an_all_ignored_batch(name, tmp_path, monkeypa
     monkeypatch.chdir(tmp_path)
     factory, net = STEPS[name]
     base = tasks.categorical(net=net)
-    reference, _ = tasks.fit(base, tasks.ALL_IGNORED, inputs=_inputs(net))
-    trained, run = tasks.fit(base, tasks.ALL_IGNORED, inputs=_inputs(net), train_step_fn=factory())
+    reference, _ = tasks.fit(base, tasks.ALL_IGNORED, inputs=_inputs(net), weight_decay=tasks.DECAY)
+    trained, run = tasks.fit(
+        base, tasks.ALL_IGNORED, inputs=_inputs(net), weight_decay=tasks.DECAY, train_step_fn=factory()
+    )
     assert tasks.moved(reference, base) == 0.0 and tasks.moved(trained, base) == 0.0
     record = tasks.record(run)
     assert (record.kind, record.count, record.status, record.loss) == ("categorical", 0, "empty", None)

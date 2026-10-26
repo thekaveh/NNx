@@ -336,11 +336,11 @@ def test_born_again_checks_its_kd_keywords_before_generation_zero(tmp_path, monk
 # --- a declared TaskSpec (#513) ---------------------------------------------------------------
 
 
-def _task_params(Y: torch.Tensor) -> NNTrainParams:
+def _task_params(Y: torch.Tensor, *, weight_decay: float = 0.0) -> NNTrainParams:
     return NNTrainParams(
         n_epochs=1,
         train_loader=[(task_steps.X, Y)],
-        optim=NNOptimParams.builder().sgd(max_lr=0.5, momentum=0.0).build(),
+        optim=NNOptimParams.builder().sgd(max_lr=0.5, momentum=0.0, weight_decay=weight_decay).build(),
     )
 
 
@@ -365,6 +365,7 @@ def test_born_again_takes_no_update_on_an_all_ignored_batch_in_any_generation(tm
     monkeypatch.chdir(tmp_path)
     model = task_steps.categorical()
     initial = task_steps.weights(model)
-    runs = born_again_train(model, generations=2, train_params=_task_params(task_steps.ALL_IGNORED), alpha=0.0)
-    assert [task_steps.record(run).status for run in runs] == ["empty", "empty"]
+    params = _task_params(task_steps.ALL_IGNORED, weight_decay=task_steps.DECAY)  # any step would move them
+    runs = born_again_train(model, generations=2, train_params=params, alpha=0.0)
+    assert [(task_steps.record(run).status, task_steps.record(run).loss) for run in runs] == [("empty", None)] * 2
     assert torch.equal(task_steps.weights(model), initial)  # generation 1 (the KD step) left them unchanged
