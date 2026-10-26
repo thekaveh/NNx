@@ -1007,3 +1007,40 @@ def test_a_boolean_record_without_p_true_counts_once_across_samples():
     report = evaluate(samples, records, split="test-v1")
     reasons = dict(next(iter(report.slices.values())).coverage.reasons)
     assert list(reasons.values()) == [3] and "p_true" in next(iter(reasons))
+
+
+@pytest.mark.parametrize("kind", ["max_probability", "margin"])
+def test_selective_coverage_of_saturating_float32_logits_matches_the_policy_on_predict_proba(kind):
+    """#514: a policy tuned on float32 ``predict_proba`` scored 0.0 coverage
+    on ``FixedHeadProvider`` records of the same logits (float64 rows below
+    its saturated threshold of 1.0); both now read float64 probabilities."""
+    from nnx.abstention import select_threshold
+
+    model = NNModel(
+        net_params=NNParams(input_dim=1, output_dim=2, hidden_dims=[], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
+            task=TaskSpec.categorical(2, labels=("a", "b")),
+        ),
+    )
+    with torch.no_grad():  # logits [0, x]: the input is the float32 logit gap
+        model.net.layers[0].weight.copy_(torch.tensor([[0.0], [1.0]]))
+        model.net.layers[0].bias.zero_()
+    rng = np.random.default_rng(0)
+    column = lambda gaps: torch.tensor(gaps, dtype=torch.float32).unsqueeze(1)  # noqa: E731
+    x_val = column(np.concatenate([rng.uniform(17, 30, 40), rng.uniform(4, 9, 10)]))  # 40 right, 10 wrong
+    selection = select_threshold(
+        model.predict_proba(x_val), [1] * 40 + [0] * 10, kind=kind, risk_ceiling=0.0, split_id="val", model_id="m"
+    )
+    policy = selection.require()
+    x_new = column(rng.uniform(17, 30, 20))
+    expected = float(policy.apply(model.predict_proba(x_new), model_id="m").accepted.mean())
+    assert expected == 1.0
+    samples = [Sample(f"s{i}", AB, x_new[i], "b") for i in range(20)]
+    records = collect(FixedHeadProvider(model), samples, provider_id="head", budget=Budget(max_calls=20)).records
+    report = evaluate(samples, records, split="test", policy=policy, model_id="m")
+    for name in ("in_family", "family:default", "perturbation:original"):
+        coverage = report.slices[name].metrics["selective_coverage"]
+        assert (coverage.value, coverage.denominator) == (expected, 20), name

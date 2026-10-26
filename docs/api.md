@@ -6493,13 +6493,14 @@ Accept or abstain on every row of ``source``.
 ```text
 ``source`` is a ``CalibratedPrediction`` (the policy's
 ``input_field`` picks its raw or calibrated view), a categorical
-``PredictionResult`` (raw; pass ``model_id=``), or ``(N, C)``
-probabilities with ``labels=`` / ``model_id=`` (and
-``input_field=`` / ``calibrator_id=`` for calibrated ones). The
-declared schema must equal the policy's — otherwise
-:class:`AbstentionSchemaError`, before any probability is read.
-Malformed probabilities raise :class:`AbstentionError`. The input is
-never modified.
+``PredictionResult`` (raw, scored from its logits in float64 — its
+own ``probabilities`` are neither read nor validated; pass
+``model_id=``), or ``(N, C)`` probabilities with ``labels=`` /
+``model_id=`` (and ``input_field=`` / ``calibrator_id=`` for
+calibrated ones), scored as given. The declared schema must equal
+the policy's — otherwise :class:`AbstentionSchemaError`, before any
+probability is read. Malformed probabilities raise
+:class:`AbstentionError`. The input is never modified.
 ```
 
 ##### `nnx.abstention.AbstentionPolicy.state`
@@ -6570,7 +6571,8 @@ A policy applied to ``N`` rows.
 **Details**
 
 ```text
-``probabilities`` is a float64 copy of the field the policy read;
+``probabilities`` is a float64 copy of the field the policy read (for a
+``PredictionResult``, recomputed in float64 from its logits);
 ``prediction`` the first class of maximal probability (a prediction's
 own ``decoded`` class, for a prediction); ``score`` the
 policy score; ``accepted`` whether the row was accepted. The policy's
@@ -6826,7 +6828,8 @@ Choose a ``kind`` threshold on the validation split ``split_id``.
 **Details**
 
 ```text
-``source`` is declared as for :meth:`AbstentionPolicy.apply`; a
+``source`` is declared and read as for :meth:`AbstentionPolicy.apply`
+(a ``PredictionResult`` from its logits in float64); a
 ``CalibratedPrediction`` needs ``input_field=`` to say which of its two
 views to tune on. Every candidate threshold is evaluated: by default
 every distinct score, or, beyond :data:`MAX_DEFAULT_CANDIDATES` of them,
@@ -6943,7 +6946,9 @@ Coverage and selective risk at each candidate threshold, ascending.
 ``source`` is ``(N, C)`` probabilities (the prediction is each row's
 first class of maximal probability), a categorical ``PredictionResult``
 or a ``CalibratedPrediction`` with ``input_field=`` (their own
-``decoded`` classes, as :func:`select_threshold` reads them). By default
+``decoded`` classes, as :func:`select_threshold` reads them; a
+``PredictionResult`` is scored from its logits in float64, its own
+``probabilities`` neither read nor validated). By default
 the candidates are the distinct scores (bounded by
 :data:`MAX_DEFAULT_CANDIDATES`). Coverage never rises as the threshold
 rises; risk is measured at each point, never assumed monotone. The last
@@ -7022,9 +7027,12 @@ Apply ``policy`` to a typed decision (``nnx.decisions``).
 ```text
 ``result`` is a ``ChoiceResult`` or ``ScoreResult``; its option ids, in
 order, are the labels. A provider's distribution is raw, so the policy
-must read ``"probabilities"``; labels and ``model_id`` must equal the
-policy's (:class:`AbstentionSchemaError` otherwise). The result is
-returned unchanged inside a :class:`SelectiveDecision`, accepted or not.
+must read ``"probabilities"``, and it is scored as served:
+``FixedHeadProvider``'s is the float64 softmax of the head's logits,
+what a policy reads from that head's ``PredictionResult``. Labels and
+``model_id`` must equal the policy's (:class:`AbstentionSchemaError`
+otherwise). The result is returned unchanged inside a
+:class:`SelectiveDecision`, accepted or not.
 ```
 
 
