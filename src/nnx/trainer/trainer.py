@@ -496,8 +496,11 @@ class Trainer:
         from ..optimizers import build_optimizer
 
         # FEAT-002: a declared task must be able to score the model's current
-        # loss_fn — checked before any loader is iterated or run reserved.
-        self.model._check_task_preflight()
+        # loss_fn, and a built-in objective must train its kind (#513) —
+        # checked before any loader is iterated or run reserved.
+        self.model._check_task_preflight(
+            objective, hint="train it with supervised_objective() or a custom trainer_step_fn"
+        )
         # FEAT-003: declared metrics and monitors are resolved before any run
         # is reserved; Trainer steps are custom, so only validation metrics
         # (computed by evaluate()) and training loss / error can be tracked.

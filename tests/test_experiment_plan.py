@@ -25,6 +25,7 @@ from nnx.nn.params.nn_model_params import NNModelParams
 from nnx.nn.params.nn_params import NNParams
 from nnx.nn.params.nn_train_params import NNTrainParams
 from nnx.plans import Diagnostic, ExperimentPlan, PlanError, PlanValidation
+from tests import _task_steps as task_steps
 
 NET = NNParams(input_dim=4, output_dim=3, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU)
 MODEL = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
@@ -864,3 +865,56 @@ def test_an_explicit_default_step_plan_validates_like_the_default_step():
     )
     report = _plan().with_train(train).with_step_fns(train_step_fn=default_train_step).validate()
     assert "train.scheduler" not in report.paths and "train.monitor" not in report.paths
+
+
+# --- built-in paradigm steps and a declared TaskSpec (#513) -----------------------------------
+
+
+def _paradigm_steps(task: nnx.TaskSpec, loss: Losses) -> dict[str, dict[str, Any]]:
+    from nnx.objectives import kd_objective
+    from nnx.paradigms import kd_train_step_factory, mixup_train_step_factory, moe_train_step_factory
+
+    teacher = task_steps.model(task, loss=loss, seed=1)
+    return {
+        "kd_train_step_factory": {"train_step_fn": kd_train_step_factory(teacher, alpha=0.0)},
+        "mixup_train_step_factory": {"train_step_fn": mixup_train_step_factory()},
+        "moe_train_step_factory": {"train_step_fn": moe_train_step_factory(aux_loss_weight=0.0)},
+        "kd_objective": {"objective": kd_objective(teacher, alpha=0.0)},
+    }
+
+
+def _hooked(plan: ExperimentPlan, hook: dict[str, Any]) -> ExperimentPlan:
+    return plan.with_objective(hook["objective"]) if "objective" in hook else plan.with_step_fns(**hook)
+
+
+@pytest.mark.parametrize(
+    "name", ["kd_train_step_factory", "mixup_train_step_factory", "moe_train_step_factory", "kd_objective"]
+)
+def test_validate_accepts_and_fit_trains_a_masked_categorical_task_with_a_paradigm_step(name, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    task = nnx.TaskSpec.categorical(3, ignore_index=-1)
+    loader = [(torch.randn(6, 4), torch.tensor([-1, 1, 2, -1, 1, 2]))]
+    plan = _hooked(
+        _plan().with_model(dataclasses.replace(MODEL, task=task)).with_train(NNTrainParams(n_epochs=1)),
+        _paradigm_steps(task, Losses.CROSS_ENTROPY)[name],
+    ).with_data(loader)
+    assert plan.validate().ok
+    assert plan.fit().run.idps[-1].train_edp.count == 4  # train() masks the ignored rows: no IndexError
+
+
+@pytest.mark.parametrize(
+    "name", ["kd_train_step_factory", "mixup_train_step_factory", "moe_train_step_factory", "kd_objective"]
+)
+def test_validate_reports_a_paradigm_step_that_train_refuses_for_a_regression_task(name, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    task = nnx.TaskSpec.regression(3)
+    model = dataclasses.replace(MODEL, loss=Losses.MEAN_SQUARED_ERROR, task=task)
+    hook = _paradigm_steps(task, Losses.MEAN_SQUARED_ERROR)[name]
+    report = _hooked(_plan().with_model(model), hook).validate()
+    path = "objective" if "objective" in hook else "train_step_fn"
+    assert report.paths == (path,)
+    assert name in report.diagnostics[0].message and "regression task" in report.diagnostics[0].message
+    built = task_steps.model(task, loss=Losses.MEAN_SQUARED_ERROR)
+    with pytest.raises(nnx.TaskValidationError, match=f"{name}.*regression task"):  # train() refuses the same
+        task_steps.fit(built, torch.randn(6, 3), **hook)
+    assert task_steps.no_run_left(tmp_path)

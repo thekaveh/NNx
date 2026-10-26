@@ -729,6 +729,45 @@ def test_a_built_in_paradigm_step_reports_its_updates():
     assert monitor.update_history[-1][1] == pytest.approx(0.1 * 0.5**10)
 
 
+@pytest.mark.parametrize("paradigm", ["kd", "feature_kd", "mixup", "cutmix", "moe"])
+def test_a_built_in_step_skipping_every_window_does_not_warn_of_a_missing_report(paradigm):
+    # #513: a declared task's all-masked batch takes no update in a built-in
+    # step, as in the default step: no report is due and none is asked for.
+    from nnx import (
+        cutmix_train_step_factory,
+        feature_kd_train_step_factory,
+        kd_train_step_factory,
+        mixup_train_step_factory,
+        moe_train_step_factory,
+    )
+    from tests import _task_steps as tasks
+
+    net = {"cutmix": Nets.CONV, "moe": Nets.FEED_FWD_MOE}.get(paradigm, Nets.FEED_FWD)
+    model = tasks.categorical(-1, net=net)
+    steps = {
+        "kd": lambda: kd_train_step_factory(tasks.categorical(-1, seed=1), alpha=0.0),
+        "feature_kd": lambda: feature_kd_train_step_factory(
+            tasks.categorical(-1, seed=1), auxiliary_layers={"layers.0": "layers.0"}, alpha=0.0, beta=0.0
+        ),
+        "mixup": lambda: mixup_train_step_factory(),
+        "cutmix": lambda: cutmix_train_step_factory(),
+        "moe": lambda: moe_train_step_factory(aux_loss_weight=0.0),
+    }
+    inputs = tasks.IMAGES if net is Nets.CONV else tasks.X
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)  # no "reported no optimizer update" warning
+        _train(model, epochs=1, loader=[(inputs, torch.full((6,), -1))], accumulate=1, step=steps[paradigm]())
+
+
+def test_a_custom_step_reporting_no_update_still_warns():
+    def step(ctx):
+        ctx.model.net.zero_grad()
+        return NNEvaluationDataPoint(loss=1.0)
+
+    with pytest.warns(UserWarning, match="reported no optimizer update, so the optimizer_update-clock scheduler"):
+        _train(_model(), epochs=1, accumulate=1, step=step)
+
+
 def test_an_nnmodel_step_cannot_report_by_optimizer_name():
     from nnx.nn.nn_model import default_train_step
 

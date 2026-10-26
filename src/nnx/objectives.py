@@ -58,6 +58,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 import torch
 
 from ._update_engine import REDUCTIONS, UpdateEvent, check_nonfinite_policy
+from .tasks import _StepTasks
 
 if TYPE_CHECKING:
     from .nn.nn_model import NNModel
@@ -283,6 +284,12 @@ def _supervised_terms(model: Any, logits: torch.Tensor, target: torch.Tensor, na
     from .nn.nn_model import _loss_terms
 
     _, numerator, denominator = _loss_terms(model.loss_fn, logits, target)
+    return _loss_term(name, numerator, denominator, weight)
+
+
+def _loss_term(name: str, numerator: torch.Tensor, denominator: Optional[float], weight: float = 1.0) -> LossTerm:
+    """A normalized term over ``denominator`` samples, or a summed one when
+    the loss reduces by sum (``denominator`` ``None``)."""
     if denominator is None:
         return LossTerm(name, numerator, None, "sum", weight)
     return LossTerm(name, numerator, denominator, "mean", weight)
@@ -308,7 +315,7 @@ class SupervisedObjective(Objective):
             _, target, logits = model._fwd_outputs(ctx.batch)
             output, target, valid = adapter.prepare(ctx.full_precision(logits), target)
             _, numerator, weight = adapter.loss_terms(model.loss_fn, output, target, valid)
-            term = LossTerm("loss", numerator, None, "sum") if weight is None else LossTerm("loss", numerator, weight)
+            term = _loss_term("loss", numerator, weight)
             accumulator = adapter.accumulator(keep_arrays=bool(ctx.extra_metrics))
             with torch.no_grad():
                 accumulator.update(output.detach(), target, valid)
@@ -345,9 +352,22 @@ class KDObjective(Objective):
     the rows are split into microbatches or targets are ignored. The teacher
     is frozen and put in eval mode once, as ``kd_train_step_factory`` does,
     and never updated. At ``alpha=0`` only the ``"supervised"`` term is
-    returned. An all-masked microbatch at ``alpha=0`` records like
-    :class:`SupervisedObjective`'s, never NaN.
+    returned, and at ``alpha=1`` only the ``"distillation"`` term (the
+    labels are not scored, so placeholder labels train as with
+    ``kd_train_step_factory(alpha=1)``). An all-masked microbatch at
+    ``alpha=0`` records like :class:`SupervisedObjective`'s, never NaN.
+
+    A model that declares a categorical or multilabel ``TaskSpec`` scores the
+    ``"supervised"`` term through its task adapter, as
+    :class:`SupervisedObjective` does: ignored and NaN targets are masked, and
+    the record is the task's. The labels are validated against the task even
+    at ``alpha=1``, so a placeholder label must then be the task's
+    ``ignore_index`` (NaN for a multilabel task). A regression task is
+    refused before any run is reserved.
     """
+
+    # The task kinds the "supervised" term is scored for (#513): nnx.tasks.STEP_TASKS.
+    __nnx_step_tasks__ = _StepTasks("kd_objective")
 
     def __init__(self, teacher: NNModel, *, alpha: float = 0.5, temperature: float = 4.0, nonfinite: str = "fail"):
         from .paradigms.distillation import _check_kd_weights, _freeze_teacher
@@ -373,8 +393,7 @@ class KDObjective(Objective):
                 teacher_precision.output(self.teacher._net_forward((X.to(self.teacher.device),), {})).to(model.device)
             )
         rows = int(student.shape[0])
-        hard = _supervised_terms(model, student, Y, "supervised", 1.0 - self.alpha)
-        terms: tuple[LossTerm, ...] = (hard,)
+        terms: tuple[LossTerm, ...] = ()
         if self.alpha > 0:  # alpha=0 is plain supervised training: no soft term (a binary head has none)
             soft = LossTerm(
                 "distillation",
@@ -383,7 +402,22 @@ class KDObjective(Objective):
                 "mean",
                 self.alpha,
             )
-            terms = (soft, hard)
+            terms = (soft,)
+        adapter = getattr(model, "task_adapter", None)
+        if adapter is not None:
+            # A declared task (#513): the labels over its valid targets, validated before any backward.
+            output, target, valid = adapter.prepare(student, Y)
+            if self.alpha < 1:
+                _, numerator, weight = adapter.loss_terms(model.loss_fn, output, target, valid)
+                terms = (*terms, _loss_term("supervised", numerator, weight, 1.0 - self.alpha))
+            accumulator = adapter.accumulator(keep_arrays=bool(ctx.extra_metrics))
+            with torch.no_grad():
+                accumulator.update(output.detach(), target, valid)
+            return ObjectiveResult(
+                terms, accumulator.result(loss=ObjectiveResult(terms).loss(), extra_metrics=ctx.extra_metrics)
+            )
+        if self.alpha < 1:  # alpha=1 is pure distillation: the labels are not scored (placeholders train)
+            terms = (*terms, _supervised_terms(model, student, Y, "supervised", 1.0 - self.alpha))
         record = _classification_edp_for_loss(
             loss_fn=model.loss_fn,
             target=Y,

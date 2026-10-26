@@ -34,7 +34,7 @@ from ..nn.nn_model import NNModel
 from ..nn.params.nn_run import NNRun
 from ..nn.params.nn_train_params import NNTrainParams
 from ..precision import PrecisionUnsupportedError, resolve_precision
-from .distillation import _check_kd_weights, kd_train_step_factory
+from .distillation import _KD_STEP_TASKS, _check_kd_weights, kd_train_step_factory
 
 
 def born_again_train(
@@ -72,6 +72,11 @@ def born_again_train(
             generations ≥ 1 (``alpha``, ``temperature``). Ignored on
             generation 0 (no teacher).
 
+    A model that declares a categorical or multilabel ``TaskSpec`` keeps its
+    task in every generation: generation 0's default step and the later
+    generations' KD step both leave ignored and NaN targets out of the
+    hard-label loss, and a batch with nothing to learn from takes no update.
+
     Returns:
         A list of :class:`NNRun` objects, one per generation, in order.
         ``runs[0]`` is the plain run; ``runs[k]`` for ``k > 0`` is the
@@ -88,6 +93,10 @@ def born_again_train(
             ``TransformerNN`` (sequence output). Nothing is trained then.
             Another module's single-output head is refused by the KD step
             at generation 1, after generation 0 trained.
+        TaskValidationError: (a ``ValueError``) if ``generations > 1`` and
+            the model declares a task the KD step does not train (a
+            ``TaskSpec.regression``): refused before generation 0 trains, so
+            no run directory or ``runs/best`` is written.
         TypeError: if the training loader holds stored teacher records
             (for any ``generations``), or if ``generations > 1`` and a
             keyword is not a :func:`kd_train_step_factory` parameter.
@@ -150,6 +159,12 @@ def born_again_train(
                 "born_again_train distills generations 1+ over class logits, but the head has a single output; "
                 "use a 2-class head or generations=1"
             )
+        # The KD step's own task rule (#513): a kind it does not train would be
+        # refused at generation 1, after generation 0 trained.
+        _KD_STEP_TASKS.check(
+            getattr(model.task_adapter, "spec", None),
+            hint="born_again_train distills generations 1+ with it; use generations=1",
+        )
     runs: list[NNRun] = []
     teacher: NNModel | None = None
     initial_state = copy.deepcopy(model.net.state_dict())

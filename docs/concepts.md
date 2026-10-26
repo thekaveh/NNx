@@ -734,7 +734,9 @@ NNModelParams(net=Nets.FEED_FWD, loss=Losses.CROSS_ENTROPY, task=TaskSpec.catego
 ```
 
 The task's adapter (`model.task_adapter`) then owns these concerns for the
-default step, `evaluate()`, `predict()` and `predict_proba()`:
+default step, `evaluate()`, `predict()` and `predict_proba()`, and for the
+hard-label term of the built-in paradigm steps (see **Paradigm steps**
+below):
 
 - **Validation.** Each batch's outputs and targets are checked for the
   declared shape, dtype and value range before any backward pass or
@@ -785,6 +787,23 @@ default step, `evaluate()`, `predict()` and `predict_proba()`:
   `edp.metrics`. Regression records carry `mse` / `mae` in `edp.metrics` and
   leave the classification fields and `error` as `None`. So BEST selection,
   `ReduceLROnPlateau` and `EarlyStopping` track the loss.
+- **Paradigm steps.** `kd_train_step_factory`,
+  `feature_kd_train_step_factory`, `moe_train_step_factory`,
+  `mixup_train_step_factory`, `cutmix_train_step_factory` and `kd_objective`
+  score their hard-label term through the adapter for a categorical or
+  multilabel task. Each batch is validated before any backward pass, ignored
+  and NaN targets are masked as in the default step, and the record is the
+  task's. Mixup and CutMix prepare each of their two targets and mix the
+  record's metrics by λ. The distillation, feature and MoE auxiliary terms
+  keep every row. A batch with nothing to learn from (every target masked and
+  every other term of weight 0) takes no update and records
+  `status="empty"`. A regression task is refused with `TaskValidationError`
+  before any run is reserved: by `NNModel.train`, `Trainer.train`,
+  `ExperimentPlan.validate()` and, before generation 0, `born_again_train`.
+  `kd_objective(alpha=1)` scores no labels, so placeholder labels train as
+  with `kd_train_step_factory(alpha=1)`. With a declared task both still
+  validate each batch's labels, so a placeholder must be the task's
+  `ignore_index` (NaN for multilabel). Other custom steps are not adapted.
 - **Loggers and user metrics.** TensorBoard / W&B receive `mse`, `mae`, …
   directly and never a fabricated or zero-filled classification field. User
   `extra_metrics` are called as `fn(y_true, y_pred)` on the valid targets

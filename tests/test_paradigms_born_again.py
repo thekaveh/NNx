@@ -30,10 +30,13 @@ from nnx import (
     NNSchedulerParams,
     NNTrainParams,
     Optims,
+    TaskSpec,
+    TaskValidationError,
     born_again_train,
     set_seed,
 )
 from nnx.paradigms import born_again as born_again_module
+from tests import _task_steps as task_steps
 
 
 def _make_classifier(hidden: int = 16) -> NNModel:
@@ -328,3 +331,41 @@ def test_born_again_checks_its_kd_keywords_before_generation_zero(tmp_path, monk
     with pytest.raises(error):
         born_again_train(_make_classifier(), train_params=_train_params(), generations=2, **kwargs)
     assert not (tmp_path / "runs").exists()
+
+
+# --- a declared TaskSpec (#513) ---------------------------------------------------------------
+
+
+def _task_params(Y: torch.Tensor, *, weight_decay: float = 0.0) -> NNTrainParams:
+    return NNTrainParams(
+        n_epochs=1,
+        train_loader=[(task_steps.X, Y)],
+        optim=NNOptimParams.builder().sgd(max_lr=0.5, momentum=0.0, weight_decay=weight_decay).build(),
+    )
+
+
+@pytest.mark.parametrize("generations", [2, 3])
+def test_born_again_refuses_a_regression_task_before_generation_0(generations, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    model = task_steps.model(TaskSpec.regression(2), loss=Losses.MEAN_SQUARED_ERROR, output_dim=2)
+    with pytest.raises(TaskValidationError, match="kd_train_step_factory.*regression task.*generations=1"):
+        born_again_train(model, generations=generations, train_params=_task_params(torch.randn(6, 2)), alpha=0.0)
+    assert task_steps.no_run_left(tmp_path)  # neither generation 0's run nor runs/best
+    assert len(born_again_train(model, generations=1, train_params=_task_params(torch.randn(6, 2)))) == 1
+
+
+def test_born_again_masks_an_out_of_range_ignore_index_in_every_generation(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Y = torch.tensor([-1, 1, 2, -1, 1, 2])
+    runs = born_again_train(task_steps.categorical(-1), generations=3, train_params=_task_params(Y))  # no IndexError
+    assert [task_steps.record(run).count for run in runs] == [4, 4, 4]
+
+
+def test_born_again_takes_no_update_on_an_all_ignored_batch_in_any_generation(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    model = task_steps.categorical()
+    initial = task_steps.weights(model)
+    params = _task_params(task_steps.ALL_IGNORED, weight_decay=task_steps.DECAY)  # any step would move them
+    runs = born_again_train(model, generations=2, train_params=params, alpha=0.0)
+    assert [(task_steps.record(run).status, task_steps.record(run).loss) for run in runs] == [("empty", None)] * 2
+    assert torch.equal(task_steps.weights(model), initial)  # generation 1 (the KD step) left them unchanged
