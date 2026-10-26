@@ -20,9 +20,12 @@ from nnx import (
     NNSchedulerParams,
     NNTrainParams,
     Optims,
+    TaskSpec,
+    TaskValidationError,
     feature_kd_train_step_factory,
     set_seed,
 )
+from tests import _task_steps as tasks
 
 
 def _make_classifier(hidden: int) -> NNModel:
@@ -436,3 +439,73 @@ def test_feature_kd_student_activations_approach_teacher(tmp_path, monkeypatch):
     # We just sanity-check the init re-load works; the contrast is
     # tested implicitly by the strict inequality above.
     _ = init_state  # kept for diagnostic readability
+
+
+# --- a declared TaskSpec (#513) ---------------------------------------------------------------
+
+PAIRS = {"layers.0": "layers.0"}
+
+
+def test_feature_kd_alpha_0_beta_0_masks_ignored_rows_as_the_default_step(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(), tasks.categorical(seed=1)
+    step = feature_kd_train_step_factory(teacher, auxiliary_layers=PAIRS, alpha=0.0, beta=0.0)
+    reference, reference_run = tasks.fit(base, tasks.MIXED)
+    trained, run = tasks.fit(base, tasks.MIXED, train_step_fn=step)
+    torch.testing.assert_close(tasks.weights(trained), tasks.weights(reference))
+    got = tasks.record(run)
+    assert (got.kind, got.count, got.status) == ("categorical", 4, "ok")
+    assert got.loss == pytest.approx(tasks.record(reference_run).loss)
+
+
+def test_feature_kd_takes_no_update_on_an_all_ignored_batch(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(), tasks.categorical(seed=1)
+    step = feature_kd_train_step_factory(teacher, auxiliary_layers=PAIRS, alpha=0.0, beta=0.0)
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, weight_decay=tasks.DECAY, train_step_fn=step)
+    assert tasks.moved(trained, base) == 0.0
+    assert (tasks.record(run).status, tasks.record(run).loss) == ("empty", None)
+
+
+@pytest.mark.parametrize(("alpha", "beta"), [(0.0, 0.5), (0.5, 0.0)])
+def test_feature_kd_soft_or_feature_term_trains_on_an_all_ignored_batch(alpha, beta, tmp_path, monkeypatch):
+    # Either term keeps every row, so a fully masked batch still trains.
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(), tasks.categorical(seed=1)
+    step = feature_kd_train_step_factory(teacher, auxiliary_layers=PAIRS, alpha=alpha, beta=beta)
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, train_step_fn=step)
+    assert tasks.moved(trained, base) > 0.0
+    record = tasks.record(run)
+    assert (record.count, record.status) == (0, "empty")
+    assert record.loss is not None and record.loss > 0.0
+
+
+@pytest.mark.parametrize("ignore_index", [-1, 255])
+def test_feature_kd_masks_an_out_of_range_ignore_index(ignore_index, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(ignore_index), tasks.categorical(ignore_index, seed=1)
+    Y = torch.tensor([ignore_index, 1, 2, ignore_index, 1, 2])
+    _, run = tasks.fit(base, Y, train_step_fn=feature_kd_train_step_factory(teacher, auxiliary_layers=PAIRS))
+    assert tasks.record(run).count == 4  # no IndexError: the ignored rows are masked
+
+
+def test_feature_kd_masks_nan_multilabel_targets(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    task = TaskSpec.multilabel(3)
+    base = tasks.model(task, loss=Losses.BINARY_CROSS_ENTROPY)
+    teacher = tasks.model(task, loss=Losses.BINARY_CROSS_ENTROPY, seed=1)
+    Y = tasks.multilabel_targets()
+    _, reference = tasks.fit(base, Y)
+    step = feature_kd_train_step_factory(teacher, auxiliary_layers=PAIRS, alpha=0.0, beta=0.0)
+    _, run = tasks.fit(base, Y, train_step_fn=step)
+    assert tasks.record(run).loss == pytest.approx(tasks.record(reference).loss)
+
+
+def test_feature_kd_refuses_a_regression_task_before_any_run(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    regression = dict(loss=Losses.MEAN_SQUARED_ERROR, output_dim=2)
+    base = tasks.model(TaskSpec.regression(2), **regression)
+    teacher = tasks.model(TaskSpec.regression(2), seed=1, **regression)
+    with pytest.raises(TaskValidationError, match="feature_kd_train_step_factory.*regression task"):
+        tasks.fit(base, torch.randn(6, 2), train_step_fn=feature_kd_train_step_factory(teacher, auxiliary_layers=PAIRS))
+    assert tasks.no_run_left(tmp_path)

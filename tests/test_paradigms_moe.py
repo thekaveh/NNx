@@ -19,10 +19,13 @@ from nnx import (
     NNSchedulerParams,
     NNTrainParams,
     Optims,
+    TaskSpec,
+    TaskValidationError,
     moe_train_step_factory,
     set_seed,
 )
 from nnx.nn.net.feed_fwd_nn import FeedFwdNN
+from tests import _task_steps as tasks
 
 # -------------------------------------------------------------------------
 # Test net: a tiny classifier whose hidden layer is an MoELinear so the
@@ -493,3 +496,85 @@ def test_moe_supervised_term_uses_normalized_nll():
         model_ce.net.named_parameters(), model_nll.net.named_parameters(), strict=False
     ):
         assert torch.allclose(p_ce, p_nll, atol=1e-6), name
+
+
+# -------------------------------------------------------------------------
+# A declared TaskSpec (#513)
+# -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("net", [Nets.FEED_FWD, Nets.FEED_FWD_MOE])
+def test_moe_step_at_weight_0_masks_ignored_rows_as_the_default_step(net, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = tasks.categorical(net=net)
+    reference, reference_run = tasks.fit(base, tasks.MIXED)
+    trained, run = tasks.fit(base, tasks.MIXED, train_step_fn=moe_train_step_factory(aux_loss_weight=0.0))
+    torch.testing.assert_close(tasks.weights(trained), tasks.weights(reference))
+    got = tasks.record(run)
+    assert (got.kind, got.count, got.status) == ("categorical", 4, "ok")
+    assert got.loss == pytest.approx(tasks.record(reference_run).loss)
+
+
+@pytest.mark.parametrize("net", [Nets.FEED_FWD, Nets.FEED_FWD_MOE])
+def test_moe_step_at_weight_0_takes_no_update_on_an_all_ignored_batch(net, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = tasks.categorical(net=net)
+    step = moe_train_step_factory(aux_loss_weight=0.0)
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, weight_decay=tasks.DECAY, train_step_fn=step)
+    assert tasks.moved(trained, base) == 0.0
+    assert (tasks.record(run).status, tasks.record(run).loss) == ("empty", None)
+
+
+def test_moe_step_without_moe_layers_takes_no_update_on_an_all_ignored_batch(tmp_path, monkeypatch):
+    # The default aux_loss_weight > 0 on a net with no MoE layer: no router
+    # ran, so no aux loss trains and the all-masked batch takes no step.
+    monkeypatch.chdir(tmp_path)
+    base = tasks.categorical(net=Nets.FEED_FWD)
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, weight_decay=tasks.DECAY, train_step_fn=moe_train_step_factory())
+    assert tasks.moved(trained, base) == 0.0
+    assert (tasks.record(run).status, tasks.record(run).loss) == ("empty", None)
+    # After a mixed batch the momentum buffer is non-zero: a step on the
+    # masked batch would still move the weights away from the default step's.
+    batches = (tasks.MIXED, tasks.ALL_IGNORED)
+    reference, reference_run = tasks.fit(base, batches, momentum=0.9)
+    trained, run = tasks.fit(base, batches, momentum=0.9, train_step_fn=moe_train_step_factory())
+    torch.testing.assert_close(tasks.weights(trained), tasks.weights(reference))
+    assert tasks.record(run).loss == pytest.approx(tasks.record(reference_run).loss)
+
+
+def test_moe_step_trains_its_router_on_an_all_ignored_batch(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = tasks.categorical(net=Nets.FEED_FWD_MOE)
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, train_step_fn=moe_train_step_factory(aux_loss_weight=1.0))
+    assert tasks.moved(trained, base) > 0.0  # the weighted aux loss has samples: the router still learns
+    record = tasks.record(run)
+    assert record.status == "empty" and record.loss is not None
+
+
+@pytest.mark.parametrize("ignore_index", [-1, 255])
+def test_moe_step_masks_an_out_of_range_ignore_index(ignore_index, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = tasks.categorical(ignore_index, net=Nets.FEED_FWD_MOE)
+    Y = torch.tensor([ignore_index, 1, 2, ignore_index, 1, 2])
+    reference, _ = tasks.fit(base, Y)
+    trained, _ = tasks.fit(base, Y, train_step_fn=moe_train_step_factory(aux_loss_weight=0.0))
+    torch.testing.assert_close(tasks.weights(trained), tasks.weights(reference))
+    _, run = tasks.fit(base, Y, train_step_fn=moe_train_step_factory())  # no IndexError
+    assert tasks.record(run).count == 4
+
+
+def test_moe_step_masks_nan_multilabel_targets(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = tasks.model(TaskSpec.multilabel(3), loss=Losses.BINARY_CROSS_ENTROPY)
+    Y = tasks.multilabel_targets()
+    _, reference = tasks.fit(base, Y)
+    _, run = tasks.fit(base, Y, train_step_fn=moe_train_step_factory(aux_loss_weight=0.0))
+    assert tasks.record(run).loss == pytest.approx(tasks.record(reference).loss)
+
+
+def test_moe_step_refuses_a_regression_task_before_any_run(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = tasks.model(TaskSpec.regression(2), loss=Losses.MEAN_SQUARED_ERROR, output_dim=2)
+    with pytest.raises(TaskValidationError, match="moe_train_step_factory.*regression task"):
+        tasks.fit(base, torch.randn(6, 2), train_step_fn=moe_train_step_factory())
+    assert tasks.no_run_left(tmp_path)

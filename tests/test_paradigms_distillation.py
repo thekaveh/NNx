@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
@@ -18,9 +19,13 @@ from nnx import (
     NNSchedulerParams,
     NNTrainParams,
     Optims,
+    TaskSpec,
+    TaskValidationError,
     kd_train_step_factory,
     set_seed,
 )
+from nnx._step_helpers import softened_kl
+from tests import _task_steps as tasks
 
 
 def _make_classifier(hidden: int) -> NNModel:
@@ -305,3 +310,95 @@ def test_feature_kd_hard_term_uses_normalized_nll():
         student_ce.net.named_parameters(), student_nll.net.named_parameters(), strict=False
     ):
         assert torch.allclose(p_ce, p_nll, atol=1e-6), name
+
+
+# --- a declared TaskSpec (#513) ---------------------------------------------------------------
+
+
+def test_kd_alpha_0_masks_ignored_rows_as_the_default_step(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(), tasks.categorical(seed=1)
+    reference, reference_run = tasks.fit(base, tasks.MIXED)
+    trained, run = tasks.fit(base, tasks.MIXED, train_step_fn=kd_train_step_factory(teacher, alpha=0.0))
+    torch.testing.assert_close(tasks.weights(trained), tasks.weights(reference))
+    got, want = tasks.record(run), tasks.record(reference_run)
+    assert (got.kind, got.count, got.status) == ("categorical", 4, "ok")
+    assert got.loss == pytest.approx(want.loss)
+    with torch.no_grad():  # the masked rows' loss would be counted without the adapter
+        assert got.loss != pytest.approx(float(F.cross_entropy(base.net(tasks.X), tasks.MIXED)))
+
+
+def test_kd_hard_term_scores_only_the_non_ignored_rows(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(), tasks.categorical(seed=1)
+    _, run = tasks.fit(base, tasks.MIXED, train_step_fn=kd_train_step_factory(teacher, alpha=0.5, temperature=2.0))
+    with torch.no_grad():
+        student, soft = base.net(tasks.X), teacher.net(tasks.X)
+        keep = tasks.MIXED != 0
+        hard = F.cross_entropy(student[keep], tasks.MIXED[keep])
+        expected = 0.5 * softened_kl(student, soft, 2.0) + 0.5 * hard  # the soft term keeps every row
+    assert tasks.record(run).loss == pytest.approx(float(expected), rel=1e-5)
+
+
+def test_kd_alpha_0_takes_no_update_on_an_all_ignored_batch(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(), tasks.categorical(seed=1)
+    step = kd_train_step_factory(teacher, alpha=0.0)
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, weight_decay=tasks.DECAY, train_step_fn=step)
+    assert tasks.moved(trained, base) == 0.0
+    record = tasks.record(run)
+    assert (record.kind, record.count, record.status, record.loss) == ("categorical", 0, "empty", None)
+
+
+@pytest.mark.parametrize("alpha", [0.5, 1.0])
+def test_kd_soft_term_trains_on_an_all_ignored_batch(alpha, tmp_path, monkeypatch):
+    # alpha > 0: the soft term keeps every row, so the batch still trains
+    # (pure distillation on placeholder labels equal to ignore_index included).
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(), tasks.categorical(seed=1)
+    step = kd_train_step_factory(teacher, alpha=alpha, temperature=2.0)
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, train_step_fn=step)
+    assert tasks.moved(trained, base) > 0.0
+    record = tasks.record(run)
+    with torch.no_grad():
+        expected = alpha * softened_kl(base.net(tasks.X), teacher.net(tasks.X), 2.0)
+    assert (record.count, record.status) == (0, "empty")
+    assert record.loss == pytest.approx(float(expected), rel=1e-5)
+
+
+@pytest.mark.parametrize("ignore_index", [-1, 255])
+def test_kd_masks_an_out_of_range_ignore_index(ignore_index, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base, teacher = tasks.categorical(ignore_index), tasks.categorical(ignore_index, seed=1)
+    Y = torch.tensor([ignore_index, 1, 2, ignore_index, 1, 2])
+    reference, _ = tasks.fit(base, Y)
+    trained, _ = tasks.fit(base, Y, train_step_fn=kd_train_step_factory(teacher, alpha=0.0))
+    torch.testing.assert_close(tasks.weights(trained), tasks.weights(reference))
+    _, run = tasks.fit(base, Y, train_step_fn=kd_train_step_factory(teacher, alpha=0.5))  # no IndexError
+    assert tasks.record(run).count == 4
+
+
+def test_kd_masks_nan_multilabel_targets(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    task = TaskSpec.multilabel(3)
+    base = tasks.model(task, loss=Losses.BINARY_CROSS_ENTROPY)
+    teacher = tasks.model(task, loss=Losses.BINARY_CROSS_ENTROPY, seed=1)
+    Y = tasks.multilabel_targets()
+    _, reference = tasks.fit(base, Y)
+    _, run = tasks.fit(base, Y, train_step_fn=kd_train_step_factory(teacher, alpha=0.0))
+    assert tasks.record(run).loss == pytest.approx(tasks.record(reference).loss)
+    _, run = tasks.fit(base, Y, train_step_fn=kd_train_step_factory(teacher, alpha=0.5))  # no divergence
+    assert tasks.record(run).kind == "multilabel" and tasks.record(run).count == 12
+
+
+def test_kd_refuses_a_regression_task_before_any_run(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    regression = dict(loss=Losses.MEAN_SQUARED_ERROR, output_dim=2)
+    base = tasks.model(TaskSpec.regression(2), **regression)
+    teacher = tasks.model(TaskSpec.regression(2), seed=1, **regression)
+    with pytest.raises(TaskValidationError) as caught:
+        tasks.fit(base, torch.randn(6, 2), train_step_fn=kd_train_step_factory(teacher, alpha=0.0))
+    message = str(caught.value)
+    assert "kd_train_step_factory" in message and "regression task" in message
+    assert "declare the task" not in message and "NNModelParams(task=" not in message
+    assert tasks.no_run_left(tmp_path)

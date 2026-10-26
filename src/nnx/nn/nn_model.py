@@ -75,7 +75,7 @@ from ..precision import TRAIN as _PRECISION_TRAIN
 from ..precision import PrecisionPolicy, PrecisionUnsupportedError, ResolvedPrecision, resolve_precision
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
-from ..tasks import TaskAdapter, _bounded_extra_metrics_error, task_adapter
+from ..tasks import TaskAdapter, _bounded_extra_metrics_error, _check_step_task, task_adapter
 from ..transforms import _canonical_transforms, _recipe_transforms, _replayable, _snapshot_transforms, _state_shapes
 from ..utils import Utils, _capture_training_modes, _restore_training_modes, _writable
 from .enum.checkpoints import Checkpoints, phase_tag
@@ -2978,12 +2978,16 @@ class NNModel(_HubMixinBase):
             self._precision = cached
         return cached[1]
 
-    def _check_task_preflight(self) -> None:
-        """Reject a runtime ``loss_fn`` the declared task cannot score —
-        before any loader is iterated (NNModel.train and Trainer.train)."""
+    def _check_task_preflight(self, step: Any = None, *, hint: Optional[str] = None) -> None:
+        """Reject a runtime ``loss_fn`` the declared task cannot score, and a
+        built-in paradigm step or objective (``step``) that does not train
+        the task's kind (#513) — before any loader is iterated or run is
+        reserved (NNModel.train and Trainer.train, which passes its own
+        ``hint``)."""
         adapter = getattr(self, "task_adapter", None)
         if adapter is not None:
             adapter.check_loss_fn(self.loss_fn)
+            _check_step_task(step, adapter.spec, hint=hint)
 
     def _base_state(self) -> Optional[Mapping[str, Optional[tuple[int, ...]]]]:
         """``{key: shape}`` of the tensors the descriptor rebuilds, recorded
@@ -3885,7 +3889,7 @@ class NNModel(_HubMixinBase):
             self._assert_reconstructible_topology()
         if params is None:
             raise ValueError("train params must be non-None")
-        self._check_task_preflight()
+        self._check_task_preflight(objective if objective is not None else train_step_fn)
         # FEAT-028: the precision policy is resolved once, before any run is
         # reserved; the loop, validation and prediction reuse it.
         precision = self._precision_for_training(train_step_fn)
@@ -4406,7 +4410,15 @@ class NNModel(_HubMixinBase):
             class _ReportUpdate:
                 """The step's ``report_update``: the clock's (refusing an
                 optimizer name, as ever), then the update listeners. ``listening``
-                says whether anything needs a judged step (``listens``)."""
+                says whether anything needs a judged step (``listens``), and
+                ``skip_window()`` counts a built-in step's window with nothing to
+                learn from, which reports no update (#513)."""
+
+                def __init__(self) -> None:
+                    self.skipped_windows = 0
+
+                def skip_window(self) -> None:
+                    self.skipped_windows += 1
 
                 def __call__(self, *names: Any) -> None:
                     # A refused report is no update: refuse before the window
@@ -4420,7 +4432,8 @@ class NNModel(_HubMixinBase):
                 def listening(self) -> bool:
                     return listens(clock_report) or bool(ctx.update_listeners)
 
-            report_update: Callable[..., None] = _ReportUpdate()
+            update_reporter = _ReportUpdate()
+            report_update: Callable[..., None] = update_reporter
 
             if engine is not None:
                 assert objective is not None
@@ -4510,6 +4523,7 @@ class NNModel(_HubMixinBase):
                 if clock is not None:
                     clock.trace.clear()
                     updates_before_epoch = clock.count
+                    skips_before_epoch = update_reporter.skipped_windows
                 epoch_summary = (
                     _TrainEpochSummary(train_metrics, metric_domain, metric_ignore_index, metric_threshold)
                     if summarize
@@ -4643,7 +4657,9 @@ class NNModel(_HubMixinBase):
 
                 if clock is not None:
                     # FEAT-014: stepped on committed updates, not here.
-                    if clock.count == updates_before_epoch and not owns_windows and engine is None:
+                    # A built-in step's skipped window (#513) is a reason for no update, as the default step's.
+                    skipped = update_reporter.skipped_windows != skips_before_epoch
+                    if clock.count == updates_before_epoch and not owns_windows and engine is None and not skipped:
                         from .callbacks import _warn_at_user_frame
 
                         _warn_at_user_frame(

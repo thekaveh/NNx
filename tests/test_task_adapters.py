@@ -33,6 +33,7 @@ from nnx import (
     set_seed,
     task_adapter,
 )
+from tests import _task_steps as task_steps
 
 # ------------------------------------------------------------------ helpers
 
@@ -1033,3 +1034,53 @@ def test_task_weights_of_other_losses_and_shapes_are_unchanged():
     assert adapter.loss_terms(OwnForward(), *adapter.prepare(logits, values))[2] == 4.0
     with pytest.raises(TaskValidationError, match="cannot be masked"):
         adapter.loss_terms(OwnForward(), *adapter.prepare(logits, one_masked))
+
+
+# ------------------------------------------------------------------ paradigm steps (#513)
+
+
+def _paradigm_hooks(teacher: NNModel) -> dict[str, dict]:
+    from nnx.objectives import kd_objective
+    from nnx.paradigms import feature_kd_train_step_factory, kd_train_step_factory, moe_train_step_factory
+
+    return {
+        "kd_train_step_factory": {"train_step_fn": kd_train_step_factory(teacher, alpha=0.0)},
+        "feature_kd_train_step_factory": {
+            "train_step_fn": feature_kd_train_step_factory(
+                teacher, auxiliary_layers={"layers.0": "layers.0"}, alpha=0.0, beta=0.0
+            )
+        },
+        "moe_train_step_factory": {"train_step_fn": moe_train_step_factory(aux_loss_weight=0.0)},
+        "kd_objective": {"objective": kd_objective(teacher, alpha=0.0)},
+    }
+
+
+@pytest.mark.parametrize(
+    "name", ["kd_train_step_factory", "feature_kd_train_step_factory", "moe_train_step_factory", "kd_objective"]
+)
+def test_paradigm_records_are_the_default_steps_task_records(name, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = task_steps.categorical()
+    hook = _paradigm_hooks(task_steps.categorical(seed=1))[name]
+    for Y in (task_steps.MIXED, task_steps.ALL_IGNORED):
+        _, reference = task_steps.fit(base, Y)
+        _, run = task_steps.fit(base, Y, **hook)
+        got, want = task_steps.record(run), task_steps.record(reference)
+        assert (got.kind, got.count, got.status) == (want.kind, want.count, want.status)
+        assert got.loss == pytest.approx(want.loss) if want.loss is not None else got.loss is None
+        assert (got.accuracy, got.f1, got.error) == pytest.approx((want.accuracy, want.f1, want.error))
+
+
+def test_a_marked_step_refuses_a_task_kind_it_does_not_train():
+    from nnx.paradigms import kd_train_step_factory, mixup_train_step_factory
+    from nnx.tasks import _check_step_task
+
+    step = mixup_train_step_factory()
+    for task in (None, TaskSpec.categorical(3), TaskSpec.multilabel(3)):
+        _check_step_task(step, task)  # trained through the adapter (or no task at all)
+    _check_step_task(lambda ctx: None, TaskSpec.regression(2))  # a user's own step is the user's business
+    with pytest.raises(TaskValidationError, match=r"mixup_train_step_factory trains categorical and multilabel"):
+        _check_step_task(step, TaskSpec.regression(2))
+    teacher = _model(None, loss=Losses.CROSS_ENTROPY, output_dim=3)
+    with pytest.raises(TaskValidationError, match=r"this model declares a regression task \(TaskSpec\.regression\)"):
+        _check_step_task(kd_train_step_factory(teacher), TaskSpec.regression())
