@@ -2014,7 +2014,7 @@ Saved component state that cannot be restored: every problem found (missing, unk
 #### `nnx.components.ResumeStatus`
 
 ```python
-class nnx.components.ResumeStatus(mode: 'str' = 'fresh', source_run_id: 'Optional[str]' = None, source_checkpoint: 'Optional[str]' = None, restored_components: 'tuple[str, ...]' = (), fresh_components: 'tuple[str, ...]' = (), source_epoch: 'Optional[int]' = None, source_generation: 'Optional[int]' = None, source_checkpoint_id: 'Optional[str]' = None) -> 'None'
+class nnx.components.ResumeStatus(mode: 'str' = 'fresh', source_run_id: 'Optional[str]' = None, source_checkpoint: 'Optional[str]' = None, restored_components: 'tuple[str, ...]' = (), fresh_components: 'tuple[str, ...]' = (), source_epoch: 'Optional[int]' = None, source_generation: 'Optional[int]' = None, source_checkpoint_id: 'Optional[str]' = None, attempt_token: 'Optional[str]' = None, source_attempt_token: 'Optional[str]' = None) -> 'None'
 ```
 
 How a training session started.
@@ -2039,6 +2039,15 @@ Attributes:
     source_generation / source_checkpoint_id: the resume point's
         generation ordinal and checkpoint id from its manifest;
         ``None`` for a checkpoint without a manifest.
+    attempt_token: this session's attempt token, a fresh id for every
+        ``train()`` call (under DDP, the same on every rank) that a later
+        resume records as its source's (#553); ``None`` for status
+        recorded without it.
+    source_attempt_token: the source run's ``attempt_token`` when the
+        session resumed from it, or ``"bundle-<generation>"`` for a run
+        bundle; history lineage stitches the source only while it still
+        holds that attempt. ``None`` for a fresh run, a source recorded
+        without a token and status recorded before tokens.
 ```
 
 ##### `nnx.components.ResumeStatus.state`
@@ -11678,9 +11687,15 @@ that epoch cannot be known (the checkpoint, or the parent's LAST, is
 unreadable), the parent's records before the run's first record are
 used, with a ``RuntimeWarning``; when neither is known, or the parent
 run is gone, the lineage starts at the run, with a ``RuntimeWarning``.
-Lineage follows resumes: a run that started fresh (a born-again
-generation naming its teacher's run as ``parent_run_id``, say) starts
-its own epochs, and its lineage is its own history.
+A run that recorded the parent attempt it resumed from (#553) is
+stitched only to that attempt: when the parent has been retrained in
+place since, or the run resumed from a run bundle (whose parent lives
+in the bundle, not under ``root``), the lineage starts at the run, with
+a ``RuntimeWarning``; a run recorded without one is stitched to the run
+holding the parent's id. Lineage follows resumes: a run that started
+fresh (a born-again generation naming its teacher's run as
+``parent_run_id``, say) starts its own epochs, and its lineage is its
+own history.
 ```
 
 

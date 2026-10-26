@@ -443,3 +443,54 @@ def test_a_run_with_a_top_level_tensor_rebuilds_without_it_through_every_rebuild
         assert rebuilt.net.state_dict().keys() == base.keys()
         for key, value in base.items():
             assert torch.equal(rebuilt.net.state_dict()[key], value), key
+
+
+# --- #553: a bundle child's history lineage -------------------------------------------------------
+
+
+@pytest.mark.parametrize("journal", [False, True], ids=["idps.csv", "journal"])
+@pytest.mark.parametrize("beside", ["an unrelated same-id run", "no same-id run", "its unchanged source run"])
+def test_a_bundle_childs_lineage_starts_at_the_child_with_the_bundle_warning(beside, journal, tmp_path, monkeypatch):
+    """The parent of a bundle-resumed run lives in the bundle: a same-id run
+    in the child's runs root is never stitched in — not an unrelated run,
+    and not the bundle's unchanged source either (the bundle does not prove
+    which attempt it was exported from), and a root without one is not told
+    the parent is "no longer saved"."""
+    import filecmp
+    import warnings
+
+    from nnx.history import HistoryJournal, export_history_csv, iter_history
+
+    history = HistoryJournal(retention=3, chunk_size=2) if journal else None
+    _, batches = _data()
+    os.makedirs("m1")
+    monkeypatch.chdir("m1")
+    torch.manual_seed(7)
+    source = _classifier().train(params=_params(2, "split", batches), history=history)
+    export_bundle(source.id, os.path.join(tmp_path, "bundle"))
+    if beside != "its unchanged source run":
+        os.makedirs(os.path.join(tmp_path, "m2"))
+        monkeypatch.chdir(os.path.join(tmp_path, "m2"))
+    if beside == "an unrelated same-id run":
+        other = [(50 * features, labels) for features, labels in batches]  # other data, same configuration
+        torch.manual_seed(7)
+        assert _classifier().train(params=_params(2, "split", other), history=history).id == source.id
+    child = reconstruct_bundle(os.path.join(tmp_path, "bundle")).resume(_params(1, "split", batches), history=history)
+    assert child.resume_status is not None and child.resume_status.source_attempt_token is not None
+
+    def recorded(read):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = read()
+        return result, [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
+
+    own = [record.state() for record in iter_history(child.id)]
+    assert own and {record["epoch_idx"] for record in own} == {2}
+    lineage, messages = recorded(lambda: [record.state() for record in iter_history(child.id, lineage=True)])
+    assert lineage == own
+    assert len(messages) == 1 and "bundle" in messages[0] and source.id in messages[0]
+    assert "no longer saved" not in messages[0]
+    count, messages = recorded(lambda: export_history_csv(child.id, tmp_path / "lineage.csv", lineage=True))
+    assert count == len(own) and len(messages) == 1 and "bundle" in messages[0]
+    export_history_csv(child.id, tmp_path / "own.csv")
+    assert filecmp.cmp(tmp_path / "lineage.csv", tmp_path / "own.csv", shallow=False)

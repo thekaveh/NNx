@@ -103,6 +103,23 @@ def test_two_epochs_equal_one_plus_a_resume(resumed):
         assert torch.equal(split["rng_after"], full["rng_after"])  # each rank's own streams restored
 
 
+def test_every_rank_records_the_writers_attempt_tokens(resumed):
+    """#553: one train() call under DDP is one attempt. Every rank's
+    ResumeStatus holds the writer's token, the one its metadata.yaml
+    records, and the resume names the first fit's as its source."""
+    from nnx.nn.params.nn_run import _recorded_attempt_token
+
+    runs = resumed["dir"] / "runs"
+    first = [torch.load(resumed["dir"] / f"rank{rank}.first", weights_only=False) for rank in range(2)]
+    for fit in (first, resumed["split"]):
+        tokens = {rank["attempt_token"] for rank in fit}
+        assert len(tokens) == 1 and None not in tokens
+        assert tokens == {_recorded_attempt_token(str(runs / fit[0]["run_id"]))}
+    assert first[0]["attempt_token"] != resumed["split"][0]["attempt_token"]
+    assert {rank["source_attempt_token"] for rank in first} == {None}
+    assert {rank["source_attempt_token"] for rank in resumed["split"]} == {first[0]["attempt_token"]}
+
+
 def test_a_planned_resume_continues_the_plan_on_every_rank(resumed, tmp_path_factory):
     """#394 under DDP: stopped after epoch 0 of a 2-epoch plan, a planned
     resume trains epoch 1 only and equals the uninterrupted run."""
