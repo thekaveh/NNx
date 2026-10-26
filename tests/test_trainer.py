@@ -2660,3 +2660,96 @@ def test_trainer_refuses_kd_objective_for_a_regression_task_before_any_run(tmp_p
     assert "supervised_objective() or a custom trainer_step_fn" in message
     assert "default step" not in message and "train_step_fn" not in message
     assert task_steps.no_run_left(tmp_path)
+
+
+def test_trainer_refuses_a_link_val_loader_before_the_first_update(tmp_path, monkeypatch):
+    """#548: Trainer validates through the default evaluate path, which
+    refuses every link batch: refused before any update or run, with
+    remedies Trainer can follow (it takes no eval_step_fn)."""
+    from nnx import Callback
+    from nnx.link_tasks import LinkTask, LinkTaskError, link_predictor_spec, split_links
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    g = torch.Generator().manual_seed(0)
+    edges = [(u, v) for u in range(30) for v in range(u + 1, 30) if torch.rand(1, generator=g).item() < 0.2]
+    x = torch.randn(30, 2, generator=g)
+    task = LinkTask(split_links(torch.tensor(edges).t().contiguous(), 30, val=0.1, test=0.1, seed=0))
+
+    class Count(Callback):
+        updates = 0
+
+        def on_optimizer_update(self, ctx, event):
+            self.updates += 1
+
+    for val_loader in (task.loader("val", x, batch_size=8), list(task.loader("val", x, batch_size=8))):
+        model = NNModel(params=NNModelParams(net=link_predictor_spec(input_dim=2), loss=Losses.MEAN_SQUARED_ERROR))
+        before = {k: v.clone() for k, v in model.net.state_dict().items()}
+        counter = Count()
+        with pytest.raises(LinkTaskError) as caught:
+            Trainer(model).train(
+                params=NNTrainerParams(
+                    n_epochs=2,
+                    train_loader=task.loader("train", x, batch_size=8, seed=0),
+                    val_loader=val_loader,
+                    optims={"main": NNOptimParams.builder().adam(max_lr=1e-2).build()},
+                    save_phase_checkpoints=False,
+                ),
+                objective=task.objective(),
+                callbacks=[counter],
+            )
+        assert counter.updates == 0
+        assert all(torch.equal(before[k], v) for k, v in model.net.state_dict().items())
+        assert task_steps.no_run_left(tmp_path)
+        caught.match("Trainer.train\\(\\) validates through the default evaluate path")
+        assert "eval_step_fn" not in str(caught.value)  # Trainer.train takes none
+        assert "task.predict() and link_metrics()" in str(caught.value)
+    # Train-only, the same Trainer fit runs.
+    Trainer(NNModel(params=NNModelParams(net=link_predictor_spec(input_dim=2), loss=Losses.MEAN_SQUARED_ERROR))).train(
+        params=NNTrainerParams(
+            n_epochs=1,
+            train_loader=task.loader("train", x, batch_size=8, seed=0),
+            optims={"main": NNOptimParams.builder().adam(max_lr=1e-2).build()},
+            save_phase_checkpoints=False,
+        ),
+        objective=task.objective(),
+    )
+
+
+def test_trainer_validates_link_batches_through_a_batch_adapter_that_reads_them(tmp_path, monkeypatch):
+    """#548: only a link predictor reading its own batches is refused up
+    front; a module whose batch adapter reads link batches validates
+    through the default evaluate path, as before."""
+    from nnx.link_tasks import LinkTask, link_predictor_spec, split_links
+    from nnx.models import BatchAdapter
+    from nnx.tasks import TaskSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    g = torch.Generator().manual_seed(0)
+    edges = [(u, v) for u in range(30) for v in range(u + 1, 30) if torch.rand(1, generator=g).item() < 0.2]
+    x = torch.randn(30, 2, generator=g)
+    task = LinkTask(split_links(torch.tensor(edges).t().contiguous(), 30, val=0.1, test=0.1, seed=0))
+
+    class Columns(BatchAdapter):
+        def split(self, batch):
+            return (batch.x, batch.edge_index, batch.edge_label_index), {}, batch.edge_label.unsqueeze(1)
+
+        def output(self, raw):
+            return raw.unsqueeze(1)
+
+    spec = link_predictor_spec(input_dim=2)
+    model = NNModel(
+        params=NNModelParams(net=spec, loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression()),
+        batch_adapter=Columns(),
+    )
+    Trainer(model).train(
+        params=NNTrainerParams(
+            n_epochs=1,
+            train_loader=task.loader("train", x, batch_size=8, seed=0),
+            val_loader=task.loader("val", x, batch_size=8),
+            optims={"main": NNOptimParams.builder().adam(max_lr=1e-2).build()},
+            save_phase_checkpoints=False,
+        ),
+        objective=task.objective(),
+    )

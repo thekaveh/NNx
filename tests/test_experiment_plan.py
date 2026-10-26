@@ -1104,3 +1104,61 @@ def test_validate_reports_a_paradigm_step_that_train_refuses_for_a_regression_ta
     with pytest.raises(nnx.TaskValidationError, match=f"{name}.*regression task"):  # train() refuses the same
         task_steps.fit(built, torch.randn(6, 3), **hook)
     assert task_steps.no_run_left(tmp_path)
+
+
+# --- link-task validation, checked before training (#548) ---------------------------------------------------
+
+
+def test_validate_reports_link_validation_that_train_would_refuse_after_an_epoch(tmp_path, monkeypatch):
+    from nnx.link_tasks import LinkTask, link_predictor_spec, split_links
+    from nnx.nn.params.nn_optim_params import NNOptimParams
+
+    monkeypatch.chdir(tmp_path)
+    g = torch.Generator().manual_seed(0)
+    edges = torch.tensor([(u, v) for u in range(30) for v in range(u + 1, 30) if torch.rand(1, generator=g) < 0.2])
+    x = torch.randn(30, 2, generator=g)
+    split = split_links(edges.t().contiguous(), 30, val=0.1, test=0.1, seed=0)
+    task, other = LinkTask(split), LinkTask(split_links(edges.t().contiguous(), 30, val=0.1, test=0.1, seed=1))
+    small = LinkTask(split, max_candidates=len(split.candidate_ids("val")) - 1)
+    model = NNModelParams(net=link_predictor_spec(input_dim=2), loss=Losses.MEAN_SQUARED_ERROR)
+    train = NNTrainParams(n_epochs=1, optim=NNOptimParams.builder().adam(max_lr=1e-2).build())
+
+    def plan(link_task, val, evaluator):
+        return (
+            ExperimentPlan()
+            .with_model(model)
+            .with_train(train)
+            .with_data(link_task.loader("train", x, batch_size=8, seed=0), val)
+            .with_objective(link_task.objective())
+            .with_step_fns(eval_step_fn=evaluator)
+        )
+
+    cases = {
+        "case A (test)": (plan(task, task.loader("test", x, 8), task.eval_step()), "data.val", "reads the 'val' split"),
+        "case A (train)": (plan(task, task.loader("train", x, 8), task.eval_step()), "data.val", "got a 'train'"),
+        "case B": (plan(small, small.loader("val", x, 8), small.eval_step()), "eval_step_fn", "max_candidates="),
+        "twin (a)": (plan(task, task.loader("val", x, 8), None), "eval_step_fn", "eval_step_fn=task.eval_step()"),
+        "twin (a), a factory": (plan(task, lambda: [], None), "eval_step_fn", "eval_step_fn=task.eval_step()"),
+        "twin (c)": (plan(task, other.loader("val", x, 8), task.eval_step()), "data.val", "another split"),
+    }
+    for name, (bad, path, text) in cases.items():
+        report = bad.validate()
+        assert not report.ok, name
+        assert report.paths == (path,), (name, report)
+        assert text in report.diagnostics[0].message, name
+    # Under the default training step the hint names the objective too (that step refuses link batches as well).
+    unobjected = (
+        ExperimentPlan()
+        .with_model(model)
+        .with_train(train)
+        .with_data(task.loader("train", x, 8), task.loader("val", x, 8))
+    )
+    assert (
+        "objective=task.objective() and eval_step_fn=task.eval_step()" in unobjected.validate().diagnostics[0].message
+    )
+    assert plan(task, task.loader("val", x, 8), task.eval_step()).validate().ok
+    assert plan(task, LinkTask(split).loader("val", x, 8), task.eval_step()).validate().ok  # same split
+    assert plan(task, None, None).validate().ok  # train-only
+    # A user batch adapter replaces the net's unpack_batch: left to the default path, as train() leaves it.
+    assert plan(task, task.loader("val", x, 8), None).with_batch_adapter(nnx.models.PositionalInputs(3)).validate().ok
+    assert not (tmp_path / "runs").exists()  # nothing trained
