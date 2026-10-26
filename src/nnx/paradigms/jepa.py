@@ -37,7 +37,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .._step_helpers import finalize_step, first_input, imperative_step
+from .._step_helpers import finalize_step, first_input, imperative_step, require_real_or_scalar_tensor
 from .._validation import require_finite_real
 from ..components import ComponentSpec
 from ..nn.nn_model import TrainStepContext, TrainStepFn
@@ -61,7 +61,7 @@ def build_target_encoder(source: nn.Module) -> nn.Module:
     return target
 
 
-def update_ema(source: nn.Module, target: nn.Module, momentum: float) -> None:
+def update_ema(source: nn.Module, target: nn.Module, momentum: float | torch.Tensor) -> None:
     """In-place EMA update: ``target ← momentum * target + (1 - momentum) * source``.
 
     Called once per training step from inside the JEPA train_step_fn.
@@ -76,15 +76,19 @@ def update_ema(source: nn.Module, target: nn.Module, momentum: float) -> None:
         momentum: EMA decay in ``[0, 1)``. Higher = slower target
             tracking. I-JEPA's reference recipe uses 0.996 with a
             cosine schedule up to 1.0 over training; the factory's
-            default matches.
+            default matches. A one-element real tensor (a schedule
+            computed with torch) is taken by its value.
 
     Raises:
         ValueError: when ``momentum`` is not a real in ``[0, 1)`` (a
-            ``bool`` included).
+            ``bool`` included) or a one-element real (not bool) tensor
+            holding one.
         KeyError: when a target parameter has no same-named source
             parameter (the name-keyed update contract).
     """
-    require_finite_real(momentum, "momentum", owner="update_ema", minimum=0, maximum=1, exclusive_max=True)
+    momentum = require_real_or_scalar_tensor(
+        momentum, "momentum", owner="update_ema", minimum=0, maximum=1, exclusive_max=True
+    )
     # Walk by named-parameter so the EMA continues to work when the
     # *source* has been augmented with extra submodules (typical
     # idiom: register the JEPA predictor under ``model.net`` so a
