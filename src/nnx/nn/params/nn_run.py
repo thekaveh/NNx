@@ -20,6 +20,7 @@ import yaml
 from filelock import FileLock
 
 from ..._metrics import _resolve_metric
+from ..._validation import plain_str
 from ...compilation import CompileRecord
 from ...components import ResumeStatus
 from ...history import HISTORY_DIR, HistoryCorruptionError, _journal_epoch_series, _JournalReader, has_journal
@@ -701,6 +702,8 @@ class NNRun:
         # since callers can reach this API without a static type checker.
         if self.salt is not None and (not isinstance(self.salt, str) or not self.salt.strip()):
             raise ValueError("NNRun.salt must be a non-empty string when provided")
+        # A numpy.str_ salt is stored (and hashed) as the plain str (#515).
+        object.__setattr__(self, "salt", plain_str(self.salt))
         # Key order is part of the run id: model, net, train. `net` is absent
         # for registered / runtime modules (FEAT-006), described by `model`.
         state: dict[str, object] = dict(model=self.model.state())

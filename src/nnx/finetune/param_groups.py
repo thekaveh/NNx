@@ -24,7 +24,7 @@ from typing import Optional
 
 from torch import nn
 
-from .._validation import require_finite_real
+from .._validation import plain_real, plain_str, require_finite_real
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -70,6 +70,15 @@ class NNParamGroupSpec:
     weight_decay: Optional[float] = None
 
     def __post_init__(self) -> None:
+        # A non-string pattern otherwise failed only at optimizer build
+        # (fnmatch TypeError); a str subclass (numpy.str_) is stored as the
+        # plain str, so state() serializes and hashes the text (#515).
+        if not isinstance(self.name_pattern, str):
+            raise ValueError(
+                f"NNParamGroupSpec requires name_pattern to be a string (an fnmatch glob), "
+                f"got {self.name_pattern!r} of type {type(self.name_pattern).__name__}"
+            )
+        object.__setattr__(self, "name_pattern", plain_str(self.name_pattern))
         if self.lr is not None and self.lr_multiplier is not None:
             raise ValueError(
                 f"NNParamGroupSpec(name_pattern={self.name_pattern!r}): "
@@ -112,6 +121,12 @@ class NNParamGroupSpec:
                 minimum=0.0,
                 domain_message=f"{owner}: weight_decay must be non-negative, got {self.weight_decay}",
             )
+        # NumPy scalars become plain numbers, so state() serializes (run.yaml)
+        # and hashes as float(value). Not the check's float: an int stays an
+        # int, so weight_decay=0 keeps its run id.
+        for name in ("lr", "lr_multiplier", "weight_decay"):
+            if getattr(self, name) is not None:
+                object.__setattr__(self, name, plain_real(getattr(self, name)))
 
     def state(self) -> dict:
         d: dict = dict(name_pattern=self.name_pattern)

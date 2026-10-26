@@ -62,7 +62,7 @@ import torch
 from torch import nn
 
 from ._config import _SLUG, _freeze_config, _thaw_config
-from ._validation import require_count
+from ._validation import plain_str, require_count
 from .nn.enum.optims import resolve_param_groups
 from .nn.params.nn_optim_params import NNOptimParams, _validate_optim_param_groups, _validate_optim_scalars
 
@@ -94,7 +94,7 @@ def _require_factory_id(value: object, *, owner: str) -> str:
             f"{owner} requires id to be a non-empty string of letters, digits, '_', '.' or '-' "
             f"(starting with a letter or digit), got {value!r}"
         )
-    return value
+    return plain_str(value)  # a numpy.str_ id is stored as the plain str (#515)
 
 
 def _require_factory_version(value: object, *, owner: str) -> int:

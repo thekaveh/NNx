@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import torch
 from torch import nn
@@ -381,3 +382,61 @@ def test_nn_optim_params_rejects_negative_weight_decay(bad):
     with pytest.raises(ValueError, match="weight_decay must be non-negative"):
         _adam(weight_decay=bad)
     assert _adam(weight_decay=0.0).weight_decay == 0.0
+
+
+@pytest.mark.parametrize("bad", [3, None, b"layers.*", ["layers.*"]])
+def test_param_group_spec_refuses_a_non_string_name_pattern(bad):
+    """A non-string pattern failed only at optimizer build, with a TypeError
+    from fnmatch that named neither the spec nor the field (#515)."""
+    with pytest.raises(ValueError, match="NNParamGroupSpec requires name_pattern to be a string"):
+        NNParamGroupSpec(name_pattern=bad)
+
+
+@pytest.mark.parametrize(
+    "numpy_group,plain_group",
+    [
+        (dict(lr_multiplier=np.logspace(-2, 0, 3)[1]), dict(lr_multiplier=0.1)),
+        (dict(lr=np.float32(1e-3)), dict(lr=float(np.float32(1e-3)))),
+        (dict(weight_decay=np.float64(0.0)), dict(weight_decay=0.0)),
+        (dict(name_pattern=np.str_("layers.0.*")), dict(name_pattern="layers.0.*")),
+    ],
+    ids=["lr_multiplier", "lr", "weight_decay", "name_pattern"],
+)
+def test_numpy_param_group_values_train_save_and_keep_the_plain_run_id(numpy_group, plain_group, tmp_path, monkeypatch):
+    """Ticket #515 Example 1: a sweep-grid NumPy value trained one epoch,
+    then run.yaml failed to save and the run directory was deleted."""
+    import os
+
+    from nnx import Callback, NNRun, set_seed
+
+    monkeypatch.chdir(tmp_path)
+
+    class EpochCounter(Callback):
+        trained = 0
+
+        def on_epoch_end(self, ctx):
+            EpochCounter.trained += 1
+
+    def optim(group):
+        spec = NNParamGroupSpec(**{"name_pattern": "layers.0.*", **group})
+        return NNOptimParams(
+            name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0, param_groups=[spec]
+        )
+
+    state = optim(numpy_group).param_groups[0].state()
+    assert state == optim(plain_group).param_groups[0].state()
+    assert type(state["name_pattern"]) is str and all(type(v) is float for k, v in state.items() if k != "name_pattern")
+
+    net = NNParams(input_dim=4, output_dim=2, hidden_dims=[3], dropout_prob=0.0, activation=Activations.RELU)
+    model_params = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    X = torch.randn(16, 4, generator=torch.Generator().manual_seed(1))
+    Y = (X[:, 0] > 0).long()
+    set_seed(0)
+    run = NNModel(net_params=net, params=model_params).train(
+        NNTrainParams(n_epochs=3, optim=optim(numpy_group), train_loader=[(X[:8], Y[:8]), (X[8:], Y[8:])]),
+        callbacks=[EpochCounter()],
+    )
+    assert EpochCounter.trained == 3
+    assert [d for d in os.listdir("runs") if not d.startswith(".") and d != "best"] == [run.id]
+    assert run.id == NNRun(net=net, model=model_params, train=NNTrainParams(n_epochs=3, optim=optim(plain_group))).id
+    assert NNRun.load(run.id).id == run.id

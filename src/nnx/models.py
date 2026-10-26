@@ -47,7 +47,7 @@ import torch
 from torch import nn
 
 from ._config import _SLUG, _freeze_config, _thaw_config
-from ._validation import require_count
+from ._validation import plain_str, require_count
 
 __all__ = [
     "BatchAdapter",
@@ -101,7 +101,7 @@ def _require_id(value: object, *, owner: str) -> str:
             f"{owner} requires id to be a non-empty string of letters, digits, '_', '.' or '-' "
             f"(starting with a letter or digit), got {value!r}"
         )
-    return value
+    return plain_str(value)  # a numpy.str_ id is stored as the plain str (#515)
 
 
 # --- descriptors ---------------------------------------------------------------

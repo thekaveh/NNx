@@ -61,6 +61,7 @@ import numpy as np
 import torch
 
 from ._confusion import ConfusionCounts, average_scores, record_scores
+from ._validation import plain_str
 from .monitors import _not_ignored
 from .nn.enum.losses import Losses
 from .nn.enum.nets import Nets
@@ -128,6 +129,7 @@ class TaskSpec:
             raise TaskValidationError(
                 f"TaskSpec kind must be one of {', '.join(repr(k) for k in TASK_KINDS)}, got {self.kind!r}"
             )
+        object.__setattr__(self, "kind", plain_str(self.kind))  # a numpy.str_ kind is not YAML-safe (#515)
         minimum = 2 if self.kind == "categorical" else 1
         if self.num_outputs is not None:
             object.__setattr__(self, "num_outputs", _count(self.num_outputs, "num_outputs", minimum=minimum))
