@@ -11,8 +11,9 @@ training-loop level rather than buried in the dataloader.
 **Mixup** (zhang:mixup): ``x' = λ x_a + (1−λ) x_b``;
 ``L = λ L(f(x'), y_a) + (1−λ) L(f(x'), y_b)``. Works for floating
 inputs of any shape — tabular, image, sequence features. Integer inputs
-(token ids) cannot be interpolated and are refused before any mixing:
-train a sequence model with ``nnx.lm_tasks.CausalLMTask``.
+cannot be interpolated and are refused before any mixing: cast integer
+features to float; for token ids, train a sequence model with
+``nnx.lm_tasks.CausalLMTask``.
 
 **CutMix** (yun:cutmix): copies a random rectangular region from
 ``x_b`` into ``x_a``, then re-weights the loss by the area ratio.
@@ -104,8 +105,8 @@ def mixup_train_step_factory(*, alpha: float = 0.4) -> TrainStepFn:
         if not X.is_floating_point():
             # Before the draws: a refused batch leaves the RNG stream as it was.
             raise ValueError(
-                f"the mixup step interpolates floating inputs, got {X.dtype} input: token ids cannot be mixed; "
-                "train a sequence model with nnx.lm_tasks.CausalLMTask"
+                f"the mixup step interpolates floating inputs, got {X.dtype} input: cast integer features to "
+                "float; token ids cannot be mixed, so train a sequence model with nnx.lm_tasks.CausalLMTask"
             )
         B = X.shape[0]
 
@@ -172,7 +173,8 @@ def cutmix_train_step_factory(*, alpha: float = 1.0) -> TrainStepFn:
             hint = (
                 "Use Mixup for tabular / lower-rank data."
                 if X.is_floating_point()
-                else "Train a sequence model on token ids with nnx.lm_tasks.CausalLMTask."
+                else "Cast integer features to float before mixing them; for token ids, train a sequence model "
+                "with nnx.lm_tasks.CausalLMTask."
             )
             raise ValueError(f"CutMix requires 4D image input (B, C, H, W), got rank {X.dim()}. {hint}")
         B, _, H, W = X.shape
