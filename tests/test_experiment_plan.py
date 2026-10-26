@@ -1146,6 +1146,16 @@ def test_validate_reports_link_validation_that_train_would_refuse_after_an_epoch
         assert not report.ok, name
         assert report.paths == (path,), (name, report)
         assert text in report.diagnostics[0].message, name
+    # Under the default training step the hint names the objective too (that step refuses link batches as well).
+    unobjected = (
+        ExperimentPlan()
+        .with_model(model)
+        .with_train(train)
+        .with_data(task.loader("train", x, 8), task.loader("val", x, 8))
+    )
+    assert (
+        "objective=task.objective() and eval_step_fn=task.eval_step()" in unobjected.validate().diagnostics[0].message
+    )
     assert plan(task, task.loader("val", x, 8), task.eval_step()).validate().ok
     assert plan(task, LinkTask(split).loader("val", x, 8), task.eval_step()).validate().ok  # same split
     assert plan(task, None, None).validate().ok  # train-only

@@ -535,6 +535,7 @@ class ExperimentPlan:
                 self._sources(train)[1],  # read, never iterated (nor a factory called)
                 self.eval_step_fn,
                 link_net=isinstance(net, ModelSpec) and net.id == FACTORY_ID and self.batch_adapter is None,
+                default_train_step=self._default_step,
             ):
                 report("data.val" if path == "val_loader" else path, message)
 

@@ -4315,7 +4315,12 @@ class NNModel(_HubMixinBase):
             # ... as does a link task's evaluator (task.eval_step()): its role,
             # split and max_candidates refusals, and a link predictor's
             # default evaluate path, which refuses every batch (#548).
-            _link_eval_preflight(self, params.val_loader, eval_step_fn)
+            _link_eval_preflight(
+                self,
+                params.val_loader,
+                eval_step_fn,
+                default_train_step=objective is None and train_step_fn in (None, default_train_step),
+            )
         if params.train_loader is None:
             raise ValueError(
                 "params.train_loader is required — set it directly or via with_train_loader(...) before train()."
