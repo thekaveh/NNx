@@ -754,10 +754,10 @@ default step, `evaluate()`, `predict()` and `predict_proba()`:
   and NaN multilabel / regression targets are excluded from the loss and
   every metric alike. Integer class targets of any width, unsigned ones
   included, are compared with `ignore_index` as `int64`, so a `uint8` 156 is
-  class 156 even when `ignore_index=-100`. The loss is averaged over the valid targets with the
-  same normalization weights the default step uses for gradient
-  accumulation. So uneven batches and an accumulated window reduce exactly
-  like one full batch.
+  class 156 even when `ignore_index=-100`. The loss is averaged over the
+  valid targets with the same normalization weights the default step uses
+  for gradient accumulation. So uneven batches and an accumulated window
+  reduce exactly like one full batch.
 - **Masked windows and dtypes.** A window whose every target is masked takes
   no optimizer update. Targets keep their own dtype (no cast to a
   reduced-precision output).
