@@ -600,6 +600,116 @@ def test_a_configuration_error_stops_the_search(tmp_path, apply, error, match):
     assert trial.state == optuna.trial.TrialState.FAIL and trial.user_attrs["reason"].startswith("config_error:")
 
 
+def _schedule(kind_name: str, **fields):
+    from nnx.nn.enum.schedulers import Schedulers
+    from nnx.nn.params.nn_scheduler_params import NNSchedulerParams
+
+    return NNSchedulerParams(
+        kind=Schedulers[kind_name], min_lr=1e-6, factor=0.5, patience=1, cooldown=0, threshold=0.0, **fields
+    )
+
+
+def with_scheduler(base: ExperimentPlan, scheduler) -> ExperimentPlan:
+    return base.with_train(replace(base.train, scheduler=scheduler))
+
+
+def test_a_schedule_horizon_the_build_refuses_stops_the_search_before_any_trial(tmp_path):
+    """#506: a total_steps shorter than the run fails every trial alike, so
+    the base plan is refused before a study, trial or factory call."""
+    from nnx.plans import PlanError
+
+    calls = Calls()
+    base = with_scheduler(plan(calls), _schedule("ONE_CYCLE", max_lr=0.05, total_steps=1))
+    storage = f"sqlite:///{tmp_path / 'horizon.db'}"
+    with pytest.raises(PlanError, match="train.scheduler"):
+        run(base, storage=storage, name="horizon", budget=SearchBudget(trials=4))
+    assert (calls.train, calls.val, calls.callbacks) == (0, 0, 0) and runs_on_disk() == []
+    assert optuna.study.get_all_study_names(storage) == []
+
+
+def test_an_apply_that_varies_the_epochs_past_the_horizon_stops_the_search(tmp_path):
+    """#506: apply() turning a valid horizon into a refused one (n_epochs
+    past an explicit total_steps) is a configuration error of that trial."""
+    from nnx.plans import PlanError
+
+    base = with_scheduler(plan(n_epochs=2), _schedule("ONE_CYCLE", max_lr=0.05, total_steps=2))
+    storage = f"sqlite:///{tmp_path / 'epochs.db'}"
+    with pytest.raises(PlanError, match="n_epochs"):
+        run(base, apply=lambda p, q: with_lr(p, q).with_epochs(3), storage=storage, name="epochs")
+    (trial,) = optuna.load_study(study_name="epochs", storage=storage).trials
+    assert trial.state == optuna.trial.TrialState.FAIL and trial.user_attrs["reason"] == "config_error:PlanError"
+
+
+def test_a_factory_returning_a_dataset_stops_the_search_and_a_fixed_rerun_continues(tmp_path):
+    """#506: fit()'s PlanError for what a factory returned is a configuration
+    error: one trial, recorded as config_error:PlanError, then the search
+    stops — so a rerun with the fixed factory still has budget to ask."""
+    from nnx.plans import PlanError
+
+    calls = Calls()
+    broken = plan(calls).with_data(lambda: TensorDataset(X, Y))  # forgot the DataLoader
+    assert broken.validate().ok  # the factory is called only by fit()
+    storage = f"sqlite:///{tmp_path / 'factory.db'}"
+    with pytest.raises(PlanError, match="TensorDataset"):
+        run(broken, storage=storage, name="factory", budget=SearchBudget(trials=3))
+    (trial,) = optuna.load_study(study_name="factory", storage=storage).trials  # one trial spent, then stopped
+    assert trial.state == optuna.trial.TrialState.FAIL
+    assert trial.user_attrs["reason"] == "config_error:PlanError"
+    assert "wrap it in a DataLoader" in trial.user_attrs["error"]
+    assert calls.val == 1 and runs_on_disk() == []
+    fixed = run(plan(), storage=storage, name="factory", budget=SearchBudget(trials=3))
+    assert fixed.asked == 2 and fixed.best is not None  # the same stored study, with budget left
+
+
+class _Stream(torch.utils.data.IterableDataset):
+    """A training stream without a length."""
+
+    def __iter__(self):
+        yield from zip(X.split(6), Y.split(6), strict=True)
+
+
+def _early_stopping_on_accuracy():
+    from nnx.nn.callbacks import EarlyStopping
+
+    return EarlyStopping(monitor=MonitorSpec(metric="accuracy", split="val"), patience=1)  # not declared
+
+
+@pytest.mark.parametrize(
+    ("change", "path"),
+    [
+        (lambda p: p.with_data(lambda: iter(DataLoader(TensorDataset(X, Y), batch_size=6))), "data.train"),
+        (lambda p: p.with_callback_factories(lambda: 3), "callback_factories[0]"),
+        (lambda p: p.with_callback_factories(_early_stopping_on_accuracy), "callback_factories[0].monitor"),
+        (
+            lambda p: with_scheduler(p, _schedule("COSINE_ANNEALING", clock="optimizer_update")).with_data(
+                lambda: DataLoader(_Stream(), batch_size=None)
+            ),
+            "train.scheduler",
+        ),
+        (
+            lambda p: with_scheduler(p, _schedule("ONE_CYCLE", max_lr=0.05, total_steps=5, clock="optimizer_update")),
+            "train.scheduler",
+        ),
+    ],
+    ids=["data-factory-output", "callback-factory-output", "factory-callback-monitor", "no-budget", "short-budget"],
+)
+def test_every_fit_time_plan_error_stops_the_search(tmp_path, change, path):
+    """#506: each PlanError fit() raises for what the factories made stops
+    the search after its trial; a fit's other errors stay failed trials
+    (test_a_failed_fit_is_recorded_with_its_message_and_the_search_goes_on)."""
+    from nnx.plans import PlanError
+
+    base = change(plan())  # 6 batches of the train factory: 12 planned updates over 2 epochs
+    assert base.validate().ok
+    storage = f"sqlite:///{tmp_path / 'fit.db'}"
+    with pytest.raises(PlanError) as caught:
+        run(base, storage=storage, name="fit", budget=SearchBudget(trials=3))
+    assert path in [d.path for d in caught.value.diagnostics]
+    (trial,) = optuna.load_study(study_name="fit", storage=storage).trials
+    assert trial.state == optuna.trial.TrialState.FAIL and trial.user_attrs["reason"] == "config_error:PlanError"
+    assert runs_on_disk() == []
+
+
 def test_an_update_cap_is_refused_with_a_custom_step():
     from nnx.nn.nn_model import default_train_step
 

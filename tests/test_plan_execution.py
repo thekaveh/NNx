@@ -728,3 +728,108 @@ def test_a_planned_plan_resume_equals_the_uninterrupted_plan_bit_for_bit(tmp_pat
     for name, weight in whole.model.net.state_dict().items():
         assert torch.equal(weight, resumed.model.net.state_dict()[name]), name
     assert resumed.metrics["val"] == whole.metrics["val"]
+
+
+# --- #506: the schedule's horizon and warm-up are refused before any factory runs --------------
+
+
+def _schedule(kind_name: str, **fields: Any) -> NNSchedulerParams:
+    from nnx.nn.enum.schedulers import Schedulers
+
+    return NNSchedulerParams(
+        kind=Schedulers[kind_name], min_lr=1e-6, factor=0.5, patience=1, cooldown=0, threshold=0.0, **fields
+    )
+
+
+def _sgd_train(n_epochs: int, scheduler: NNSchedulerParams, **fields: Any) -> NNTrainParams:
+    return NNTrainParams(
+        n_epochs=n_epochs, optim=NNOptimParams.builder().sgd(max_lr=0.05).build(), scheduler=scheduler, **fields
+    )
+
+
+# (scheduler, n_epochs, borrowed train loader): cases A and B on the epoch clock over a
+# factory loader; case C and B on the update clock over a borrowed loader of 3 batches.
+REFUSED_HORIZONS = {
+    "A-one_cycle": (dict(kind_name="ONE_CYCLE", max_lr=0.05, total_steps=2), 3, False),
+    "A-warmup_decay": (dict(kind_name="LINEAR_WARMUP_DECAY", total_steps=2), 3, False),
+    "B-epoch": (dict(kind_name="LINEAR_WARMUP_DECAY", warmup_steps=5), 3, False),
+    "C-updates": (dict(kind_name="ONE_CYCLE", max_lr=0.05, total_steps=2, clock="optimizer_update"), 1, True),
+    "B-updates": (dict(kind_name="LINEAR_WARMUP_DECAY", warmup_steps=5, clock="optimizer_update"), 1, True),
+    "D-resume": (dict(kind_name="ONE_CYCLE", max_lr=0.05), 2, False),
+}
+
+
+def _refused_plan(case: str, calls: dict[str, int]) -> ExperimentPlan:
+    fields, n_epochs, borrowed = REFUSED_HORIZONS[case]
+
+    def train_factory():
+        calls["train"] += 1
+        return _train_loader()
+
+    def val_factory():
+        calls["val"] += 1
+        return _val_loader()
+
+    plan = (
+        _plan()
+        .with_train(_sgd_train(n_epochs, _schedule(**fields)))
+        .with_data(list(_train_loader()) if borrowed else train_factory, val=val_factory)
+    )
+    return plan.resuming("abc") if case == "D-resume" else plan
+
+
+@pytest.mark.parametrize("case", list(REFUSED_HORIZONS))
+def test_a_schedule_horizon_the_build_refuses_fails_before_any_factory(tmp_path, monkeypatch, case):
+    monkeypatch.chdir(tmp_path)
+    calls = {"train": 0, "val": 0}
+    plan = _refused_plan(case, calls)
+    with pytest.raises(PlanError) as caught:
+        plan.fit()
+    assert [d.path for d in caught.value.diagnostics] == ["train.scheduler"]
+    assert calls == {"train": 0, "val": 0} and not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize("case", list(REFUSED_HORIZONS))
+def test_train_still_raises_its_value_error_for_the_refused_horizons(tmp_path, monkeypatch, case):
+    """The plan reports the loop's own refusal: NNModel.train raises it as a
+    ValueError (never a PlanError) with the same message."""
+    monkeypatch.chdir(tmp_path)
+    plan = _refused_plan(case, {"train": 0, "val": 0})
+    (diagnostic,) = plan.validate().diagnostics
+    params = plan._compile_train(_train_loader(), _val_loader())
+    with pytest.raises(ValueError) as caught:
+        NNModel(net_params=NET, params=MODEL).train(params)
+    assert not isinstance(caught.value, PlanError) and str(caught.value) == diagnostic.message
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        dict(kind_name="ONE_CYCLE", max_lr=0.05, total_steps=5),  # 6 planned updates
+        dict(kind_name="LINEAR_WARMUP_DECAY", warmup_steps=7),  # over a default budget of 6 updates
+    ],
+    ids=["short-total_steps", "long-warmup"],
+)
+def test_a_factory_loaders_update_horizon_is_refused_before_the_model_is_built(tmp_path, monkeypatch, fields):
+    monkeypatch.chdir(tmp_path)
+    calls, built = [], []
+
+    def train_factory():
+        calls.append("train")
+        return _train_loader()  # 3 batches: 6 updates over 2 epochs
+
+    monkeypatch.setattr(ExperimentPlan, "_build_model", lambda self: built.append(self))
+    plan = _plan().with_train(_sgd_train(2, _schedule(clock="optimizer_update", **fields))).with_data(train_factory)
+    assert plan.validate().ok  # the factory's loader is unknown until fit() calls it
+    with pytest.raises(PlanError) as caught:
+        plan.fit()
+    assert [d.path for d in caught.value.diagnostics] == ["train.scheduler"]
+    assert "(6)" in caught.value.diagnostics[0].message
+    assert calls == ["train"] and built == [] and not (tmp_path / "runs").exists()
+
+
+def test_a_factory_loaders_update_horizon_that_covers_the_run_trains(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    scheduler = _schedule("ONE_CYCLE", max_lr=0.05, total_steps=6, clock="optimizer_update")
+    fitted = _plan().with_train(_sgd_train(2, scheduler)).fit()
+    assert sorted({idp.epoch_idx for idp in fitted.run.idps}) == [0, 1]

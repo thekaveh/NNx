@@ -867,6 +867,156 @@ def test_an_explicit_default_step_plan_validates_like_the_default_step():
     assert "train.scheduler" not in report.paths and "train.monitor" not in report.paths
 
 
+# --- #506: the schedule's horizon and warm-up, and the resume horizon --------------------------
+
+
+def _schedule(kind_name: str, **fields: Any):
+    from nnx import NNSchedulerParams, Schedulers
+
+    return NNSchedulerParams(
+        kind=Schedulers[kind_name], min_lr=1e-6, factor=0.5, patience=1, cooldown=0, threshold=0.0, **fields
+    )
+
+
+def _batches(n: int = 4) -> list:
+    """A borrowed loader of ``n`` batches (its len() is read, never iterated)."""
+    return list(DataLoader(TensorDataset(torch.randn(8 * n, 4), torch.arange(8 * n) % 3), batch_size=8))
+
+
+def _built_refusal(scheduler, *, n_epochs: int, n_updates=None) -> str:
+    """The ValueError building the scheduler raises, as train() builds it."""
+    optimizer = torch.optim.SGD([torch.nn.Parameter(torch.zeros(1))], lr=0.1)
+    with pytest.raises(ValueError) as caught:
+        scheduler.kind(optimizer, scheduler, n_epochs, n_updates=n_updates)
+    return str(caught.value)
+
+
+HORIZON_REFUSALS = {
+    # case A: an explicit total_steps shorter than the epochs it steps over
+    "A-one_cycle": (dict(kind_name="ONE_CYCLE", max_lr=0.05, total_steps=2), 3, None, "must be >= n_epochs (3)"),
+    "A-warmup_decay": (dict(kind_name="LINEAR_WARMUP_DECAY", total_steps=2), 3, None, "must be >= n_epochs (3)"),
+    # case B: a warm-up longer than the default total_steps (n_epochs)
+    "B-epoch": (
+        dict(kind_name="LINEAR_WARMUP_DECAY", warmup_steps=5),
+        3,
+        None,
+        "warmup_steps (5) must be <= the schedule's total_steps (3)",
+    ),
+    # case C: an update-clock total_steps shorter than the planned updates (4 batches, 1 epoch)
+    "C-updates": (
+        dict(kind_name="ONE_CYCLE", max_lr=0.05, total_steps=2, clock="optimizer_update"),
+        1,
+        4,
+        "planned optimizer updates (4)",
+    ),
+    # case B on the update clock: a warm-up longer than the 4 planned updates it defaults to
+    "B-updates": (
+        dict(kind_name="LINEAR_WARMUP_DECAY", warmup_steps=5, clock="optimizer_update"),
+        1,
+        4,
+        "warmup_steps (5) must be <= the schedule's total_steps (4)",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(HORIZON_REFUSALS))
+def test_validate_reports_a_schedule_horizon_the_build_refuses(case):
+    fields, n_epochs, n_updates, match = HORIZON_REFUSALS[case]
+    scheduler = _schedule(**fields)
+    plan = _plan().with_train(NNTrainParams(n_epochs=n_epochs, scheduler=scheduler)).with_data(_batches())
+    report = plan.validate()
+    assert not report.ok and report.paths == ("train.scheduler",)
+    message = report.diagnostics[0].message
+    assert match in message
+    # The build's own refusal, word for word: one implementation for both.
+    assert message == _built_refusal(scheduler, n_epochs=n_epochs, n_updates=n_updates)
+
+
+@pytest.mark.parametrize(
+    ("fields", "n_epochs"),
+    [
+        (dict(kind_name="ONE_CYCLE", max_lr=0.05, total_steps=3), 3),  # total_steps == n_epochs
+        (dict(kind_name="ONE_CYCLE", max_lr=0.05, total_steps=9), 3),  # a longer horizon
+        (dict(kind_name="ONE_CYCLE", max_lr=0.05), 3),  # the default total_steps
+        (dict(kind_name="LINEAR_WARMUP_DECAY", warmup_steps=3), 3),  # warm-up == the default total
+        (dict(kind_name="LINEAR_WARMUP_DECAY", total_steps=6, warmup_steps=6), 3),
+        (dict(kind_name="LINEAR_WARMUP_DECAY"), 3),
+        (dict(kind_name="ONE_CYCLE", max_lr=0.05, total_steps=4, clock="optimizer_update"), 1),  # == updates
+        (dict(kind_name="ONE_CYCLE", max_lr=0.05, clock="optimizer_update"), 2),  # default: 8 updates
+        (dict(kind_name="LINEAR_WARMUP_DECAY", warmup_steps=4, clock="optimizer_update"), 1),
+        (dict(kind_name="COSINE_ANNEALING", T_max=1), 3),  # an open-ended kind has no horizon to pass
+    ],
+)
+def test_validate_accepts_a_schedule_horizon_that_trains_today(fields, n_epochs):
+    plan = _plan().with_train(NNTrainParams(n_epochs=n_epochs, scheduler=_schedule(**fields)))
+    assert plan.with_data(_batches()).validate().ok
+
+
+def test_the_build_and_the_plan_share_one_horizon_check(monkeypatch):
+    """Schedulers.__call__ and validate() run the same refusal: replacing it
+    changes both."""
+    from nnx.nn.enum import schedulers
+
+    monkeypatch.setattr(schedulers, "_horizon_problem", lambda kind, params, **horizon: "the shared refusal")
+    scheduler = _schedule("ONE_CYCLE", max_lr=0.05, total_steps=9)
+    report = _plan().with_train(NNTrainParams(n_epochs=3, scheduler=scheduler)).validate()
+    assert [(d.path, d.message) for d in report.diagnostics] == [("train.scheduler", "the shared refusal")]
+    assert _built_refusal(scheduler, n_epochs=3) == "the shared refusal"
+
+
+def test_a_custom_step_leaves_an_update_clock_horizon_to_the_loop():
+    """NNx plans the updates only when it owns the windows: under a custom
+    step an explicit total_steps is not compared with them."""
+    scheduler = _schedule("ONE_CYCLE", max_lr=0.05, total_steps=2, clock="optimizer_update")
+    plan = _plan().with_train(NNTrainParams(n_epochs=1, scheduler=scheduler)).with_data(_batches())
+    assert plan.with_step_fns(train_step_fn=lambda ctx: None).validate().ok
+
+
+def _resuming(plan: ExperimentPlan, how: str, **resume: Any) -> ExperimentPlan:
+    """Resume ``plan`` through resuming() or the training parameters."""
+    if how == "resuming":
+        return plan.resuming("abc", **resume)
+    fields = {"resume_from_run_id": "abc"}
+    fields.update({f"resume_{key}": value for key, value in resume.items()})
+    return plan.with_train(dataclasses.replace(plan.train, **fields))
+
+
+@pytest.mark.parametrize("how", ["resuming", "train"])
+@pytest.mark.parametrize(
+    ("fields", "match"),
+    [
+        (dict(kind_name="ONE_CYCLE", max_lr=0.05), "requires scheduler.total_steps"),  # case D
+        (dict(kind_name="LINEAR_WARMUP_DECAY", total_steps=4), "requires scheduler.warmup_steps"),
+    ],
+    ids=["D-one_cycle", "warmup_decay-default-warmup"],
+)
+@pytest.mark.parametrize("mode", [None, "stateful"], ids=["auto", "stateful"])
+def test_validate_reports_a_stateful_resume_without_one_horizon(how, fields, match, mode):
+    plan = _plan().with_train(NNTrainParams(n_epochs=2, scheduler=_schedule(**fields)))
+    assert plan.validate().ok  # a fresh run builds the default horizon
+    report = _resuming(plan, how, **({} if mode is None else {"mode": mode})).validate()
+    assert report.paths == ("train.scheduler",) and match in report.diagnostics[0].message
+    from nnx.nn.nn_model import _check_resume_horizon
+
+    with pytest.raises(ValueError) as caught:  # the loop's own refusal, word for word
+        _check_resume_horizon(plan.train.scheduler, n_epochs=2)
+    assert report.diagnostics[0].message == str(caught.value)
+
+
+@pytest.mark.parametrize("how", ["resuming", "train"])
+def test_validate_accepts_the_resumes_that_need_no_explicit_horizon(how):
+    one_cycle = _plan().with_train(NNTrainParams(n_epochs=2, scheduler=_schedule("ONE_CYCLE", max_lr=0.05)))
+    assert _resuming(one_cycle, how, mode="weights_only").validate().ok  # a fresh schedule
+    warmup_decay = _plan().with_train(
+        NNTrainParams(n_epochs=2, scheduler=_schedule("LINEAR_WARMUP_DECAY", total_steps=4))
+    )
+    assert _resuming(warmup_decay, how, epochs="planned").validate().ok  # the plan's own warm-up
+    assert _resuming(warmup_decay, how, mode="weights_only").validate().ok
+    updates = _schedule("LINEAR_WARMUP_DECAY", total_steps=8, clock="optimizer_update")
+    on_updates = _plan().with_train(NNTrainParams(n_epochs=2, scheduler=updates))
+    assert _resuming(on_updates, how).validate().ok  # its warm-up is a tenth of total_steps, not of a session
+
+
 # --- built-in paradigm steps and a declared TaskSpec (#513) -----------------------------------
 
 

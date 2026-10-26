@@ -620,6 +620,7 @@ class ExperimentPlan:
             report("train.scheduler", f"must be NNSchedulerParams, got {type(train.scheduler).__name__}")
         else:
             self._check_update_budget(train.scheduler, report)
+            self._check_schedule_horizon(train, report)
         if train.overwrite_existing:
             report(
                 "train.overwrite_existing",
@@ -760,6 +761,7 @@ class ExperimentPlan:
     def _check_resume(self, report: Callable[[str, str], None], train: Optional[NNTrainParams]) -> None:
         resume = self.resume
         self._check_planned_horizon(report, train, resume)
+        self._check_resume_horizon(report, train, resume)
         if resume is None:
             return
         if not isinstance(resume.run_id, str) or not resume.run_id.strip():
@@ -817,6 +819,34 @@ class ExperimentPlan:
                 "'planned' continues the source run's training state; resume_mode='weights_only' restores the "
                 "weights only — resume statefully, or use epochs='additional'",
             )
+
+    @staticmethod
+    def _check_resume_horizon(
+        report: Callable[[str, str], None], train: Optional[NNTrainParams], resume: Optional[_Resume]
+    ) -> None:
+        """The loop's refusals of a stateful resume of a one-cycle /
+        warmup-decay schedule that need no checkpoint (#506): no explicit
+        ``total_steps``, or an epoch-clock warm-up left to its per-session
+        default outside a planned resume. ``NNModel.train``'s own check,
+        run with no start epoch (the overrun past ``total_steps`` needs the
+        checkpoint); a weights-only resume starts a fresh schedule."""
+        if train is None or not isinstance(train.scheduler, NNSchedulerParams):
+            return
+        fields = ExperimentPlan._resume_fields(train, resume)
+        mode, epochs = fields["resume_mode"], fields["resume_epochs"]
+        # An invalid mode is the resume's own diagnostic.
+        if fields["resume_from_run_id"] is None or not (isinstance(mode, str) and mode in ("auto", "stateful")):
+            return
+        from .nn.nn_model import _check_resume_horizon
+
+        try:
+            _check_resume_horizon(
+                train.scheduler,
+                n_epochs=train.n_epochs,
+                planned=isinstance(epochs, str) and epochs == "planned",
+            )
+        except ValueError as exc:
+            report("train.scheduler", str(exc))
 
     def _check_monitoring(self, report: Callable[[str, str], None], train: NNTrainParams, has_val: bool) -> None:
         """The metric and monitor rules ``NNModel.train`` applies before
@@ -947,6 +977,17 @@ class ExperimentPlan:
         source = self._sources(self.train)[0]
         loader = _UNKNOWN_LOADER if source is None or _is_factory(source) else source
         problem = _update_budget_problem(scheduler, self.train_step_fn, loader)
+        if problem is not None:
+            report("train.scheduler", problem)
+
+    def _check_schedule_horizon(self, train: NNTrainParams, report: Callable[[str, str], None]) -> None:
+        """The schedule's own refusals of its horizon and warm-up (#506), as
+        building it in train() would raise them. An optimizer_update clock's
+        horizon over a data factory's loader is checked when fit() calls
+        it."""
+        source = self._sources(train)[0]
+        loader = _UNKNOWN_LOADER if source is None or _is_factory(source) else source
+        problem = _schedule_horizon_problem(train, self.train_step_fn, loader)
         if problem is not None:
             report("train.scheduler", problem)
 
@@ -1129,9 +1170,11 @@ class ExperimentPlan:
         The steps are the ones an equally seeded imperative script takes:
         validate (an invalid plan raises :class:`PlanError` before
         anything runs); seed; call each data factory and callback factory
-        exactly once (what they return is checked next, and a
-        :class:`PlanError` then leaves the seed applied, as the script's
-        ``set_seed`` would); build ``NNModel(net, model)``; and call
+        exactly once (what they return is checked next — the loaders, the
+        callbacks and their monitors, and the update budget and
+        ``optimizer_update``-clock horizon a data factory's loader decides —
+        and a :class:`PlanError` then leaves the seed applied, as the
+        script's ``set_seed`` would); build ``NNModel(net, model)``; and call
         ``model.train(train, callbacks, ...)``. The ``train`` given to
         ``model.train`` carries the plan's seed, data, data identity and
         resume. The run's ``salt`` is ``"plan-attempt:<attempt>"``, where
@@ -1162,10 +1205,13 @@ class ExperimentPlan:
         _check_made(sources, loaders, made)
         made_found: list[Diagnostic] = []
         assert isinstance(self.train, NNTrainParams)
-        if _is_factory(sources[0]):  # the update budget a factory's loader decides
-            problem = _update_budget_problem(self.train.scheduler, self.train_step_fn, loaders[0])
-            if problem is not None:
-                made_found.append(Diagnostic("train.scheduler", problem))
+        if _is_factory(sources[0]):  # the update budget and horizon a factory's loader decides
+            for problem in (
+                _update_budget_problem(self.train.scheduler, self.train_step_fn, loaders[0]),
+                _schedule_horizon_problem(self.train, self.train_step_fn, loaders[0]),
+            ):
+                if problem is not None:
+                    made_found.append(Diagnostic("train.scheduler", problem))
         self._check_callback_monitors(
             lambda path, message: made_found.append(Diagnostic(path, message)),
             self.train,
@@ -1287,6 +1333,31 @@ def _update_budget_problem(scheduler: Any, train_step_fn: Any, loader: Any) -> O
     except TypeError:
         return f"{needs}: NNx plans the updates only over a training loader with a length"
     return None
+
+
+def _schedule_horizon_problem(train: NNTrainParams, train_step_fn: Any, loader: Any) -> Optional[str]:
+    """Why building ``train``'s scheduler would refuse its horizon or
+    warm-up, or ``None``: the build's own check
+    (``nnx.nn.enum.schedulers._horizon_problem``) over the horizon train()
+    gives it — ``n_epochs``, or on the optimizer_update clock the planned
+    updates when NNx owns the update windows. ``len()`` is the only thing
+    read from ``loader``; an unknown one (a data factory not yet called)
+    leaves an update-clock horizon unchecked."""
+    from ._scheduler_clock import planned_updates, uses_update_clock
+    from .nn.enum.schedulers import _horizon_problem
+    from .nn.nn_model import default_train_step
+
+    scheduler = train.scheduler
+    if not isinstance(scheduler, NNSchedulerParams) or scheduler.kind is None:
+        return None
+    n_updates = None
+    if uses_update_clock(scheduler):
+        if loader is _UNKNOWN_LOADER:
+            return None
+        if train_step_fn in (None, default_train_step):  # train()'s planned updates
+            window = getattr(train.optim, "accumulate_grad_batches", 1)
+            n_updates = planned_updates(loader, window if isinstance(window, int) else 1, train.n_epochs)
+    return _horizon_problem(scheduler.kind, scheduler, n_epochs=train.n_epochs, n_updates=n_updates)
 
 
 def _check_made(sources: tuple[Any, Any], loaders: list[Any], callbacks: list[Any]) -> None:

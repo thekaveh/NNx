@@ -99,7 +99,7 @@ class Schedulers(Enum):
                 else:
                     max_lr = params.max_lr
                 total_steps = budget(params.total_steps, "total_steps")
-                _reject_short_total_steps(total_steps, horizon, updates=updates)
+                _refuse(_horizon_problem(self, params, n_epochs=n_epochs, n_updates=n_updates))
                 return lr_scheduler.OneCycleLR(
                     optimizer,
                     max_lr=max_lr,
@@ -107,20 +107,8 @@ class Schedulers(Enum):
                 )
             case Schedulers.LINEAR_WARMUP_DECAY:
                 total_steps = budget(params.total_steps, "total_steps")
-                # The default warm-up is a tenth of the schedule: of the
-                # run's epochs on the epoch clock (unchanged), and of its
-                # total_steps updates on the update clock, so a split
-                # update-clock run warms up exactly as the whole one.
-                default_warmup = max(1, (total_steps if updates else n_epochs) // 10)
-                warmup_steps = params.warmup_steps if params.warmup_steps is not None else default_warmup
-                _reject_short_total_steps(total_steps, horizon, updates=updates)
-                if warmup_steps > total_steps:
-                    # Checked against the resolved budget (a default one
-                    # too): the schedule would never reach the optimizer's
-                    # LR, nor decay.
-                    raise ValueError(
-                        f"warmup_steps ({warmup_steps}) must be <= the schedule's total_steps ({total_steps})"
-                    )
+                _refuse(_horizon_problem(self, params, n_epochs=n_epochs, n_updates=n_updates))
+                warmup_steps = _warmup_steps(params, total_steps, n_epochs=n_epochs)
 
                 def _lr_lambda(step: int) -> float:
                     if step < warmup_steps:
@@ -134,21 +122,63 @@ class Schedulers(Enum):
                 return lr_scheduler.LambdaLR(optimizer, lr_lambda=_lr_lambda)
 
 
-def _reject_short_total_steps(total_steps: int, horizon: Optional[int], *, updates: bool = False) -> None:
-    """An explicit total_steps shorter than the run is a config error:
-    OneCycleLR raises mid-train once it is exhausted (losing that epoch's
-    idps), and LINEAR_WARMUP_DECAY's decay clamp silently trains the rest at
-    LR=0. On the epoch clock NNx steps once per EPOCH (not per batch, the HF
-    habit); on the optimizer_update clock once per committed update."""
-    if horizon is None:
-        return  # unknown length: the scheduler clock refuses an overrun when it happens
-    if total_steps < horizon:
+def _horizon_problem(
+    kind: Any, params: NNSchedulerParams, *, n_epochs: int, n_updates: Optional[int] = None
+) -> Optional[str]:
+    """Why building a ``kind`` schedule from ``params`` refuses its horizon
+    or warm-up, or ``None``. Pure: no optimizer or scheduler is built. One
+    implementation for :meth:`Schedulers.__call__` and the configuration
+    checks of ``ExperimentPlan.validate()`` / ``fit()`` (#506).
+
+    ``n_updates`` is the run's planned optimizer updates (``None`` when they
+    are unknown). A budget the run cannot resolve (an optimizer_update clock
+    with no planned updates and no explicit budget) is not this check's: the
+    build refuses it on its own.
+
+    - An explicit ``total_steps`` shorter than the run: ``OneCycleLR`` raises
+      mid-train once it is exhausted (losing that epoch's records), and
+      LINEAR_WARMUP_DECAY's decay clamp silently trains the rest at LR=0. On
+      the epoch clock NNx steps once per EPOCH (not per batch, the HF habit);
+      on the optimizer_update clock once per committed update.
+    - A warm-up longer than the resolved ``total_steps`` (a default one
+      too): the schedule would never reach the optimizer's LR, nor decay.
+    """
+    if kind not in (Schedulers.ONE_CYCLE, Schedulers.LINEAR_WARMUP_DECAY):
+        return None
+    updates = uses_update_clock(params)
+    horizon = n_updates if updates else n_epochs
+    total_steps = params.total_steps if params.total_steps is not None else horizon
+    if total_steps is None:
+        return None  # no budget to check: the build refuses the missing one
+    if horizon is not None and total_steps < horizon:
+        # An unknown length (horizon None) is not checked here: the
+        # scheduler clock refuses an overrun when it happens.
         if updates:
-            raise ValueError(
+            return (
                 f"total_steps ({total_steps}) must be >= the run's planned optimizer updates ({horizon}) — an "
                 "optimizer_update-clock scheduler steps once per committed update."
             )
-        raise ValueError(
+        return (
             f"total_steps ({total_steps}) must be >= n_epochs ({horizon}) — "
             "NNx schedulers step once per epoch, not per batch."
         )
+    if kind is Schedulers.LINEAR_WARMUP_DECAY:
+        warmup_steps = _warmup_steps(params, total_steps, n_epochs=n_epochs)
+        if warmup_steps > total_steps:
+            return f"warmup_steps ({warmup_steps}) must be <= the schedule's total_steps ({total_steps})"
+    return None
+
+
+def _warmup_steps(params: NNSchedulerParams, total_steps: int, *, n_epochs: int) -> int:
+    """A warmup-decay schedule's warm-up: ``warmup_steps``, else a tenth of
+    the schedule — of the run's epochs on the epoch clock (unchanged), and
+    of its ``total_steps`` updates on the update clock, so a split
+    update-clock run warms up exactly as the whole one."""
+    if params.warmup_steps is not None:
+        return params.warmup_steps
+    return max(1, (total_steps if uses_update_clock(params) else n_epochs) // 10)
+
+
+def _refuse(problem: Optional[str]) -> None:
+    if problem is not None:
+        raise ValueError(problem)

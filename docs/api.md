@@ -5124,8 +5124,16 @@ imports Optuna or creates a study.
   the value of the epoch its BEST checkpoint holds (``min_delta`` included).
 - **Errors.** A fit that raises fails its trial (``TrialOutcome.error``
   keeps the message) and the search continues; a configuration error —
-  ``apply`` raising or returning a plan the search cannot score — stops the
-  search. An exhausted sampler ends it (``stop_reason="exhausted"``).
+  ``apply`` raising or returning a plan the search cannot score, or a
+  :class:`~nnx.plans.PlanError` from the trial's ``fit()`` — fails that
+  trial (``reason="config_error:<type>"``) and stops the search. A
+  ``PlanError`` from ``fit()`` reports what the factories made (data and
+  callback factory output, a factory-made callback's monitor, the update
+  budget or scheduler horizon over a factory's loader), so it would fail
+  every trial alike. An ``apply`` that varies ``n_epochs``,
+  ``warmup_steps`` or ``total_steps`` into a combination the scheduler
+  refuses, or swaps in a factory whose output is invalid, stops the search
+  at that trial. An exhausted sampler ends it (``stop_reason="exhausted"``).
 - **Outcomes.** Every trial's :class:`TrialOutcome` keeps its parameters,
   state and terminal reason, resource counters (epochs, committed updates,
   seconds), best monitor value, attempt id, run id and BEST checkpoint path.
@@ -7399,9 +7407,11 @@ Train one attempt and return its `FitResult`.
 The steps are the ones an equally seeded imperative script takes:
 validate (an invalid plan raises :class:`PlanError` before
 anything runs); seed; call each data factory and callback factory
-exactly once (what they return is checked next, and a
-:class:`PlanError` then leaves the seed applied, as the script's
-``set_seed`` would); build ``NNModel(net, model)``; and call
+exactly once (what they return is checked next — the loaders, the
+callbacks and their monitors, and the update budget and
+``optimizer_update``-clock horizon a data factory's loader decides —
+and a :class:`PlanError` then leaves the seed applied, as the
+script's ``set_seed`` would); build ``NNModel(net, model)``; and call
 ``model.train(train, callbacks, ...)``. The ``train`` given to
 ``model.train`` carries the plan's seed, data, data identity and
 resume. The run's ``salt`` is ``"plan-attempt:<attempt>"``, where
