@@ -2014,8 +2014,129 @@ def test_the_rank_that_cannot_score_its_batch_raises_its_own_reason():
         def gather(self, value):
             return [value, False]
 
-    with pytest.raises(ValueError, match="default steps score classification"):
+    with pytest.raises(ValueError) as caught:
         _agreed_scorable_target(_BothRanks(), torch.nn.MSELoss(), torch.tensor([0.5, 1.0]))
+    # #565: distributed= refuses custom steps and objectives, so a task is the one remedy.
+    assert str(caught.value) == (
+        "the default steps score classification and cannot score MSELoss targets: "
+        "declare the task, e.g. NNModelParams(task=TaskSpec.regression(...))"
+    )
+
+
+# --- #565: each task-free regression-loss refusal names the remedy that works for its caller -----
+
+_DECLARE_TASK = "declare the task, e.g. NNModelParams(task=TaskSpec.regression(...))"
+
+
+def _task_free_mse_model(task=None):
+    import torch
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams
+
+    torch.manual_seed(0)
+    return NNModel(
+        net_params=NNParams(input_dim=4, output_dim=1, hidden_dims=[6], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR, task=task),
+    )
+
+
+def _scorable_and_continuous_batches():
+    """Class-valued targets (scorable as classes under MSE) and continuous ones."""
+    import torch
+
+    generator = torch.Generator().manual_seed(3)
+    X = torch.randn(8, 4, generator=generator)
+    classes = [(X[:4], torch.randint(0, 2, (4, 1), generator=generator).float()), (X[4:], torch.ones(4, 1))]
+    continuous = [(X[:4], torch.rand(4, 1, generator=generator)), (X[4:], torch.rand(4, 1, generator=generator))]
+    return classes, continuous
+
+
+def _mse_step(ctx):
+    """The caller's own regression training step."""
+    X, Y = ctx.batch
+    ctx.optimizer.zero_grad()
+    loss = ctx.model.loss_fn(ctx.model.net(X), Y)
+    loss.backward()
+    ctx.optimizer.step()
+    from nnx import NNEvaluationDataPoint
+
+    return NNEvaluationDataPoint(loss=float(loss.detach()))
+
+
+def _train_params(train, val=None):
+    from nnx import NNOptimParams
+
+    return NNTrainParams(
+        n_epochs=1, train_loader=train, val_loader=val, optim=NNOptimParams.builder().sgd(max_lr=0.1).build()
+    )
+
+
+def test_the_default_training_step_keeps_its_refusal(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _, continuous = _scorable_and_continuous_batches()
+    with pytest.raises(ValueError) as caught:
+        _task_free_mse_model().train(params=_train_params(continuous))
+    assert str(caught.value) == (
+        f"the default steps score classification and cannot score MSELoss targets: {_DECLARE_TASK}, "
+        "or pass train_step_fn / objective"
+    )
+
+
+@pytest.mark.parametrize("hook", ["default", "train_step_fn", "objective"])
+def test_train_validation_advises_a_task_or_an_eval_step_fn(hook, tmp_path, monkeypatch):
+    """NNModel.train's default validation scores classification without a
+    task, whichever step trained: a task or an eval_step_fn makes it score
+    the targets (another train_step_fn / objective does not)."""
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    classes, continuous = _scorable_and_continuous_batches()
+    train = continuous if hook == "train_step_fn" else classes  # the custom step trains on regression targets
+    hooks = {"default": {}, "train_step_fn": {"train_step_fn": _mse_step}, "objective": {}}[hook]
+    if hook == "objective":
+        hooks = {"objective": supervised_objective()}
+    with pytest.raises(ValueError) as caught:
+        _task_free_mse_model().train(params=_train_params(train, continuous), **hooks)
+    assert str(caught.value) == (
+        f"validation without a task scores classification and cannot score MSELoss targets: {_DECLARE_TASK}, "
+        "or pass eval_step_fn"
+    )
+
+
+def test_streaming_eval_step_advises_a_task_or_another_eval_step_fn(tmp_path, monkeypatch):
+    from nnx.streaming import streaming_eval_step
+
+    monkeypatch.chdir(tmp_path)
+    _, continuous = _scorable_and_continuous_batches()
+    with pytest.raises(ValueError) as caught:
+        _task_free_mse_model().train(
+            params=_train_params(continuous, continuous), train_step_fn=_mse_step, eval_step_fn=streaming_eval_step
+        )
+    assert str(caught.value) == (
+        f"streaming_eval_step() without a task scores classification and cannot score MSELoss targets: "
+        f"{_DECLARE_TASK}, or pass your own eval_step_fn"
+    )
+
+
+def test_the_advised_remedies_train(tmp_path, monkeypatch):
+    """The remedies the refusals name work: an own eval_step_fn after a
+    custom regression step, or a declared regression task."""
+    from nnx import NNEvaluationDataPoint, TaskSpec
+
+    monkeypatch.chdir(tmp_path)
+    _, continuous = _scorable_and_continuous_batches()
+
+    def mse_eval(ctx):
+        errors = [float(ctx.model.loss_fn(ctx.model.net(X), Y)) for X, Y in ctx.val_loader]
+        return NNEvaluationDataPoint(loss=sum(errors) / len(errors))
+
+    run = _task_free_mse_model().train(
+        params=_train_params(continuous, continuous), train_step_fn=_mse_step, eval_step_fn=mse_eval
+    )
+    assert run.idps[-1].val_edp.loss is not None
+    run = _task_free_mse_model(TaskSpec.regression(1)).train(params=_train_params(continuous, continuous))
+    assert run.idps[-1].val_edp.kind == "regression"
+    assert _task_free_mse_model(TaskSpec.regression(1)).evaluate(continuous).kind == "regression"
 
 
 def test_activation_map_reads_the_first_tensor_of_a_mapping_and_refuses_one_without():

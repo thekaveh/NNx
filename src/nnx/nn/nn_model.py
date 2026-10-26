@@ -1136,23 +1136,75 @@ def _classification_metric_tensors(
     return target, prediction
 
 
-def _check_scorable_target(loss_fn: torch.nn.Module, target: torch.Tensor, paradigm: Optional[str] = None) -> None:
+class _Scoring(NamedTuple):
+    """Who scores a task-free batch as classification, and the remedy that
+    works for that caller (#565); ``remedy`` is ``None`` for a step that no
+    task declaration makes score regression."""
+
+    scores: str
+    remedy: Optional[str]
+
+
+_DECLARE_TASK = "declare the task, e.g. NNModelParams(task=TaskSpec.regression(...))"
+_DEFAULT_STEP_SCORING = _Scoring("the default steps score", f"{_DECLARE_TASK}, or pass train_step_fn / objective")
+# distributed= runs the default train and validation steps only: a task is the one remedy there.
+_DISTRIBUTED_STEP_SCORING = _Scoring("the default steps score", _DECLARE_TASK)
+_DISTRIBUTED_VALIDATION_SCORING = _Scoring("distributed validation without a task scores", _DECLARE_TASK)
+_EVALUATE_SCORING = _Scoring("evaluate() without a task scores", _DECLARE_TASK)
+_TRAIN_VALIDATION_SCORING = _Scoring("validation without a task scores", f"{_DECLARE_TASK}, or pass eval_step_fn")
+_TRAINER_VALIDATION_SCORING = _Scoring("validation without a task scores", _DECLARE_TASK)  # Trainer: no eval_step_fn
+_STREAMING_EVAL_SCORING = _Scoring(
+    "streaming_eval_step() without a task scores", f"{_DECLARE_TASK}, or pass your own eval_step_fn"
+)
+_SUPERVISED_OBJECTIVE_SCORING = _Scoring("supervised_objective() without a task scores", _DECLARE_TASK)
+# Distillation scores classification: a categorical or multilabel task cannot make it score regression.
+_KD_OBJECTIVE_SCORING = _Scoring("kd_objective scores", None)
+
+# The scoring of the default validation step's evaluate() call (#565), set
+# around it by NNModel.train and Trainer.train: an evaluate() override's
+# signature cannot carry it.
+_VALIDATION_SCORING: contextvars.ContextVar[Optional[_Scoring]] = contextvars.ContextVar(
+    "nnx_validation_scoring", default=None
+)
+
+
+def _check_scorable_target(
+    loss_fn: torch.nn.Module,
+    target: torch.Tensor,
+    paradigm: Optional[str] = None,
+    *,
+    scoring: _Scoring = _DEFAULT_STEP_SCORING,
+) -> None:
     """Without a task the default steps score classification (accuracy / F1
     of the predictions), which continuous targets of a regression loss
-    cannot be: refuse them with the fix. The default training step checks
-    before its backward, so a refused batch updates nothing."""
+    cannot be: refuse them with the fix that works for the caller
+    (``scoring``). The default training step checks before its backward, so
+    a refused batch updates nothing."""
     regression_loss = isinstance(
         loss_fn, (torch.nn.MSELoss, torch.nn.L1Loss, torch.nn.SmoothL1Loss, torch.nn.HuberLoss)
     )
     if regression_loss and target.is_floating_point() and not torch.equal(target, target.round()):
         if paradigm is not None:  # a paradigm step: no task or other step makes it score regression
-            raise ValueError(
-                f"the {paradigm} step scores classification only and cannot score {type(loss_fn).__name__} targets"
-            )
+            scoring = _Scoring(f"the {paradigm} step scores", None)
+        if scoring.remedy is None:
+            raise ValueError(f"{scoring.scores} classification only and cannot score {type(loss_fn).__name__} targets")
         raise ValueError(
-            f"the default steps score classification and cannot score {type(loss_fn).__name__} targets: declare "
-            "the task, e.g. NNModelParams(task=TaskSpec.regression(...)), or pass train_step_fn / objective"
+            f"{scoring.scores} classification and cannot score {type(loss_fn).__name__} targets: {scoring.remedy}"
         )
+
+
+def _default_validation(model: Any, params: Any, scoring: _Scoring) -> NNEvaluationDataPoint:
+    """The default validation step: the model's ``evaluate()`` (an override
+    included), refusing an unscorable task-free batch with ``scoring``'s
+    remedy. ``metrics=`` only when declared: evaluate() overrides written
+    before FEAT-003 keep their (loader, extra_metrics) call."""
+    token = _VALIDATION_SCORING.set(scoring)
+    try:
+        if params.metrics:
+            return model.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics, metrics=params.metrics)
+        return model.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics)
+    finally:
+        _VALIDATION_SCORING.reset(token)
 
 
 def _classification_edp_for_loss(
@@ -1162,10 +1214,11 @@ def _classification_edp_for_loss(
     prediction: torch.Tensor,
     loss: Optional[float],
     extra_metrics: Optional[Mapping[str, Callable]],
+    scoring: _Scoring = _DEFAULT_STEP_SCORING,
 ) -> NNEvaluationDataPoint:
     """The classification record of one batch; ``loss`` may be ``None``
     (an objective's all-masked microbatch has no loss of its own)."""
-    _check_scorable_target(loss_fn, target)
+    _check_scorable_target(loss_fn, target, scoring=scoring)
     metric_target, metric_prediction = _classification_metric_tensors(loss_fn, target, prediction)
     if metric_target.numel() == 0:
         return NNEvaluationDataPoint(
@@ -1394,7 +1447,7 @@ def _agreed_scorable_target(ddp: Any, loss_fn: torch.nn.Module, target: torch.Te
     gradient all-reduce."""
     refusal: Optional[ValueError] = None
     try:
-        _check_scorable_target(loss_fn, target)
+        _check_scorable_target(loss_fn, target, scoring=_DISTRIBUTED_STEP_SCORING)
     except ValueError as caught:
         refusal = caught
     failed = [rank for rank, bad in enumerate(ddp.gather(refusal is not None)) if bad]
@@ -1804,9 +1857,15 @@ def _distributed_validation(model: Any, ddp: Any, params: Any) -> NNEvaluationDa
     ddp.validation_ids = ids
     batches = [batch for part, _ in gathered for batch in part]
     replay = _Replay(model)
-    if params.metrics:
-        return _evaluate(replay, batches, params.extra_metrics, tuple(params.metrics), bounded=False, who="validation")
-    return _evaluate(replay, batches, params.extra_metrics, (), bounded=False, who="validation")
+    return _evaluate(
+        replay,
+        batches,
+        params.extra_metrics,
+        tuple(params.metrics or ()),
+        bounded=False,
+        who="validation",
+        scoring=_DISTRIBUTED_VALIDATION_SCORING,
+    )
 
 
 def _distributed_state(ddp: Any, train_loader: Any, val_loader: Any, rank_rng: list[Any]) -> dict[str, Any]:
@@ -2594,21 +2653,31 @@ def _evaluate(
     *,
     bounded: bool,
     who: str,
+    scoring: Optional[_Scoring] = None,
 ) -> NNEvaluationDataPoint:
     """``NNModel.evaluate()``'s loop, shared with the streaming validation
     step (FEAT-020). ``bounded=True`` keeps counts and sums instead of every
     target and prediction, so memory does not grow with the loader; it
     rejects ``extra_metrics`` and metrics that need every stored score before
-    any batch is read. Module-level: legacy stand-ins borrow ``evaluate()``."""
+    any batch is read. Module-level: legacy stand-ins borrow ``evaluate()``.
+
+    A declared task re-checks the live ``loss_fn`` before any batch is read,
+    as ``train()`` does (#565). Without a task, ``scoring`` (else the default
+    validation step's, else ``evaluate()``'s) names the remedy for targets
+    classification cannot score."""
+    # getattr: legacy stand-ins borrow evaluate() without the property.
+    adapter = getattr(model, "task_adapter", None)
+    if adapter is not None:
+        adapter.check_loss_fn(model.loss_fn)
     if bounded and extra_metrics:
         raise _bounded_extra_metrics_error(who)
     # Ensure loss_fn lives on the same device as the model — guards
     # against callers reassigning model.device after construction.
     model.loss_fn = model.loss_fn.to(model.device)
     named = _named_metric_set(model, metrics, where=who, bounded=bounded)
-    # getattr: legacy stand-ins borrow evaluate() without the property.
-    if getattr(model, "task_adapter", None) is not None:
+    if adapter is not None:
         return _evaluate_task(model, loader, extra_metrics, named, bounded=bounded, who=who)
+    scoring = scoring or _VALIDATION_SCORING.get() or _EVALUATE_SCORING
     # Snapshot training-mode for non-destructive restore (matches the
     # convention already used by `nnx.viz.activation_map` and
     # `nnx.lr_finder`). Without this, a caller doing the common
@@ -2641,7 +2710,7 @@ def _evaluate(
                 batch_n = int(Y.size(0))
                 # Aggregate predictions / labels across the entire loader so
                 # metrics are computed on the full eval set, not per-batch.
-                _check_scorable_target(model.loss_fn, Y)
+                _check_scorable_target(model.loss_fn, Y, scoring=scoring)
                 metric_Y, metric_Y_hat = _classification_metric_tensors(model.loss_fn, Y, Y_hat)
                 if metric_Y.numel():
                     if bounded:
@@ -4634,15 +4703,7 @@ class NNModel(_HubMixinBase):
                         _restore_training_modes(eval_training_modes)
                 elif validate:
                     assert params.val_loader is not None
-                    # `metrics=` only when declared: evaluate() overrides written
-                    # before FEAT-003 keep their (loader, extra_metrics) call.
-                    val_edp = (
-                        self.evaluate(
-                            loader=params.val_loader, extra_metrics=params.extra_metrics, metrics=params.metrics
-                        )
-                        if params.metrics
-                        else self.evaluate(loader=params.val_loader, extra_metrics=params.extra_metrics)
-                    )
+                    val_edp = _default_validation(self, params, _TRAIN_VALIDATION_SCORING)
                 else:
                     val_edp = None
                 records.replace_last(records.last.with_val_edp(val_edp))
@@ -4923,6 +4984,12 @@ class NNModel(_HubMixinBase):
         and reported in the record's ``metrics`` under each spec's name. A
         metric whose input this model cannot provide raises before any
         batch is read.
+
+        A model that declares a task re-checks the live ``loss_fn`` before
+        any batch is read, as ``train()`` does: one the task cannot score
+        raises :class:`~nnx.TaskValidationError`. Without a task the record
+        is classification's, and continuous targets of a regression loss
+        raise ValueError advising the task declaration.
 
         Raises ValueError if the loader yields zero batches (there would be
         nothing to average).

@@ -1202,6 +1202,63 @@ def test_trainer_task_preflight_fails_before_consuming_the_loader(tmp_path, monk
     assert not (tmp_path / "runs").exists() or not any((tmp_path / "runs").iterdir())
 
 
+def test_evaluate_rechecks_a_runtime_loss_fn_before_reading_a_batch():
+    """#565: standalone evaluate() runs the same live loss_fn check as
+    Trainer.train, before any batch is read."""
+    model = _regression_task_model()
+    model.loss_fn = nn.CrossEntropyLoss()
+    with pytest.raises(TaskValidationError, match="regression loss"):
+        model.evaluate(_ExplodingLoader())  # type: ignore[arg-type]
+
+
+_DECLARE_TASK = "declare the task, e.g. NNModelParams(task=TaskSpec.regression(...))"
+
+
+def _task_free_mse_model() -> NNModel:
+    torch.manual_seed(0)
+    return NNModel(
+        net_params=NNParams(input_dim=4, output_dim=1, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.MEAN_SQUARED_ERROR),
+    )
+
+
+def _mse_step(ctx: TrainerStepContext) -> NNEvaluationDataPoint:
+    """The caller's own regression training step."""
+    X, Y = ctx.batch
+    optimizer = ctx.optimizers["main"]
+    optimizer.zero_grad()
+    loss = ctx.model.loss_fn(ctx.model.net(X), Y)
+    loss.backward()
+    optimizer.step()
+    return NNEvaluationDataPoint(loss=float(loss.detach()))
+
+
+def test_task_free_evaluate_and_trainer_validation_advise_only_a_task_declaration(tmp_path, monkeypatch):
+    """#565: evaluate() and Trainer.train validation score classification
+    without a task; their refusal names the one remedy that works there (no
+    step or objective to pass), not the default steps' text."""
+    monkeypatch.chdir(tmp_path)
+    continuous = DataLoader(TensorDataset(torch.randn(8, 4), torch.rand(8, 1)), batch_size=4)
+    with pytest.raises(ValueError) as from_evaluate:
+        _task_free_mse_model().evaluate(continuous)
+    assert str(from_evaluate.value) == (
+        f"evaluate() without a task scores classification and cannot score MSELoss targets: {_DECLARE_TASK}"
+    )
+    with pytest.raises(ValueError) as from_trainer:
+        Trainer(model=_task_free_mse_model()).train(
+            params=NNTrainerParams(
+                n_epochs=1,
+                train_loader=continuous,
+                val_loader=continuous,
+                optims={"main": NNOptimParams.builder().sgd(max_lr=0.1).build()},
+            ),
+            trainer_step_fn=_mse_step,
+        )
+    assert str(from_trainer.value) == (
+        f"validation without a task scores classification and cannot score MSELoss targets: {_DECLARE_TASK}"
+    )
+
+
 def _assert_same_records(loaded, expected):
     """Reloaded idps.csv records equal the originals bit for bit: the
     loader parses floats round-trip, so no tolerance is needed."""
