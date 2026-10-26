@@ -2105,6 +2105,33 @@ def test_train_validation_advises_a_task_or_an_eval_step_fn(hook, tmp_path, monk
     )
 
 
+def test_an_evaluate_override_keeps_the_validation_advice_until_validation_ends(tmp_path, monkeypatch):
+    """The validation remedy reaches an evaluate() override written with the
+    pre-FEAT-003 (loader, extra_metrics) signature, and is reset once the
+    validation step ends: a later standalone evaluate() gets its own."""
+    from nnx import NNModel
+
+    class OverridingModel(NNModel):
+        def evaluate(self, loader, extra_metrics=None):
+            return super().evaluate(loader=loader, extra_metrics=extra_metrics)
+
+    monkeypatch.chdir(tmp_path)
+    classes, continuous = _scorable_and_continuous_batches()
+    stock = _task_free_mse_model()
+    model = OverridingModel(net_params=stock.net_params, params=stock.params)
+    with pytest.raises(ValueError) as caught:
+        model.train(params=_train_params(classes, continuous))
+    assert str(caught.value) == (
+        f"validation without a task scores classification and cannot score MSELoss targets: {_DECLARE_TASK}, "
+        "or pass eval_step_fn"
+    )
+    with pytest.raises(ValueError) as caught:
+        model.evaluate(continuous)
+    assert str(caught.value) == (
+        f"evaluate() without a task scores classification and cannot score MSELoss targets: {_DECLARE_TASK}"
+    )
+
+
 def test_streaming_eval_step_advises_a_task_or_another_eval_step_fn(tmp_path, monkeypatch):
     from nnx.streaming import streaming_eval_step
 
