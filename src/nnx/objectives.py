@@ -360,8 +360,10 @@ class KDObjective(Objective):
     A model that declares a categorical or multilabel ``TaskSpec`` scores the
     ``"supervised"`` term through its task adapter, as
     :class:`SupervisedObjective` does: ignored and NaN targets are masked, and
-    the record is the task's. A regression task is refused before any run
-    is reserved.
+    the record is the task's. The labels are validated against the task even
+    at ``alpha=1``, so a placeholder label must then be the task's
+    ``ignore_index`` (NaN for a multilabel task). A regression task is
+    refused before any run is reserved.
     """
 
     # The task kinds the "supervised" term is scored for (#513): nnx.tasks.STEP_TASKS.

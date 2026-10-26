@@ -2581,8 +2581,10 @@ labels are not scored, so placeholder labels train as with
 A model that declares a categorical or multilabel ``TaskSpec`` scores the
 ``"supervised"`` term through its task adapter, as
 :class:`SupervisedObjective` does: ignored and NaN targets are masked, and
-the record is the task's. A regression task is refused before any run
-is reserved.
+the record is the task's. The labels are validated against the task even
+at ``alpha=1``, so a placeholder label must then be the task's
+``ignore_index`` (NaN for a multilabel task). A regression task is
+refused before any run is reserved.
 ```
 
 
@@ -15099,9 +15101,12 @@ task adapter, as the default step does: categorical targets equal to
 ``ignore_index`` and NaN multilabel labels are left out of it (the soft
 term keeps every row), each batch is validated before any backward
 pass, and the record carries the task's ``kind`` / ``count`` /
-``status``. A batch with nothing to learn from (every target masked at
-``alpha=0``) takes no update and records ``status="empty"``. A
-regression task is refused before any run is reserved.
+``status``. The labels are validated against the task even at
+``alpha=1``, so a placeholder label must then be the task's
+``ignore_index`` (NaN for a multilabel task). A batch with nothing to
+learn from (every target masked at ``alpha=0``) takes no update and
+records ``status="empty"``. A regression task is refused before any run
+is reserved.
 
 Returns:
     A ``TrainStepFn`` suitable for ``NNModel.train(..., train_step_fn=...)``.

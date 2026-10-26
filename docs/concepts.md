@@ -801,7 +801,9 @@ below):
   before any run is reserved: by `NNModel.train`, `Trainer.train`,
   `ExperimentPlan.validate()` and, before generation 0, `born_again_train`.
   `kd_objective(alpha=1)` scores no labels, so placeholder labels train as
-  with `kd_train_step_factory(alpha=1)`. Other custom steps are not adapted.
+  with `kd_train_step_factory(alpha=1)`. With a declared task both still
+  validate each batch's labels, so a placeholder must be the task's
+  `ignore_index` (NaN for multilabel). Other custom steps are not adapted.
 - **Loggers and user metrics.** TensorBoard / W&B receive `mse`, `mae`, …
   directly and never a fabricated or zero-filled classification field. User
   `extra_metrics` are called as `fn(y_true, y_pred)` on the valid targets
