@@ -776,12 +776,13 @@ def _resume_fit(
     the optimizer and scheduler names, types, registered factories and
     parameter topologies, the precision, each plateau rule, the configured
     hyperparameters (#502), the epochs (#394), the component set and —
-    under DDP (``ddp``, ``NNModel.train`` only) — the world and partition. Then ``window`` is armed and the state restored:
-    a failure from here, this function's own included, rolls back once
-    through ``window``. ``Trainer`` has no ``resume_epochs``: it always
-    resumes ``"additional"`` epochs. ``planned_session`` (``NNModel.train``
-    only) is told a planned resume's remaining epochs before the
-    components are validated, which check the update budget."""
+    under DDP (``ddp``, ``NNModel.train`` only) — the world and partition.
+    Then ``window`` is armed and the state restored: a failure from here,
+    this function's own included, rolls back once through ``window``.
+    ``Trainer`` has no ``resume_epochs``: it always resumes ``"additional"``
+    epochs. ``planned_session`` (``NNModel.train`` only) is told a planned
+    resume's remaining epochs before the components are validated, which
+    check the update budget."""
     run_id = params.resume_from_run_id
     if run_id is None:
         return _Resumed(start_epoch=0, session_epochs=params.n_epochs)
