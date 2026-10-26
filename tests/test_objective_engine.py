@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import math
 import os
+from typing import Any
 
 import pytest
 import torch
@@ -1579,3 +1580,27 @@ def test_kd_objective_alpha_1_trains_like_the_kd_step_on_placeholder_labels(
     objective, _ = tasks.fit(base, Y, lr=0.1, objective=kd_objective(teacher, alpha=1.0, nonfinite=nonfinite))
     assert tasks.moved(objective, base) > 0.0
     torch.testing.assert_close(tasks.weights(objective), tasks.weights(step))
+
+
+@pytest.mark.parametrize("hook", ["objective", "step"])
+def test_kd_alpha_1_still_validates_the_labels_of_a_declared_task(hook, tmp_path, monkeypatch):
+    # The labels are not scored at alpha=1, but a declared task still checks
+    # them: a placeholder outside the task's range is refused, one equal to
+    # its ignore_index trains on the soft term alone.
+    from nnx import kd_train_step_factory
+
+    monkeypatch.chdir(tmp_path)
+    teacher = tasks.model(None, seed=1)
+
+    def hooks() -> dict[str, Any]:
+        if hook == "objective":
+            return {"objective": kd_objective(teacher, alpha=1.0)}
+        return {"train_step_fn": kd_train_step_factory(teacher, alpha=1.0)}
+
+    placeholders = torch.full((6,), -1)
+    with pytest.raises(TaskValidationError, match=r"class indices in \[0, 3\), got values in \[-1, -1\]"):
+        tasks.fit(tasks.model(TaskSpec.categorical(3)), placeholders, **hooks())
+    base = tasks.categorical(-1)
+    trained, run = tasks.fit(base, placeholders, **hooks())
+    assert tasks.moved(trained, base) > 0.0
+    assert (tasks.record(run).count, tasks.record(run).status) == (0, "empty")

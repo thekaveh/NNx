@@ -117,9 +117,12 @@ def kd_train_step_factory(
     ``ignore_index`` and NaN multilabel labels are left out of it (the soft
     term keeps every row), each batch is validated before any backward
     pass, and the record carries the task's ``kind`` / ``count`` /
-    ``status``. A batch with nothing to learn from (every target masked at
-    ``alpha=0``) takes no update and records ``status="empty"``. A
-    regression task is refused before any run is reserved.
+    ``status``. The labels are validated against the task even at
+    ``alpha=1``, so a placeholder label must then be the task's
+    ``ignore_index`` (NaN for a multilabel task). A batch with nothing to
+    learn from (every target masked at ``alpha=0``) takes no update and
+    records ``status="empty"``. A regression task is refused before any run
+    is reserved.
 
     Returns:
         A ``TrainStepFn`` suitable for ``NNModel.train(..., train_step_fn=...)``.
