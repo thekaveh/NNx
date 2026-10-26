@@ -476,7 +476,8 @@ def test_trainer_checkpoint_failure_rolls_history_back(tmp_path, monkeypatch):
     def fail_checkpoint(*args, **kwargs):
         raise OSError("trainer checkpoint failure")
 
-    monkeypatch.setattr(Trainer, "_save_checkpoint", fail_checkpoint)
+    # #536: the Trainer commits each epoch through NNModel's shared epoch commit.
+    monkeypatch.setattr(NNModel, "_save_checkpoints", fail_checkpoint)
     with pytest.raises(OSError, match="trainer checkpoint failure"):
         Trainer(model=_supervised_model()).train(
             params=NNTrainerParams(

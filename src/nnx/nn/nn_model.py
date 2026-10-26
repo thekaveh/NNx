@@ -11,7 +11,7 @@ import os
 import re
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Union, cast
 
@@ -180,18 +180,21 @@ def _named_training_state(
     schedulers: Mapping[str, Any],
     optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
     hyperparameters: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    topologies: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """A ``Trainer``'s name-keyed optimizer / scheduler bundle, as
     ``NNCheckpoint.save`` keyword arguments (FEAT-005): states, types,
-    parameter topologies, registered-factory identities and configured
-    hyperparameters (#502, ``_resume_hyperparameters`` by name), so a
-    resume can validate each optimizer as ``NNModel.train`` validates its
-    one."""
+    parameter ``topologies`` (now, unless given), registered-factory
+    identities and configured hyperparameters (#502,
+    ``_resume_hyperparameters`` by name), so a resume can validate each
+    optimizer as ``NNModel.train`` validates its one."""
     configured = hyperparameters or {}
+    if topologies is None:
+        topologies = {name: _optimizer_topology(opt, net) for name, opt in optimizers.items()}
     return {
         "optimizers_state": {name: opt.state_dict() for name, opt in optimizers.items()},
         "optimizer_types": {name: _component_type(opt) for name, opt in optimizers.items()},
-        "optimizer_topologies": {name: _optimizer_topology(opt, net) for name, opt in optimizers.items()},
+        "optimizer_topologies": dict(topologies),
         "optimizer_factories": {name: (optimizer_factories or {}).get(name) for name in optimizers},
         "optimizer_configs": {name: configured[name]["optimizer"] for name in optimizers if name in configured} or None,
         "scheduler_configs": {name: configured[name]["scheduler"] for name in optimizers if name in configured} or None,
@@ -520,37 +523,11 @@ def _load_resume_source(
     return _ResumeSource(ckpt, training_state, resume_net_state or ckpt.net_state, label, manifest)
 
 
-def _restore_weights_only(
-    net: torch.nn.Module, source: _ResumeSource, train_loader: Any, mode: str, *, fresh: str
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Load only the source weights (restoring the net on failure); warn
-    unless ``resume_mode="weights_only"`` asked for exactly this. The
-    warning is attributed to the first caller outside nnx.
-    Returns the pre-load net and RNG snapshots, so a later refusal can hand
-    the caller's model back unchanged."""
-    net_snapshot = _snapshot_state_dict(net.state_dict())
-    rng_snapshot = _capture_rng_state(train_loader)
-    try:
-        net.load_state_dict(source.net_state)
-        if mode != "weights_only":  # inside the guard: a warnings-as-errors filter raises here
-            from .callbacks import _warn_at_user_frame
-
-            _warn_at_user_frame(
-                f"checkpoint has no training-state sidecar; model weights were restored, but {fresh} restart "
-                "from their configured defaults",
-            )
-    except BaseException:
-        net.load_state_dict(net_snapshot)
-        _restore_rng_state(rng_snapshot, train_loader)
-        raise
-    return net_snapshot, rng_snapshot
-
-
 def _rollback_resume(
     net: torch.nn.Module, net_state: dict[str, Any], rng_state: dict[str, Any], train_loader: Any
 ) -> None:
-    """Put the model and RNG back after a resume fails after its restore,
-    before its first committed update (:class:`_ResumeWindow`). A callback
+    """Put the model and RNG back after a resume fails, from its restore
+    until its first committed update (:class:`_ResumeWindow`). A callback
     may have changed the network by then (QAT preparation swaps modules); a
     rollback that cannot load is reported as a warning instead of replacing
     the original error, and the RNG streams go back either way."""
@@ -572,24 +549,33 @@ def _rollback_resume(
 
 class _ResumeWindow:
     """A resume's rollback transaction (#507), shared by ``NNModel.train`` and
-    ``Trainer.train``. From the restore until the first committed update,
-    nothing has trained from the loaded state: a failure in that window (the
-    post-restore setup, a refused ``on_train_begin`` or first
-    ``on_epoch_begin``, the component restore, the first fetch, an empty
-    first epoch, a first step raising before its update, a fetch or step
-    between accumulated micro-steps) hands the caller's model and RNG back
-    (``rollback``) before the error propagates. The window closes when NNx
-    sees the first update (``report_update``, which the default step calls,
-    or an objective's engine committing); a custom step may never report
-    one, so its first return closes the window too. A later failure keeps
-    the trained state, as in a fresh fit. Used as a context manager,
-    as often as the guarded code needs; ``rollback=None`` (no resume) makes
-    it a no-op."""
+    ``Trainer.train`` — their one rollback guard (#536). From the restore
+    until the first committed update, nothing has trained from the loaded
+    state: a failure in that window (the restore itself, a warning raised
+    as an error, another rank's failure under DDP, the post-restore setup, a
+    refused ``on_train_begin`` or first ``on_epoch_begin``, the component
+    restore, the first fetch, an empty first epoch, a first step raising
+    before its update, a fetch or step between accumulated micro-steps)
+    hands the caller's model and RNG back once (:func:`_rollback_resume`)
+    before the error propagates. :func:`_resume_fit` arms it with the
+    pre-restore snapshots. The window closes when NNx sees the first update
+    (``report_update``, which the default step calls, or an objective's
+    engine committing); a custom step may never report one, so its first
+    return closes the window too. A later failure keeps the trained state,
+    as in a fresh fit. Used as a context manager, as often as the guarded
+    code needs; unarmed (no resume) it is a no-op."""
 
-    def __init__(self, rollback: Optional[Callable[[], None]]) -> None:
-        self._rollback = rollback
+    def __init__(self) -> None:
+        self._rollback: Optional[Callable[[], None]] = None
         self._engine: Any = None
         self._engine_commits = 0
+
+    def arm(self, net: torch.nn.Module, train_loader: Any) -> None:
+        """Snapshot the model and RNG a resume is about to replace; a failure
+        from now until the window closes puts them back."""
+        net_state = _snapshot_state_dict(net.state_dict())
+        rng_state = _capture_rng_state(train_loader)
+        self._rollback = functools.partial(_rollback_resume, net, net_state, rng_state, train_loader)
 
     def watch(self, engine: Any) -> None:
         """Close at the engine's next commit (counted from now, after a
@@ -603,14 +589,13 @@ class _ResumeWindow:
     def __enter__(self) -> _ResumeWindow:
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:  # never suppresses the error
         if exc_type is not None and self._engine is not None and self._engine.commits != self._engine_commits:
             self.close()  # the objective's update committed before the failure
         rollback = self._rollback
         if exc_type is not None and rollback is not None:
             self.close()
             rollback()
-        return False
 
 
 def _resume_training_state(
@@ -660,6 +645,315 @@ def _plan_component_restore(registry: ComponentRegistry, training_state: Mapping
             )
         return registry.fresh_plan()
     return registry.plan(saved)
+
+
+@dataclass(frozen=True)
+class _Optimization:
+    """The optimizers and schedulers a fit trains, resumes and checkpoints
+    (#536): ``NNModel.train``'s one, keyed ``""``, or a ``Trainer``'s named
+    ones (``named``), with each one's registered-factory identity and
+    configured hyperparameters (#502)."""
+
+    optimizers: Mapping[str, torch.optim.Optimizer]
+    schedulers: Mapping[str, Any]
+    factories: Mapping[str, Optional[dict[str, Any]]]
+    hyperparameters: Mapping[str, Mapping[str, Any]]
+    named: bool
+
+    def owner(self, name: str) -> str:
+        return _owner(name, named=self.named)
+
+    def topologies(self, net: torch.nn.Module) -> dict[str, Any]:
+        return {name: _optimizer_topology(optimizer, net) for name, optimizer in self.optimizers.items()}
+
+    def save_state(self, net: torch.nn.Module, topologies: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+        """The ``NNCheckpoint.save`` keywords of the optimizer and scheduler
+        states, types and parameter ``topologies`` (now, unless given)."""
+        topologies = self.topologies(net) if topologies is None else topologies
+        if self.named:
+            return _named_training_state(
+                net, self.optimizers, self.schedulers, self.factories, self.hyperparameters, topologies
+            )
+        optimizer, scheduler = self.optimizers[""], self.schedulers[""]
+        return {
+            "optimizer_state": optimizer.state_dict(),
+            "scheduler_state": scheduler.state_dict(),
+            "optimizer_type": _component_type(optimizer),
+            "scheduler_type": _component_type(scheduler),
+            "optimizer_topology": topologies[""],
+            "optimizer_factory": self.factories[""],
+            "optimizer_config": self.hyperparameters[""]["optimizer"],
+            "scheduler_config": self.hyperparameters[""]["scheduler"],
+        }
+
+    def saved(self, training_state: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+        """A training-state bundle's optimizer and scheduler entries, keyed
+        like :attr:`optimizers` whichever loop wrote it."""
+        if self.named:
+            return {
+                "optimizer": training_state["optimizers"],
+                "scheduler": training_state.get("schedulers") or {},
+                "optimizer_type": training_state.get("optimizer_types") or {},
+                "scheduler_type": training_state.get("scheduler_types") or {},
+                "optimizer_factory": training_state.get("optimizer_factories") or {},
+                "optimizer_topology": training_state.get("optimizer_topologies") or {},
+            }
+        return {key: {"": training_state.get(key)} for key in _ONE_OPTIMIZER_KEYS}
+
+
+def _owner(name: str, *, named: bool) -> str:
+    """The suffix naming a Trainer's optimizer in a refusal (none for
+    ``NNModel.train``'s one)."""
+    return f" for {name!r}" if named else ""
+
+
+def _check_resume_horizons(params: Any, scheduler_params: Mapping[str, Any], *, named: bool) -> None:
+    """The first of :func:`_resume_fit`'s checks, which both loops run
+    before they build their schedulers (#536), so a schedule's own refusal
+    never hides the resume's: a stateful resume of a one-cycle /
+    warmup-decay schedule needs one explicit horizon (a weights-only resume
+    starts a fresh schedule and needs none)."""
+    if params.resume_from_run_id is None or params.resume_mode == "weights_only":
+        return
+    planned = getattr(params, "resume_epochs", "additional") == "planned"
+    for name, sched_params in scheduler_params.items():
+        _check_resume_horizon(sched_params, n_epochs=params.n_epochs, owner=_owner(name, named=named), planned=planned)
+
+
+_ONE_OPTIMIZER_KEYS = (
+    "optimizer",
+    "scheduler",
+    "optimizer_type",
+    "scheduler_type",
+    "optimizer_factory",
+    "optimizer_topology",
+)
+
+
+class _SavedCheckpoints(NamedTuple):
+    """What ``NNModel._save_checkpoints`` published for one epoch: its
+    checkpoint, and whether it was published as BEST (#536)."""
+
+    checkpoint: NNCheckpoint
+    best: bool
+
+
+@dataclass(frozen=True)
+class _Resumed:
+    """What :func:`_resume_fit` hands its loop: where the session starts,
+    how many epochs it trains, the planned-resume counters it continues
+    (#394), the validated component plan restored after ``on_train_begin``,
+    the run's ``ResumeStatus`` and the restored RNG streams applied again
+    after ``on_train_begin`` (#538)."""
+
+    start_epoch: int
+    session_epochs: int
+    counters: Mapping[str, Any] = field(default_factory=dict)
+    component_plan: Any = None
+    status: ResumeStatus = field(default_factory=ResumeStatus)
+    rng_state: Optional[dict[str, Any]] = None
+
+
+def _resume_fit(
+    model: Any,
+    params: Any,
+    *,
+    window: _ResumeWindow,
+    optimization: _Optimization,
+    scheduler_params: Mapping[str, Any],
+    registry: ComponentRegistry,
+    train_loader: Any,
+    precision: ResolvedPrecision,
+    scaler: Any,
+    monitor: Optional[MonitorSpec],
+    default_scheduler: Any = None,
+    ddp: Any = None,
+    planned_session: Optional[Callable[[int], None]] = None,
+) -> _Resumed:
+    """The warm resume of ``NNModel.train`` and ``Trainer.train`` — one
+    implementation (#536) over ``optimization``'s one or named optimizers.
+
+    Everything is validated before anything is mutated: the scheduler
+    horizons (once before the loop builds its schedulers,
+    :func:`_check_resume_horizons`, and again against the restored epoch),
+    the resume point (verified, and refused when republished since, #537),
+    the optimizer and scheduler names, types, registered factories and
+    parameter topologies, the precision, each plateau rule, the configured
+    hyperparameters (#502), the epochs (#394), the component set and —
+    under DDP (``ddp``, ``NNModel.train`` only) — the world and partition.
+    Then ``window`` is armed and the state restored: a failure from here,
+    this function's own included, rolls back once through ``window``.
+    ``Trainer`` has no ``resume_epochs``: it always resumes ``"additional"``
+    epochs. ``planned_session`` (``NNModel.train`` only) is told a planned
+    resume's remaining epochs before the components are validated, which
+    check the update budget."""
+    run_id = params.resume_from_run_id
+    if run_id is None:
+        return _Resumed(start_epoch=0, session_epochs=params.n_epochs)
+    planned = getattr(params, "resume_epochs", "additional") == "planned"
+    where = f"resume_from_run_id={run_id!r}"
+    net = model.net
+    source = _load_resume_source(
+        run_id,
+        params.resume_from_checkpoint,
+        params.resume_mode,
+        trainer=optimization.named,
+        live_transforms=model._topology_transforms,
+        ddp=ddp,
+    )
+    lineage = {
+        "source_run_id": run_id,
+        "source_checkpoint": source.label,
+        "source_epoch": source.checkpoint.idp.epoch_idx,
+        **_manifest_lineage(source.manifest),
+    }
+    training_state = source.training_state
+    if training_state is None:
+        # Epoch numbering continues after the checkpoint's epoch; the
+        # optimizers, schedulers, scaler and components start fresh.
+        start_epoch = source.checkpoint.idp.epoch_idx + 1
+        session_epochs = _session_epochs(params, start_epoch, None, where)
+        window.arm(net, train_loader)
+        with window:
+            net.load_state_dict(source.net_state)
+            if params.resume_mode != "weights_only":  # inside the window: a warnings-as-errors filter raises here
+                from .callbacks import _warn_at_user_frame
+
+                _warn_at_user_frame(
+                    "checkpoint has no training-state sidecar; model weights were restored, but optimizer, "
+                    "scheduler, scaler, RNG and component state restart from their configured defaults",
+                )
+            status = ResumeStatus(mode="weights_only", fresh_components=registry.names, **lineage)
+        return _Resumed(start_epoch=start_epoch, session_epochs=session_epochs, status=status)
+
+    from ..optimizers import _canonical_factory_state
+
+    saved = optimization.saved(training_state)
+    if optimization.named:
+        for kind in ("optimizer", "scheduler"):
+            if set(saved[kind]) != set(optimization.optimizers):
+                raise ValueError(
+                    f"resume {kind} names do not match: checkpoint has {sorted(saved[kind])}, "
+                    f"configuration builds {sorted(optimization.optimizers)}"
+                )
+    for kind, built in (("optimizer", optimization.optimizers), ("scheduler", optimization.schedulers)):
+        for name, component in built.items():
+            expected = saved[f"{kind}_type"].get(name)
+            if expected is not None and expected != _component_type(component):
+                raise ValueError(
+                    f"resume {kind} type mismatch{optimization.owner(name)}: checkpoint has {expected}, "
+                    f"configuration builds {_component_type(component)}"
+                )
+    for name, optimizer in optimization.optimizers.items():
+        # A registered factory is identified by id, version and config (None
+        # for a built-in, and for sidecars written before factories
+        # existed): any difference is a different optimizer.
+        expected_factory, configured_factory = saved["optimizer_factory"].get(name), optimization.factories[name]
+        if _canonical_factory_state(expected_factory) != _canonical_factory_state(configured_factory):
+            raise ValueError(
+                f"resume optimizer factory mismatch{optimization.owner(name)}: checkpoint has {expected_factory}, "
+                f"configuration builds {configured_factory}"
+            )
+        expected_topology = saved["optimizer_topology"].get(name)
+        if expected_topology is not None and expected_topology != _optimizer_topology(optimizer, net):
+            raise ValueError(
+                f"resume optimizer parameter topology{optimization.owner(name)} does not match the checkpoint"
+            )
+    # FEAT-028: the same effective precision, and a scaler exactly when the
+    # checkpoint saved one.
+    _check_resume_precision(training_state, precision, scaler)
+    for name, scheduler in optimization.schedulers.items():
+        _check_plateau_resume(saved["scheduler"].get(name), scheduler, monitor)
+    # #502: the checkpoint's param groups and scheduler states would replace
+    # the configured hyperparameters.
+    _check_resume_hyperparameters(
+        _saved_hyperparameters(
+            training_state,
+            run_id,
+            optimization.schedulers,
+            trainer=optimization.named,
+            default_scheduler=default_scheduler,
+        ),
+        optimization.hyperparameters,
+        named=optimization.named,
+    )
+    completed = training_state.get("completed_epoch")
+    start_epoch = int(completed) + 1 if completed is not None else source.checkpoint.idp.epoch_idx + 1
+    counters = training_state.get("counters") or {}
+    session_epochs = _session_epochs(params, start_epoch, counters, where)
+    for name, sched_params in scheduler_params.items():
+        _check_resume_horizon(
+            sched_params,
+            n_epochs=session_epochs,
+            start_epoch=start_epoch,
+            owner=optimization.owner(name),
+            planned=planned,
+        )
+    if planned and planned_session is not None:
+        planned_session(session_epochs)
+    # Components are validated against the checkpoint before any state is
+    # mutated (one report listing every problem).
+    component_plan = _plan_component_restore(registry, training_state)
+    # Ordinary training accepts any re-iterable batch source, which has no
+    # `num_workers`: only a real DataLoader with workers keeps the warning.
+    warn_worker_rng = training_state.get("rng") is not None and _loader_num_workers(train_loader) > 0
+    # FEAT-030: same world size and partition, or nothing is restored.
+    rank_rng: Optional[Mapping[str, Any]] = None
+    if ddp is None and training_state.get("distributed") is not None:
+        raise ValueError(
+            f"this checkpoint was written by a {training_state['distributed']['world_size']}-rank distributed run: "
+            "resume it with train(distributed=DDP()) on the same world size, or start from its weights with "
+            "resume_mode='weights_only'"
+        )
+    if ddp is not None:
+        # Agreed by the caller's "resuming the run" block: a collective block
+        # is never nested in another (a rank failing before the inner one
+        # would skip its gather).
+        rank_rng = _check_distributed_resume(training_state, ddp, train_loader)
+    window.arm(net, train_loader)
+    with window:
+        net.load_state_dict(source.net_state)
+        for name, optimizer in optimization.optimizers.items():
+            optimizer.load_state_dict(saved["optimizer"][name])
+        for name, scheduler in optimization.schedulers.items():
+            if saved["scheduler"].get(name) is not None:
+                scheduler.load_state_dict(saved["scheduler"][name])
+        if scaler is not None and training_state.get("scaler") is not None:
+            scaler.load_state_dict(training_state["scaler"])
+        rng_state: Optional[dict[str, Any]] = None
+        if training_state.get("rng") is not None:
+            _restore_rng_state(training_state["rng"], train_loader)
+        if rank_rng is not None:  # this rank's own streams (FEAT-030)
+            _restore_rng_state(dict(rank_rng), train_loader)
+        if training_state.get("rng") is not None or rank_rng is not None:
+            rng_state = _capture_rng_state(train_loader)
+        if warn_worker_rng:  # a warnings-as-errors filter raises here: rolled back too
+            from .callbacks import _warn_at_user_frame
+
+            _warn_at_user_frame(
+                "exact warm-resume continuity requires train_loader.num_workers=0; "
+                "worker-local RNG state cannot be reconstructed",
+            )
+        status = ResumeStatus(mode="stateful", fresh_components=tuple(component_plan.fresh), **lineage)
+    return _Resumed(
+        start_epoch=start_epoch,
+        session_epochs=session_epochs,
+        counters=counters if planned else {},
+        component_plan=component_plan,
+        status=status,
+        rng_state=rng_state,
+    )
+
+
+def _topology_preflight(model: Any, *, nnx_updates: bool) -> None:
+    """The reconstructible-topology preflight of both ``train()`` methods
+    (#508, #536), before any run is reserved: when NNx owns the update
+    (``NNModel.train``'s default step, or an objective in either loop) or
+    the model carries a recipe (FEAT-016), the run's checkpoints must be
+    reconstructible from the params and recorded recipe. A custom step
+    owns its topology."""
+    if nnx_updates or _recipe_transforms(model._topology_transforms):
+        model._assert_reconstructible_topology()
 
 
 def _collect_checkpoint_transforms(callbacks: list[Callback]) -> tuple[NNCheckpointTransform, ...]:
@@ -3951,11 +4245,8 @@ class NNModel(_HubMixinBase):
             callbacks = _writer_owned_callbacks(callbacks)
         _check_provenance(provenance)
         _check_history(history, callbacks)
-        if train_step_fn in (None, default_train_step) or _recipe_transforms(self._topology_transforms):
-            # NNx owns the update (default step or objective), or the model
-            # carries a recipe (FEAT-016): the run's checkpoints must be
-            # reconstructible from the params and recorded recipe.
-            self._assert_reconstructible_topology()
+        # NNx owns the update with the default step or an objective.
+        _topology_preflight(self, nnx_updates=train_step_fn in (None, default_train_step))
         if params is None:
             raise ValueError("train params must be non-None")
         self._check_task_preflight(objective if objective is not None else train_step_fn)
@@ -4168,7 +4459,7 @@ class NNModel(_HubMixinBase):
         compile_session = self._compile_session  # FEAT-029: None for an eager fit
         ddp = self._ddp_session  # FEAT-030: None for a single-process fit
         writes = ddp is None or ddp.writer  # only the writer rank persists anything
-        from ..optimizers import _canonical_factory_state, optimizer_factory_state
+        from ..optimizers import optimizer_factory_state
 
         # FEAT-005: checkpointable components — callbacks, the step functions
         # and explicit ones — are registered (names checked for uniqueness)
@@ -4195,20 +4486,7 @@ class NNModel(_HubMixinBase):
         # The default step, passed explicitly (qat_train_step_factory returns it) or not.
         uses_default_step = objective is None and train_step_fn in (None, default_train_step)
         train_metrics = params.metrics if uses_default_step else ()
-        component_plan = None
-        resume_status = ResumeStatus()
-        previous_net_state: Optional[dict[str, Any]] = None
-        previous_rng_state: Optional[dict[str, Any]] = None
-        # #538: the streams a stateful resume restored, applied again after
-        # on_train_begin (a hook may draw: QAT preparation does).
-        resumed_rng_state: Optional[dict[str, Any]] = None
-
-        resume_optimizer_factory = optimizer_factory_state(params.optim)
-        resume_optimizer_topology = _optimizer_topology(optimizer, self.net)
-        # A weights-only resume starts a fresh schedule and needs no shared horizon.
-        stateful_resume = params.resume_from_run_id is not None and params.resume_mode != "weights_only"
-        if stateful_resume:
-            _check_resume_horizon(params.scheduler, n_epochs=params.n_epochs, planned=params.resume_epochs == "planned")
+        _check_resume_horizons(params, {"": params.scheduler}, named=False)
         # FEAT-014: an optimizer_update clock steps on committed updates; its
         # default horizon is the planned updates when NNx owns the windows
         # (the default step or an objective) and the loader has a length.
@@ -4245,187 +4523,55 @@ class NNModel(_HubMixinBase):
                 precision=precision,
             )
             registry.register(engine)
-        start_epoch = 0
-        # #394: the epochs this session trains, and the logical position a
-        # planned resume continues from.
-        session_epochs = params.n_epochs
-        restored_counters: Mapping[str, Any] = {}
+
+        def _plan_clock(session_epochs: int) -> None:
+            # A planned resume (#394): the scheduler's horizon is the whole
+            # plan; the clock's budget check needs the updates still to run.
+            if clock is not None:
+                clock.planned = (
+                    planned_updates(train_loader, params.optim.accumulate_grad_batches, session_epochs)
+                    if owns_windows
+                    else None
+                )
+
+        # The one optimizer and its scheduler, as the shared resume and the
+        # checkpoint saves see them (#536).
+        optimization = _Optimization(
+            optimizers={"": optimizer},
+            schedulers={"": scheduler},
+            factories={"": optimizer_factory_state(params.optim)},
+            hyperparameters={"": _resume_hyperparameters(params.optim, params.scheduler, scheduler)},  # #502
+            named=False,
+        )
 
         # Warm resume restores every stateful training component when the
         # source checkpoint has a versioned sidecar. Legacy optimizer-only
         # sidecars remain supported.
-        # FEAT-030: under DDP every rank resumes — or fails — together: a
-        # failure on any rank (a missing component, a mismatch) raises on all.
-        try:
-            with contextlib.nullcontext() if ddp is None else _collectively("resuming the run"):
-                if params.resume_from_run_id is not None:
-                    source = _load_resume_source(
-                        params.resume_from_run_id,
-                        params.resume_from_checkpoint,
-                        params.resume_mode,
-                        trainer=False,
-                        live_transforms=self._topology_transforms,
-                        ddp=ddp,
-                    )
-                    training_state = source.training_state
-                    if training_state is not None:
-                        expected_optimizer = training_state.get("optimizer_type")
-                        expected_scheduler = training_state.get("scheduler_type")
-                        if expected_optimizer is not None and expected_optimizer != _component_type(optimizer):
-                            raise ValueError(
-                                f"resume optimizer type mismatch: checkpoint has {expected_optimizer}, "
-                                f"configuration builds {_component_type(optimizer)}"
-                            )
-                        if expected_scheduler is not None and expected_scheduler != _component_type(scheduler):
-                            raise ValueError(
-                                f"resume scheduler type mismatch: checkpoint has {expected_scheduler}, "
-                                f"configuration builds {_component_type(scheduler)}"
-                            )
-                        # A registered factory is identified by id, version and config
-                        # (None for a built-in, and for sidecars written before
-                        # factories existed): any difference is a different optimizer.
-                        expected_factory = training_state.get("optimizer_factory")
-                        if _canonical_factory_state(expected_factory) != _canonical_factory_state(
-                            resume_optimizer_factory
-                        ):
-                            raise ValueError(
-                                f"resume optimizer factory mismatch: checkpoint has {expected_factory}, "
-                                f"configuration builds {resume_optimizer_factory}"
-                            )
-                        expected_topology = training_state.get("optimizer_topology")
-                        if expected_topology is not None and expected_topology != resume_optimizer_topology:
-                            raise ValueError("resume optimizer parameter topology does not match the checkpoint")
-                        _check_resume_precision(training_state, precision, scaler)
-                        _check_plateau_resume(training_state.get("scheduler"), scheduler, monitor)
-                        # #502: the checkpoint's param groups and scheduler
-                        # state would replace the configured hyperparameters.
-                        _check_resume_hyperparameters(
-                            _saved_hyperparameters(
-                                training_state, params.resume_from_run_id, {"": scheduler}, trainer=False
-                            ),
-                            {"": _resume_hyperparameters(params.optim, params.scheduler, scheduler)},
-                            named=False,
-                        )
-                        completed_epoch = training_state.get("completed_epoch")
-                        if completed_epoch is not None:
-                            start_epoch = int(completed_epoch) + 1
-                        counters = training_state.get("counters") or {}
-                        session_epochs = _session_epochs(
-                            params, start_epoch, counters, f"resume_from_run_id={params.resume_from_run_id!r}"
-                        )
-                        if params.resume_epochs == "planned":
-                            restored_counters = counters
-                            if clock is not None:
-                                # The scheduler's horizon is the whole plan; the
-                                # clock's budget check needs the updates still to run.
-                                clock.planned = (
-                                    planned_updates(train_loader, params.optim.accumulate_grad_batches, session_epochs)
-                                    if owns_windows
-                                    else None
-                                )
-                        _check_resume_horizon(
-                            params.scheduler,
-                            n_epochs=session_epochs,
-                            start_epoch=start_epoch,
-                            planned=params.resume_epochs == "planned",
-                        )
-                        # Worker capability is decided BEFORE any state is restored:
-                        # ordinary training accepts any re-iterable batch source (a
-                        # list, NNGraphDataset's one-element full-batch list, ...),
-                        # which has no `num_workers`. Absent metadata means "no
-                        # worker-local RNG to worry about"; a real DataLoader with
-                        # workers keeps its warning. Nothing here iterates the source.
-                        # Components are validated against the checkpoint before any
-                        # state is mutated (one report listing every problem).
-                        component_plan = _plan_component_restore(registry, training_state)
-                        warn_worker_rng = (
-                            training_state.get("rng") is not None and _loader_num_workers(train_loader) > 0
-                        )
-                        # FEAT-030: same world size and partition, or nothing is restored.
-                        rank_rng: Optional[Mapping[str, Any]] = None
-                        if ddp is None and training_state.get("distributed") is not None:
-                            raise ValueError(
-                                f"this checkpoint was written by a {training_state['distributed']['world_size']}-rank "
-                                "distributed run: resume it with train(distributed=DDP()) on the same world size, or "
-                                "start from its weights with resume_mode='weights_only'"
-                            )
-                        if ddp is not None:
-                            # Agreed by the enclosing "resuming the run" block: a
-                            # collective block is never nested in another (a rank
-                            # failing before the inner one would skip its gather).
-                            rank_rng = _check_distributed_resume(training_state, ddp, train_loader)
-                        previous_net_state = net_snapshot = _snapshot_state_dict(self.net.state_dict())
-                        previous_rng_state = rng_snapshot = _capture_rng_state(train_loader)
-                        try:
-                            self.net.load_state_dict(source.net_state)
-                            optimizer.load_state_dict(training_state["optimizer"])
-                            if training_state.get("scheduler") is not None:
-                                scheduler.load_state_dict(training_state["scheduler"])
-                            if scaler is not None and training_state.get("scaler") is not None:
-                                scaler.load_state_dict(training_state["scaler"])
-                            if training_state.get("rng") is not None:
-                                _restore_rng_state(training_state["rng"], train_loader)
-                            if rank_rng is not None:  # this rank's own streams (FEAT-030)
-                                _restore_rng_state(dict(rank_rng), train_loader)
-                            if training_state.get("rng") is not None or rank_rng is not None:
-                                resumed_rng_state = _capture_rng_state(train_loader)
-                        except BaseException:
-                            self.net.load_state_dict(net_snapshot)
-                            _restore_rng_state(rng_snapshot, train_loader)
-                            raise
-                        if warn_worker_rng:
-                            from .callbacks import _warn_at_user_frame
-
-                            _warn_at_user_frame(
-                                "exact warm-resume continuity requires train_loader.num_workers=0; "
-                                "worker-local RNG state cannot be reconstructed",
-                            )
-                        resume_status = ResumeStatus(
-                            mode="stateful",
-                            source_run_id=params.resume_from_run_id,
-                            source_checkpoint=source.label,
-                            source_epoch=source.checkpoint.idp.epoch_idx,
-                            fresh_components=tuple(component_plan.fresh),
-                            **_manifest_lineage(source.manifest),
-                        )
-                    else:
-                        # Epoch numbering continues after the checkpoint's epoch; the
-                        # optimizer, scheduler, scaler and components start fresh.
-                        start_epoch = source.checkpoint.idp.epoch_idx + 1
-                        session_epochs = _session_epochs(
-                            params, start_epoch, None, f"resume_from_run_id={params.resume_from_run_id!r}"
-                        )
-                        previous_net_state, previous_rng_state = _restore_weights_only(
-                            self.net,
-                            source,
-                            train_loader,
-                            params.resume_mode,
-                            fresh="optimizer, scheduler, scaler, RNG and component state",
-                        )
-                        resume_status = ResumeStatus(
-                            mode="weights_only",
-                            source_run_id=params.resume_from_run_id,
-                            source_checkpoint=source.label,
-                            source_epoch=source.checkpoint.idp.epoch_idx,
-                            fresh_components=registry.names,
-                            **_manifest_lineage(source.manifest),
-                        )
-        except BaseException:
-            # A failure after the restore (a warning raised as an error, or another
-            # rank's failure reaching a rank that restored cleanly through the
-            # agreement) hands the caller's model and RNG back unchanged.
-            if previous_net_state is not None and previous_rng_state is not None:
-                _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
-            raise
-
-        # #507: from here until the first committed update a failure hands the
-        # caller's model and RNG back (the resume's rollback transaction).
-        def _rollback() -> None:
-            assert previous_net_state is not None and previous_rng_state is not None
-            _rollback_resume(self.net, previous_net_state, previous_rng_state, train_loader)
-
-        resume_window = _ResumeWindow(_rollback if previous_net_state is not None else None)
+        # #507/#536: from the restore until the first committed update a
+        # failure hands the caller's model and RNG back, once (the resume's
+        # rollback transaction, armed by _resume_fit).
+        resume_window = _ResumeWindow()
         with resume_window:
+            # FEAT-030: under DDP every rank resumes — or fails — together: a
+            # failure on any rank (a missing component, a mismatch) raises on
+            # all, and each rank that restored rolls back.
+            with contextlib.nullcontext() if ddp is None else _collectively("resuming the run"):
+                resumed = _resume_fit(
+                    self,
+                    params,
+                    window=resume_window,
+                    optimization=optimization,
+                    scheduler_params={"": params.scheduler},
+                    registry=registry,
+                    train_loader=train_loader,
+                    precision=precision,
+                    scaler=scaler,
+                    monitor=monitor,
+                    ddp=ddp,
+                    planned_session=_plan_clock,
+                )
+            start_epoch, session_epochs = resumed.start_epoch, resumed.session_epochs
+            resume_status = resumed.status
             # Every record in a list (idps.csv), or a bounded window plus the run's
             # history journal (FEAT-036); either way saved before LAST each epoch.
             records = _training_history(run, history) if writes else _ReplicaHistory()
@@ -4522,11 +4668,11 @@ class NNModel(_HubMixinBase):
             updates_seen = step_fn is default_train_step or engine is not None
 
             # #394: a planned resume continues the logical step and update counters.
-            idx_iter = int(restored_counters.get("global_step") or 0)
-            ctx.committed_updates = int(restored_counters.get("committed_updates") or 0)
+            idx_iter = int(resumed.counters.get("global_step") or 0)
+            ctx.committed_updates = int(resumed.counters.get("committed_updates") or 0)
             stopped_mid_epoch = False
             pre_transform_net_state: Optional[dict[str, Any]] = None
-            final_optimizer_topology = resume_optimizer_topology
+            final_topologies: Optional[dict[str, Any]] = None
             pre_transform_rng_state: Optional[dict[str, Any]] = None
             # Respect NNX_TQDM_DISABLE=1 in tests / CI / non-TTY environments so
             # the progress bar doesn't pollute output. Same env var works as
@@ -4552,9 +4698,9 @@ class NNModel(_HubMixinBase):
             # FEAT-005: reset hooks (on_train_begin) have run once; now the
             # validated component states are restored, all-or-nothing, before
             # the first resumed epoch.
-            if component_plan is not None:
+            if resumed.component_plan is not None:
                 with contextlib.nullcontext() if ddp is None else _collectively("restoring components"):
-                    restored = registry.restore(component_plan)
+                    restored = registry.restore(resumed.component_plan)
                 resume_status = replace(resume_status, restored_components=restored)
             if engine is not None:
                 ctx.update_count = engine.commits  # continues after a stateful resume
@@ -4565,11 +4711,11 @@ class NNModel(_HubMixinBase):
                 .with_compile(_record_of(compile_session))
             )
             ctx.run = run
-            if resumed_rng_state is not None:
+            if resumed.rng_state is not None:
                 # #538: the resumed session's hooks have run; its first epoch
                 # starts from the restored streams, as the uninterrupted fit's
                 # next epoch would (a failure here is rolled back as well).
-                _restore_rng_state(resumed_rng_state, train_loader)
+                _restore_rng_state(resumed.rng_state, train_loader)
             unowned_warned: set[str] = set()
             for local_epoch in range(session_epochs):
                 idx_epoch = start_epoch + local_epoch
@@ -4767,10 +4913,12 @@ class NNModel(_HubMixinBase):
                     )
                 )
                 commit_error: Optional[BaseException] = None
-                checkpoint: Optional[NNCheckpoint] = None
                 try:
                     if writes:
-                        checkpoint = self._commit_epoch(
+                        # The in-memory best is the one the save reports it
+                        # published as BEST (#536); a DDP replica writes no
+                        # checkpoint and tracks none.
+                        best_checkpoint = self._commit_epoch(
                             records=records,
                             run=run,
                             ctx=ctx,
@@ -4785,13 +4933,11 @@ class NNModel(_HubMixinBase):
                                 "planned_n_epochs": start_epoch + session_epochs,
                             },
                             best_checkpoint=best_checkpoint,
-                            optimizer=optimizer,
-                            scheduler=scheduler,
+                            optimization=optimization,
                             scaler=scaler,
                             precision=precision,
                             compile_session=compile_session,
                             train_loader=train_loader,
-                            resume_optimizer_factory=resume_optimizer_factory,
                             registry=registry,
                             record=record,
                             distributed_state=distributed_state,
@@ -4806,23 +4952,6 @@ class NNModel(_HubMixinBase):
                     # The writer's commit, agreed: a failure stops every rank,
                     # and replicas never run ahead of what is on disk.
                     agree(commit_error, f"committing epoch {idx_epoch}")
-                # In-memory best_checkpoint tracking must use the same
-                # comparison as the on-disk BEST write inside
-                # _save_checkpoints (val→train, error→loss, +inf fall-through).
-                # Without this, val_loader=None runs would silently overwrite
-                # best_checkpoint every epoch (because checkpoint.idp.val_edp
-                # is None there) while the on-disk BEST tracks training error,
-                # diverging the two views of "best". A DDP replica writes no
-                # checkpoint and tracks none.
-                if checkpoint is None:
-                    pass
-                elif record is not None:
-                    # FEAT-003: the monitor decides BEST (same rule as the
-                    # on-disk BEST write above).
-                    if record.improved:
-                        best_checkpoint = checkpoint
-                elif best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint):
-                    best_checkpoint = checkpoint
 
                 self._update_tqdm_postfix(tqdm_bar, optimizer, val_edp, train_edp, record)
 
@@ -4834,7 +4963,7 @@ class NNModel(_HubMixinBase):
             pre_transform_net_state = _snapshot_state_dict(self.net.state_dict())
             pre_transform_rng_state = _capture_rng_state(train_loader)
             # Lazy layers materialized during the fit: the shapes at its start are stale.
-            final_optimizer_topology = _optimizer_topology(optimizer, self.net)
+            final_topologies = optimization.topologies(self.net)
 
         # #87: on_train_end callbacks (fired in _CallbackFinalizer.__exit__ as
         # the with-block closed above) may mutate self.net — QAT's convert()
@@ -4867,21 +4996,20 @@ class NNModel(_HubMixinBase):
                     records=records,
                     run=run,
                     normalized_callbacks=normalized_callbacks,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
+                    optimization=optimization,
+                    topologies=final_topologies,
                     scaler=scaler,
                     precision=precision,
                     compile_session=compile_session,
-                    ddp=ddp,
+                    distributed_state=(
+                        None
+                        if ddp is None
+                        else _distributed_state(ddp, train_loader, params.val_loader, final_rng or [])
+                    ),
                     writes=writes,
-                    params=params,
-                    train_loader=train_loader,
                     pre_transform_net_state=pre_transform_net_state,
                     pre_transform_rng_state=pre_transform_rng_state,
-                    resume_optimizer_topology=final_optimizer_topology,
-                    resume_optimizer_factory=resume_optimizer_factory,
                     registry=registry,
-                    final_rng=final_rng,
                     # No batch runs after the last commit, so its counters hold.
                     counters={
                         "global_step": idx_iter,
@@ -4908,37 +5036,30 @@ class NNModel(_HubMixinBase):
         records: Any,
         run: NNRun,
         normalized_callbacks: list[Callback],
-        optimizer: torch.optim.Optimizer,
-        scheduler: Any,
+        optimization: _Optimization,
+        topologies: Optional[Mapping[str, Any]],
         scaler: Any,
         precision: ResolvedPrecision,
-        compile_session: Optional[_CompileSession],
-        ddp: Any,
-        writes: bool,
-        params: NNTrainParams,
-        train_loader: Any,
+        registry: ComponentRegistry,
         pre_transform_net_state: Optional[dict[str, Any]],
         pre_transform_rng_state: Optional[dict[str, Any]],
-        resume_optimizer_topology: Any,
-        resume_optimizer_factory: Any,
-        registry: ComponentRegistry,
-        final_rng: Optional[list[Any]] = None,
+        compile_session: Optional[_CompileSession] = None,
+        distributed_state: Optional[dict[str, Any]] = None,
+        writes: bool = True,
         counters: Optional[dict[str, Any]] = None,
     ) -> None:
         """Re-save LAST from the live net after ``on_train_end`` (see #87),
         with the RNG streams from before it (#538): a hook's draw (a final
         ``evaluate()`` on a loader without a generator) is not part of the
-        training a resume continues."""
+        training a resume continues. ``topologies`` are the optimizers'
+        parameter names from before ``on_train_end``, which a train-end
+        conversion may rename. Shared by ``NNModel.train`` and
+        ``Trainer.train`` (#536)."""
         final_transforms, keeps_pre_transform = _final_transforms(self, normalized_callbacks, run.transforms)
         self._topology_transforms = final_transforms
         assert pre_transform_rng_state is not None  # captured whenever an epoch committed
-        rng_state = pre_transform_rng_state
-        distributed_state = (
-            None if ddp is None else _distributed_state(ddp, train_loader, params.val_loader, final_rng or [])
-        )
         if not writes:
             return
-        configured = _resume_hyperparameters(params.optim, params.scheduler, scheduler)  # #502
         NNCheckpoint(
             idp=records.last,
             model_params=self.params,
@@ -4948,21 +5069,14 @@ class NNModel(_HubMixinBase):
         ).save(
             run=run.id,
             type=Checkpoints.LAST,
-            optimizer_state=optimizer.state_dict(),
-            scheduler_state=scheduler.state_dict(),
+            **optimization.save_state(self.net, topologies),
             scaler_state=scaler.state_dict() if scaler is not None else None,
             precision=precision.record(),
             compile=_state_of(compile_session),
             distributed=distributed_state,
-            rng_state=rng_state,
+            rng_state=pre_transform_rng_state,
             completed_epoch=records.last.epoch_idx,
             resume_net_state=pre_transform_net_state if keeps_pre_transform else None,
-            optimizer_type=_component_type(optimizer),
-            scheduler_type=_component_type(scheduler),
-            optimizer_topology=resume_optimizer_topology,
-            optimizer_factory=resume_optimizer_factory,
-            optimizer_config=configured["optimizer"],
-            scheduler_config=configured["scheduler"],
             components=registry.collect(),
             counters=counters,
         )
@@ -5491,44 +5605,43 @@ class NNModel(_HubMixinBase):
         ctx: Any,
         idx_epoch: int,
         local_epoch: int,
-        params: NNTrainParams,
-        counters: Optional[dict[str, Any]],
+        params: Any,
         best_checkpoint: Optional[NNCheckpoint],
-        optimizer: torch.optim.Optimizer,
-        scheduler: Any,
+        optimization: _Optimization,
         scaler: Any,
         precision: ResolvedPrecision,
-        compile_session: Optional[_CompileSession],
         train_loader: Any,
-        resume_optimizer_factory: Any,
         registry: ComponentRegistry,
         record: Any,
-        distributed_state: Optional[dict[str, Any]],
+        compile_session: Optional[_CompileSession] = None,
+        distributed_state: Optional[dict[str, Any]] = None,
+        counters: Optional[dict[str, Any]] = None,
     ) -> Optional[NNCheckpoint]:
         """Commit one epoch: history first, then LAST (the commit marker),
-        phase / BEST checkpoints and the callbacks' deferred writes."""
+        phase / BEST checkpoints and the callbacks' deferred writes. Shared
+        by ``NNModel.train`` and ``Trainer.train`` (#536). Returns the
+        in-memory best: this epoch's checkpoint when the save published it
+        as BEST, ``best_checkpoint`` otherwise — one decision, the one the
+        on-disk BEST follows."""
         # Prepare run history first (idps.csv, or the journal's chunks and
         # manifest); the checkpoint is the epoch's commit marker and is never
         # allowed to get ahead of the history.
         records.save_epoch(run)
         try:
-            checkpoint = self._save_checkpoints(
+            saved = self._save_checkpoints(
                 idp=records.last,
                 run_id=run.id,
                 idx_epoch=local_epoch,
                 n_epochs=params.n_epochs,
                 best_checkpoint=best_checkpoint,
                 save_phase_checkpoints=params.save_phase_checkpoints,
-                optimizer=optimizer,
-                scheduler=scheduler,
+                optimization=optimization,
                 scaler=scaler,
                 precision=precision.record(),
                 compile=_state_of(compile_session),
                 distributed=distributed_state,
                 completed_epoch=idx_epoch,
                 train_loader=train_loader,
-                optimizer_factory=resume_optimizer_factory,
-                hyperparameters=_resume_hyperparameters(params.optim, params.scheduler, scheduler),
                 components=registry.collect(),
                 is_best=record.improved if record is not None else None,
                 trained_recipe=run.transforms,
@@ -5543,7 +5656,7 @@ class NNModel(_HubMixinBase):
             raise
         for deferred_checkpoint in ctx.deferred_checkpoint_writes:
             deferred_checkpoint()
-        return checkpoint
+        return saved.checkpoint if saved.best else best_checkpoint
 
     def _save_checkpoints(
         self,
@@ -5553,30 +5666,25 @@ class NNModel(_HubMixinBase):
         n_epochs: int,
         best_checkpoint: Optional[NNCheckpoint],
         save_phase_checkpoints: bool = True,
-        optimizer: Optional[torch.optim.Optimizer] = None,
-        scheduler=None,
+        optimization: Optional[_Optimization] = None,
         scaler: Optional[torch.amp.GradScaler] = None,
         completed_epoch: Optional[int] = None,
         train_loader: Optional[Iterable[Any]] = None,
-        optimizer_factory: Optional[dict[str, Any]] = None,
         components: Optional[dict[str, Any]] = None,
         precision: Optional[dict[str, Any]] = None,
         compile: Optional[dict[str, Any]] = None,
         distributed: Optional[dict[str, Any]] = None,
-        optimizers: Optional[Mapping[str, torch.optim.Optimizer]] = None,
-        schedulers: Optional[Mapping[str, Any]] = None,
-        optimizer_factories: Optional[Mapping[str, Optional[dict[str, Any]]]] = None,
-        hyperparameters: Optional[Mapping[str, Any]] = None,
-        named_hyperparameters: Optional[Mapping[str, Mapping[str, Any]]] = None,
         is_best: Optional[bool] = None,
         trained_recipe: Optional[Sequence[NNCheckpointTransform]] = None,
         counters: Optional[dict[str, Any]] = None,
-    ) -> NNCheckpoint:
+    ) -> _SavedCheckpoints:
         """Publish LAST, the due phase tag and — when this epoch is the best
-        so far — BEST. ``is_best`` is the monitor's decision (FEAT-003);
-        ``None`` keeps the legacy comparison. ``trained_recipe`` (the
-        recipe the run id records, FEAT-016) refuses, before anything is
-        written, a topology no checkpoint of the run could rebuild."""
+        so far — BEST, and report whether BEST was published (#536: the
+        loops track their in-memory best from this report, never by
+        re-evaluating the rule). ``is_best`` is the monitor's decision
+        (FEAT-003); ``None`` keeps the legacy comparison. ``trained_recipe``
+        (the recipe the run id records, FEAT-016) refuses, before anything
+        is written, a topology no checkpoint of the run could rebuild."""
         if trained_recipe is not None:
             _check_trained_recipe(self, trained_recipe)
         checkpoint = NNCheckpoint(
@@ -5589,53 +5697,28 @@ class NNModel(_HubMixinBase):
             transforms=_snapshot_transforms(self._topology_transforms),
         )
         # Every checkpoint tag is a valid resume point, so each carries the
-        # same stateful training bundle as LAST/BEST.
-        opt_state = optimizer.state_dict() if optimizer is not None else None
-        scheduler_state = scheduler.state_dict() if scheduler is not None else None
-        scaler_state = scaler.state_dict() if scaler is not None else None
-        rng_state = _capture_rng_state(train_loader)
-        optimizer_type = _component_type(optimizer) if optimizer is not None else None
-        scheduler_type = _component_type(scheduler) if scheduler is not None else None
-        optimizer_topology = _optimizer_topology(optimizer, self.net) if optimizer is not None else None
-        # FEAT-005: a Trainer's named optimizers / schedulers and every
-        # component travel in the same generation sidecar.
+        # same stateful training bundle as LAST/BEST: the optimizers and
+        # schedulers (a Trainer's named ones, FEAT-005), the scaler, the RNG
+        # and every component, in the same generation sidecar.
         # FEAT-028: the run's resolved precision record rides along, so a
         # stateful resume can refuse a different one.
         # FEAT-029: and so does the compile record (None for an eager run).
         # FEAT-030: a DDP run's world, partitions and every rank's RNG.
-        stateful_extras: dict[str, Any] = {
+        training_state: dict[str, Any] = {
+            **(optimization.save_state(self.net) if optimization is not None else {}),
+            "scaler_state": scaler.state_dict() if scaler is not None else None,
+            "rng_state": _capture_rng_state(train_loader),
+            "completed_epoch": completed_epoch,
             "components": components,
             "precision": precision,
             "compile": compile,
             "distributed": distributed,
             "counters": counters,
-            # #502: the configured hyperparameters the restored states replace.
-            "optimizer_config": None if hyperparameters is None else hyperparameters["optimizer"],
-            "scheduler_config": None if hyperparameters is None else hyperparameters["scheduler"],
         }
-        if optimizers is not None:
-            stateful_extras.update(
-                _named_training_state(
-                    self.net, optimizers, schedulers or {}, optimizer_factories, named_hyperparameters
-                )
-            )
 
         # LAST is the epoch commit marker, so publish it before ancillary
         # phase/BEST checkpoints.
-        checkpoint.save(
-            run=run_id,
-            type=Checkpoints.LAST,
-            optimizer_state=opt_state,
-            scheduler_state=scheduler_state,
-            scaler_state=scaler_state,
-            rng_state=rng_state,
-            completed_epoch=completed_epoch,
-            optimizer_type=optimizer_type,
-            scheduler_type=scheduler_type,
-            optimizer_topology=optimizer_topology,
-            optimizer_factory=optimizer_factory,
-            **stateful_extras,
-        )
+        checkpoint.save(run=run_id, type=Checkpoints.LAST, **training_state)
 
         # Phase markers at epoch boundaries — fractions are nominal (1/4, 2/4,
         # 3/4 of the planned epoch count); off-by-one allowed when n_epochs
@@ -5644,45 +5727,19 @@ class NNModel(_HubMixinBase):
         if save_phase_checkpoints:
             tag = phase_tag(idx_epoch, n_epochs)
             if tag is not None:
-                checkpoint.save(
-                    run=run_id,
-                    type=tag,
-                    optimizer_state=opt_state,
-                    scheduler_state=scheduler_state,
-                    scaler_state=scaler_state,
-                    rng_state=rng_state,
-                    completed_epoch=completed_epoch,
-                    optimizer_type=optimizer_type,
-                    scheduler_type=scheduler_type,
-                    optimizer_topology=optimizer_topology,
-                    optimizer_factory=optimizer_factory,
-                    **stateful_extras,
-                )
+                checkpoint.save(run=run_id, type=tag, **training_state)
 
         # BEST tracking goes through the same _best_err helper used by
-        # NNRun.save's cross-run comparison and by Trainer._save_checkpoint
-        # — single source of truth for "what's the comparable error here"
-        # (val→train, error→loss, +inf fall-through, tolerating None EDP
-        # or None .error from custom train_step_fn paradigms).
+        # NNRun.save's cross-run comparison — single source of truth for
+        # "what's the comparable error here" (val→train, error→loss, +inf
+        # fall-through, tolerating None EDP or None .error from custom
+        # train_step_fn paradigms). Evaluated here only (#536).
         if is_best is None:
             is_best = best_checkpoint is None or _best_err(checkpoint) < _best_err(best_checkpoint)
         if is_best:
-            checkpoint.save(
-                run=run_id,
-                type=Checkpoints.BEST,
-                optimizer_state=opt_state,
-                scheduler_state=scheduler_state,
-                scaler_state=scaler_state,
-                rng_state=rng_state,
-                completed_epoch=completed_epoch,
-                optimizer_type=optimizer_type,
-                scheduler_type=scheduler_type,
-                optimizer_topology=optimizer_topology,
-                optimizer_factory=optimizer_factory,
-                **stateful_extras,
-            )
+            checkpoint.save(run=run_id, type=Checkpoints.BEST, **training_state)
 
-        return checkpoint
+        return _SavedCheckpoints(checkpoint, bool(is_best))
 
     def _step_scheduler(
         self,
