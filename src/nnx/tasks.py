@@ -422,6 +422,12 @@ class TaskAdapter:
             return zero + float("nan"), zero, 0.0
         if n_valid == valid.numel():
             # Nothing masked: the loss sees the batch exactly as without a task.
+            if _elementwise_form(loss_fn) is not None and getattr(loss_fn, "reduction", "mean") == "mean":
+                # Weighted per element, as a masked batch is: the no-task
+                # weight counts a stock-forward subclass's rows (FIX-045).
+                loss = loss_fn(output, target)
+                weight = float(valid.numel())
+                return loss, loss * weight, weight
             return _loss_terms(loss_fn, output, target)
         return self._masked_loss_terms(loss_fn, output, target, valid, n_valid)
 

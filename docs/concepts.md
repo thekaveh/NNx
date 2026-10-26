@@ -764,8 +764,10 @@ default step, `evaluate()`, `predict()` and `predict_proba()`:
 - **Masked losses.** Masked multilabel / regression losses are evaluated
   element-wise at full shape, so a `BCEWithLogitsLoss` `pos_weight` still
   lines up with its labels. They need an elementwise loss (`MSELoss`,
-  `L1Loss`, `SmoothL1Loss`, `HuberLoss`, `BCEWithLogitsLoss`). Any other loss
-  module scores complete batches unchanged and rejects a masked one.
+  `L1Loss`, `SmoothL1Loss`, `HuberLoss`, `BCEWithLogitsLoss`), or a subclass
+  of one that keeps its `forward`; such a mean loss weights complete batches
+  by their elements too. Any other loss module scores complete batches
+  unchanged and rejects a masked one.
 - **Decoding.** Argmax over axis 1 (categorical), `sigmoid >= threshold`
   (multilabel), or the values themselves (regression). `predict().classes`
   holds these decoded values. `predict_proba(X)` may omit its spec (the task
