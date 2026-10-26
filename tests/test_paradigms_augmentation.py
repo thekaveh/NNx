@@ -475,6 +475,30 @@ def test_mixup_masks_each_permuted_target_through_the_adapter(tmp_path, monkeypa
     assert tasks.record(run).loss == pytest.approx(float(expected), rel=1e-5)
 
 
+def test_mixup_mixes_the_record_metrics_of_both_permuted_targets(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = tasks.categorical(-1, seed=1)
+    Y = torch.tensor([-1, 0, 1, 2, 0, 1])
+    set_seed(2)
+    _, run = tasks.fit(base, Y, train_step_fn=mixup_train_step_factory())
+    set_seed(2)  # the same lambda and permutation as the step draws
+    lam = float(torch.distributions.Beta(torch.tensor(0.4), torch.tensor(0.4)).sample())
+    perm = torch.randperm(6)
+    with torch.no_grad():
+        predicted = base.net(lam * tasks.X + (1.0 - lam) * tasks.X[perm]).argmax(dim=1)
+
+    def accuracy(target):
+        keep = target != -1
+        return float((predicted[keep] == target[keep]).float().mean())
+
+    acc_a, acc_b = accuracy(Y), accuracy(Y[perm])
+    assert acc_a != acc_b  # the seed tells a mixed record from the first target's alone
+    record = tasks.record(run)
+    expected = lam * acc_a + (1.0 - lam) * acc_b
+    assert record.accuracy == pytest.approx(expected, rel=1e-5)
+    assert record.error == pytest.approx(1.0 - expected, rel=1e-5)
+
+
 def test_mixup_masks_nan_multilabel_targets(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     base = tasks.model(TaskSpec.multilabel(3), loss=Losses.BINARY_CROSS_ENTROPY)
