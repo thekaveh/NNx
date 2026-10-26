@@ -2514,7 +2514,8 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
   `Diagnostic` with a field path. Example paths are `model`, `net`,
   `model.net`, `train`, `data.train`, `data.val`, `data.identity`, `seed`,
   `callbacks[i]`, `callback_factories[i]`, `objective`, `resume.*`,
-  `train.overwrite_existing`, `train.metrics[i]` and `train.monitor`.
+  `train.overwrite_existing`, `train.scheduler`, `train.metrics[i]` and
+  `train.monitor`.
     - It reports conflicts statically, such as a resume alongside
       `train.parent_run_id`, or a validation monitor with no validation data.
     - It checks, with no model built, the task against the loss and output
@@ -2526,6 +2527,17 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
       callback is never bound. It also checks that the model can provide
       every declared metric's input, using the model's parameters alone (loss,
       task, output width).
+    - It reports, as `train.scheduler`, the horizons the scheduler's build
+      refuses, with the build's own check and message: a one-cycle or
+      warmup-decay `total_steps` shorter than `n_epochs` (on the
+      `optimizer_update` clock, than the planned updates over a borrowed
+      loader with a length), and a `warmup_steps` longer than the resolved
+      `total_steps`, a default one included. It also reports the stateful
+      resume refusals that need no checkpoint (§14.2): a one-cycle /
+      warmup-decay resume in any mode but `weights_only` without an explicit
+      `total_steps`, and an epoch-clock warmup-decay resume without
+      `warmup_steps` unless it is `resume_epochs="planned"`. The overrun of a
+      resumed `total_steps` needs the checkpoint, so the loop checks it.
     - It never iterates a loader, calls a factory, builds a model, reads
       weights or writes a directory.
     - A data source must be re-iterable batches. It reports a one-shot
@@ -2533,8 +2545,9 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
       a bare tensor or array. The last two yield single samples; wrap them in
       a `DataLoader`.
     - What factories return is checked the same way when a fit starts, before
-      a model is built, a factory-made callback's monitor included. A problem
-      there raises `PlanError`.
+      a model is built, a factory-made callback's monitor included, and so
+      are the update budget and the `optimizer_update`-clock horizon a data
+      factory's loader decides. A problem there raises `PlanError`.
     - `raise_for_errors()` raises `PlanError` listing them all. `fit()` calls
       it first, right after the multi-rank check below. An invalid `attempt`
       id is listed with the rest. `probe()` checks the model, network and seed
@@ -3401,6 +3414,7 @@ validate (space, budget, monitor = plan's val monitor, factories, weights-only r
              per committed update: update cap / deadline → stop at that update
              per validated epoch:  report(value, step=epoch) → prune? / deadline?
            → value (completed) | TrialPruned | failure (non-finite, error, no epoch)
+             | config error (apply, the trial plan, a PlanError from fit) → stop the search
 ```
 
 - **One monitor.** Trials are scored by a *validation* `MonitorSpec` equal to
@@ -3419,12 +3433,23 @@ validate (space, budget, monitor = plan's val monitor, factories, weights-only r
   would come only from an epoch that beats the source's. The search re-checks
   this on every plan `apply` returns.
 - **Errors.** A fit that raises is a failed trial, recorded with its
-  message (`TrialOutcome.error`), and the search goes on.
+  message (`TrialOutcome.error`), and the search goes on, unless it raises
+  `PlanError` (next item). A shape mismatch in the forward pass, for
+  example, is a failed trial.
 - **Configuration errors.** A configuration error fails that trial and stops
-  the search with the error. The failed trial counts against a stored
-  study's budget. Configuration errors are `apply` raising, `apply`
-  returning something other than a plan, or a plan the search cannot score
-  (borrowed callbacks, another monitor, a resume that is not weights-only).
+  the search with the error, recorded as `config_error:<type>`. The failed
+  trial counts against a stored study's budget, and a rerun after the fix
+  continues with the budget left. Configuration errors are `apply` raising,
+  `apply` returning something other than a plan, a plan the search cannot
+  score (borrowed callbacks, another monitor, a resume that is not
+  weights-only, any `validate()` diagnostic), and a `PlanError` from the
+  trial's `fit()`. `fit()` raises one for what the factories made: data or
+  callback factory output, a factory-made callback's monitor, or a missing
+  or too-short update budget over a factory's loader (§20). Each would fail
+  every trial alike. So an `apply` that varies `n_epochs`, `warmup_steps` or
+  `total_steps` into a combination the scheduler refuses, or swaps in a
+  factory with invalid output, stops the search at that trial. A base plan
+  with such a scheduler is refused before the first trial.
   `updates_per_trial` is refused for a plan with its own `train_step_fn`,
   which may not report updates.
 - **The budget counts every trial**: completed, failed, pruned and orphaned
