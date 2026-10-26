@@ -463,9 +463,8 @@ Raises:
         A misconfigured link-task validation raises ``LinkTaskError``
         before any run is reserved: a link ``val_loader`` that is not
         ``'val'`` or is built on another split, a val split beyond the
-        evaluator's ``max_candidates``, or a link ``val_loader`` (or
-        link predictor with any ``val_loader``) without
-        ``eval_step_fn=task.eval_step()``.
+        evaluator's ``max_candidates``, or a link predictor with a
+        ``val_loader`` but without ``eval_step_fn=task.eval_step()``.
     FileExistsError: If the content-addressed run already exists and
         ``overwrite_existing`` is false.
     FloatingPointError: If the default step encounters non-finite loss.
@@ -921,10 +920,10 @@ Raises:
         weight_norm / spectral_norm parametrization or legacy hook),
         or a recipe model's topology is not its base plus its recipe.
         A trainer_step_fn run on a model without a recipe is not
-        checked. A link task's ``val_loader`` (or a link predictor
-        with any ``val_loader``) raises ``LinkTaskError`` before any
-        run is reserved: the default evaluate path cannot check its
-        batches.
+        checked. A link predictor (reading batches through its own
+        ``unpack_batch``) with a ``val_loader`` raises
+        ``LinkTaskError`` before any run is reserved: the default
+        evaluate path refuses its batches.
     RuntimeError: in a process group of more than one rank.
 ```
 

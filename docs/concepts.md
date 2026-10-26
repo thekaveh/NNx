@@ -3244,7 +3244,7 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
       on another split, as `val_loader` with `task.eval_step()` (another
       `LinkTask` on the same split is fine);
     - a `val` split with more candidates than `max_candidates`;
-    - a link `val_loader` without `task.eval_step()`, or under
+    - a link predictor's `val_loader` without `task.eval_step()`, or under
       `Trainer.train`, which validates through the default evaluate path
       only. Validate with `NNModel.train(..., eval_step_fn=task.eval_step())`,
       or drop `val_loader` and score after training.

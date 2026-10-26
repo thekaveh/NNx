@@ -534,7 +534,7 @@ class ExperimentPlan:
             for path, message in _link_eval_problems(
                 self._sources(train)[1],  # read, never iterated (nor a factory called)
                 self.eval_step_fn,
-                link_net=isinstance(net, ModelSpec) and net.id == FACTORY_ID,
+                link_net=isinstance(net, ModelSpec) and net.id == FACTORY_ID and self.batch_adapter is None,
             ):
                 report("data.val" if path == "val_loader" else path, message)
 
