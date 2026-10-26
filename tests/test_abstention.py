@@ -1221,6 +1221,45 @@ def test_a_saturated_float32_threshold_reads_float64_scores():
     assert prediction.probabilities.dtype == np.float32  # the prediction itself is untouched
 
 
+def _hand_built(logits, probabilities, decoded):
+    from nnx.prediction import PredictionResult, ProbabilitySpec
+
+    return PredictionResult(
+        logits=logits,
+        probabilities=np.asarray(probabilities, dtype=np.float32),
+        decoded=np.asarray(decoded),
+        sample_ids=np.arange(len(decoded)),
+        spec=ProbabilitySpec("categorical", labels=LABELS),
+    )
+
+
+def test_bfloat16_tensor_logits_score_in_float64_with_a_bfloat16_tie_tolerance():
+    import torch
+
+    saturated = AbstentionPolicy("max_probability", 1.0, labels=LABELS, model_id="m", tuning_split_id="val")
+    result = saturated.apply(
+        _hand_built(torch.tensor([[0.0, 20.0, 0.0]], dtype=torch.bfloat16), P[:1], [1]), model_id="m"
+    )
+    assert result.probabilities.dtype == np.float64 and result.score[0] < 1.0 and not result.accepted.any()
+    # Top two probabilities about 0.004 apart are within bfloat16's rounding: either may be the decoded class ...
+    near_tie = [[0.0, 2.0**-6, -5.0]]
+    bfloat16 = _hand_built(torch.tensor(near_tie, dtype=torch.bfloat16), P[:1], [0])
+    loose = _policy("max_probability", 0.3).apply(bfloat16, model_id="m")
+    assert loose.prediction.tolist() == [0] and loose.score[0] < loose.probabilities[0].max()
+    # ... but well beyond float32's, so the same logits as a float32 tensor refuse class 0.
+    with pytest.raises(AbstentionError, match="maximal probability"):
+        _policy("max_probability", 0.3).apply(_hand_built(torch.tensor(near_tie), P[:1], [0]), model_id="m")
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_non_finite_logits_are_refused_as_logits(bad):
+    prediction = _hand_built(np.array([[bad, 0.0, 0.0]], dtype=np.float32), [[0.2, 0.4, 0.4]], [1])
+    with pytest.raises(AbstentionError, match="logits contain non-finite values"):
+        _policy("max_probability", 0.3).apply(prediction, model_id="m")
+    with pytest.raises(AbstentionError, match="logits contain non-finite values"):
+        risk_coverage_curve(prediction, np.array([1]), kind="margin")
+
+
 def test_float64_logits_score_as_before_and_saved_policies_keep_their_ids():
     from nnx.prediction import ProbabilitySpec, prediction_from_logits
 

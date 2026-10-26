@@ -76,15 +76,17 @@ def logit_probabilities(logits: Any, *, error: type[Exception]) -> Optional[tupl
     logits cast to float64 — and the machine epsilon of the logits' own
     dtype (bfloat16's for a bfloat16 tensor, float64's for integers).
     ``None`` for any other shape or dtype: the caller reads its
-    probabilities as given. ``error`` for an unreadable array; the input is
-    never modified."""
+    probabilities as given. ``error`` for an unreadable array or non-finite
+    logits; the input is never modified."""
     # bfloat16 tensors arrive upcast to float32; their rounding is bfloat16's.
     source_eps = 2.0**-7 if is_tensor(logits) and str(logits.dtype) == "torch.bfloat16" else None
     array = read_array(logits, copy=False, error=error)
     if array.ndim != 2 or array.shape[1] < 2 or array.dtype.kind not in "fiu":
         return None
+    if not np.isfinite(array).all():  # refused as logits, before a NaN softmax can blame the probabilities
+        raise error("the prediction's logits contain non-finite values")
     eps = float(np.finfo(array.dtype if array.dtype.kind == "f" else np.float64).eps)
-    with np.errstate(over="ignore", invalid="ignore"):  # non-finite logits give NaN: the caller refuses them
+    with np.errstate(over="ignore"):  # a max shift past the float64 range only underflows exp to 0
         return softmax_(array.astype(np.float64, copy=True), 1), source_eps if source_eps is not None else eps
 
 
