@@ -85,7 +85,7 @@ def task_step(step: _StepT, tasks: _StepTasks) -> _StepT:
     return step
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True, slots=True)
 class TaskTerm:
     """A paradigm step's hard (label) term through the model's task adapter
     (#513): ``loss`` is the loss over the valid targets — a graph-connected
@@ -106,7 +106,7 @@ def task_term(adapter: TaskAdapter, loss_fn: torch.nn.Module, logits: torch.Tens
     output, target, valid = adapter.prepare(logits, target)
     loss, numerator, weight = adapter.loss_terms(loss_fn, output, target, valid)
     # A sum-reduction loss (weight None) is its numerator; an all-masked batch (weight 0) has a NaN display loss.
-    return TaskTerm(loss if weight else numerator, weight != 0, output, target, valid)
+    return TaskTerm(loss=loss if weight else numerator, trains=weight != 0, output=output, target=target, valid=valid)
 
 
 def task_record(
