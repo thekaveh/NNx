@@ -9,7 +9,9 @@ record carries accuracy / f1 / recall / precision. A :class:`TaskSpec` on
     params = NNModelParams(net=Nets.FEED_FWD, loss=Losses.MEAN_SQUARED_ERROR, task=TaskSpec.regression(2))
 
 The task's adapter then owns, for the default step, ``evaluate()``,
-``predict()`` and ``predict_proba()``:
+``predict()`` and ``predict_proba()`` (and for the hard-label term of the
+built-in KD, feature-KD, Mixup, CutMix and MoE steps and ``kd_objective``,
+which train categorical and multilabel tasks and refuse a regression one):
 
 * **validation** — each batch's outputs and targets are checked for the
   declared shape, dtype and value range *before* any backward pass or
@@ -252,6 +254,40 @@ def _labels(labels: Any) -> Any:
     if labels is None or isinstance(labels, (str, bytes)) or not isinstance(labels, Sequence):
         return labels
     return tuple(labels)
+
+
+# Carried by a built-in paradigm step or objective (#513): a _StepTasks naming
+# it and the task kinds its hard term scores through the adapter.
+STEP_TASKS = "__nnx_step_tasks__"
+
+
+@dataclass(frozen=True, slots=True)
+class _StepTasks:
+    """The task kinds a built-in paradigm step or objective trains. One rule
+    for ``NNModel.train``, ``Trainer.train``, ``ExperimentPlan.validate()``
+    and ``born_again_train``: :meth:`check` refuses any other declared kind
+    before a run is reserved."""
+
+    name: str
+    kinds: tuple[str, ...] = ("categorical", "multilabel")
+
+    def check(self, task: Optional[TaskSpec], *, hint: Optional[str] = None) -> None:
+        if task is None or task.kind in self.kinds:
+            return
+        raise TaskValidationError(
+            f"{self.name} trains {' and '.join(self.kinds)} tasks only, but this model declares a {task.kind} task "
+            f"(TaskSpec.{task.kind}): "
+            + (hint or "train it with the default step, supervised_objective() or a custom train_step_fn")
+        )
+
+
+def _check_step_task(step: Any, task: Optional[TaskSpec]) -> None:
+    """Refuse ``step`` (a step function or an objective) for a declared task
+    whose kind its :data:`STEP_TASKS` marker does not list; an unmarked step
+    is the caller's own and passes."""
+    marker = getattr(step, STEP_TASKS, None)
+    if isinstance(marker, _StepTasks):
+        marker.check(task)
 
 
 # ---------------------------------------------------------------- adapters

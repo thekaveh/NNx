@@ -11,6 +11,8 @@ Covers:
 
 from __future__ import annotations
 
+import copy
+
 import pytest
 import torch
 import torch.nn as nn
@@ -31,10 +33,14 @@ from nnx import (
     NNRun,
     NNTrainerParams,
     Optims,
+    TaskSpec,
+    TaskValidationError,
     Trainer,
     TrainerStepContext,
     TrainerStepFn,
 )
+from nnx.objectives import kd_objective, supervised_objective
+from tests import _task_steps as task_steps
 from tests._surgery import SURGERY_FORMS, unrecorded_surgery
 
 
@@ -2546,3 +2552,47 @@ def test_trainer_two_plus_two_equals_four_when_a_callback_draws(hook, tmp_path, 
     assert run.resume_status is not None and run.resume_status.mode == "stateful"
     for name, weight in whole.net.state_dict().items():
         assert torch.equal(weight, resumed.net.state_dict()[name]), name
+
+
+# --- Trainer.train(objective=kd_objective(...)) and a declared TaskSpec (#513) ---------------
+
+
+def _trainer_fit(base: NNModel, Y: torch.Tensor, objective) -> tuple[NNModel, NNRun]:
+    trained = copy.deepcopy(base)
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(1)
+        .train_loader([(task_steps.X, Y)])
+        .optimizer("default", NNOptimParams.builder().sgd(max_lr=0.5, momentum=0.0).build())
+        .build()
+    )
+    return trained, Trainer(trained).train(params, objective=objective, salt=type(objective).__name__)
+
+
+def test_trainer_kd_objective_takes_no_update_on_an_all_ignored_batch(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base, teacher = task_steps.categorical(), task_steps.categorical(seed=1)
+    trained, run = _trainer_fit(base, task_steps.ALL_IGNORED, kd_objective(teacher, alpha=0.0))
+    assert task_steps.moved(trained, base) == 0.0
+    record = task_steps.record(run)
+    assert (record.kind, record.count, record.status, record.loss) == ("categorical", 0, "empty", None)
+
+
+def test_trainer_kd_objective_masks_an_out_of_range_ignore_index(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base, teacher = task_steps.categorical(-1), task_steps.categorical(-1, seed=1)
+    Y = torch.tensor([-1, 1, 2, -1, 1, 2])
+    reference, _ = _trainer_fit(base, Y, supervised_objective())
+    trained, run = _trainer_fit(base, Y, kd_objective(teacher, alpha=0.0))  # no IndexError
+    torch.testing.assert_close(task_steps.weights(trained), task_steps.weights(reference))
+    assert task_steps.record(run).count == 4
+
+
+def test_trainer_refuses_kd_objective_for_a_regression_task_before_any_run(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    regression = dict(loss=Losses.MEAN_SQUARED_ERROR, output_dim=2)
+    base = task_steps.model(TaskSpec.regression(2), **regression)
+    teacher = task_steps.model(TaskSpec.regression(2), seed=1, **regression)
+    with pytest.raises(TaskValidationError, match="kd_objective.*regression task"):
+        _trainer_fit(base, torch.randn(6, 2), kd_objective(teacher))
+    assert task_steps.no_run_left(tmp_path)

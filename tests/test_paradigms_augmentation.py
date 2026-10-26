@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
@@ -19,10 +20,13 @@ from nnx import (
     NNSchedulerParams,
     NNTrainParams,
     Optims,
+    TaskSpec,
+    TaskValidationError,
     cutmix_train_step_factory,
     mixup_train_step_factory,
     set_seed,
 )
+from tests import _task_steps as tasks
 
 # -------------------------------------------------------------------------
 # Mixup
@@ -413,3 +417,76 @@ def test_augmentation_supervised_terms_use_normalized_nll(family):
     with torch.no_grad():
         raw = model_nll.net(X)
     assert float(F.nll_loss(F.log_softmax(raw, dim=1), Y)) == pytest.approx(float(F.cross_entropy(raw, Y)), rel=1e-6)
+
+
+# -------------------------------------------------------------------------
+# A declared TaskSpec (#513)
+# -------------------------------------------------------------------------
+
+STEPS = {"mixup": (mixup_train_step_factory, Nets.FEED_FWD), "cutmix": (cutmix_train_step_factory, Nets.CONV)}
+
+
+def _inputs(net: Nets) -> torch.Tensor:
+    return tasks.IMAGES if net is Nets.CONV else tasks.X
+
+
+@pytest.mark.parametrize("name", STEPS)
+def test_mixing_takes_no_update_on_an_all_ignored_batch(name, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    factory, net = STEPS[name]
+    base = tasks.categorical(net=net)
+    reference, _ = tasks.fit(base, tasks.ALL_IGNORED, inputs=_inputs(net))
+    trained, run = tasks.fit(base, tasks.ALL_IGNORED, inputs=_inputs(net), train_step_fn=factory())
+    assert tasks.moved(reference, base) == 0.0 and tasks.moved(trained, base) == 0.0
+    record = tasks.record(run)
+    assert (record.kind, record.count, record.status, record.loss) == ("categorical", 0, "empty", None)
+
+
+@pytest.mark.parametrize("ignore_index", [-1, 255])
+@pytest.mark.parametrize("name", STEPS)
+def test_mixing_masks_an_out_of_range_ignore_index(name, ignore_index, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    factory, net = STEPS[name]
+    Y = torch.tensor([ignore_index, 1, 2, ignore_index, 1, 2])
+    _, run = tasks.fit(tasks.categorical(ignore_index, net=net), Y, inputs=_inputs(net), train_step_fn=factory())
+    record = tasks.record(run)  # no IndexError: each permuted target masks its ignored rows
+    assert (record.kind, record.count, record.status) == ("categorical", 4, "ok")
+    assert record.loss is not None and 0.0 <= record.accuracy <= 1.0
+
+
+def test_mixup_masks_each_permuted_target_through_the_adapter(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = tasks.categorical()
+    set_seed(0)
+    _, run = tasks.fit(base, tasks.MIXED, train_step_fn=mixup_train_step_factory())
+    set_seed(0)  # the same lambda and permutation as the step draws
+    lam = float(torch.distributions.Beta(torch.tensor(0.4), torch.tensor(0.4)).sample())
+    perm = torch.randperm(6)
+    with torch.no_grad():
+        logits = base.net(lam * tasks.X + (1.0 - lam) * tasks.X[perm])
+
+        def masked(target):
+            keep = target != 0
+            return F.cross_entropy(logits[keep], target[keep])
+
+        expected = lam * masked(tasks.MIXED) + (1.0 - lam) * masked(tasks.MIXED[perm])
+    assert tasks.record(run).loss == pytest.approx(float(expected), rel=1e-5)
+
+
+def test_mixup_masks_nan_multilabel_targets(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = tasks.model(TaskSpec.multilabel(3), loss=Losses.BINARY_CROSS_ENTROPY)
+    _, run = tasks.fit(base, tasks.multilabel_targets(), train_step_fn=mixup_train_step_factory())  # no divergence
+    record = tasks.record(run)
+    assert (record.kind, record.count, record.status) == ("multilabel", 12, "ok")
+    assert set(record.metrics) == {"subset_accuracy", "element_accuracy"}
+
+
+@pytest.mark.parametrize("name", STEPS)
+def test_mixing_refuses_a_regression_task_before_any_run(name, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    factory, net = STEPS[name]
+    base = tasks.model(TaskSpec.regression(2), net=net, loss=Losses.MEAN_SQUARED_ERROR, output_dim=2)
+    with pytest.raises(TaskValidationError, match=f"{name}_train_step_factory.*regression task"):
+        tasks.fit(base, torch.randn(6, 2), inputs=_inputs(net), train_step_fn=factory())
+    assert tasks.no_run_left(tmp_path)

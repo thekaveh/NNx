@@ -72,6 +72,7 @@ from .nn.params.nn_params import NNParams
 from .nn.params.nn_scheduler_params import NNSchedulerParams
 from .nn.params.nn_train_params import NNTrainParams, _validate_resume_epochs, _validate_resume_mode
 from .precision import PrecisionUnsupportedError, ResolvedPrecision, resolve_precision
+from .tasks import TaskSpec, TaskValidationError, _check_step_task
 
 if TYPE_CHECKING:
     from .nn.nn_model import NNModel
@@ -744,6 +745,13 @@ class ExperimentPlan:
                 _check_step_precision(self.train_step_fn, precision)  # train()'s own rule (FEAT-028)
             except PrecisionUnsupportedError as exc:
                 report("train_step_fn", str(exc))
+        task = getattr(self.model, "task", None) if isinstance(self.model, NNModelParams) else None
+        if isinstance(task, TaskSpec):
+            for path, step in (("train_step_fn", self.train_step_fn), ("objective", self.objective)):
+                try:  # train()'s own rule: a built-in step trains the task's kind or is refused (#513)
+                    _check_step_task(step, task)
+                except TaskValidationError as exc:
+                    report(path, str(exc))
         try:
             _check_provenance(self.provenance)  # train()'s own rule
         except TypeError as exc:

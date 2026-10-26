@@ -75,7 +75,7 @@ from ..precision import TRAIN as _PRECISION_TRAIN
 from ..precision import PrecisionPolicy, PrecisionUnsupportedError, ResolvedPrecision, resolve_precision
 from ..provenance import ExperimentManifest
 from ..seeding import _capture_rng_state, _restore_rng_state  # the loop's checkpointed RNG streams
-from ..tasks import TaskAdapter, _bounded_extra_metrics_error, task_adapter
+from ..tasks import TaskAdapter, _bounded_extra_metrics_error, _check_step_task, task_adapter
 from ..transforms import _canonical_transforms, _recipe_transforms, _replayable, _snapshot_transforms, _state_shapes
 from ..utils import Utils, _capture_training_modes, _restore_training_modes, _writable
 from .enum.checkpoints import Checkpoints, phase_tag
@@ -2978,12 +2978,15 @@ class NNModel(_HubMixinBase):
             self._precision = cached
         return cached[1]
 
-    def _check_task_preflight(self) -> None:
-        """Reject a runtime ``loss_fn`` the declared task cannot score —
-        before any loader is iterated (NNModel.train and Trainer.train)."""
+    def _check_task_preflight(self, step: Any = None) -> None:
+        """Reject a runtime ``loss_fn`` the declared task cannot score, and a
+        built-in paradigm step or objective (``step``) that does not train
+        the task's kind (#513) — before any loader is iterated or run is
+        reserved (NNModel.train and Trainer.train)."""
         adapter = getattr(self, "task_adapter", None)
         if adapter is not None:
             adapter.check_loss_fn(self.loss_fn)
+            _check_step_task(step, adapter.spec)
 
     def _base_state(self) -> Optional[Mapping[str, Optional[tuple[int, ...]]]]:
         """``{key: shape}`` of the tensors the descriptor rebuilds, recorded
@@ -3885,7 +3888,7 @@ class NNModel(_HubMixinBase):
             self._assert_reconstructible_topology()
         if params is None:
             raise ValueError("train params must be non-None")
-        self._check_task_preflight()
+        self._check_task_preflight(objective if objective is not None else train_step_fn)
         # FEAT-028: the precision policy is resolved once, before any run is
         # reserved; the loop, validation and prediction reuse it.
         precision = self._precision_for_training(train_step_fn)
