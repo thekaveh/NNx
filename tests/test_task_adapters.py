@@ -126,6 +126,109 @@ def test_model_construction_rejects_an_incompatible_task(task, loss, output_dim,
         _model(task, loss=loss, output_dim=output_dim)
 
 
+class _ExplodingLoader:
+    def __iter__(self):
+        raise AssertionError("the loss_fn check must fail before any batch is read")
+
+
+# (task, construction loss, output width, a runtime loss_fn the task cannot score)
+_INCOMPATIBLE_RUNTIME_LOSSES = [
+    pytest.param(TaskSpec.regression(2), Losses.MEAN_SQUARED_ERROR, 2, torch.nn.CrossEntropyLoss(), id="regression"),
+    pytest.param(TaskSpec.multilabel(2), Losses.BINARY_CROSS_ENTROPY, 2, torch.nn.MSELoss(), id="multilabel"),
+    pytest.param(TaskSpec.categorical(3), Losses.CROSS_ENTROPY, 3, torch.nn.MultiMarginLoss(), id="categorical"),
+]
+
+
+@pytest.mark.parametrize(("task", "loss", "output_dim", "runtime_loss"), _INCOMPATIBLE_RUNTIME_LOSSES)
+def test_evaluate_rechecks_a_runtime_loss_fn_before_reading_a_batch(
+    task, loss, output_dim, runtime_loss, tmp_path, monkeypatch
+):
+    """#565: evaluate() refuses a runtime loss_fn the declared task cannot
+    score with train()'s TaskValidationError, before any batch is read
+    (it reported a meaningless loss)."""
+    monkeypatch.chdir(tmp_path)
+    model = _model(task, loss=loss, output_dim=output_dim)
+    model.loss_fn = runtime_loss
+    with pytest.raises(TaskValidationError) as from_train:
+        _train(model, _ExplodingLoader())
+    with pytest.raises(TaskValidationError) as from_evaluate:
+        model.evaluate(_ExplodingLoader())  # type: ignore[arg-type]
+    assert str(from_evaluate.value) == str(from_train.value)
+
+
+class _TaggedCrossEntropy(torch.nn.CrossEntropyLoss):
+    pass
+
+
+class _TaggedBCE(torch.nn.BCEWithLogitsLoss):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("task", "loss", "output_dim", "runtime_loss", "y"),
+    [
+        pytest.param(
+            TaskSpec.categorical(3),
+            Losses.CROSS_ENTROPY,
+            3,
+            _TaggedCrossEntropy(),
+            torch.tensor([0, 1, 2, 1, 0, 2]),
+            id="categorical-subclass",
+        ),
+        pytest.param(
+            TaskSpec.multilabel(2),
+            Losses.BINARY_CROSS_ENTROPY,
+            2,
+            _TaggedBCE(),
+            _fixed([[0, 1], [1, 1], [0, 0], [1, 0], [0, 1], [1, 1]]),
+            id="multilabel-subclass",
+        ),
+        pytest.param(
+            TaskSpec.regression(2),
+            Losses.MEAN_SQUARED_ERROR,
+            2,
+            torch.nn.MSELoss(),
+            torch.linspace(-1.0, 1.0, 12).reshape(6, 2),
+            id="regression-fresh-mse",
+        ),
+    ],
+)
+def test_evaluate_scores_a_compatible_runtime_loss_fn_as_before(task, loss, output_dim, runtime_loss, y):
+    """#565: a runtime loss the task can score (a subclass of its loss) is
+    accepted, and scores exactly as the construction loss."""
+    set_seed(0)
+    loader = DataLoader(TensorDataset(torch.randn(6, 3), y), batch_size=4)
+    model = _model(task, loss=loss, output_dim=output_dim)
+    reference = model.evaluate(loader)
+    model.loss_fn = runtime_loss
+    swapped = model.evaluate(loader)
+    assert swapped.state() == reference.state()
+
+
+def test_evaluate_does_not_check_the_loss_fn_of_a_task_free_model_or_a_stand_in():
+    """#565: a model without a task (and a legacy stand-in that borrows
+    evaluate() without a task_adapter) keeps any runtime loss_fn."""
+
+    class StandIn:
+        evaluate = NNModel.evaluate
+
+        def __init__(self, net, loss_fn):
+            self.net, self.loss_fn, self.device = net, loss_fn, torch.device("cpu")
+
+        def _fwd_pass(self, batch):
+            X, Y = batch
+            logits = self.net(X)
+            return X, Y, logits, logits.argmax(dim=1)
+
+    loader = DataLoader(TensorDataset(torch.randn(6, 3), torch.tensor([0, 1, 2, 1, 0, 2])), batch_size=4)
+    task_free = _model(None, loss=Losses.CROSS_ENTROPY, output_dim=3)
+    task_free.loss_fn = torch.nn.MultiMarginLoss()  # a categorical task would refuse it
+    record = task_free.evaluate(loader)
+    assert record.loss is not None and math.isfinite(record.loss)
+    stand_in = StandIn(task_free.net, torch.nn.MultiMarginLoss())
+    assert stand_in.evaluate(loader).state() == record.state()
+
+
 def test_language_model_tasks_are_out_of_scope():
     adapter = task_adapter(TaskSpec.categorical())
     with pytest.raises(TaskValidationError, match="TRANSFORMER"):

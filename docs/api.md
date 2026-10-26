@@ -489,6 +489,12 @@ and reported in the record's ``metrics`` under each spec's name. A
 metric whose input this model cannot provide raises before any
 batch is read.
 
+A model that declares a task re-checks the live ``loss_fn`` before
+any batch is read, as ``train()`` does: one the task cannot score
+raises :class:`~nnx.TaskValidationError`. Without a task the record
+is classification's, and continuous targets of a regression loss
+raise ValueError advising the task declaration.
+
 Raises ValueError if the loader yields zero batches (there would be
 nothing to average).
 ```

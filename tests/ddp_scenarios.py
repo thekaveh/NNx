@@ -518,6 +518,45 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         except BaseException as error:  # noqa: BLE001 - recorded for the test
             out["error"] = type(error).__name__
             out["message"] = str(error)
+    elif name == "unscorable_validation":
+        # #565: a task-free MSE model's continuous targets, in training (every
+        # rank's batch) and in validation; distributed= refuses custom steps,
+        # so each refusal names only the task declaration, which trains.
+        from torch.utils.data import TensorDataset
+
+        generator = torch.Generator().manual_seed(3)
+        X = torch.randn(8, FEATURES, generator=generator)
+        classes = TensorDataset(X, torch.randint(0, 2, (8, 1), generator=generator).float())  # scorable as classes
+        continuous = TensorDataset(X, torch.rand(8, 1, generator=generator))
+
+        def mse_model(task=None) -> NNModel:
+            torch.manual_seed(0)
+            return NNModel(
+                net_params=NNParams(
+                    input_dim=FEATURES, output_dim=1, hidden_dims=[6], dropout_prob=0.0, activation=Activations.RELU
+                ),
+                params=NNModelParams(net=Nets.FEED_FWD, device=_device(), loss=Losses.MEAN_SQUARED_ERROR, task=task),
+            )
+
+        def fit(salt: str, train, val=None, task=None) -> None:
+            validation = None if val is None else nnx_dist.validation_loader(val, batch_size=2)
+            mse_model(task).train(
+                params=params(nnx_dist.train_loader(train, batch_size=2, shuffle=False), validation, n_epochs=1),
+                salt=salt,
+                distributed=nnx_dist.DDP(),
+            )
+
+        out["messages"] = {}
+        for label, run in {
+            "train": lambda: fit("train", continuous),
+            "validation": lambda: fit("validation", classes, continuous),
+            "task": lambda: fit("task", continuous, continuous, TaskSpec.regression(1)),
+        }.items():
+            try:
+                run()
+                out["messages"][label] = None
+            except ValueError as error:
+                out["messages"][label] = str(error)
     elif name == "preflight":
         out["errors"] = {}
         attempts = {
