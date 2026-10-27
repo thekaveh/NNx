@@ -148,17 +148,37 @@ def recall_at_k(
     return sum(relevance[i] >= threshold for i in order) / total
 
 
+def _grades(relevance: Sequence[int]) -> list[int]:
+    for grade in relevance:
+        if isinstance(grade, bool) or not isinstance(grade, numbers.Integral) or grade < 0:
+            raise RankingError(f"relevance grades must be non-negative integers, got {grade!r}")
+    return [int(grade) for grade in relevance]
+
+
+def _gain(grade: int, top: int) -> float:
+    # ``(2^grade - 1) / 2^top``: scaled by the query's top grade, so it never overflows; a power-of-two
+    # scale is exact, so NDCG (a ratio of such gains) is unchanged while the scaled gains stay normal
+    # floats (top grade below about 1022; above that, low grades' gains go subnormal and lose low bits).
+    return math.ldexp(1.0, grade - top) - math.ldexp(1.0, -top)
+
+
 def ndcg_at_k(relevance: Sequence[int], scores: Sequence[float], candidate_ids: Sequence[Id], k: int) -> float:
     """``DCG@k / IDCG@k`` with gain ``2^rel - 1`` and discount
-    ``log2(rank + 1)`` (the query must have a nonzero grade)."""
+    ``log2(rank + 1)`` (the query must have a nonzero grade).
+
+    Grades are non-negative integers (a negative, non-integer or boolean
+    grade is refused) with no upper limit: the gains are computed relative
+    to the query's top grade, so NDCG stays finite for every grade."""
     _check_query(relevance, scores, candidate_ids)
     k = _check_k(k, len(scores))
-    ideal = sorted(relevance, reverse=True)[:k]
-    idcg = sum((2.0**r - 1.0) / math.log2(position + 2) for position, r in enumerate(ideal))
-    if idcg == 0.0:
+    grades = _grades(relevance)
+    top = max(grades)
+    if top == 0:
         raise RankingError("NDCG is undefined for a query whose every grade is 0")
+    ideal = sorted(grades, reverse=True)[:k]
+    idcg = sum(_gain(r, top) / math.log2(position + 2) for position, r in enumerate(ideal))
     order = rank(scores, candidate_ids)[:k]
-    dcg = sum((2.0 ** relevance[i] - 1.0) / math.log2(position + 2) for position, i in enumerate(order))
+    dcg = sum(_gain(grades[i], top) / math.log2(position + 2) for position, i in enumerate(order))
     return dcg / idcg
 
 
@@ -182,11 +202,15 @@ def pairwise_logistic_loss(
     least :data:`CHECKPOINT_PAIRS` pairs is recomputed in backward
     (``torch.utils.checkpoint``) rather than kept, while a smaller one costs
     less to keep than to recompute. ``relevance`` may live on any device; it
-    is moved to the scores'."""
+    is moved to the scores'. float16 / bfloat16 scores are widened to
+    float32 first, so the cross-query sum accumulates in full precision
+    (the numerator is float32); other dtypes are kept."""
     if weighting not in WEIGHTINGS:
         raise RankingError(f"weighting must be one of {WEIGHTINGS}, got {weighting!r}")
     if len(query_ids) != scores.shape[0] or relevance.shape[0] != scores.shape[0]:
         raise RankingError(f"{scores.shape[0]} scores for {relevance.shape[0]} grades and {len(query_ids)} query ids")
+    if scores.dtype in (torch.float16, torch.bfloat16):
+        scores = scores.float()  # differentiable; a reduced-precision running sum stalls over many queries
     relevance = relevance.to(scores.device)
     groups: dict[Id, list[int]] = {}
     for row, query in enumerate(query_ids):
@@ -236,7 +260,8 @@ class RankingTask:
     Args:
         k: the cutoffs the metrics are reported at (each ``>= 1``).
         max_relevance: grades are integers in ``0..max_relevance``
-            (``1``: binary relevance).
+            (``1``: binary relevance). It has no upper limit: NDCG stays
+            finite for every grade.
         relevance_threshold: a candidate is relevant (for MRR and Recall,
             and for excluding queries) when its grade is at least this.
         weighting: the objective's ``"query"`` or ``"pair"`` weighting.
@@ -543,7 +568,7 @@ class RankingObjective(Objective):
         model = ctx.model
         model.net.train()
         features, query_ids, candidate_ids, relevance, mask = self.task.split(ctx.batch)
-        scores = self.task.scores(model, features, len(query_ids))
+        scores = ctx.full_precision(self.task.scores(model, features, len(query_ids)))
         rows = list(range(len(query_ids))) if mask is None else [i for i in range(len(query_ids)) if bool(mask[i])]
         index = torch.tensor(rows, dtype=torch.long)
         numerator, denominator = pairwise_logistic_loss(
