@@ -50,6 +50,7 @@ import torch
 from torch import nn
 
 from ._optional import require
+from ._validation import shown
 
 __all__ = [
     "FACTORY_ID",
@@ -82,7 +83,7 @@ def _count(value: Any, what: str, *, minimum: int, maximum: Optional[int] = None
     count = int(value) if isinstance(value, numbers.Integral) and not isinstance(value, bool) else None
     if count is None or count < minimum or (maximum is not None and count > maximum):
         domain = f">= {minimum}" if maximum is None else f"in [{minimum}, {maximum}]"
-        raise GraphTaskError(f"{what} must be an integer {domain}, got {value!r}")
+        raise GraphTaskError(f"{what} must be an integer {domain}, got {shown(value)}")
     return count
 
 

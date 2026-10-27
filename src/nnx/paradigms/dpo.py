@@ -35,7 +35,7 @@ import torch
 import torch.nn.functional as F
 
 from .._step_helpers import finalize_step, imperative_step
-from .._validation import require_count, require_finite_real
+from .._validation import require_count, require_finite_real, shown
 from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
@@ -97,7 +97,7 @@ def dpo_train_step_factory(
         owner="dpo_train_step_factory",
         minimum=0,
         exclusive_min=True,
-        domain_message=f"beta must be a finite positive number, got {beta!r}",
+        domain_message=f"beta must be a finite positive number, got {shown(beta, real=True)}",
     )
     if pad_token_id is not None:  # a bool or a negative id would mask nothing
         pad_token_id = require_count(pad_token_id, "pad_token_id", owner="dpo_train_step_factory", minimum=0)

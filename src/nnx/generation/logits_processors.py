@@ -15,7 +15,7 @@ from typing import Protocol
 
 import torch
 
-from .._validation import require_finite_real
+from .._validation import require_finite_real, shown
 
 
 class LogitsProcessor(Protocol):
@@ -47,7 +47,7 @@ class TemperatureScaling:
             "temperature",
             owner="TemperatureScaling",
             minimum=0,
-            domain_message=f"temperature must be a finite number >= 0, got {temperature}",
+            domain_message=f"temperature must be a finite number >= 0, got {shown(temperature, real=True)}",
         )
 
     def __call__(self, logits: torch.Tensor, token_history: list[int]) -> torch.Tensor:
@@ -147,7 +147,7 @@ class RepetitionPenalty:
             "repetition_penalty",
             owner="RepetitionPenalty",
             minimum=1,
-            domain_message=f"repetition_penalty must be a finite number >= 1.0, got {penalty}",
+            domain_message=f"repetition_penalty must be a finite number >= 1.0, got {shown(penalty, real=True)}",
         )
 
     def __call__(self, logits: torch.Tensor, token_history: list[int]) -> torch.Tensor:

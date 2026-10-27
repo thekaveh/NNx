@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from .._validation import require_count
+from .._validation import require_count, shown
 from ..nn.callbacks import Callback
 from ..nn.nn_model import TrainStepFn, default_train_step
 
@@ -73,7 +73,7 @@ def _check_groupsize(groupsize: object) -> int:
         owner="torchao QAT",
         minimum=0,
         exclusive_min=True,
-        domain_message=f"groupsize must be a positive int, got {groupsize!r}",
+        domain_message=f"groupsize must be a positive int, got {shown(groupsize)}",
     )
 
 

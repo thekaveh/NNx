@@ -61,7 +61,7 @@ import numpy as np
 import torch
 
 from ._confusion import ConfusionCounts, average_scores, record_scores
-from ._validation import checked, plain_str, require_finite_real
+from ._validation import checked, plain_str, require_finite_real, shown
 from .monitors import _not_ignored
 from .nn.enum.losses import Losses
 from .nn.enum.nets import Nets
@@ -146,7 +146,7 @@ class TaskSpec:
         )
         if self.kind == "multilabel":
             if not 0.0 < threshold < 1.0:
-                raise TaskValidationError(f"TaskSpec threshold must be in (0, 1), got {self.threshold!r}")
+                raise TaskValidationError(f"TaskSpec threshold must be in (0, 1), got {shown(self.threshold)}")
         elif threshold != _DEFAULT_THRESHOLD:
             raise TaskValidationError(f"TaskSpec threshold applies to multilabel tasks only, not {self.kind}")
         object.__setattr__(self, "threshold", threshold)

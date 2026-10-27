@@ -59,7 +59,7 @@ from ._confusion import AVERAGES, ConfusionCounts
 from ._probability import brier_terms as _brier_terms
 from ._probability import nll_terms as _nll_terms
 from ._update_engine import trains
-from ._validation import plain_str, require_count, require_finite_real
+from ._validation import plain_str, require_count, require_finite_real, shown
 
 if TYPE_CHECKING:
     from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -477,7 +477,7 @@ class MonitorSpec:
             "min_delta",
             owner="MonitorSpec",
             minimum=0,
-            domain_message=f"MonitorSpec min_delta must be a finite number >= 0, got {self.min_delta!r}",
+            domain_message=f"MonitorSpec min_delta must be a finite number >= 0, got {shown(self.min_delta, real=True)}",
         )
         object.__setattr__(self, "min_delta", delta)
         for name in ("on_missing", "on_nonfinite"):

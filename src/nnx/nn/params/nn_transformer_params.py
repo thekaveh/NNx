@@ -21,7 +21,7 @@ import ast
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..._validation import plain_real, require_count, require_finite_real
+from ..._validation import plain_real, require_count, require_finite_real, shown
 from ..enum.activations import Activations
 from .nn_params import NNParams, _is_probability, _per_layer_from_state
 
@@ -92,7 +92,7 @@ class NNTransformerParams(NNParams):
         for name in ("attn_dropout", "resid_dropout"):
             value = getattr(self, name)
             if not _is_probability(value):  # a real number in [0, 1], as NNParams.dropout_prob
-                raise ValueError(f"NNTransformerParams requires 0.0 <= {name} <= 1.0, got {value!r}")
+                raise ValueError(f"NNTransformerParams requires 0.0 <= {name} <= 1.0, got {shown(value, real=True)}")
             object.__setattr__(self, name, plain_real(value))
         if not isinstance(self.tie_embeddings, bool):  # a truthy string would tie while run.yaml recorded it
             raise ValueError(f"NNTransformerParams.tie_embeddings must be a bool, got {self.tie_embeddings!r}")

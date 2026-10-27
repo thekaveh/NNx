@@ -57,7 +57,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 import torch
 
 from ._update_engine import REDUCTIONS, UpdateEvent, check_nonfinite_policy
-from ._validation import require_finite_real
+from ._validation import require_finite_real, shown
 from .tasks import _StepTasks
 
 if TYPE_CHECKING:
@@ -125,7 +125,7 @@ class LossTerm:
             denominator = self.denominator
             needs = (
                 f"LossTerm {self.name!r} is normalized (reduction='mean') and needs an explicit finite "
-                f"denominator >= 0 (the number of samples its numerator sums over), got {denominator!r}"
+                f"denominator >= 0 (the number of samples its numerator sums over), got {shown(denominator, real=True)}"
             )
             if denominator is None or isinstance(denominator, bool) or not isinstance(denominator, numbers.Real):
                 raise ValueError(needs)
