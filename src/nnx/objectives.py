@@ -48,7 +48,6 @@ JEPA EMA target advances there).
 from __future__ import annotations
 
 import contextlib
-import math
 import numbers
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -58,6 +57,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 import torch
 
 from ._update_engine import REDUCTIONS, UpdateEvent, check_nonfinite_policy
+from ._validation import require_finite_real, shown
 from .tasks import _StepTasks
 
 if TYPE_CHECKING:
@@ -123,22 +123,18 @@ class LossTerm:
                 )
         else:
             denominator = self.denominator
-            if (
-                denominator is None
-                or isinstance(denominator, bool)
-                or not isinstance(denominator, numbers.Real)
-                or not math.isfinite(denominator)
-                or denominator < 0
-            ):
-                raise ValueError(
-                    f"LossTerm {self.name!r} is normalized (reduction='mean') and needs an explicit finite "
-                    f"denominator >= 0 (the number of samples its numerator sums over), got {denominator!r}"
-                )
-            object.__setattr__(self, "denominator", float(denominator))
-        weight = self.weight
-        if isinstance(weight, bool) or not isinstance(weight, numbers.Real) or not math.isfinite(weight):
-            raise ValueError(f"LossTerm {self.name!r} weight must be a finite number, got {weight!r}")
-        object.__setattr__(self, "weight", float(weight))
+            needs = (
+                f"LossTerm {self.name!r} is normalized (reduction='mean') and needs an explicit finite "
+                f"denominator >= 0 (the number of samples its numerator sums over), got {shown(denominator, real=True)}"
+            )
+            if denominator is None or isinstance(denominator, bool) or not isinstance(denominator, numbers.Real):
+                raise ValueError(needs)
+            # NaN, ±inf and an integer too large for a float (10**400) are refused by name.
+            denominator = require_finite_real(
+                denominator, "denominator", owner=f"LossTerm {self.name!r}", minimum=0, domain_message=needs
+            )
+            object.__setattr__(self, "denominator", denominator)
+        object.__setattr__(self, "weight", require_finite_real(self.weight, "weight", owner=f"LossTerm {self.name!r}"))
 
     @cached_property
     def _numerator_value(self) -> float:

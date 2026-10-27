@@ -12,12 +12,14 @@ can compose them into dashboards or notebook layouts).
 from __future__ import annotations
 
 import math
+import numbers
 from typing import TYPE_CHECKING, Union
 
 import numpy as np
 from torch import nn
 
 from .._optional import require
+from .._validation import shown
 
 if TYPE_CHECKING:
     import plotly.graph_objects as go
@@ -54,9 +56,12 @@ def weight_histogram(
         ValueError: If `model` has no named parameters (nothing to plot),
             or if `bins` or `cols` is not a positive integer.
     """
+    # Any integer, NumPy integers included, passed on as a plain int: plotly's
+    # make_subplots(cols=) and nbinsx refuse a numpy.int64.
     for name, value in (("bins", bins), ("cols", cols)):
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ValueError(f"weight_histogram: {name} must be a positive integer, got {value!r}")
+        if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < 1:
+            raise ValueError(f"weight_histogram: {name} must be a positive integer, got {shown(value)}")
+    bins, cols = int(bins), int(cols)
     go = require("plotly.graph_objects", "nnx.viz.weight_histogram")
     make_subplots = require("plotly.subplots", "nnx.viz.weight_histogram").make_subplots
     # Local import to avoid a circular import at package init time.

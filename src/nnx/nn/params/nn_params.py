@@ -6,7 +6,7 @@ import numbers
 from dataclasses import dataclass, field
 from typing import Optional
 
-from ..._validation import plain_real, require_count
+from ..._validation import plain_real, require_count, shown
 from ..enum.activations import Activations
 
 
@@ -38,13 +38,15 @@ class _ImmutableList(list):
 
 def _is_probability(value: object) -> bool:
     """A real number in [0, 1] — not a bool (``True`` would otherwise pass
-    as 1.0 and hash as a different run), a string or NaN."""
-    return (
-        isinstance(value, numbers.Real)
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and 0.0 <= float(value) <= 1.0
-    )
+    as 1.0 and hash as a different run), a string, NaN or an integer too
+    large for a float (``10**400``, out of range rather than an OverflowError)."""
+    if not isinstance(value, numbers.Real) or isinstance(value, bool):
+        return False
+    try:
+        real = float(value)
+    except OverflowError:
+        return False
+    return math.isfinite(real) and 0.0 <= real <= 1.0
 
 
 def _per_layer_from_state(state: dict) -> tuple[Optional[list[Activations]], Optional[list[float]]]:
@@ -133,7 +135,7 @@ class NNParams:
                 self, "n_heads", require_count(self.n_heads, "n_heads", owner=owner, minimum=0, exclusive_min=True)
             )
         if not _is_probability(self.dropout_prob):
-            raise ValueError(f"NNParams requires 0.0 <= dropout_prob <= 1.0, got {self.dropout_prob!r}")
+            raise ValueError(f"NNParams requires 0.0 <= dropout_prob <= 1.0, got {shown(self.dropout_prob, real=True)}")
         object.__setattr__(self, "dropout_prob", plain_real(self.dropout_prob))
 
         # Per-layer overrides (#85): length must equal the number of hidden
@@ -150,7 +152,8 @@ class NNParams:
                     f"({n_hidden}), got {len(self.dropout_probs)}"
                 )
             if not all(_is_probability(q) for q in self.dropout_probs):
-                raise ValueError(f"NNParams requires 0.0 <= dropout_probs[i] <= 1.0, got {self.dropout_probs}")
+                shown_probs = ", ".join(shown(q, real=True) for q in self.dropout_probs)
+                raise ValueError(f"NNParams requires 0.0 <= dropout_probs[i] <= 1.0, got [{shown_probs}]")
             object.__setattr__(self, "dropout_probs", [plain_real(q) for q in self.dropout_probs])
 
         if self.activations is not None:

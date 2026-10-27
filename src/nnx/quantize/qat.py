@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
+from .._validation import require_count, shown
 from ..nn.callbacks import Callback
 from ..nn.nn_model import TrainStepFn, default_train_step
 
@@ -54,6 +55,28 @@ if TYPE_CHECKING:  # pragma: no cover — type-checking-only imports.
 _SUPPORTED_CONFIGS: tuple[str, ...] = ("8da4w",)
 
 
+def _check_groupsize(groupsize: object) -> int:
+    """``groupsize`` as a plain ``int`` > 0 (NumPy integers included).
+
+    Fail fast: groupsize is the int4 weight grouping width. A negative value
+    builds a silently mis-quantized model (the quantizer accepts it), and 0
+    surfaces only as a cryptic ZeroDivisionError deep inside
+    prepare()/model.train(). Validated in ``_build_quantizer`` — the single
+    chokepoint both QATLifecycleCallback and qat_train_step_factory route
+    through. The plain ``int`` is what the checkpoint transform's options
+    (JSON in safetensors metadata) store."""
+    return require_count(
+        groupsize,
+        "groupsize",
+        # Owner-neutral: the callback, qat_train_step_factory and a QAT
+        # checkpoint's replay (NNModel load) all validate through here.
+        owner="torchao QAT",
+        minimum=0,
+        exclusive_min=True,
+        domain_message=f"groupsize must be a positive int, got {shown(groupsize)}",
+    )
+
+
 def _build_quantizer(qat_config: str, *, groupsize: int = 32):
     """Resolve a config shortcut to a torchao quantizer instance.
 
@@ -62,13 +85,7 @@ def _build_quantizer(qat_config: str, *, groupsize: int = 32):
     with a pointer to the pip extra when torchao isn't installed and
     ValueError when the recipe name isn't recognized.
     """
-    if isinstance(groupsize, bool) or not isinstance(groupsize, int) or groupsize <= 0:
-        # Fail fast: groupsize is the int4 weight grouping width. A negative
-        # value builds a silently mis-quantized model (the quantizer accepts
-        # it), and 0 surfaces only as a cryptic ZeroDivisionError deep inside
-        # prepare()/model.train(). Validated here — the single chokepoint both
-        # QATLifecycleCallback and qat_train_step_factory route through.
-        raise ValueError(f"groupsize must be a positive int, got {groupsize}")
+    groupsize = _check_groupsize(groupsize)
     try:
         from torchao.quantization.qat import Int8DynActInt4WeightQATQuantizer
     except ImportError as e:  # pragma: no cover — opt-in extra
@@ -179,11 +196,13 @@ class QATLifecycleCallback(Callback):
 
     def __init__(self, qat_config: str = "8da4w", *, groupsize: int = 32):
         self.qat_config = qat_config
-        self.groupsize = groupsize
         # Resolve the quantizer eagerly so a torchao ImportError or a
         # bad config name surfaces at callback construction, not on
         # ``on_train_begin`` (which would otherwise crash mid-train).
+        # ``_build_quantizer`` validates groupsize; the plain ``int`` is
+        # stored for the checkpoint transform's options.
         self.quantizer = _build_quantizer(qat_config, groupsize=groupsize)
+        self.groupsize = int(groupsize)
         self.is_prepared: bool = False
         self.is_converted: bool = False
 

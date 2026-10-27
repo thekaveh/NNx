@@ -60,6 +60,7 @@ import torch
 
 from ._confusion import integers
 from ._probability import to_numpy
+from ._validation import require_finite_real, shown
 from .monitors import (
     MetricAccumulator,
     MetricSpec,
@@ -380,13 +381,17 @@ class StreamingMetrics:
                 raise ValueError(f"labels must be non-empty strings, got {labels!r}")
             if len(set(labels)) != len(labels):
                 raise ValueError(f"labels must be unique, got {labels!r}")
-        if (
-            isinstance(threshold, bool)
-            or not isinstance(threshold, numbers.Real)
-            or not math.isfinite(threshold)
-            or not 0.0 < threshold < 1.0
-        ):
-            raise ValueError(f"threshold must be a probability in (0, 1), got {threshold!r}")
+        # A bool, NaN, ±inf or an integer too large for a float (10**400) is refused by name.
+        threshold = require_finite_real(
+            threshold,
+            "threshold",
+            owner="StreamingMetrics",
+            minimum=0,
+            maximum=1,
+            exclusive_min=True,
+            exclusive_max=True,
+            domain_message=f"threshold must be a probability in (0, 1), got {shown(threshold, real=True)}",
+        )
         if ignore_index is not None and (
             semantics != "categorical"
             or isinstance(ignore_index, bool)

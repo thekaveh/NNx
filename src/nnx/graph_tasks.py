@@ -50,6 +50,7 @@ import torch
 from torch import nn
 
 from ._optional import require
+from ._validation import shown
 
 __all__ = [
     "FACTORY_ID",
@@ -78,10 +79,12 @@ class GraphTaskError(ValueError):
     """A graph collection, batch or classifier setting NNx rejects."""
 
 
-def _count(value: Any, what: str, *, minimum: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < minimum:
-        raise GraphTaskError(f"{what} must be an integer >= {minimum}, got {value!r}")
-    return int(value)
+def _count(value: Any, what: str, *, minimum: int, maximum: Optional[int] = None) -> int:
+    count = int(value) if isinstance(value, numbers.Integral) and not isinstance(value, bool) else None
+    if count is None or count < minimum or (maximum is not None and count > maximum):
+        domain = f">= {minimum}" if maximum is None else f"in [{minimum}, {maximum}]"
+        raise GraphTaskError(f"{what} must be an integer {domain}, got {shown(value)}")
+    return count
 
 
 def is_graph_collection_batch(batch: Any) -> bool:
@@ -229,14 +232,16 @@ class GraphCollection(torch.utils.data.Dataset):
 
     def loader(self, batch_size: int, *, shuffle: bool = False, seed: Optional[int] = None) -> Any:
         """A PyG loader over whole graphs (in collection order unless
-        ``shuffle``; a ``seed`` makes the shuffle reproducible and is refused
-        without it)."""
+        ``shuffle``; a ``seed`` in ``[0, 2**64 - 1]``, torch's generator
+        range, makes the shuffle reproducible and is refused without it)."""
         DataLoader = require("torch_geometric.loader", "nnx.graph_tasks").DataLoader
 
         batch_size = _count(batch_size, "batch_size", minimum=1)
         if seed is not None and not shuffle:
             raise GraphTaskError("a seed orders a shuffled loader; pass shuffle=True or no seed")
-        generator = None if seed is None else torch.Generator().manual_seed(_count(seed, "seed", minimum=0))
+        generator = (
+            None if seed is None else torch.Generator().manual_seed(_count(seed, "seed", minimum=0, maximum=2**64 - 1))
+        )
         return DataLoader(self._items, batch_size=batch_size, shuffle=shuffle, generator=generator)
 
 

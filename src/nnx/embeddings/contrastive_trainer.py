@@ -33,8 +33,6 @@ The two public entry points are:
 
 from __future__ import annotations
 
-import math
-import numbers
 from collections.abc import Iterable
 from typing import Any, Optional, Union
 
@@ -43,7 +41,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from .._step_helpers import finalize_step, imperative_step
-from .._validation import require_finite_real
+from .._validation import require_count, require_finite_real, shown
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..paradigms.contrastive import nt_xent_loss
@@ -218,8 +216,14 @@ def embed_texts(
         A ``(N, D)`` ``torch.Tensor`` on ``device``. Detached from
         any autograd graph.
     """
-    if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
-        raise ValueError(f"embed_texts batch_size must be an integer >= 1, got {batch_size!r}")
+    # Any integer, NumPy integers included, used as a plain int.
+    batch_size = require_count(
+        batch_size,
+        "batch_size",
+        owner="embed_texts",
+        minimum=1,
+        domain_message=f"embed_texts batch_size must be an integer >= 1, got {shown(batch_size)}",
+    )
     # Encode where the backbone lives (its weights are never moved) and hand
     # the result over on ``device``.
     native = _resolve_device(backbone, None)
@@ -403,9 +407,13 @@ def train_contrastive(
         # the error before any training work happens).
         raise ValueError(f"batch_size must be >= 2 for NT-Xent (got {batch_size}) — each batch needs a negative.")
     require_finite_real(temperature, "temperature", owner="train_contrastive", minimum=0, exclusive_min=True)
-    if isinstance(lr, bool) or not isinstance(lr, numbers.Real) or not math.isfinite(lr) or lr <= 0:
-        # AdamW accepts lr=0.0: every epoch would run and leave the backbone untouched.
-        raise ValueError(f"lr must be positive and finite, got {lr!r}")
+    try:
+        require_finite_real(lr, "lr", owner="train_contrastive", minimum=0, exclusive_min=True)
+    except ValueError:
+        # AdamW accepts lr=0.0: every epoch would run and leave the backbone
+        # untouched. A bool, NaN, ±inf or an integer too large for a float
+        # (10**400, an OverflowError before) gets the same refusal.
+        raise ValueError(f"lr must be positive and finite, got {shown(lr, real=True)}") from None
     if grad_clip_norm is not None:
         # `None` disables clipping; a non-positive norm would otherwise slip
         # past the `is not None` guard below and clip_grad_norm_(..., 0.0)
@@ -418,7 +426,7 @@ def train_contrastive(
             owner="train_contrastive",
             minimum=0,
             exclusive_min=True,
-            domain_message=f"grad_clip_norm must be positive and finite, or None to disable, got {grad_clip_norm}",
+            domain_message=f"grad_clip_norm must be positive and finite, or None to disable, got {shown(grad_clip_norm, real=True)}",
         )
 
     if isinstance(dataset, list):

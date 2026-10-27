@@ -48,6 +48,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol, cast, runtime_checkable
 
+from ._validation import require_count, shown
+
 __all__ = [
     "COMPONENT_STATE_VERSION",
     "ComponentRegistry",
@@ -107,8 +109,17 @@ class ComponentSpec:
                 f"ComponentSpec name must be a filename-safe slug (letters, digits, '.', '_', ':', '-'), "
                 f"got {self.name!r}"
             )
-        if isinstance(self.version, bool) or not isinstance(self.version, int) or self.version < 1:
-            raise ValueError(f"ComponentSpec version must be a positive integer, got {self.version!r}")
+        # Any integer, NumPy integers included, stored as a plain int: the
+        # training-state sidecar is read with torch.load(weights_only=True),
+        # which refuses a raw numpy.int64.
+        version = require_count(
+            self.version,
+            "version",
+            owner="ComponentSpec",
+            minimum=1,
+            domain_message=f"ComponentSpec version must be a positive integer, got {shown(self.version)}",
+        )
+        object.__setattr__(self, "version", version)
         if not isinstance(self.required, bool):
             raise ValueError(f"ComponentSpec required must be a bool, got {self.required!r}")
         if not isinstance(self.numbered, bool):
@@ -221,8 +232,15 @@ class ResumeStatus:
         if self.mode not in ("fresh", "stateful", "weights_only"):
             raise ValueError(f"ResumeStatus mode must be 'fresh', 'stateful' or 'weights_only', got {self.mode!r}")
         epoch = self.source_epoch
-        if epoch is not None and (isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0):
-            raise ValueError(f"ResumeStatus source_epoch must be a non-negative integer or None, got {epoch!r}")
+        if epoch is not None:  # a NumPy integer is stored as the plain int it equals
+            epoch = require_count(
+                epoch,
+                "source_epoch",
+                owner="ResumeStatus",
+                minimum=0,
+                domain_message=f"ResumeStatus source_epoch must be a non-negative integer or None, got {shown(epoch)}",
+            )
+            object.__setattr__(self, "source_epoch", epoch)
         for name in ("attempt_token", "source_attempt_token"):
             token = getattr(self, name)
             if token is not None and (not isinstance(token, str) or not token):

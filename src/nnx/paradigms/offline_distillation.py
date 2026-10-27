@@ -70,6 +70,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from .._step_helpers import full_precision
+from .._validation import checked, require_count, shown
 from ..components import ComponentSpec
 from ..objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult
 from ..utils import _writable
@@ -407,14 +408,32 @@ class TeacherDataset(torch.utils.data.Dataset):
 
     def loader(self, batch_size: int, *, shuffle: bool = False, seed: Optional[int] = None) -> DataLoader:
         """A ``DataLoader`` of :class:`TeacherBatch`es; ``shuffle`` draws
-        its order from ``seed`` (a generator a stateful resume restores)."""
-        if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
-            raise TeacherRecordError(f"batch_size must be a positive integer, got {batch_size!r}")
+        its order from ``seed`` (a generator a stateful resume restores), an
+        integer in ``[-2**63, 2**64 - 1]``, torch's generator range. NumPy
+        integers are passed on as plain ``int``."""
+        batch_size = checked(
+            require_count,
+            batch_size,
+            "batch_size",
+            owner="TeacherDataset.loader",
+            error=TeacherRecordError,
+            minimum=1,
+            domain_message=f"batch_size must be a positive integer, got {shown(batch_size)}",
+        )
         generator = None
         if shuffle:
-            if isinstance(seed, bool) or not isinstance(seed, int):
+            if seed is None:
                 raise TeacherRecordError(f"a shuffling loader needs an integer seed, got {seed!r}")
-            generator = torch.Generator().manual_seed(seed)
+            drawn: int = checked(
+                require_count,
+                seed,
+                "seed",
+                owner="TeacherDataset.loader",
+                error=TeacherRecordError,
+                minimum=-(2**63),
+                maximum=2**64 - 1,
+            )
+            generator = torch.Generator().manual_seed(drawn)
         return DataLoader(self, batch_size=batch_size, shuffle=shuffle, generator=generator, collate_fn=self.collate)
 
     def objective(self, *, alpha: float = 0.5, nonfinite: str = "fail") -> OfflineDistillationObjective:

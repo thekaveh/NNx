@@ -7,6 +7,7 @@ install the extra still get a clean ``pytest -q``.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -93,6 +94,53 @@ def test_qat_lifecycle_callback_rejects_non_positive_groupsize(bad_groupsize):
     [[params-boundary-validation]] class."""
     with pytest.raises(ValueError, match="groupsize must be a positive int"):
         QATLifecycleCallback(qat_config="8da4w", groupsize=bad_groupsize)
+
+
+@pytest.mark.parametrize("bad_groupsize", [True, 16.0, 0, -32, np.float64(32.0)])
+def test_a_refused_groupsize_is_named_with_its_repr(bad_groupsize):
+    """#544: the refusal names groupsize and shows the value's repr (a
+    NumPy float printed as an accepted-looking ``32.0`` before)."""
+    with pytest.raises(ValueError, match="groupsize") as refused:
+        QATLifecycleCallback(groupsize=bad_groupsize)
+    assert repr(bad_groupsize) in str(refused.value)
+
+
+def _qat_trained(groupsize) -> tuple[NNModel, QATLifecycleCallback]:
+    torch.manual_seed(0)
+    model = _make_model(hidden_dims=[64, 64])
+    callback = QATLifecycleCallback(groupsize=groupsize)
+    loader = DataLoader(_make_loader(n=32, seed=0).dataset, batch_size=16)
+    model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=loader,
+            optim=NNOptimParams(name=Optims.SGD, max_lr=1e-2, momentum=0.0, weight_decay=0.0),
+            overwrite_existing=True,
+        ),
+        callbacks=[callback],
+        train_step_fn=qat_train_step_factory(),
+        salt=f"groupsize-{type(groupsize).__name__}",
+    )
+    return model, callback
+
+
+def test_a_numpy_groupsize_trains_and_converts_like_the_plain_int(tmp_path, monkeypatch):
+    """#544: torchao takes a NumPy groupsize, and so does the callback; it
+    stores the plain int, which the checkpoint transform options (JSON in
+    safetensors metadata) hold."""
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.chdir(tmp_path)
+    reference, _ = _qat_trained(32)
+    x = torch.randn(4, 32, generator=torch.Generator().manual_seed(1))
+    with torch.no_grad():
+        expected = reference.net(x)
+    for groupsize in (np.int64(32), np.int32(32)):
+        model, callback = _qat_trained(groupsize)
+        assert callback.is_converted and callback.groupsize == 32 and type(callback.groupsize) is int
+        (transform,) = callback.checkpoint_transforms()
+        assert transform.options["groupsize"] == 32 and type(transform.options["groupsize"]) is int
+        with torch.no_grad():
+            torch.testing.assert_close(model.net(x), expected)
 
 
 def test_qat_train_step_factory_returns_base_step_unchanged():

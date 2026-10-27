@@ -120,6 +120,26 @@ def _batch(dataset: TeacherDataset) -> TeacherBatch:
 # ------------------------------------------------------------------ records
 
 
+def test_the_loader_takes_numpy_integers_and_bounds_its_seed():
+    """#544: NumPy integers are passed on as plain ints; a seed beyond
+    torch's generator range failed with its raw "Overflow when unpacking
+    long long" in the loader() call."""
+    import numpy as np
+
+    dataset = _dataset(3)
+    order = [batch.sample_ids for batch in dataset.loader(batch_size=2, shuffle=True, seed=5)]
+    loader = dataset.loader(batch_size=np.int64(2), shuffle=True, seed=np.int64(5))
+    assert type(loader.batch_size) is int and [batch.sample_ids for batch in loader] == order
+    for edge in (2**64 - 1, -1, -(2**63)):  # torch's whole generator range, negative seeds included
+        assert sum(len(batch.sample_ids) for batch in dataset.loader(batch_size=2, shuffle=True, seed=edge)) == 3
+    for bad in (2**64, -(2**63) - 1, 10**5000, True, 1.0, None):
+        with pytest.raises(TeacherRecordError, match="seed"):
+            dataset.loader(batch_size=2, shuffle=True, seed=bad)
+    for bad in (0, True, 2.0):
+        with pytest.raises(TeacherRecordError, match="batch_size"):
+            dataset.loader(batch_size=bad)
+
+
 def test_record_schema(tmp_path):
     record = _record("s0", (0.75, 0.25), label="cat")
     assert record.state()["format"] == RECORD_FORMAT

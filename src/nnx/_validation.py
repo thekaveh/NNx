@@ -28,6 +28,10 @@ anything but a 3-tuple fails with the tuple contract before a dataset
 factory, tokenizer or split runs. Nothing here coerces numeric strings or
 touches ``state()``.
 
+`shown` is the value an error message quotes: its ``repr``, except that an
+integer too long to print in full (``10**5000`` is past Python's 4300-digit
+``str`` limit) is described by its size, so the refusal still names the field.
+
 `plain_real` and `plain_str` turn an already-validated NumPy scalar or
 ``str`` subclass into the plain Python value it equals, keeping an exact
 ``int`` / ``float`` / ``str`` as given so existing run ids never shift.
@@ -65,7 +69,7 @@ def require_finite_real(
     if isinstance(value, bool) or not isinstance(value, numbers.Real):
         raise ValueError(
             f"{owner} requires {field} to be a finite real number{_domain(minimum, maximum, exclusive_min, exclusive_max)}, "
-            f"got {value!r} of type {type(value).__name__}"
+            f"got {shown(value)} of type {type(value).__name__}"
         )
     try:
         real = float(value)
@@ -75,16 +79,39 @@ def require_finite_real(
         ) from exc
     if not math.isfinite(real):
         raise ValueError(
-            f"{owner} requires {field} to be finite{_domain(minimum, maximum, exclusive_min, exclusive_max)}, got {value!r}"
+            f"{owner} requires {field} to be finite{_domain(minimum, maximum, exclusive_min, exclusive_max)}, got {shown(value)}"
         )
     below = minimum is not None and (real <= minimum if exclusive_min else real < minimum)
     above = maximum is not None and (real >= maximum if exclusive_max else real > maximum)
     if below or above:
         raise ValueError(
             domain_message
-            or f"{owner} requires {field}{_domain(minimum, maximum, exclusive_min, exclusive_max)}, got {value!r}"
+            or f"{owner} requires {field}{_domain(minimum, maximum, exclusive_min, exclusive_max)}, got {shown(value)}"
         )
     return real
+
+
+# An integer longer than this many bits (about 100 digits) is quoted by its size.
+_SHOWN_BITS = 332
+
+
+def shown(value: object, *, real: bool = False) -> str:
+    """``repr(value)`` for an error message, or a description of an integer
+    too long to print: ``10**5000`` would otherwise raise Python's own
+    "Exceeds the limit (4300 digits)" ``ValueError`` while the message is
+    built, so the refusal would never name its field. ``real=True`` (a
+    float field) calls an integer that overflows a float "an integer too
+    large for a float", as :func:`require_finite_real` does."""
+    if isinstance(value, numbers.Integral) and not isinstance(value, bool):
+        integer = int(value)
+        if real:
+            try:
+                float(integer)
+            except OverflowError:
+                return "an integer too large for a float"
+        if integer.bit_length() > _SHOWN_BITS:
+            return f"an integer of {integer.bit_length()} bits"
+    return repr(value)
 
 
 def plain_real(value: Any) -> Any:
@@ -135,7 +162,7 @@ def require_count(
     if isinstance(value, bool) or not isinstance(value, numbers.Integral):
         raise ValueError(
             f"{owner} requires {field} to be an integer{_domain(minimum, maximum, exclusive_min, exclusive_max)}, "
-            f"got {value!r} of type {type(value).__name__}"
+            f"got {shown(value)} of type {type(value).__name__}"
         )
     count = int(value)
     below = minimum is not None and (count <= minimum if exclusive_min else count < minimum)
@@ -143,7 +170,7 @@ def require_count(
     if below or above:
         raise ValueError(
             domain_message
-            or f"{owner} requires {field}{_domain(minimum, maximum, exclusive_min, exclusive_max)}, got {value!r}"
+            or f"{owner} requires {field}{_domain(minimum, maximum, exclusive_min, exclusive_max)}, got {shown(value)}"
         )
     return count
 
@@ -167,7 +194,7 @@ def require_batch_sizes(value: object, *, owner: str) -> tuple[Optional[int], Op
     if not isinstance(value, tuple) or len(value) != 3:
         raise ValueError(
             f"{owner} requires batch_sizes to be a 3-tuple (train, val, test) of None or positive integers, "
-            f"got {value!r} of type {type(value).__name__}"
+            f"got {shown(value)} of type {type(value).__name__}"
         )
     resolved: list[Optional[int]] = []
     for i, (split, entry) in enumerate(zip(_SPLITS, value, strict=True)):
@@ -182,7 +209,7 @@ def require_batch_sizes(value: object, *, owner: str) -> tuple[Optional[int], Op
                 owner=owner,
                 minimum=0,
                 exclusive_min=True,
-                domain_message=f"{owner} requires {slot} to be None (one full-split batch) or a positive integer, got {entry!r}",
+                domain_message=f"{owner} requires {slot} to be None (one full-split batch) or a positive integer, got {shown(entry)}",
             )
         )
     return (resolved[0], resolved[1], resolved[2])
@@ -191,13 +218,13 @@ def require_batch_sizes(value: object, *, owner: str) -> tuple[Optional[int], Op
 def _domain(minimum, maximum, exclusive_min, exclusive_max) -> str:
     parts = []
 
-    def shown(bound):  # integral bounds exactly (2**32 - 1, not 4.29497e+09)
+    def bound_text(bound):  # integral bounds exactly (2**32 - 1, not 4.29497e+09)
         return str(bound) if isinstance(bound, int) and not isinstance(bound, bool) else f"{bound:g}"
 
     if minimum is not None:
-        parts.append(f"{'>' if exclusive_min else '>='} {shown(minimum)}")
+        parts.append(f"{'>' if exclusive_min else '>='} {bound_text(minimum)}")
     if maximum is not None:
-        parts.append(f"{'<' if exclusive_max else '<='} {shown(maximum)}")
+        parts.append(f"{'<' if exclusive_max else '<='} {bound_text(maximum)}")
     return f" {' and '.join(parts)}" if parts else ""
 
 

@@ -94,3 +94,18 @@ def test_weight_histogram_counts_non_finite_values_in_the_title():
         layer.weight[1, 1] = float("inf")
     titles = [annotation.text for annotation in weight_histogram(layer).layout.annotations]
     assert "weight (2 non-finite)" in titles and "bias" in titles
+
+
+def test_weight_histogram_passes_numpy_grid_arguments_on_as_ints():
+    """#544: NumPy integers are grid sizes (plotly's make_subplots(cols=) and
+    nbinsx refuse a numpy.int64, so a plain int is passed on)."""
+    import numpy as np
+
+    model = nn.Sequential(nn.Linear(2, 3), nn.Linear(3, 2))
+    plain = weight_histogram(model, bins=8, cols=2)
+    fig = weight_histogram(model, bins=np.int64(8), cols=np.int32(2))
+    assert len(fig.data) == len(plain.data) == 4
+    assert [trace.nbinsx for trace in fig.data] == [8] * 4 and fig.layout == plain.layout
+    for bad in ({"bins": 2.0}, {"cols": "2"}, {"bins": np.float64(8)}):
+        with pytest.raises(ValueError, match="positive integer"):
+            weight_histogram(model, **bad)
