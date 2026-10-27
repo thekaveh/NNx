@@ -9214,7 +9214,8 @@ A query-grouped ranking task.
 Args:
     k: the cutoffs the metrics are reported at (each ``>= 1``).
     max_relevance: grades are integers in ``0..max_relevance``
-        (``1``: binary relevance).
+        (``1``: binary relevance). It has no upper limit: NDCG stays
+        finite for every grade.
     relevance_threshold: a candidate is relevant (for MRR and Recall,
         and for excluding queries) when its grade is at least this.
     weighting: the objective's ``"query"`` or ``"pair"`` weighting.
@@ -9369,7 +9370,9 @@ query's full pair matrix is ever held — in training too: a block of at
 least :data:`CHECKPOINT_PAIRS` pairs is recomputed in backward
 (``torch.utils.checkpoint``) rather than kept, while a smaller one costs
 less to keep than to recompute. ``relevance`` may live on any device; it
-is moved to the scores'.
+is moved to the scores'. float16 / bfloat16 scores are widened to
+float32 first, so the cross-query sum accumulates in full precision
+(the numerator is float32); other dtypes are kept.
 ```
 
 
@@ -9407,6 +9410,14 @@ nnx.ranking.ndcg_at_k(relevance: 'Sequence[int]', scores: 'Sequence[float]', can
 ```
 
 ``DCG@k / IDCG@k`` with gain ``2^rel - 1`` and discount ``log2(rank + 1)`` (the query must have a nonzero grade).
+
+**Details**
+
+```text
+Grades are non-negative integers (a negative, non-integer or boolean
+grade is refused) with no upper limit: the gains are computed relative
+to the query's top grade, so NDCG stays finite for every grade.
+```
 
 
 #### `nnx.ranking.RankingError`

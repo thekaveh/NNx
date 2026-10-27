@@ -3085,7 +3085,8 @@ batch = (features, query_ids, candidate_ids, relevance[, mask])   # or a mapping
 
 - **Declared.** The task declares:
     - the cutoffs `k`;
-    - integer relevance grades `0..max_relevance`;
+    - integer relevance grades `0..max_relevance` (`max_relevance` has no
+      upper limit: NDCG stays finite for every grade);
     - the `relevance_threshold` (a candidate is relevant at or above it);
     - the objective's `weighting` (`"query"`: each query weighs the same;
       `"pair"`: each pair does);
@@ -3106,7 +3107,10 @@ batch = (features, query_ids, candidate_ids, relevance[, mask])   # or a mapping
 - **The objective** is the pairwise logistic loss over every pair of a
   query's candidates with unequal grades. For relevance `[1, 0]` and scores
   `[2, 0]`, the loss is `log(1 + e^-2) = 0.126928`. Ties contribute nothing,
-  and a query without an unequal pair is skipped.
+  and a query without an unequal pair is skipped. Under a float16 / bfloat16
+  policy the scores are widened to float32 before the loss, so the sum over a
+  microbatch's queries accumulates in full precision; `pairwise_logistic_loss`
+  itself also widens float16 / bfloat16 scores.
 - **Training batches.** Pairs are formed within a microbatch, so keep a
   query's candidates in one batch when training. The scorer takes the
   features as its one input. Every row goes through it, masked ones too, so
@@ -3120,7 +3124,10 @@ batch = (features, query_ids, candidate_ids, relevance[, mask])   # or a mapping
   candidates in the top `k` over all relevant ones. `NDCG@k` uses gain
   `2^rel - 1` and discount `log2(rank + 1)`. For relevance `[2, 0, 1]`,
   scores `[3, 2, 1]` and `k=2`, the results are MRR 1, Recall 1/2 and NDCG
-  `3 / (3 + 1/log2 3)`.
+  `3 / (3 + 1/log2 3)`. The gains are computed relative to the query's top
+  grade, so NDCG stays finite for every grade (grades of 1023 and more
+  included). `ndcg_at_k` called directly refuses a negative,
+  non-integer or boolean grade with a `RankingError`.
 - **Excluded queries and cutoffs.** A query with no relevant candidate is
   **excluded and counted**, never scored 0. A `k` above a query's candidate
   count, or `k <= 0`, is refused.
