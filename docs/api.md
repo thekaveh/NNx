@@ -17340,6 +17340,11 @@ Divide logits by ``temperature`` before sampling.
 decoding (argmax). We map argmax positions to +inf and others to
 -inf so the downstream sampler picks deterministically without
 branching on the temperature value.
+
+``temperature == 1`` returns ``logits`` itself and ``temperature > 1``
+returns ``logits / temperature`` in their own dtype: dividing by
+``T >= 1`` cannot overflow. Only ``0 < T < 1`` upcasts half-precision
+logits to float32 and guards against overflow.
 ```
 
 
