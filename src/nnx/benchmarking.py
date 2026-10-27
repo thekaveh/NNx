@@ -22,8 +22,11 @@ A compiled forward goes through :mod:`nnx.compilation`, as a fit's does:
 each helper call gets dynamo's recompile limit afresh, on top of the
 entries earlier compiles hold; ``CompileSpec.on_failure`` applies
 (:class:`~nnx.compilation.CompileFailed`, or an eager restart); and a run
-is compiled only when a graph compiled for that call ran. The reports
-carry the :class:`~nnx.compilation.CompileRecord` of what took effect.
+is compiled only when a graph compiled for that call ran. Each call
+therefore compiles afresh (its first call includes compilation, even for a
+model benchmarked before), and its graphs stay in dynamo's cache until
+``torch._dynamo.reset()``. The reports carry the
+:class:`~nnx.compilation.CompileRecord` of what took effect.
 
 Nothing here trains, and the module passed in is never modified (each
 helper works on a deep copy, in eval mode, under ``torch.no_grad``).
@@ -428,9 +431,10 @@ def _abs_diff(a: torch.Tensor, b: torch.Tensor) -> float:
         raise RuntimeError(f"eager and compiled forwards returned differently shaped outputs: {a.shape} vs {b.shape}")
     if not a.numel():
         return 0.0
-    # On the CPU: MPS has no float64.
+    # Moved to the CPU before widening: MPS has no float64, and a combined
+    # device-and-dtype ``.to`` converts on the source device first.
     wide = torch.complex128 if a.is_complex() or b.is_complex() else torch.float64
-    x, y = a.detach().to("cpu", wide), b.detach().to("cpu", wide)
+    x, y = a.detach().cpu().to(wide), b.detach().cpu().to(wide)
     same = (x == y) | (x.isnan() & y.isnan())
     gap = (x - y).abs().nan_to_num(nan=float("inf")).masked_fill(same, 0.0)
     return float(gap.max())

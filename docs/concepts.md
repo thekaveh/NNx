@@ -3434,8 +3434,10 @@ cancellation, and never runs inside a timed region.
 The helpers compile through `nnx.compilation`, as a fit does:
 
 - **Recompile allowance.** Each helper call gets dynamo's recompile limit
-  afresh, on top of the most entries any code dynamo traced holds (fits
-  included). A sweep over many models in one process keeps compiling.
+  and its accumulated limit (256 entries of one code object) afresh, on top
+  of the most entries any code dynamo traced holds (fits included). A sweep
+  over many models, or many benchmarks of one model, in one process keeps
+  compiling.
 - **Failure policy.** `CompileSpec.on_failure` applies. Under `"error"`, a
   forward that fails to compile raises `CompileFailed`, with torch's error
   as its `__cause__`. Under `"eager"`, the run restarts that forward eagerly
@@ -3448,7 +3450,9 @@ The helpers compile through `nnx.compilation`, as a fit does:
   fit never counts. A forward under `torch.compiler.disable`, one dynamo
   skips (an `nn.LSTM`, a forward with no torch op) or one dynamo leaves to
   eager at the recompile limit compiled nothing, and fails as a compile
-  failure does.
+  failure does. So every compiled benchmark compiles afresh: its first call
+  includes compilation even for a model benchmarked before, and its graphs
+  stay in dynamo's cache, unused, until `torch._dynamo.reset()`.
 - **Recorded.** `BenchmarkReport.compile` and `ProfileReport.compile` hold the
   `CompileRecord`: `effective` is `compiled`, or `eager` with the `restart`.
   `BenchmarkReport.state()` includes it. A report's default `label` and its
