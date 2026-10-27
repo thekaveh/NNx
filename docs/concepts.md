@@ -3422,10 +3422,34 @@ reports shapes, dtypes, backend, device and the latencies' mean / median /
 stdev.
 
 `compare_compile` benchmarks eager and compiled copies of identical weights.
-`profile_forward` runs `torch.profiler` with a finite `wait / warmup /
-active / repeat` schedule into an explicit `output_dir`. The profiler is
-closed on success, error and cancellation, and never runs inside a timed
-region. See [`examples/benchmark_compile.py`](https://github.com/thekaveh/NNx/blob/main/examples/benchmark_compile.py).
+Its `max_abs_diff` covers every tensor in the outputs, including those in
+tuples, mappings and dataclasses. It compares them in float64 (complex128
+for complex outputs). Matching infinities and NaN on both sides differ by
+`0.0`; a NaN on one side only counts as `inf`. `profile_forward` runs
+`torch.profiler` with a finite `wait / warmup / active / repeat` schedule
+into an explicit `output_dir`. It creates that directory only once every
+argument is valid. The profiler is closed on success, error and
+cancellation, and never runs inside a timed region.
+
+The helpers compile through `nnx.compilation`, as a fit does:
+
+- **Recompile allowance.** Each helper call gets dynamo's recompile limit
+  afresh, on top of the entries that earlier compiles of the class hold
+  (fits included). A sweep over many models in one process keeps compiling.
+- **Failure policy.** `CompileSpec.on_failure` applies. Under `"error"`, a
+  forward that fails to compile raises `CompileFailed`, with torch's error
+  as its `__cause__`. Under `"eager"`, the run restarts that forward eagerly
+  and runs the rest eagerly.
+- **Compiled nothing.** A run that compiled nothing is never labelled
+  compiled. Examples are a forward under `torch.compiler.disable`, or one
+  dynamo leaves to eager at the recompile limit. Such a run fails as a
+  compile failure does.
+- **Recorded.** `BenchmarkReport.compile` and `ProfileReport.compile` hold the
+  `CompileRecord`: `effective` is `compiled`, or `eager` with the `restart`.
+  `BenchmarkReport.state()` includes it. A report's default `label` and its
+  `backend` follow what took effect.
+
+See [`examples/benchmark_compile.py`](https://github.com/thekaveh/NNx/blob/main/examples/benchmark_compile.py).
 
 ## 29. Budgeted experiment search (`nnx.search`)
 

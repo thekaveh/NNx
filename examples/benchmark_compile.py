@@ -14,7 +14,9 @@ of assuming:
   3. **Benchmark.** ``compare_compile`` times eager and compiled copies of
      the same weights: the **first call** (including compilation) separately
      from the **warmed** latency and throughput over ``--repeats`` calls
-     after ``--warmup`` untimed ones, with mean / median / stdev.
+     after ``--warmup`` untimed ones, with mean / median / stdev. The
+     compiled side gets dynamo's recompile limit afresh after the fit, and
+     reports the compile state that took effect (``effective``).
   4. **Profile.** ``profile_forward`` runs ``torch.profiler`` with a finite
      wait / warmup / active schedule into ``--output-dir`` (by default a
      temporary directory, removed on exit) — outside any timed region.
@@ -117,6 +119,7 @@ def run(device: str = "cpu", warmup: int = 3, repeats: int = 10, output_dir: str
             "dtypes": eager["dtypes"],
             "device": eager["device"],
             "backend": compiled["backend"],
+            "effective": compiled["compile"]["effective"],
             "warmup": warmup,
             "repeats": repeats,
             "weights_digest_match": eager["weights_digest"] == compiled["weights_digest"],

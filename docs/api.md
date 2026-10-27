@@ -4688,7 +4688,7 @@ str).
 class nnx.compilation.CompileSpec(*, backend: 'str' = 'inductor', mode: 'Optional[str]' = None, fullgraph: 'bool' = False, dynamic: 'Optional[bool]' = None, on_failure: 'str' = 'error') -> 'None'
 ```
 
-What to compile with: a ``torch.compile`` ``backend`` (default ``"inductor"``), its ``mode`` (one of `COMPILE_MODES`, or ``None``), ``fullgraph`` (reject graph breaks), ``dynamic`` (``None`` lets torch decide) and ``on_failure`` (``"error"`` or ``"eager"``).
+What to compile with: a ``torch.compile`` ``backend`` (default ``"inductor"``), its ``mode`` (one of `COMPILE_MODES`, or ``None``), ``fullgraph`` (reject graph breaks), ``dynamic`` (``None`` lets torch decide) and ``on_failure`` (``"error"`` or ``"eager"``), which applies to a fit's forward and to `nnx.benchmarking`'s compiled forwards.
 
 ##### `nnx.compilation.CompileSpec.options`
 
@@ -4789,6 +4789,16 @@ nnx.benchmarking.benchmark_forward(net: 'torch.nn.Module', inputs: 'Inputs', *, 
 
 Time ``net``'s forward on ``inputs`` (eager, or compiled with ``compile``): the first call, then ``repeats`` calls after ``warmup`` untimed ones, on a deep copy in eval mode under ``torch.no_grad``. ``device`` defaults to the module's.
 
+**Details**
+
+```text
+A compiled forward follows ``compile.on_failure`` as a fit's does:
+a forward that fails to compile, hits dynamo's recompile limit or
+compiles nothing raises :class:`~nnx.compilation.CompileFailed`
+(``"error"``) or runs eagerly from then on (``"eager"``), and the
+report's ``compile`` record says which.
+```
+
 
 #### `nnx.benchmarking.compare_compile`
 
@@ -4805,16 +4815,27 @@ Benchmark ``net`` eager and compiled (``compile``, default ``CompileSpec()``) fr
 nnx.benchmarking.profile_forward(net: 'torch.nn.Module', inputs: 'Inputs', *, output_dir: 'Union[str, os.PathLike[str]]', wait: 'int' = 1, warmup: 'int' = 1, active: 'int' = 3, repeat: 'int' = 1, compile: 'Optional[CompileSpec]' = None, device: 'Optional[Union[str, torch.device]]' = None, row_limit: 'int' = 10) -> 'ProfileReport'
 ```
 
-Profile ``net``'s forward with ``torch.profiler`` for exactly ``(wait + warmup + active) * repeat`` steps, writing Chrome traces to ``output_dir`` (created if needed). Every count is finite (``active`` and ``repeat`` at least 1). The profiler is stopped and its traces flushed whether the steps finish, raise or are cancelled. With ``compile`` and ``wait=warmup=0`` the first active step includes the compilation itself.
+Profile ``net``'s forward with ``torch.profiler`` for exactly ``(wait + warmup + active) * repeat`` steps, writing Chrome traces to ``output_dir`` (created if needed, once every argument is valid). Every count is finite (``active`` and ``repeat`` at least 1). The profiler is stopped and its traces flushed whether the steps finish, raise or are cancelled. With ``compile`` and ``wait=warmup=0`` the first active step includes the compilation itself; the compiled forward follows ``compile.on_failure`` as in `benchmark_forward`.
 
 
 #### `nnx.benchmarking.BenchmarkReport`
 
 ```python
-class nnx.benchmarking.BenchmarkReport(*, label: 'str', backend: 'Optional[str]', device: 'str', shapes: 'tuple[tuple[int, ...], ...]', dtypes: 'tuple[str, ...]', batch_size: 'int', warmup: 'int', repeats: 'int', first_call_seconds: 'float', latencies: 'tuple[float, ...]', peak_memory_bytes: 'Optional[int]', weights_digest: 'str', torch_version: 'str') -> 'None'
+class nnx.benchmarking.BenchmarkReport(*, label: 'str', backend: 'Optional[str]', device: 'str', shapes: 'tuple[tuple[int, ...], ...]', dtypes: 'tuple[str, ...]', batch_size: 'int', warmup: 'int', repeats: 'int', first_call_seconds: 'float', latencies: 'tuple[float, ...]', peak_memory_bytes: 'Optional[int]', weights_digest: 'str', torch_version: 'str', compile: 'Optional[CompileRecord]' = None) -> 'None'
 ```
 
 One benchmarked configuration. Times are seconds; ``latencies`` are the warmed per-call times (``repeats`` of them).
+
+**Details**
+
+```text
+``compile`` is the :class:`~nnx.compilation.CompileRecord` of a
+compiled request (``None`` for an eager one): what took effect is its
+``effective`` state, ``compiled`` or, after an
+``on_failure="eager"`` restart, ``eager`` with the ``restart``. The
+default ``label`` and the ``backend`` follow what took effect: a run
+that compiled nothing is labelled ``eager``, with no backend.
+```
 
 ##### `nnx.benchmarking.BenchmarkReport.mean_seconds`
 
@@ -4881,6 +4902,18 @@ class nnx.benchmarking.CompileComparison(*, eager: 'BenchmarkReport', compiled: 
 
 An eager and a compiled benchmark of identical weights, and the largest absolute difference between their outputs.
 
+**Details**
+
+```text
+``max_abs_diff`` covers every tensor in the outputs (tuples, lists,
+mappings, named tuples and dataclasses are opened), compared in float64
+(complex128 for complex outputs). Equal values differ by ``0.0``,
+matching infinities and NaN on both sides included; a NaN on one side
+only counts as ``inf``. It is NaN when the outputs held no tensor, so
+nothing was compared. ``compiled.compile`` says whether the compiled
+side compiled.
+```
+
 ##### `nnx.benchmarking.CompileComparison.speedup`
 
 ```python
@@ -4901,10 +4934,10 @@ No public description is currently available.
 #### `nnx.benchmarking.ProfileReport`
 
 ```python
-class nnx.benchmarking.ProfileReport(*, output_dir: 'str', trace_files: 'tuple[str, ...]', schedule: 'Mapping[str, int]', steps: 'int', table: 'str') -> 'None'
+class nnx.benchmarking.ProfileReport(*, output_dir: 'str', trace_files: 'tuple[str, ...]', schedule: 'Mapping[str, int]', steps: 'int', table: 'str', compile: 'Optional[CompileRecord]' = None) -> 'None'
 ```
 
-A finished profile: where its traces were written, the schedule and step count, and the top operators by self time.
+A finished profile: where its traces were written, the schedule and step count, and the top operators by self time. ``compile`` is the `CompileRecord` of a compiled request (``None`` for an eager one); its ``effective`` state says what was profiled.
 
 
 ### 2.15. Single-node data parallelism (`nnx.distributed`)
@@ -16679,7 +16712,7 @@ Raises:
         IA3 / prefix tuning), or a projection (``w_qkv`` / ``w_o`` /
         ``w1``–``w3`` / ``lm_head``) is not a plain ``nn.Linear`` (a
         low-rank factorized one): GGUF stores plain weights. Nothing is
-        written.
+        written, and no directory is created.
 ```
 
 
@@ -16730,7 +16763,8 @@ Args:
     transformer_nn: An NNx ``TransformerNN`` instance — the model
         to export.
     tokenizer: Corresponding ``NNTokenizerParams``.
-    out_dir: Output directory. Created if it doesn't exist.
+    out_dir: Output directory. Created if it doesn't exist, once
+        every argument is valid.
     system: Optional system prompt; emitted as a ``SYSTEM ...``
         block (triple-quoted) when non-empty. Must not contain a
         triple-quote or end with a double-quote (Modelfile block
