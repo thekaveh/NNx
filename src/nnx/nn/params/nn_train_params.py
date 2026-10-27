@@ -70,12 +70,15 @@ def _parent_run_id(value: object, owner: str) -> Optional[str]:
         return plain_str(value)
     from .nn_run import NNRun
 
-    got = (
-        f"an NNRun; pass its .id ({value.id!r})"
-        if isinstance(value, NNRun)
-        else f"{value!r} of type {type(value).__name__}; params loaded from a run saved with such a "
-        "lineage keep it, but a copy of them must set parent_run_id to a run id string or None"
-    )
+    if isinstance(value, NNRun):
+        got = f"an NNRun; pass its .id ({value.id!r})"
+    elif isinstance(value, str) and not value:
+        got = f"{value!r}"  # state() drops "", so no saved run can hold it
+    else:
+        got = (
+            f"{value!r} of type {type(value).__name__}; params loaded from a run saved with such a "
+            "lineage keep it, but a copy of them must set parent_run_id to a run id string or None"
+        )
     raise ValueError(f"{owner}.parent_run_id must be a non-empty run id string when provided, got {got}")
 
 

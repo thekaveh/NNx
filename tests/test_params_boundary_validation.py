@@ -2554,8 +2554,10 @@ def test_parent_run_id_must_be_a_run_id_string_before_any_epoch(lineage, tmp_pat
     parent, _ = _fit()
     value = parent if lineage == "run" else lineage
     match = r"parent_run_id.*\.id" if lineage == "run" else "parent_run_id must be a non-empty run id string"
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(ValueError, match=match) as refused:
         NNTrainParams(n_epochs=1, parent_run_id=value)
+    # The copy hint is for a lineage a saved run.yaml can hold; state() drops "".
+    assert ("a copy of them must set parent_run_id" in str(refused.value)) is (lineage in (12345, "  "))
     before = _run_dirs()
     with pytest.raises(ValueError, match=match):
         _fit(parent_run_id=value)
