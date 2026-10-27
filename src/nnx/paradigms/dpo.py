@@ -29,15 +29,13 @@ that's out of scope here. See ``docs/dpo.md`` for the honest tradeoffs.
 
 from __future__ import annotations
 
-import math
-import numbers
 from typing import Optional
 
 import torch
 import torch.nn.functional as F
 
 from .._step_helpers import finalize_step, imperative_step
-from .._validation import require_count
+from .._validation import require_count, require_finite_real
 from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
@@ -92,8 +90,15 @@ def dpo_train_step_factory(
         ValueError: if ``beta`` is not a finite positive number, or if
             ``pad_token_id`` is not a non-negative integer.
     """
-    if isinstance(beta, bool) or not isinstance(beta, numbers.Real) or not math.isfinite(beta) or beta <= 0:
-        raise ValueError(f"beta must be a finite positive number, got {beta}")
+    # A bool, NaN, ±inf or an integer too large for a float (10**400) is refused by name.
+    beta = require_finite_real(
+        beta,
+        "beta",
+        owner="dpo_train_step_factory",
+        minimum=0,
+        exclusive_min=True,
+        domain_message=f"beta must be a finite positive number, got {beta!r}",
+    )
     if pad_token_id is not None:  # a bool or a negative id would mask nothing
         pad_token_id = require_count(pad_token_id, "pad_token_id", owner="dpo_train_step_factory", minimum=0)
 

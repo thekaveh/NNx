@@ -61,7 +61,7 @@ import numpy as np
 import torch
 
 from ._confusion import ConfusionCounts, average_scores, record_scores
-from ._validation import plain_str
+from ._validation import checked, plain_str, require_finite_real
 from .monitors import _not_ignored
 from .nn.enum.losses import Losses
 from .nn.enum.nets import Nets
@@ -139,15 +139,17 @@ class TaskSpec:
             if isinstance(self.ignore_index, bool) or not isinstance(self.ignore_index, numbers.Integral):
                 raise TaskValidationError(f"TaskSpec ignore_index must be an integer, got {self.ignore_index!r}")
             object.__setattr__(self, "ignore_index", int(self.ignore_index))
-        threshold = self.threshold
-        if isinstance(threshold, bool) or not isinstance(threshold, numbers.Real) or not math.isfinite(threshold):
-            raise TaskValidationError(f"TaskSpec threshold must be a finite real number, got {threshold!r}")
+        # A bool, NaN, ±inf or an integer too large for a float (10**400) is
+        # refused by name; NumPy numbers are stored as the float they equal.
+        threshold = checked(
+            require_finite_real, self.threshold, "threshold", owner="TaskSpec", error=TaskValidationError
+        )
         if self.kind == "multilabel":
-            if not 0.0 < float(threshold) < 1.0:
-                raise TaskValidationError(f"TaskSpec threshold must be in (0, 1), got {threshold!r}")
-        elif float(threshold) != _DEFAULT_THRESHOLD:
+            if not 0.0 < threshold < 1.0:
+                raise TaskValidationError(f"TaskSpec threshold must be in (0, 1), got {self.threshold!r}")
+        elif threshold != _DEFAULT_THRESHOLD:
             raise TaskValidationError(f"TaskSpec threshold applies to multilabel tasks only, not {self.kind}")
-        object.__setattr__(self, "threshold", float(threshold))
+        object.__setattr__(self, "threshold", threshold)
         if self.labels is None:
             return
         if isinstance(self.labels, (str, bytes)) or not isinstance(self.labels, Sequence):

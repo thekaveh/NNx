@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import replace
 
 import pytest
@@ -136,6 +137,67 @@ def runs_on_disk() -> list[str]:
     ],
 )
 def test_bounds_and_budgets_validate_first(make):
+    with pytest.raises((ValueError, TypeError)):
+        make()
+
+
+def test_numpy_bounds_budgets_and_choices_are_the_plain_values():
+    """#544: NumPy numbers from a sweep grid are the plain values they equal
+    — the same state(), digest() and stored types (digest()'s json.dumps
+    refuses a raw numpy.int64)."""
+    import numpy as np
+
+    for numpy_float in (np.float32, np.float64):
+        numpy = FloatParam(name="lr", low=numpy_float(0.25), high=numpy_float(1.0), step=numpy_float(0.125))
+        plain = FloatParam(name="lr", low=0.25, high=1.0, step=0.125)
+        assert numpy.state() == plain.state()
+        assert SearchSpace(numpy).digest() == SearchSpace(plain).digest()
+        assert all(type(getattr(numpy, field)) is float for field in ("low", "high", "step"))
+    integral = FloatParam(name="lr", low=np.int64(0), high=np.int64(2), step=np.int64(1))
+    assert SearchSpace(integral).digest() == SearchSpace(FloatParam(name="lr", low=0, high=2, step=1)).digest()
+    width = IntParam(name="w", low=np.int64(1), high=np.int32(8), step=np.int64(1))
+    assert width.state() == IntParam(name="w", low=1, high=8).state()
+    assert all(type(getattr(width, field)) is int for field in ("low", "high", "step"))
+    assert SearchSpace(width).digest() == SearchSpace(IntParam(name="w", low=1, high=8)).digest()
+    choices = CategoricalParam(name="c", choices=(np.int64(16), np.int64(32)))
+    assert choices.state() == CategoricalParam(name="c", choices=(16, 32)).state()
+    assert SearchSpace(choices).digest() == SearchSpace(CategoricalParam(name="c", choices=(16, 32))).digest()
+    budget = SearchBudget(trials=np.int64(3), updates_per_trial=np.int32(2), deadline_seconds=np.float32(1.5))
+    assert (budget.trials, budget.updates_per_trial, budget.deadline_seconds) == (3, 2, 1.5)
+    assert (
+        type(budget.trials) is int and type(budget.updates_per_trial) is int and type(budget.deadline_seconds) is float
+    )
+
+
+@pytest.mark.parametrize(
+    ("make", "field"),
+    [
+        (lambda: FloatParam(name="lr", low=10**400, high=1.0), "lr.low"),
+        (lambda: FloatParam(name="lr", low=1e-4, high=10**400), "lr.high"),
+        (lambda: FloatParam(name="lr", low=1e-4, high=1.0, step=10**400), "lr.step"),
+        (lambda: FloatParam(name="lr", low=-(10**400), high=1.0), "lr.low"),
+        (lambda: SearchBudget(trials=2, deadline_seconds=10**400), "deadline_seconds"),
+    ],
+)
+def test_an_integer_too_large_for_a_float_is_refused_by_name(make, field):
+    """#544: 10**400 raised a raw OverflowError."""
+    with pytest.raises(ValueError, match=re.escape(field)):
+        make()
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: IntParam(name="w", low=1.0, high=8),
+        lambda: IntParam(name="w", low=True, high=8),
+        lambda: IntParam(name="w", low="1", high=8),
+        lambda: SearchBudget(trials=True),
+        lambda: SearchBudget(trials=3.0),
+        lambda: SearchBudget(trials=2, updates_per_trial="2"),
+        lambda: FloatParam(name="lr", low=True, high=2.0),
+    ],
+)
+def test_bools_floats_and_strings_stay_refused_as_counts(make):
     with pytest.raises((ValueError, TypeError)):
         make()
 

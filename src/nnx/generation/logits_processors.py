@@ -10,11 +10,12 @@ canonical composition order).
 
 from __future__ import annotations
 
-import math
 import numbers
 from typing import Protocol
 
 import torch
+
+from .._validation import require_finite_real
 
 
 class LogitsProcessor(Protocol):
@@ -39,9 +40,15 @@ class TemperatureScaling:
     """
 
     def __init__(self, temperature: float):
-        if not math.isfinite(temperature) or temperature < 0:
-            raise ValueError(f"temperature must be a finite number >= 0, got {temperature}")
-        self.temperature = temperature
+        # A bool, NaN, ±inf or an integer too large for a float (10**400) is
+        # refused by name; generate(temperature=) builds this processor.
+        self.temperature = require_finite_real(
+            temperature,
+            "temperature",
+            owner="TemperatureScaling",
+            minimum=0,
+            domain_message=f"temperature must be a finite number >= 0, got {temperature}",
+        )
 
     def __call__(self, logits: torch.Tensor, token_history: list[int]) -> torch.Tensor:
         if self.temperature == 0.0:
@@ -134,9 +141,14 @@ class RepetitionPenalty:
     """
 
     def __init__(self, penalty: float):
-        if not math.isfinite(penalty) or penalty < 1.0:
-            raise ValueError(f"repetition_penalty must be a finite number >= 1.0, got {penalty}")
-        self.penalty = penalty
+        # As TemperatureScaling; generate(repetition_penalty=) builds this processor.
+        self.penalty = require_finite_real(
+            penalty,
+            "repetition_penalty",
+            owner="RepetitionPenalty",
+            minimum=1,
+            domain_message=f"repetition_penalty must be a finite number >= 1.0, got {penalty}",
+        )
 
     def __call__(self, logits: torch.Tensor, token_history: list[int]) -> torch.Tensor:
         if not token_history or self.penalty == 1.0:

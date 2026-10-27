@@ -38,13 +38,15 @@ class _ImmutableList(list):
 
 def _is_probability(value: object) -> bool:
     """A real number in [0, 1] — not a bool (``True`` would otherwise pass
-    as 1.0 and hash as a different run), a string or NaN."""
-    return (
-        isinstance(value, numbers.Real)
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and 0.0 <= float(value) <= 1.0
-    )
+    as 1.0 and hash as a different run), a string, NaN or an integer too
+    large for a float (``10**400``, out of range rather than an OverflowError)."""
+    if not isinstance(value, numbers.Real) or isinstance(value, bool):
+        return False
+    try:
+        real = float(value)
+    except OverflowError:
+        return False
+    return math.isfinite(real) and 0.0 <= real <= 1.0
 
 
 def _per_layer_from_state(state: dict) -> tuple[Optional[list[Activations]], Optional[list[float]]]:
