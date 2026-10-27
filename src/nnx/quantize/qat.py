@@ -68,7 +68,9 @@ def _check_groupsize(groupsize: object) -> int:
     return require_count(
         groupsize,
         "groupsize",
-        owner="QATLifecycleCallback",
+        # Owner-neutral: the callback, qat_train_step_factory and a QAT
+        # checkpoint's replay (NNModel load) all validate through here.
+        owner="torchao QAT",
         minimum=0,
         exclusive_min=True,
         domain_message=f"groupsize must be a positive int, got {groupsize!r}",
@@ -194,11 +196,13 @@ class QATLifecycleCallback(Callback):
 
     def __init__(self, qat_config: str = "8da4w", *, groupsize: int = 32):
         self.qat_config = qat_config
-        self.groupsize = _check_groupsize(groupsize)
         # Resolve the quantizer eagerly so a torchao ImportError or a
         # bad config name surfaces at callback construction, not on
         # ``on_train_begin`` (which would otherwise crash mid-train).
-        self.quantizer = _build_quantizer(qat_config, groupsize=self.groupsize)
+        # ``_build_quantizer`` validates groupsize; the plain ``int`` is
+        # stored for the checkpoint transform's options.
+        self.quantizer = _build_quantizer(qat_config, groupsize=groupsize)
+        self.groupsize = int(groupsize)
         self.is_prepared: bool = False
         self.is_converted: bool = False
 
