@@ -759,8 +759,9 @@ def test_shutdown_leaves_the_group_together_and_a_second_call_is_a_no_op(tmp_pat
 
 def test_the_longest_timeout_forms_a_real_gloo_group(tmp_path, monkeypatch):
     """#544: the largest accepted timeout_seconds forms a Gloo group and
-    leaves it; the timedelta bound (999,999,999 days) failed in torch's
-    int64-nanosecond clock with a DistNetworkError naming no field."""
+    leaves it; longer ones overflowed torch's int64-nanosecond deadlines
+    (a DistNetworkError on macOS, an at-once barrier timeout on Linux),
+    naming no field."""
     from nnx import distributed as nnx_dist
 
     monkeypatch.setenv("NNX_DDP_TIMEOUT", str(nnx_dist._MAX_TIMEOUT_SECONDS))
