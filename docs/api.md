@@ -4912,7 +4912,7 @@ Under torchrun; see Architecture §3.
 nnx.distributed.init_process_group(backend: 'Optional[str]' = None, *, timeout_seconds: 'float' = 120.0) -> 'tuple[int, int]'
 ```
 
-Join the process group ``torchrun`` described in the environment (``env://``) and return ``(rank, world_size)``. ``backend`` defaults to ``nccl`` when CUDA is available, else ``gloo``; ``timeout_seconds`` bounds every collective, so a rank that dies cannot hang the others forever (at most ``9e9`` s, about 285 years: torch's clock holds no more). Under ``nccl`` each process takes ``cuda:LOCAL_RANK`` (``torch.cuda.set_device``); any other backend selects no device, so a CUDA model under ``gloo`` needs ``torch.cuda.set_device(local_rank)`` before it is built (otherwise every rank's model sits on ``cuda:0``).
+Join the process group ``torchrun`` described in the environment (``env://``) and return ``(rank, world_size)``. ``backend`` defaults to ``nccl`` when CUDA is available, else ``gloo``; ``timeout_seconds`` bounds every collective, so a rank that dies cannot hang the others forever (at most ``3e9`` s, about 95 years: torch's nanosecond deadlines hold no more on every platform). Under ``nccl`` each process takes ``cuda:LOCAL_RANK`` (``torch.cuda.set_device``); any other backend selects no device, so a CUDA model under ``gloo`` needs ``torch.cuda.set_device(local_rank)`` before it is built (otherwise every rank's model sits on ``cuda:0``).
 
 
 #### `nnx.distributed.shutdown`
