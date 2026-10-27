@@ -11275,7 +11275,8 @@ Args:
           per the safetensors spec). A NumPy bool, integer or
           float scalar in a record (a custom step's ``loss`` or
           ``extra``, say) is stored as the Python number it holds;
-          a value JSON cannot hold (a tensor, an arbitrary object)
+          a value JSON cannot hold (a tensor, a NumPy
+          ``longdouble`` or ``timedelta64``, an arbitrary object)
           raises ``TypeError`` naming its type before any file is
           written. Safe to mmap, readable by
           ComfyUI/vLLM/AutoGPTQ/HF tools, and proof against

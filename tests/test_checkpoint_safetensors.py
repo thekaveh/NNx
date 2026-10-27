@@ -717,8 +717,26 @@ class _Opaque:
 
 @pytest.mark.parametrize(
     "value",
-    [torch.tensor([1.0, 2.0]), torch.tensor(0.5), _Opaque(), np.complex64(1 + 2j), np.datetime64("2026-01-01")],
-    ids=["multi_element_tensor", "zero_dim_tensor", "object", "complex64", "datetime64"],
+    [
+        torch.tensor([1.0, 2.0]),
+        torch.tensor(0.5),
+        _Opaque(),
+        np.complex64(1 + 2j),
+        np.datetime64("2026-01-01"),
+        np.longdouble(1.5),
+        np.timedelta64(5, "ns"),
+        np.timedelta64(2, "D"),
+    ],
+    ids=[
+        "multi_element_tensor",
+        "zero_dim_tensor",
+        "object",
+        "complex64",
+        "datetime64",
+        "longdouble",
+        "timedelta64_ns",
+        "timedelta64_days",
+    ],
 )
 def test_safetensors_export_refuses_unserializable_record_values(tmp_path, value):
     """A value the metadata cannot hold still raises TypeError naming its

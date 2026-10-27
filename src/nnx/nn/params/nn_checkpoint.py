@@ -46,10 +46,14 @@ _MODEL_CHECKPOINT_TAG = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 def _metadata_scalar(value: Any) -> Any:
     """``json.dumps`` hook for the safetensors metadata: a NumPy bool, integer
     or float scalar (a custom step's record, say) becomes the Python number it
-    holds. Anything else — a tensor, 0-d included, or an arbitrary object —
-    is refused naming its type, before any file is written."""
-    if isinstance(value, (np.bool_, np.integer, np.floating)):
-        return value.item()
+    holds. Anything else — a tensor, 0-d included, a ``timedelta64`` (an
+    ``np.integer`` whose unit ``.item()`` drops), a ``longdouble`` (whose
+    ``.item()`` is a ``longdouble`` again) or an arbitrary object — is refused
+    naming its type, before any file is written."""
+    if isinstance(value, (np.bool_, np.integer, np.floating)) and not isinstance(value, np.timedelta64):
+        item = value.item()
+        if isinstance(item, (bool, int, float)):
+            return item
     raise TypeError(f"a safetensors checkpoint cannot store a {type(value).__name__} in its JSON metadata")
 
 
@@ -553,7 +557,8 @@ class NNCheckpoint:
                   per the safetensors spec). A NumPy bool, integer or
                   float scalar in a record (a custom step's ``loss`` or
                   ``extra``, say) is stored as the Python number it holds;
-                  a value JSON cannot hold (a tensor, an arbitrary object)
+                  a value JSON cannot hold (a tensor, a NumPy
+                  ``longdouble`` or ``timedelta64``, an arbitrary object)
                   raises ``TypeError`` naming its type before any file is
                   written. Safe to mmap, readable by
                   ComfyUI/vLLM/AutoGPTQ/HF tools, and proof against
