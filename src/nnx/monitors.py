@@ -723,6 +723,9 @@ def _check_metric_inputs(
                 )
 
 
+_WIDE_UNSIGNED = (torch.uint16, torch.uint32, torch.uint64)
+
+
 def _batch_inputs(
     domain: str,
     target: torch.Tensor,
@@ -744,10 +747,14 @@ def _batch_inputs(
             output = output.movedim(1, -1).reshape(-1, n_classes)
             target = target.reshape(-1)
             valid = valid.reshape(-1) if valid is not None else None
-        if valid is None and ignore_index is not None:
-            valid = _not_ignored(target, ignore_index)
         if not target.is_floating_point():
-            target = target.long()  # class indices are int64; torch 2.4 cannot index uint16/32/64
+            # Class indices are int64; torch 2.4 cannot index uint16/32/64. One copy serves the mask too.
+            unsigned = not target.dtype.is_signed
+            target = target.long()
+            if valid is None and ignore_index is not None:
+                valid = _not_ignored(target, ignore_index, unsigned=unsigned)
+        elif valid is None and ignore_index is not None:
+            valid = _not_ignored(target, ignore_index)
         if valid is not None:
             output, target = output[valid], target[valid]
         inputs: dict[str, np.ndarray] = {}
@@ -756,6 +763,8 @@ def _batch_inputs(
         if "probabilities" in needed:
             inputs["probabilities"] = torch.softmax(output.float(), dim=1).cpu().numpy()
         return target.long().cpu().numpy(), inputs
+    if target.dtype in _WIDE_UNSIGNED:
+        target = target.double()  # torch 2.4 cannot index uint16/32/64; float64 keeps every 0/1 decision
     if valid is not None:
         output, target = output[valid], target[valid]
     output, target = output.reshape(-1), target.reshape(-1)
