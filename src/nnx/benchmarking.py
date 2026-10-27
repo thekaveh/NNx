@@ -20,9 +20,9 @@ these helpers show what compilation costs and buys on *your* hardware.
 
 A compiled forward goes through :mod:`nnx.compilation`, as a fit's does:
 each helper call gets dynamo's recompile limit afresh, on top of the
-entries earlier compiles of the class hold; ``CompileSpec.on_failure``
-applies (:class:`~nnx.compilation.CompileFailed`, or an eager restart);
-and a run that compiled nothing is never labelled compiled. The reports
+entries earlier compiles hold; ``CompileSpec.on_failure`` applies
+(:class:`~nnx.compilation.CompileFailed`, or an eager restart); and a run
+is compiled only when a graph compiled for that call ran. The reports
 carry the :class:`~nnx.compilation.CompileRecord` of what took effect.
 
 Nothing here trains, and the module passed in is never modified (each

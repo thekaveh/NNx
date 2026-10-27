@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import dataclasses
 import os
@@ -441,27 +442,25 @@ def test_a_forward_dynamo_skips_is_never_reported_compiled(helper, policy, make,
 
 
 @pytest.mark.parametrize("helper", HELPERS)
-def test_a_forward_served_from_dynamos_cache_is_reported_compiled(helper, tmp_path):
-    """A second copy of a module compiles no graph of its own where torch
-    does not guard on the instance (it does on the 2.4 floor): the cached
-    graph ran, so it is compiled. The cached graphs are left as found."""
+def test_a_second_benchmark_compiles_and_runs_graphs_of_its_own(helper, tmp_path):
+    """A second copy of a module is never served the graph dynamo cached for
+    the first benchmark: each benchmark compiles with a backend of its own,
+    and dynamo guards each cached graph on the backend that compiled it."""
     from torch._dynamo.utils import counters
 
-    assert benchmark_forward(_net(), _inputs(), compile=FAST, warmup=0, repeats=1).label == "compiled"
-    graphs = counters["stats"]["unique_graphs"]
+    spec = _counting()
+    assert benchmark_forward(_net(), _inputs(), compile=spec, warmup=0, repeats=1).label == "compiled"
+    graphs, before = counters["stats"]["unique_graphs"], _CALLS["n"]
     if helper == "benchmark_forward":
-        report = benchmark_forward(_net(), _inputs(), compile=FAST, warmup=0, repeats=1)
+        report = benchmark_forward(_net(), _inputs(), compile=spec, warmup=0, repeats=1)
     elif helper == "compare_compile":
-        report = compare_compile(_net(), _inputs(), compile=FAST, warmup=0, repeats=1).compiled
+        report = compare_compile(_net(), _inputs(), compile=spec, warmup=0, repeats=1).compiled
     else:
-        report = profile_forward(_net(), _inputs(), compile=FAST, output_dir=tmp_path, wait=0, warmup=0, active=1)
-    served = counters["stats"]["unique_graphs"] == graphs
-    assert served or torch.__version__ < "2.5"
+        report = profile_forward(_net(), _inputs(), compile=spec, output_dir=tmp_path, wait=0, warmup=0, active=1)
+    assert counters["stats"]["unique_graphs"] > graphs and _CALLS["n"] > before
     assert report.compile.effective == "compiled"
     if not isinstance(report, ProfileReport):
-        assert (report.label, report.backend) == ("compiled", "aot_eager")
-    held = [value for name, value in vars(torch._dynamo.external_utils).items() if name.startswith("__compiled_fn")]
-    assert not any("_graph_ran" in getattr(graph, "__qualname__", "") for graph in held)
+        assert (report.label, report.backend) == ("compiled", spec.backend)
 
 
 class _BreaksFirst(torch.nn.Module):
@@ -510,25 +509,122 @@ def _sequential_breaking_midway() -> torch.nn.Module:
     return torch.nn.Sequential(_BreaksMidway(), torch.nn.Linear(2, 2))
 
 
+def _apply(layer, x):
+    """A plain helper function that graph-breaks before its torch op."""
+    torch._dynamo.graph_break()
+    return layer(x)
+
+
+class _BreaksInHelper(torch.nn.Module):
+    """The graph break in a plain helper function the forward calls first:
+    its graphs are cached on the helper's code, not the forward's."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lin = torch.nn.Linear(4, 2)
+
+    def forward(self, x):
+        return _apply(self.lin, x)
+
+
+class _BreaksInMethod(torch.nn.Module):
+    """The graph break in a method other than ``forward``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lin = torch.nn.Linear(4, 2)
+
+    def project(self, x):
+        torch._dynamo.graph_break()
+        return self.lin(x)
+
+    def forward(self, x):
+        return self.project(x)
+
+
 @pytest.mark.parametrize("policy", ["error", "eager"])
 @pytest.mark.parametrize("helper", HELPERS)
 @pytest.mark.parametrize(
     "make",
-    [_BreaksFirst, _BreaksInside, _sequential_breaking_first, _sequential_breaking_midway],
-    ids=["leading", "nested", "sequential-leading", "sequential-midway"],
+    [
+        _BreaksFirst,
+        _BreaksMidway,
+        _BreaksInside,
+        _sequential_breaking_first,
+        _sequential_breaking_midway,
+        _BreaksInHelper,
+        _BreaksInMethod,
+    ],
+    ids=["leading", "midway", "nested", "sequential-leading", "sequential-midway", "helper", "method"],
 )
-def test_a_forward_with_a_leading_graph_break_served_from_cache_is_reported_compiled(helper, policy, make, tmp_path):
+def test_a_graph_breaking_forward_benchmarked_again_is_reported_compiled(helper, policy, make, tmp_path):
     """Benchmarked again in one process (the same model, or a new one of the
-    class), its cached graphs run though its own entry holds none: they sit
-    in a resume function or a child's frame, and an ``nn.Sequential`` is
-    traced through torch's shared wrapper."""
-    spec = dataclasses.replace(FAST, on_failure=policy)
+    class), wherever its graph break sits: in the forward, a child's, a
+    helper function or another method, and through the wrapper torch's own
+    modules (an ``nn.Sequential``) share. Each benchmark compiles and runs
+    graphs of its own."""
+    spec = dataclasses.replace(_counting(), on_failure=policy)
     same = make()
     for attempt, net in enumerate([same, same, make(), make()]):
+        before = _CALLS["n"]
         report = _run(helper, net, spec, tmp_path / str(attempt))
+        assert _CALLS["n"] > before, attempt
         assert report.compile.effective == "compiled" and report.compile.restart is None, attempt
         if not isinstance(report, ProfileReport):
-            assert (report.label, report.backend) == ("compiled", "aot_eager")
+            assert (report.label, report.backend) == ("compiled", spec.backend)
+
+
+class _AlsoBreaksInHelper(_BreaksInHelper):
+    def forward(self, x):
+        return _apply(self.lin, x) * 2
+
+
+@pytest.mark.parametrize("helper", HELPERS)
+def test_a_graph_breaking_forward_keeps_compiling_past_the_recompile_limit(helper, tmp_path):
+    """Each benchmark adds cache entries to the helper function and the
+    resume functions its graph break leaves, not only to the forward: ten
+    benchmarks in one process of two classes sharing the helper all
+    compile, though each forward holds only five entries (torch 2.13 does
+    not count the helper's entries for other layers against the limit; the
+    2.4 floor does)."""
+    spec = _counting()
+    for attempt in range(10):
+        before = _CALLS["n"]
+        net = _BreaksInHelper() if attempt % 2 else _AlsoBreaksInHelper()
+        report = _run(helper, net, spec, tmp_path / str(attempt))
+        assert report.compile.effective == "compiled" and _CALLS["n"] > before, attempt
+
+
+@pytest.mark.parametrize("policy", ["error", "eager"])
+@pytest.mark.parametrize("make", [_BreaksMidway, _BreaksInHelper], ids=["midway", "helper"])
+def test_a_graph_cached_for_an_earlier_benchmark_never_counts_as_compiled(policy, make, monkeypatch):
+    """Without the allowance and with a recompile limit of 1, a second
+    benchmark cannot compile its graphs (the 2.4 floor still compiles the
+    one before the break, keyed on the new copy). Dynamo may then run the
+    graphs cached for the first one (torch 2.13 does, past the limit,
+    without failing): they were not compiled for this benchmark, so unless
+    a graph of its own compiled and ran, it compiled nothing."""
+    from torch._dynamo.utils import counters
+
+    import nnx.compilation as compilation
+
+    config = torch._dynamo.config
+    spec = dataclasses.replace(FAST, on_failure=policy)
+    monkeypatch.setattr(compilation._InferenceSession, "strict", lambda self: contextlib.nullcontext())
+    first = make()
+    with config.patch(**{"recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit": 1}):
+        assert benchmark_forward(first, _x(), compile=spec, warmup=0, repeats=1).compile.effective == "compiled"
+        graphs = counters["stats"]["unique_graphs"]
+        try:
+            report = benchmark_forward(first, _x(), compile=spec, warmup=0, repeats=1)
+        except CompileFailed as caught:
+            assert policy == "error" and "compiled nothing" in str(caught)
+            return
+    if report.compile.effective == "compiled":
+        assert counters["stats"]["unique_graphs"] > graphs and torch.__version__ < "2.5"
+        return
+    assert policy == "eager", "compiled nothing, yet no CompileFailed"
+    assert (report.label, report.backend, report.compile.effective) == ("eager", None, "eager")
 
 
 @pytest.mark.parametrize("helper", HELPERS)
