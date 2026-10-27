@@ -181,7 +181,7 @@ def write_gguf(
             IA3 / prefix tuning), or a projection (``w_qkv`` / ``w_o`` /
             ``w1``–``w3`` / ``lm_head``) is not a plain ``nn.Linear`` (a
             low-rank factorized one): GGUF stores plain weights. Nothing is
-            written.
+            written, and no directory is created.
     """
     import torch
 
@@ -195,10 +195,6 @@ def write_gguf(
     from .tensor_name_map import map_tensors
 
     out_path = str(Path(out_path).expanduser().resolve())
-    # Create the parent directory — GGUFWriter open()s the path
-    # directly, so a fresh cwd writing "out/model.gguf" otherwise dies
-    # with FileNotFoundError (the ollama exporter already mkdirs).
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
     params = transformer_nn.params
     # NNParams declares ``n_heads`` as Optional[int]; NNTransformerParams
@@ -214,7 +210,15 @@ def write_gguf(
     # architecture from metadata picks the same shape we shipped.
     feed_forward_length = int(2 * params.ffn_mult * params.d_model / 3)
     head_dim = params.d_model // n_heads
+    # Read the network (which refuses a PEFT adapter or a factorized
+    # projection) before anything touches the disk.
+    tensors = map_tensors(transformer_nn)
 
+    # Create the parent directory only now that the arguments are valid —
+    # GGUFWriter open()s the path directly, so a fresh cwd writing
+    # "out/model.gguf" otherwise dies with FileNotFoundError (the ollama
+    # exporter relies on this mkdir for its bundle directory).
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     writer = gguf.GGUFWriter(out_path, arch=architecture)
 
     # try/finally: GGUFWriter opens the file lazily inside
@@ -255,7 +259,6 @@ def write_gguf(
 
         # ---------- tensors ----------
         target_dtype = _quantization_torch_dtype(quantization)
-        tensors = map_tensors(transformer_nn)
         for name, arr in tensors.items():
             # The map returns numpy arrays already in F32. Cast via torch
             # so we get a single code path for F16 / BF16 / F32 (numpy

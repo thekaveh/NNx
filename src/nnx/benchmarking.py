@@ -11,11 +11,19 @@ these helpers show what compilation costs and buys on *your* hardware.
   dtypes, backend, device, repeats and the dispersion of the latencies.
 - :func:`compare_compile` benchmarks an eager and a compiled copy made from
   **identical weights** (both deep copies of the module; the reports share a
-  ``weights_digest``) and reports the largest output difference.
+  ``weights_digest``) and reports the largest output difference, NaN-aware
+  and in float64.
 - :func:`profile_forward` runs ``torch.profiler`` with a finite
   ``wait / warmup / active / repeat`` schedule into an explicit
   ``output_dir``. The profiler is closed on success, error and
   cancellation, and never runs inside a benchmark's timed region.
+
+A compiled forward goes through :mod:`nnx.compilation`, as a fit's does:
+each helper call gets dynamo's recompile limit afresh, on top of the
+entries earlier compiles of the class hold; ``CompileSpec.on_failure``
+applies (:class:`~nnx.compilation.CompileFailed`, or an eager restart);
+and a run that compiled nothing is never labelled compiled. The reports
+carry the :class:`~nnx.compilation.CompileRecord` of what took effect.
 
 Nothing here trains, and the module passed in is never modified (each
 helper works on a deep copy, in eval mode, under ``torch.no_grad``).
@@ -23,7 +31,9 @@ helper works on a deep copy, in eval mode, under ``torch.no_grad``).
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import dataclasses
 import hashlib
 import numbers
 import os
@@ -35,7 +45,7 @@ from typing import Any, Optional, Union, cast
 
 import torch
 
-from .compilation import CompileSpec, _known_backends
+from .compilation import CompileRecord, CompileSpec, _InferenceSession
 
 __all__ = [
     "BenchmarkReport",
@@ -138,20 +148,41 @@ def _weights_digest(net: torch.nn.Module) -> str:
     return digest.hexdigest()
 
 
-def _prepared(net: torch.nn.Module, device: torch.device, spec: Optional[CompileSpec]) -> tuple[torch.nn.Module, Any]:
+def _prepared(
+    net: torch.nn.Module, device: torch.device, spec: Optional[CompileSpec]
+) -> tuple[torch.nn.Module, Optional[_InferenceSession]]:
+    """A deep copy of ``net`` on ``device`` in eval mode and, with ``spec``,
+    its compiled forward: a fit's recompile allowance, failure policy and
+    compiled-nothing check (:mod:`nnx.compilation`), not a bare
+    ``torch.compile``."""
     if spec is not None and not isinstance(spec, CompileSpec):
         raise TypeError(f"compile must be an nnx.compilation.CompileSpec or None, got {type(spec).__name__}")
-    if spec is not None and spec.backend not in _known_backends():
-        raise ValueError(f"CompileSpec.backend {spec.backend!r} is not a torch.compile backend here")
     module = copy.deepcopy(net).to(device).eval()
-    call = module if spec is None else torch.compile(module, backend=spec.backend, **spec.options())
-    return module, call
+    return module, None if spec is None else _InferenceSession(module, spec)
+
+
+def _calling(module: torch.nn.Module, session: Optional[_InferenceSession]) -> tuple[Any, Any]:
+    """The callable to run and the context to hold around all its calls."""
+    if session is None:
+        return module, contextlib.nullcontext()
+    return session.forward, session.strict()
+
+
+def _compiled(session: Optional[_InferenceSession]) -> bool:
+    return session is not None and session.record.effective == "compiled"
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class BenchmarkReport:
     """One benchmarked configuration. Times are seconds; ``latencies`` are
-    the warmed per-call times (``repeats`` of them)."""
+    the warmed per-call times (``repeats`` of them).
+
+    ``compile`` is the :class:`~nnx.compilation.CompileRecord` of a
+    compiled request (``None`` for an eager one): what took effect is its
+    ``effective`` state, ``compiled`` or, after an
+    ``on_failure="eager"`` restart, ``eager`` with the ``restart``. The
+    default ``label`` and the ``backend`` follow what took effect: a run
+    that compiled nothing is labelled ``eager``, with no backend."""
 
     label: str
     backend: Optional[str]
@@ -166,6 +197,7 @@ class BenchmarkReport:
     peak_memory_bytes: Optional[int]
     weights_digest: str
     torch_version: str
+    compile: Optional[CompileRecord] = None
 
     @property
     def mean_seconds(self) -> float:
@@ -216,6 +248,7 @@ class BenchmarkReport:
             "peak_memory_bytes": self.peak_memory_bytes,
             "weights_digest": self.weights_digest,
             "torch_version": self.torch_version,
+            "compile": None if self.compile is None else self.compile.record(),
         }
 
 
@@ -240,9 +273,10 @@ def _run_benchmark(
     warmup = _count(warmup, "warmup", minimum=0)
     repeats = _count(repeats, "repeats", minimum=1)
     target = _device(net, device)
-    module, call = _prepared(net, target, compile)
+    module, session = _prepared(net, target, compile)
     batch = _inputs(inputs, target)
-    with torch.no_grad():
+    call, strict = _calling(module, session)
+    with torch.no_grad(), strict:
         first, output = _timed(call, batch, target)  # includes compilation, if any
         for _ in range(warmup):
             call(*batch)
@@ -251,9 +285,10 @@ def _run_benchmark(
             torch.cuda.reset_peak_memory_stats(target)
         latencies = tuple(_timed(call, batch, target)[0] for _ in range(repeats))
         peak = int(torch.cuda.max_memory_allocated(target)) if target.type == "cuda" else None
+    compiled = _compiled(session)
     report = BenchmarkReport(
-        label=label or ("eager" if compile is None else "compiled"),
-        backend=None if compile is None else compile.backend,
+        label=label or ("compiled" if compiled else "eager"),
+        backend=compile.backend if compiled and compile is not None else None,
         device=str(target),
         shapes=tuple(tuple(x.shape) for x in batch),
         dtypes=tuple(str(x.dtype).removeprefix("torch.") for x in batch),
@@ -265,6 +300,7 @@ def _run_benchmark(
         peak_memory_bytes=peak,
         weights_digest=_weights_digest(module),
         torch_version=str(torch.__version__),
+        compile=None if session is None else session.record,
     )
     return report, output
 
@@ -282,14 +318,28 @@ def benchmark_forward(
     """Time ``net``'s forward on ``inputs`` (eager, or compiled with
     ``compile``): the first call, then ``repeats`` calls after ``warmup``
     untimed ones, on a deep copy in eval mode under ``torch.no_grad``.
-    ``device`` defaults to the module's."""
+    ``device`` defaults to the module's.
+
+    A compiled forward follows ``compile.on_failure`` as a fit's does:
+    a forward that fails to compile, hits dynamo's recompile limit or
+    compiles nothing raises :class:`~nnx.compilation.CompileFailed`
+    (``"error"``) or runs eagerly from then on (``"eager"``), and the
+    report's ``compile`` record says which."""
     return _run_benchmark(net, inputs, compile=compile, warmup=warmup, repeats=repeats, device=device, label=label)[0]
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class CompileComparison:
     """An eager and a compiled benchmark of identical weights, and the
-    largest absolute difference between their outputs."""
+    largest absolute difference between their outputs.
+
+    ``max_abs_diff`` covers every tensor in the outputs (tuples, lists,
+    mappings, named tuples and dataclasses are opened), compared in float64
+    (complex128 for complex outputs). Equal values differ by ``0.0``,
+    matching infinities and NaN on both sides included; a NaN on one side
+    only counts as ``inf``. It is NaN when the outputs held no tensor, so
+    nothing was compared. ``compiled.compile`` says whether the compiled
+    side compiled."""
 
     eager: BenchmarkReport
     compiled: BenchmarkReport
@@ -323,40 +373,75 @@ def compare_compile(
     ``CompileSpec()``) from identical weights."""
     spec = CompileSpec() if compile is None else compile
     eager, eager_out = _run_benchmark(
-        net, inputs, compile=None, warmup=warmup, repeats=repeats, device=device, label="eager"
+        net, inputs, compile=None, warmup=warmup, repeats=repeats, device=device, label=None
     )
     compiled, compiled_out = _run_benchmark(
-        net, inputs, compile=spec, warmup=warmup, repeats=repeats, device=device, label="compiled"
+        net, inputs, compile=spec, warmup=warmup, repeats=repeats, device=device, label=None
     )
     if eager.weights_digest != compiled.weights_digest:  # pragma: no cover - deep copies of one module
         raise RuntimeError("eager and compiled benchmarks did not start from identical weights")
-    from torch.utils._pytree import tree_flatten
-
-    eager_leaves, eager_spec = tree_flatten(eager_out)
-    compiled_leaves, compiled_spec = tree_flatten(compiled_out)
+    eager_leaves, eager_spec = _flatten(eager_out)
+    compiled_leaves, compiled_spec = _flatten(compiled_out)
     if eager_spec != compiled_spec:
         raise RuntimeError("eager and compiled forwards returned differently structured outputs")
-    diff = max(
-        (
-            float((a.detach().float() - b.detach().float()).abs().max()) if a.numel() else 0.0
-            for a, b in zip(eager_leaves, compiled_leaves, strict=True)
-            if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor)
-        ),
-        default=0.0,
-    )
+    pairs = [
+        (a, b)
+        for a, b in zip(eager_leaves, compiled_leaves, strict=True)
+        if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor)
+    ]
+    diff = max((_abs_diff(a, b) for a, b in pairs), default=float("nan"))
     return CompileComparison(eager=eager, compiled=compiled, max_abs_diff=diff)
+
+
+def _flatten(output: Any) -> tuple[list[Any], list[Any]]:
+    """``output``'s leaves and structure, with dataclass leaves (which the
+    pytree leaves whole) opened field by field."""
+    from torch.utils._pytree import tree_flatten
+
+    leaves, spec = tree_flatten(output)
+    flat: list[Any] = []
+    structure: list[Any] = [spec]
+    for leaf in leaves:
+        if dataclasses.is_dataclass(leaf) and not isinstance(leaf, type):
+            fields = {item.name: getattr(leaf, item.name) for item in dataclasses.fields(leaf)}
+            inner, inner_structure = _flatten(fields)
+            flat.extend(inner)
+            structure.extend([type(leaf), *inner_structure])
+        else:
+            flat.append(leaf)
+    return flat, structure
+
+
+def _abs_diff(a: torch.Tensor, b: torch.Tensor) -> float:
+    """The largest ``|a - b|`` in float64 (complex128 for complex tensors):
+    equal values, matching infinities and two-sided NaN differ by ``0.0``;
+    a one-sided NaN counts as ``inf``."""
+    if a.shape != b.shape:
+        raise RuntimeError(f"eager and compiled forwards returned differently shaped outputs: {a.shape} vs {b.shape}")
+    if not a.numel():
+        return 0.0
+    # On the CPU: MPS has no float64.
+    wide = torch.complex128 if a.is_complex() or b.is_complex() else torch.float64
+    x, y = a.detach().to("cpu", wide), b.detach().to("cpu", wide)
+    same = (x == y) | (x.isnan() & y.isnan())
+    gap = (x - y).abs().nan_to_num(nan=float("inf")).masked_fill(same, 0.0)
+    return float(gap.max())
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ProfileReport:
     """A finished profile: where its traces were written, the schedule and
-    step count, and the top operators by self time."""
+    step count, and the top operators by self time. ``compile`` is the
+    :class:`~nnx.compilation.CompileRecord` of a compiled request
+    (``None`` for an eager one); its ``effective`` state says what was
+    profiled."""
 
     output_dir: str
     trace_files: tuple[str, ...]
     schedule: Mapping[str, int]
     steps: int
     table: str
+    compile: Optional[CompileRecord] = None
 
 
 def profile_forward(
@@ -374,11 +459,12 @@ def profile_forward(
 ) -> ProfileReport:
     """Profile ``net``'s forward with ``torch.profiler`` for exactly
     ``(wait + warmup + active) * repeat`` steps, writing Chrome traces to
-    ``output_dir`` (created if needed). Every count is finite (``active``
-    and ``repeat`` at least 1). The profiler is stopped and its traces
-    flushed whether the steps finish, raise or are cancelled. With
-    ``compile`` and ``wait=warmup=0`` the first active step includes the
-    compilation itself."""
+    ``output_dir`` (created if needed, once every argument is valid). Every
+    count is finite (``active`` and ``repeat`` at least 1). The profiler is
+    stopped and its traces flushed whether the steps finish, raise or are
+    cancelled. With ``compile`` and ``wait=warmup=0`` the first active step
+    includes the compilation itself; the compiled forward follows
+    ``compile.on_failure`` as in :func:`benchmark_forward`."""
     from torch.profiler import ProfilerActivity, profile, schedule, tensorboard_trace_handler
 
     if not isinstance(output_dir, (str, os.PathLike)):
@@ -391,15 +477,17 @@ def profile_forward(
     }
     row_limit = _count(row_limit, "row_limit", minimum=1)
     directory = os.fspath(output_dir)
-    os.makedirs(directory, exist_ok=True)
-    before = set(os.listdir(directory))
     target = _device(net, device)
-    _, call = _prepared(net, target, compile)
+    module, session = _prepared(net, target, compile)
     batch = _inputs(inputs, target)
+    os.makedirs(directory, exist_ok=True)  # only once every argument is valid
+    before = set(os.listdir(directory))
+    call, strict = _calling(module, session)
     activities = [ProfilerActivity.CPU] + ([ProfilerActivity.CUDA] if target.type == "cuda" else [])
     steps = (counts["wait"] + counts["warmup"] + counts["active"]) * counts["repeat"]
     with (
         torch.no_grad(),
+        strict,
         profile(
             activities=activities,
             schedule=schedule(**counts),
@@ -412,4 +500,11 @@ def profile_forward(
             profiler.step()
     table = profiler.key_averages().table(sort_by="self_cpu_time_total", row_limit=row_limit)
     traces = tuple(sorted(os.path.join(directory, name) for name in set(os.listdir(directory)) - before))
-    return ProfileReport(output_dir=directory, trace_files=traces, schedule=counts, steps=steps, table=table)
+    return ProfileReport(
+        output_dir=directory,
+        trace_files=traces,
+        schedule=counts,
+        steps=steps,
+        table=table,
+        compile=None if session is None else session.record,
+    )
