@@ -557,6 +557,36 @@ def test_training_mode_restore_replays_only_overridden_train_hooks(monkeypatch):
     assert visits[0] <= len(modes) + sum(1 for _ in hooked.modules())
 
 
+def test_training_mode_restore_undoes_a_hook_write_outside_its_subtree():
+    """A hook that switches an unregistered peer (a teacher, an EMA copy)
+    is undone where the peer comes earlier in pre-order, as the stock
+    ``train`` replay always did, so the captured modes come back (#578)."""
+
+    class Student(nn.Module):
+        def __init__(self, teacher: nn.Module):
+            super().__init__()
+            self.lin = nn.Linear(2, 2)
+            self._teacher = [teacher]  # a list, so it is not registered
+
+        def train(self, mode: bool = True):
+            super().train(mode)
+            self._teacher[0].eval()
+            return self
+
+    teacher = nn.Sequential(nn.Linear(2, 2))
+    root = nn.Sequential(teacher, Student(teacher))
+    root.train()
+    teacher.train()
+    before = [module.training for module in root.modules()]
+    modes = _capture_training_modes(root)
+    root.eval()
+
+    _restore_training_modes(modes)
+
+    assert before == [True] * 5
+    assert [module.training for module in root.modules()] == before
+
+
 def test_iter_predict_restores_deep_mixed_modes_before_each_batch():
     """Each streamed batch hands back the exact mixed modes of a deep net
     with a custom ``train`` hook, which runs once per batch (#578)."""
