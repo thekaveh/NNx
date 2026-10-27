@@ -25,6 +25,7 @@ encoder-decoders or vision models would warrant a separate writer.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -181,7 +182,8 @@ def write_gguf(
             IA3 / prefix tuning), or a projection (``w_qkv`` / ``w_o`` /
             ``w1``–``w3`` / ``lm_head``) is not a plain ``nn.Linear`` (a
             low-rank factorized one): GGUF stores plain weights. Nothing is
-            written, and no directory is created.
+            written, and no directory is created; the same holds for a
+            tokenizer that cannot be read (its own error propagates).
     """
     import torch
 
@@ -211,8 +213,9 @@ def write_gguf(
     feed_forward_length = int(2 * params.ffn_mult * params.d_model / 3)
     head_dim = params.d_model // n_heads
     # Read the network (which refuses a PEFT adapter or a factorized
-    # projection) before anything touches the disk.
+    # projection) and the tokenizer before anything touches the disk.
     tensors = map_tensors(transformer_nn)
+    vocab = _tokenizer_vocab(tokenizer)
 
     # Create the parent directory only now that the arguments are valid —
     # GGUFWriter open()s the path directly, so a fresh cwd writing
@@ -255,7 +258,7 @@ def write_gguf(
         # BPE model — emit it as "gpt2" so llama.cpp's BPE path picks it up.
         writer.add_tokenizer_model("gpt2")
         writer.add_tokenizer_pre("default")  # pre-tokenizer is Whitespace; "default" is the catch-all
-        _add_tokenizer_vocab(writer, tokenizer)
+        _add_tokenizer_vocab(writer, vocab)
 
         # ---------- tensors ----------
         target_dtype = _quantization_torch_dtype(quantization)
@@ -301,25 +304,33 @@ def _gguf_file_type_for(gguf_mod, quantization: str) -> int:
     raise ValueError(f"Unhandled quantization {quantization!r}")  # pragma: no cover — gated above
 
 
-def _add_tokenizer_vocab(writer, tokenizer) -> None:
-    """Emit the tokenizer vocab + merges into the GGUF writer.
+@dataclass(frozen=True, kw_only=True, slots=True)
+class _Vocab:
+    """What :func:`_add_tokenizer_vocab` emits, read up front."""
+
+    tokens: list[str]
+    token_types: list[int]
+    merges: list[str]
+    special_ids: dict[str, int]  # "bos" / "eos" / "unk" / "pad" -> id
+
+
+def _tokenizer_vocab(tokenizer) -> _Vocab:
+    """Read the tokenizer vocab + merges for the GGUF writer.
 
     NNx's ``NNTokenizerParams`` wraps a HF ``tokenizers.Tokenizer`` —
-    we extract the vocab (token -> id) and order it by id, then push
-    the BPE merges as a separate ``tokenizer.ggml.merges`` array. This
-    matches what llama.cpp expects for a GPT-2-style BPE tokenizer."""
+    we extract the vocab (token -> id) and order it by id, then the BPE
+    merges for a separate ``tokenizer.ggml.merges`` array. This matches
+    what llama.cpp expects for a GPT-2-style BPE tokenizer."""
     # Unwrap NNTokenizerParams to the raw tokenizers.Tokenizer.
     tk = getattr(tokenizer, "tokenizer", tokenizer)
 
     vocab = tk.get_vocab()
     # Sort tokens by their integer id so the GGUF array index == token id.
     sorted_tokens = sorted(vocab.items(), key=lambda kv: kv[1])
-    tokens = [t for t, _ in sorted_tokens]
-
     # GGUFWriter expects the list of tokens as either strings or bytes.
     # Strings are fine for BPE — llama.cpp's reader handles the bytes
     # vs. string normalization.
-    writer.add_token_list(tokens)
+    tokens = [t for t, _ in sorted_tokens]
 
     # Token types: 1 = NORMAL, 2 = UNKNOWN, 3 = CONTROL. We mark every
     # token NORMAL by default and bump the registered special tokens
@@ -330,7 +341,6 @@ def _add_tokenizer_vocab(writer, tokenizer) -> None:
     for st in special_tokens:
         if st in vocab:
             token_types[vocab[st]] = int(_CONTROL_TOKEN)
-    writer.add_token_types(token_types)
 
     # BPE merges live in tokenizers.Tokenizer's serialized JSON.
     # Extract them via to_str() rather than reaching into internals so
@@ -347,18 +357,27 @@ def _add_tokenizer_vocab(writer, tokenizer) -> None:
             normalized_merges.append(" ".join(m))
         else:
             normalized_merges.append(str(m))
-    writer.add_token_merges(normalized_merges)
 
     # BOS / EOS / UNK / PAD ids — best-effort. NNx's train_bpe
     # registers `<unk>`, `<pad>`, `<bos>`, `<eos>` by convention.
-    for special_tok, setter in (
-        ("<bos>", writer.add_bos_token_id),
-        ("<eos>", writer.add_eos_token_id),
-        ("<unk>", writer.add_unk_token_id),
-        ("<pad>", writer.add_pad_token_id),
-    ):
-        if special_tok in vocab:
-            setter(vocab[special_tok])
+    special_ids = {kind: vocab[f"<{kind}>"] for kind in ("bos", "eos", "unk", "pad") if f"<{kind}>" in vocab}
+    return _Vocab(tokens=tokens, token_types=token_types, merges=normalized_merges, special_ids=special_ids)
+
+
+def _add_tokenizer_vocab(writer, vocab: _Vocab) -> None:
+    """Emit the tokenizer vocab + merges (see :func:`_tokenizer_vocab`)
+    into the GGUF writer."""
+    writer.add_token_list(vocab.tokens)
+    writer.add_token_types(vocab.token_types)
+    writer.add_token_merges(vocab.merges)
+    setters = {
+        "bos": writer.add_bos_token_id,
+        "eos": writer.add_eos_token_id,
+        "unk": writer.add_unk_token_id,
+        "pad": writer.add_pad_token_id,
+    }
+    for kind, token_id in vocab.special_ids.items():
+        setters[kind](token_id)
 
 
 # Token-type codes — pulled from the GGUF spec.
