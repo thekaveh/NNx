@@ -2965,3 +2965,226 @@ def test_the_logits_processors_take_a_plain_real_not_a_bool_or_tensor(value):
         processor = make(np.float32(setting))
         stored = processor.temperature if field == "temperature" else processor.penalty
         assert stored == setting and type(stored) is float
+
+
+# --- #545: flags, step knobs, task-record counts and iterator inputs ---------
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], "numpy"], ids=repr)
+@pytest.mark.parametrize("policy", [None, "fp16", "bf16"])
+def test_mixed_precision_must_be_a_real_bool(value, policy):
+    """#545: a truthy string turned on FP16 + GradScaler on CUDA (and a
+    falsy non-bool silently meant False); every non-bool is refused by name,
+    with or without a precision policy."""
+    import numpy as np
+
+    from nnx import Nets, NNModelParams, PrecisionPolicy
+
+    if value == "numpy":
+        value = np.bool_(True)
+    precision = PrecisionPolicy(policy) if policy is not None else None
+    with pytest.raises(ValueError, match=r"NNModelParams\.mixed_precision must be a bool"):
+        NNModelParams(net=Nets.FEED_FWD, mixed_precision=value, precision=precision)
+
+
+def test_mixed_precision_from_state_refuses_a_string():
+    from nnx import NNModelParams
+
+    state = {"net": "feed_fwd", "loss": "cross_entropy", "device": "cpu", "mixed_precision": "false"}
+    with pytest.raises(ValueError, match=r"NNModelParams\.mixed_precision must be a bool"):
+        NNModelParams.from_state(state)
+
+
+def test_a_bool_mixed_precision_keeps_its_state_run_id_and_precision():
+    """Ids pinned at bc0becb (before #545): the bool check changes no valid
+    configuration. The CUDA selection is checked through resolve_precision
+    (no GPU needed); real-GPU evidence of FP16 training stays with #420."""
+    import torch
+
+    from nnx import Activations, Devices, Losses, Nets, NNModelParams, PrecisionPolicy
+    from nnx.nn.params.nn_run import NNRun
+    from nnx.precision import resolve_precision
+
+    net = NNParams(input_dim=4, output_dim=2, hidden_dims=[64, 32], dropout_prob=0.0, activation=Activations.RELU)
+    expected = {False: "817d53cc6a73783ca50db9e890a899fa", True: "3d13bcb0793b50669c71d54e357ed6a0"}
+    for flag, run_id in expected.items():
+        model = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, mixed_precision=flag)
+        assert ("mixed_precision" in model.state()) is flag
+        assert NNModelParams.from_state(model.state()) == model
+        assert NNRun(net=net, model=model, train=NNTrainParams(n_epochs=1), salt="exp-a").id == run_id
+        on_cuda = resolve_precision(model, "cuda")
+        assert on_cuda.effective == ("fp16" if flag else "fp32")
+        assert on_cuda.uses_scaler is flag
+        assert on_cuda.autocast_dtype == (torch.float16 if flag else None)
+    fp16 = NNModelParams(net=Nets.FEED_FWD, mixed_precision=True, precision=PrecisionPolicy("fp16"))
+    assert fp16.mixed_precision is False and fp16.precision == PrecisionPolicy("fp16")
+
+
+def _step_context(**knobs):
+    import torch
+
+    from nnx import Activations, Losses, Nets, NNModel, NNModelParams, TrainStepContext
+
+    torch.manual_seed(0)
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=3, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, loss=Losses.CROSS_ENTROPY),
+    )
+    X = torch.randn(16, 4, generator=torch.Generator().manual_seed(1))
+    batch = (X, torch.arange(16) % 3)
+    optimizer = torch.optim.SGD(model.net.parameters(), lr=0.5)
+    kwargs = {"grad_clip_norm": None, "accumulate_grad_batches": 1, **knobs}
+    return model, lambda: TrainStepContext(
+        model=model,
+        batch=batch,
+        optimizer=optimizer,
+        scaler=None,
+        extra_metrics=None,
+        batch_idx=0,
+        epoch_idx=0,
+        is_last_batch=True,
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize(
+    ("knobs", "match"),
+    [
+        ({"accumulate_grad_batches": 0}, "accumulate_grad_batches must be >= 1"),
+        ({"accumulate_grad_batches": -1}, "accumulate_grad_batches must be >= 1"),
+        ({"accumulate_grad_batches": 2.5}, "accumulate_grad_batches"),
+        ({"accumulate_grad_batches": True}, "accumulate_grad_batches"),
+        ({"accumulate_grad_batches": "2"}, "accumulate_grad_batches"),
+        ({"grad_clip_norm": 0.0}, "grad_clip_norm must be > 0 when set"),
+        ({"grad_clip_norm": -1.0}, "grad_clip_norm must be > 0 when set"),
+        ({"grad_clip_norm": float("nan")}, "grad_clip_norm"),
+        ({"grad_clip_norm": float("inf")}, "grad_clip_norm"),
+        ({"grad_clip_norm": True}, "grad_clip_norm"),
+    ],
+    ids=repr,
+)
+def test_a_hand_built_train_step_context_refuses_the_optimizer_domain(knobs, match):
+    """#545: TrainStepContext enforces the NNOptimParams domain at
+    construction — before any step, a ZeroDivisionError, gradient ascent or
+    zeroed / sign-flipped gradients."""
+    from nnx import NNOptimParams, Optims
+
+    _, build = _step_context(**knobs)
+    with pytest.raises(ValueError, match=match):
+        build()
+    with pytest.raises(ValueError, match=match):  # one predicate: the optimizer config says the same
+        NNOptimParams(name=Optims.SGD, max_lr=0.5, weight_decay=0.0, momentum=0.0, **knobs)
+
+
+def test_a_valid_train_step_context_keeps_its_knobs():
+    import numpy as np
+
+    for knobs in ({}, {"grad_clip_norm": 0.5, "accumulate_grad_batches": 3}, {"grad_clip_norm": 2}):
+        ctx = _step_context(**knobs)[1]()
+        assert ctx.grad_clip_norm == knobs.get("grad_clip_norm")
+        assert type(ctx.grad_clip_norm) is type(knobs.get("grad_clip_norm"))
+        assert ctx.accumulate_grad_batches == knobs.get("accumulate_grad_batches", 1)
+    ctx = _step_context(accumulate_grad_batches=np.int64(2))[1]()
+    assert ctx.accumulate_grad_batches == 2 and type(ctx.accumulate_grad_batches) is int
+
+
+@pytest.mark.parametrize("count", [float("nan"), float("inf"), float("-inf")], ids=repr)
+def test_a_non_finite_task_record_count_is_refused_by_name(count):
+    """#545: the integral test ran before any finiteness test, so NaN raised
+    an unnamed ValueError and ±inf an OverflowError (past `except ValueError`)."""
+    import numpy as np
+
+    from nnx import NNEvaluationDataPoint
+
+    for value in (count, np.float64(count)):
+        with pytest.raises(ValueError, match="NNEvaluationDataPoint count must be a non-negative integer"):
+            NNEvaluationDataPoint(kind="regression", count=value, status="ok")
+        with pytest.raises(ValueError, match="NNEvaluationDataPoint count must be a non-negative integer"):
+            NNEvaluationDataPoint.from_state({"kind": "regression", "count": value, "status": "ok"})
+
+
+def test_an_integral_task_record_count_is_still_accepted():
+    from nnx import NNEvaluationDataPoint
+
+    record = NNEvaluationDataPoint(kind="regression", count=3.0, status="ok")
+    assert record.count == 3 and type(record.count) is int
+    assert NNEvaluationDataPoint(kind="regression", count=10**400, status="ok").count == 10**400
+    assert NNEvaluationDataPoint.from_state({"kind": "regression", "count": 3.0, "status": "ok"}).count == 3
+    assert NNEvaluationDataPoint(kind="regression", count=0, status="empty").count == 0
+
+
+def _hidden_iterables():
+    return {
+        "map": lambda: map(int, "64,32".split(",")),
+        "generator": lambda: (w for w in (64, 32)),
+        "iter": lambda: iter([64, 32]),
+        "tuple": lambda: (64, 32),
+    }
+
+
+@pytest.mark.parametrize("kind", list(_hidden_iterables()))
+def test_an_iterable_hidden_dims_is_materialized_once(kind):
+    """#545: the error message's `list(...)` consumed a one-shot iterator, so
+    validation read it exhausted and the model had no hidden layers."""
+    import torch
+
+    from nnx import Devices, Losses, Nets, NNModel, NNModelParams
+    from nnx.nn.params.nn_run import NNRun
+
+    reference = NNParams(input_dim=4, output_dim=2, hidden_dims=[64, 32], dropout_prob=0.0)
+    params = NNParams(input_dim=4, output_dim=2, hidden_dims=_hidden_iterables()[kind](), dropout_prob=0.0)
+    assert params.hidden_dims == [64, 32] and params.dims == [4, 64, 32, 2]
+    assert params.state() == reference.state()
+    model = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+    train = NNTrainParams(n_epochs=1)
+    assert NNRun(net=params, model=model, train=train).id == NNRun(net=reference, model=model, train=train).id
+    built = NNModel(net_params=params, params=NNModelParams(net=Nets.FEED_FWD, loss=Losses.CROSS_ENTROPY))
+    shapes = [tuple(m.weight.shape) for m in built.net.modules() if isinstance(m, torch.nn.Linear)]
+    assert shapes == [(64, 4), (32, 64), (2, 32)]
+
+
+def test_an_iterator_hidden_dims_is_validated_and_moe_behaves_the_same():
+    from nnx.nn.params.nn_moe_params import NNMoEParams
+
+    with pytest.raises(ValueError, match=re.escape("NNParams requires all hidden_dims > 0, got [64, -1]")):
+        NNParams(input_dim=4, output_dim=2, hidden_dims=iter([64, -1]), dropout_prob=0.0)
+    moe = NNMoEParams(
+        input_dim=4, output_dim=2, hidden_dims=map(int, "64,32".split(",")), dropout_prob=0.0, num_experts=2
+    )
+    assert moe.hidden_dims == [64, 32]
+    with pytest.raises(ValueError, match=re.escape("NNMoEParams requires all hidden_dims > 0, got [64, -1]")):
+        NNMoEParams(input_dim=4, output_dim=2, hidden_dims=iter([64, -1]), dropout_prob=0.0, num_experts=2)
+    with pytest.raises(ValueError, match="at least one hidden layer"):
+        NNMoEParams(input_dim=4, output_dim=2, hidden_dims=iter([]), dropout_prob=0.0, num_experts=2)
+
+
+def _conv(channels):
+    from nnx import Activations
+    from nnx.nn.params.nn_conv_params import NNConvParams
+
+    return NNConvParams(
+        input_dim=784,
+        output_dim=10,
+        dropout_prob=0.0,
+        conv_channels=channels,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        pool_size=2,
+        activation=Activations.RELU,
+    )
+
+
+def test_an_iterable_conv_channels_is_materialized_once():
+    from nnx import Losses, Nets, NNModel, NNModelParams
+
+    reference = _conv([4, 8])
+    for channels in (map(int, "4,8".split(",")), (c for c in (4, 8)), iter([4, 8]), (4, 8)):
+        params = _conv(channels)
+        assert params.conv_channels == [4, 8] and params.state() == reference.state()
+        NNModel(net_params=params, params=NNModelParams(net=Nets.CONV, loss=Losses.CROSS_ENTROPY))
+    for channels in (iter([4, -1]), iter([])):
+        with pytest.raises(ValueError, match="NNConvParams requires non-empty conv_channels with all > 0"):
+            _conv(channels)
+    with pytest.raises(ValueError, match=re.escape("all > 0, got [4, -1]")):
+        _conv(iter([4, -1]))

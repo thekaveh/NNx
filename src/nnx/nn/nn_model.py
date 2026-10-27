@@ -93,7 +93,7 @@ from .params.nn_checkpoint import (
 from .params.nn_evaluation_data_point import NNEvaluationDataPoint
 from .params.nn_iteration_data_point import NNIterationDataPoint
 from .params.nn_model_params import NNModelParams
-from .params.nn_optim_params import NNOptimParams
+from .params.nn_optim_params import NNOptimParams, _validate_step_knobs
 from .params.nn_params import NNParams
 from .params.nn_run import (
     NNRun,
@@ -1251,6 +1251,11 @@ class TrainStepContext:
     gradient accumulation, AMP scale/unscale, grad clipping, and the
     NaN/Inf guard — the context tells it what knobs are set; honoring
     them is on the caller.
+
+    ``accumulate_grad_batches`` (an integer >= 1) and ``grad_clip_norm``
+    (``None`` or a finite real > 0) are checked at construction against the
+    same domain as ``NNOptimParams``, so a context built by hand cannot
+    divide by zero, ascend the gradient or zero / flip every gradient.
     """
 
     model: NNModel
@@ -1279,6 +1284,12 @@ class TrainStepContext:
     # AMP scaler skipped) and ``finalize_step`` report their own steps, so a
     # step that delegates to them does not report again.
     report_update: Callable[[], None] = NO_UPDATE_REPORTER
+
+    def __post_init__(self) -> None:
+        # NNModel.train builds contexts from a validated NNOptimParams; a
+        # hand-built one (default_train_step, finalize_step, _train_step)
+        # gets the same domain here, before any step runs (#545).
+        _validate_step_knobs(self, "TrainStepContext")
 
 
 TrainStepFn = Callable[[TrainStepContext], NNEvaluationDataPoint]

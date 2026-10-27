@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 import torch
 
 from ..._optional import require
-from ..._validation import require_batch_sizes, require_count
+from ..._validation import require_batch_sizes, require_count, shown
 from ...seeding import dataloader_worker_init_fn
 from .nn_dataset_base import NNDatasetBase
 
@@ -21,6 +21,21 @@ else:
     PyGData = _pyg_data.Data
     Dataset = _pyg_data.Dataset
     NeighborLoader = require("torch_geometric.loader", "NNGraphDataset").NeighborLoader
+
+
+def _neighbor_fan_out(value: object) -> list[int] | tuple[int, ...]:
+    """``n_neighbors`` with plain ``int`` entries, in the list or tuple it
+    came in: one fan-out per hop, each an integer >= -1 (``-1`` is PyG's
+    "all neighbors", ``0`` samples none). Anything else — a bare count, a
+    string, an empty sequence, a bool, a float or a negative below -1 — is
+    refused naming the field (#545)."""
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError(
+            "NNGraphDataset requires n_neighbors to be a non-empty list of integers >= -1 "
+            f"(one fan-out per hop; -1 = all neighbors), got {shown(value)} of type {type(value).__name__}"
+        )
+    hops = [require_count(k, f"n_neighbors[{i}]", owner="NNGraphDataset", minimum=-1) for i, k in enumerate(value)]
+    return tuple(hops) if isinstance(value, tuple) else hops
 
 
 def _full_batch_loader(data: PyGData, split_mask: torch.Tensor) -> list[PyGData]:
@@ -83,6 +98,12 @@ class NNGraphDataset(NNDatasetBase):
     ``ds_class`` is instantiated. ``sampler="full"`` rejects every explicit
     size (the complete split is always one batch).
 
+    With the neighbor sampler, ``n_workers`` is an integer >= 0 and
+    ``n_neighbors`` a non-empty list (or tuple) of integers >= -1, one
+    fan-out per hop (``-1`` = all neighbors); NumPy integers become ``int``.
+    Anything else is rejected by name before ``ds_class`` is instantiated.
+    ``sampler="full"`` ignores both.
+
     An empty ``val_mask`` / ``test_mask`` is an *absent* split in both
     sampler modes: that loader is ``None`` — the optional-loader
     contract the tabular / preference wrappers already follow, which
@@ -135,6 +156,15 @@ class NNGraphDataset(NNDatasetBase):
                 "n_neighbors is required when sampler='neighbor'. "
                 "Pass n_neighbors=[k1, k2, ...] or switch to sampler='full'."
             )
+        if self.sampler == "neighbor":
+            # The sampler's settings are checked before the dataset class is
+            # built too (#545): a real PyG dataset downloads on construction,
+            # and NeighborLoader / state() used to receive them raw. Plain
+            # `int`s, so state() stays YAML-portable; "full" ignores both.
+            object.__setattr__(
+                self, "n_workers", require_count(self.n_workers, "n_workers", owner="NNGraphDataset", minimum=0)
+            )
+            object.__setattr__(self, "n_neighbors", _neighbor_fan_out(self.n_neighbors))
 
         dataset = self.ds_class(root=self.root_dir, transform=self.transform)
         # Single-graph datasets expose the underlying Data via dataset[0].
