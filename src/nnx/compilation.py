@@ -248,6 +248,7 @@ def _message(error: BaseException) -> str:
 
 
 _LIMIT_NAMES = ("recompile_limit", "cache_size_limit")  # torch >= 2.6 / older
+_ACCUMULATED_LIMIT_NAMES = ("accumulated_recompile_limit", "accumulated_cache_size_limit")
 
 
 def _cached_entries(net: torch.nn.Module) -> int:
@@ -279,9 +280,10 @@ def _strict_recompiles(allowance: int, *, extend_without_strict: bool = False) -
     """Make dynamo's recompile limit an error, not a silent eager fallback
     (where torch supports it), so the failure policy decides. The limit is
     per code object and process-wide, so each fit gets it afresh: the
-    configured limit plus the entries other fits of the class already hold.
-    ``extend_without_strict`` still extends the limit on a torch that
-    cannot make it an error."""
+    configured limit plus the entries other fits of the class already hold,
+    and the same for the accumulated limit (every entry of a code object,
+    whatever it guards on). ``extend_without_strict`` still extends the
+    limits on a torch that cannot make them an error."""
     import torch._dynamo.config as config
 
     changes: dict[str, Any] = {}
@@ -289,9 +291,10 @@ def _strict_recompiles(allowance: int, *, extend_without_strict: bool = False) -
         changes["fail_on_recompile_limit_hit"] = True
     elif not extend_without_strict:
         return contextlib.nullcontext()
-    name = next((name for name in _LIMIT_NAMES if hasattr(config, name)), None)
-    if name is not None and allowance:
-        changes[name] = int(getattr(config, name)) + allowance
+    for names in (_LIMIT_NAMES, _ACCUMULATED_LIMIT_NAMES):
+        name = next((name for name in names if hasattr(config, name)), None)
+        if name is not None and allowance:
+            changes[name] = int(getattr(config, name)) + allowance
     return config.patch(**changes) if changes else contextlib.nullcontext()
 
 
@@ -339,10 +342,17 @@ class _CompileSession:
             torch_version=str(torch.__version__),
         )
         self._net = net
-        self._compiled: Optional[Callable[..., Any]] = torch.compile(net, backend=spec.backend, **spec.options())
+        self._compiled: Optional[Callable[..., Any]] = self._compile(net, spec)
         self._backward_proven = False
-        self._allowance = _cached_entries(net)
+        self._allowance = self._held_entries(net)
         self.where: Mapping[str, Any] = {}
+
+    def _compile(self, net: torch.nn.Module, spec: CompileSpec) -> Callable[..., Any]:
+        return torch.compile(net, backend=spec.backend, **spec.options())
+
+    def _held_entries(self, net: torch.nn.Module) -> int:
+        """The cache entries the recompile allowance adds to the limit."""
+        return _cached_entries(net)
 
     def _fail(self, error: BaseException, **stage: Any) -> dict[str, Any]:
         restart = {**self.where, **stage, "error": type(error).__name__, "message": _message(error)}
@@ -487,19 +497,25 @@ class _InferenceSession(_CompileSession):
     under a fit's recompile allowance, failure policy and compiled-nothing
     check. It compiles with a :class:`_CountedBackend` of its own: the run
     is compiled only when a graph compiled for it ran in the first call.
+    Its graphs are never reused by a later benchmark, so they stay in
+    dynamo's cache, unused, until ``torch._dynamo.reset()``.
     The caller holds :meth:`strict` around all of its calls, once: patching
     dynamo's config costs more than a small forward. After the first call
-    nothing else wraps the compiled module (no snapshot or counters), so a
-    timed call measures the module alone; a compile failure there is still
-    handled by the policy, retried eagerly without a snapshot."""
+    a timed call runs the compiled module with only the backend's one
+    counter increment per graph call around it (no snapshot or dynamo
+    counters); a compile failure there is still handled by the policy,
+    retried eagerly without a snapshot."""
 
-    def __init__(self, net: torch.nn.Module, spec: CompileSpec) -> None:
-        super().__init__(net, spec)
+    _backend: _CountedBackend
+
+    def _compile(self, net: torch.nn.Module, spec: CompileSpec) -> Callable[..., Any]:
         self._backend = _CountedBackend(spec)
-        self._compiled = torch.compile(net, backend=self._backend, fullgraph=spec.fullgraph, dynamic=spec.dynamic)
+        return torch.compile(net, backend=self._backend, fullgraph=spec.fullgraph, dynamic=spec.dynamic)
+
+    def _held_entries(self, net: torch.nn.Module) -> int:
         # Each benchmark adds entries to every code object it traces, so it
-        # gets the configured limit on top of the most any of them holds.
-        self._allowance = _most_cached_entries()
+        # gets the configured limits on top of the most any of them holds.
+        return _most_cached_entries()
 
     def strict(self) -> Any:
         """The recompile allowance (extended even where torch cannot make

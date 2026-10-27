@@ -595,6 +595,22 @@ def test_a_graph_breaking_forward_keeps_compiling_past_the_recompile_limit(helpe
         assert report.compile.effective == "compiled" and _CALLS["n"] > before, attempt
 
 
+@pytest.mark.parametrize("helper", HELPERS)
+def test_one_model_benchmarked_past_the_accumulated_limit_keeps_compiling(helper, tmp_path):
+    """Each benchmark compiles graphs of its own, which stay cached, so a
+    process benchmarking one model again and again passes dynamo's
+    accumulated limit (256 entries of a code object, here lowered to 3):
+    each call gets that limit afresh too."""
+    config = torch._dynamo.config
+    name = next(n for n in ("accumulated_recompile_limit", "accumulated_cache_size_limit") if hasattr(config, n))
+    spec, net = _counting(), _feed_fwd_net(1)
+    with config.patch(**{name: 3}):
+        for attempt in range(6):
+            before = _CALLS["n"]
+            report = _run(helper, net, spec, tmp_path / str(attempt))
+            assert report.compile.effective == "compiled" and _CALLS["n"] > before, attempt
+
+
 @pytest.mark.parametrize("policy", ["error", "eager"])
 @pytest.mark.parametrize("make", [_BreaksMidway, _BreaksInHelper], ids=["midway", "helper"])
 def test_a_graph_cached_for_an_earlier_benchmark_never_counts_as_compiled(policy, make, monkeypatch):
