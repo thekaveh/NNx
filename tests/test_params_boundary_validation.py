@@ -196,6 +196,30 @@ def test_numpy_scalars_become_plain_floats_in_state():
     assert NNParams(input_dim=2, output_dim=2, hidden_dims=[2], dropout_prob=0).state()["dropout_prob"] == 0
     assert type(NNParams(input_dim=2, output_dim=2, hidden_dims=[2], dropout_prob=0).dropout_prob) is int
 
+    # Param groups (#515), on both optimizer variants: each number becomes
+    # the float(value) it compares as, the pattern a plain str.
+    from nnx import NNOptimFactoryParams, NNParamGroupSpec, OptimizerFactorySpec
+
+    groups = [
+        NNParamGroupSpec(name_pattern=np.str_("layers.0.*"), lr=np.float32(1e-3), weight_decay=np.float64(0.0)),
+        NNParamGroupSpec(name_pattern="layers.1.*", lr_multiplier=np.float64(0.1), weight_decay=np.float32(0.5)),
+    ]
+    for optim in (
+        NNOptimParams(name=Optims.ADAM, max_lr=1e-3, momentum=(0.9, 0.999), weight_decay=0.0, param_groups=groups),
+        NNOptimFactoryParams(factory=OptimizerFactorySpec(id="acme.sgd", version=1), max_lr=1e-3, param_groups=groups),
+    ):
+        state = optim.state()
+        yaml.safe_dump(state)  # raised RepresenterError for NumPy scalars
+        first, second = state["param_groups"]
+        assert first == {"name_pattern": "layers.0.*", "lr": float(np.float32(1e-3)), "weight_decay": 0.0}
+        assert second == {"name_pattern": "layers.1.*", "lr_multiplier": 0.1, "weight_decay": 0.5}
+        for group in (first, second):
+            assert type(group["name_pattern"]) is str
+            assert all(type(group[key]) is float for key in group if key != "name_pattern")
+    # A Python int stays an int, so a plain config keeps its run id.
+    assert NNParamGroupSpec(name_pattern="*", weight_decay=0).state() == {"name_pattern": "*", "weight_decay": 0}
+    assert type(NNParamGroupSpec(name_pattern="*", weight_decay=0).weight_decay) is int
+
 
 def test_an_integer_momentum_accepted_at_construction_is_valid_at_train_time():
     """momentum=0 (plain SGD) and betas=(0, 0) pass construction, so
@@ -590,6 +614,50 @@ def test_numpy_strings_and_bools_in_configs_are_stored_as_plain_values():
 
     result = ChoiceResult("d", ((np.str_("a"), 0.5), (np.str_("b"), 0.5)))
     assert all(type(option_id) is str for option_id, _ in result.distribution)
+
+    # Identity, lineage, metric and monitor strings reach state() as plain
+    # str (#515); each failed yaml.safe_dump, most after a trained epoch.
+    from nnx import NNSchedulerParams, NNTrainParams, Schedulers, TaskSpec
+    from nnx.monitors import MonitorSpec
+    from nnx.optimizers import OptimizerFactorySpec
+
+    s = np.str_
+    assert type(ModelSpec(s("my.enc"), 1).state()["id"]) is str
+    assert type(OptimizerFactorySpec(s("acme.sgd"), 1).state()["id"]) is str
+    assert type(TaskSpec(s("categorical"), 2).state()["kind"]) is str
+    metric = MetricSpec(s("accuracy"), name=s("acc")).state()
+    assert (type(metric["id"]), type(metric["name"])) == (str, str)
+    monitor = MonitorSpec(
+        metric=s("loss"), split=s("train"), mode=s("max"), on_missing=s("error"), on_nonfinite=s("error")
+    ).state()
+    assert {name: type(monitor[name]) for name in ("metric", "split", "mode", "on_missing", "on_nonfinite")} == {
+        "metric": str,
+        "split": str,
+        "mode": str,
+        "on_missing": str,
+        "on_nonfinite": str,
+    }
+    scheduler = NNSchedulerParams(
+        min_lr=0.0, factor=0.5, patience=1, cooldown=0, threshold=0.0, kind=Schedulers.STEP, clock=s("optimizer_update")
+    )
+    assert type(scheduler.state()["clock"]) is str
+    run_id = "4c968b3c916f88b0f36bdfd2fc855938"
+    for train in (
+        NNTrainParams(
+            n_epochs=1,
+            data_id=s("ds-1"),
+            parent_run_id=s(run_id),
+            resume_from_checkpoint=s("best"),
+            resume_epochs=s("planned"),
+        ),
+        NNTrainParams(n_epochs=1, resume_from_run_id=s(run_id), resume_from_checkpoint=s("best")),
+    ):
+        state = train.state()
+        yaml.safe_dump(state)
+        assert all(type(state[key]) is str for key in ("parent_run_id", "parent_checkpoint"))
+        assert type(train.resume_from_run_id or train.parent_run_id) is str
+    planned = NNTrainParams(n_epochs=1, data_id=s("ds-1"), resume_epochs=s("planned")).state()
+    assert (type(planned["data_id"]), type(planned["resume_epochs"])) == (str, str)
 
 
 def test_link_categories_refuse_a_bare_string():
@@ -2313,3 +2381,247 @@ def test_surgery_refuses_a_custom_forward_on_the_feedfwd_paths():
     shifted = SimpleNamespace(params=SimpleNamespace(activation=Shifted))
     with pytest.raises(ValueError, match="Shifted"):
         _check_relu_activation(shifted, "layers", 0)
+
+
+# ----- #515: NumPy values in identity, lineage, metric and monitor fields
+
+
+def _tiny_net_and_model():
+    from nnx import Activations, Devices, Losses, Nets, NNModelParams
+
+    net = NNParams(input_dim=4, output_dim=2, hidden_dims=[3], dropout_prob=0.0, activation=Activations.RELU)
+    return net, NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+
+
+def _pinned_optim(lr_multiplier=0.1, weight_decay=0, name_pattern="layers.0.*"):
+    from nnx import NNOptimParams, NNParamGroupSpec, Optims
+
+    group = NNParamGroupSpec(name_pattern=name_pattern, lr_multiplier=lr_multiplier, weight_decay=weight_decay)
+    return NNOptimParams(
+        name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=weight_decay, param_groups=[group]
+    )
+
+
+def _pinned_metrics_and_monitor(name="acc", metric="acc"):
+    from nnx import MetricSpec, MonitorSpec
+
+    return (MetricSpec("accuracy", name=name),), MonitorSpec(
+        metric=metric, split="val", mode="max", on_missing="error", on_nonfinite="error"
+    )
+
+
+def test_plain_value_run_ids_are_unchanged():
+    """Ids pinned at e69fd74, before #515 normalized NumPy values: plain
+    `int` / `float` / `str` configs keep them byte for byte (weight_decay=0
+    stays an int, not the float require_finite_real returns)."""
+    from nnx import MonitorSpec, NNSchedulerParams, NNTrainerParams, Schedulers
+    from nnx.nn.params.nn_run import NNRun
+    from nnx.trainer.trainer import _representative_train_params
+
+    net, model = _tiny_net_and_model()
+    metrics, monitor = _pinned_metrics_and_monitor()
+    lineage = dict(data_id="ds-1", parent_run_id="4c968b3c916f88b0f36bdfd2fc855938", resume_from_checkpoint="best")
+    train = NNTrainParams(n_epochs=3, optim=_pinned_optim(), metrics=metrics, monitor=monitor, **lineage)
+    assert NNRun(net=net, model=model, train=train, salt="exp-a").id == "3018c6a879524cdb454ea6f908c26177"
+    scheduler = NNSchedulerParams(
+        min_lr=0.0,
+        factor=0.5,
+        patience=1,
+        cooldown=0,
+        threshold=0.0,
+        kind=Schedulers.STEP,
+        step_size=1,
+        clock="optimizer_update",
+    )
+    trainer = NNTrainerParams(
+        n_epochs=2,
+        optims={"g": _pinned_optim()},
+        schedulers={"g": scheduler},
+        metrics=metrics,
+        monitor=MonitorSpec(metric="acc", mode="max"),
+        **lineage,
+    )
+    run = NNRun(net=net, model=model, train=_representative_train_params(trainer), trainer=trainer, salt="exp-a")
+    assert run.id == "3f4ff8662ccba4094b9d2386de273b86"
+
+
+def test_a_numpy_value_gets_the_run_id_of_its_plain_python_value():
+    """A NumPy value hashes as float(value) / str(value): np.float32(1e-3)
+    matches float(np.float32(1e-3)), which is not 1e-3."""
+    import numpy as np
+
+    from nnx.nn.params.nn_run import NNRun
+
+    net, model = _tiny_net_and_model()
+
+    def run_id(lr_multiplier=0.1, weight_decay=0, name_pattern="layers.0.*", salt="exp-a", name="acc", **train):
+        metrics, monitor = _pinned_metrics_and_monitor(name=name, metric=name)
+        params = NNTrainParams(
+            n_epochs=1,
+            optim=_pinned_optim(lr_multiplier, weight_decay, name_pattern),
+            metrics=metrics,
+            monitor=monitor,
+            **train,
+        )
+        return NNRun(net=net, model=model, train=params, salt=salt).id
+
+    single = np.float32(1e-3)
+    assert run_id(lr_multiplier=single) == run_id(lr_multiplier=float(single)) != run_id(lr_multiplier=1e-3)
+    assert run_id(lr_multiplier=np.logspace(-2, 0, 3)[1]) == run_id(lr_multiplier=0.1)
+    assert run_id(weight_decay=np.float64(0)) == run_id(weight_decay=0.0) != run_id(weight_decay=0)
+    s = np.str_
+    assert run_id(name_pattern=s("layers.0.*"), salt=s("exp-a"), name=s("acc")) == run_id()
+    lineage = dict(data_id="ds-1", parent_run_id="a" * 32, resume_from_checkpoint="best", resume_epochs="planned")
+    assert run_id(**{k: s(v) for k, v in lineage.items()}) == run_id(**lineage)
+    assert run_id(resume_from_run_id=s("a" * 32)) == run_id(resume_from_run_id="a" * 32)
+
+
+def _fit(**train):
+    import contextlib
+    import io
+
+    import torch
+
+    from nnx import Callback, NNModel, set_seed
+
+    class EpochCounter(Callback):
+        trained = 0
+
+        def on_epoch_end(self, ctx):
+            EpochCounter.trained += 1
+
+    X = torch.randn(16, 4, generator=torch.Generator().manual_seed(1))
+    Y = (X[:, 0] > 0).long()
+    loader = [(X[:8], Y[:8]), (X[8:], Y[8:])]
+    salt = train.pop("salt", None)
+    set_seed(0)
+    net, model = _tiny_net_and_model()
+    params = NNTrainParams(n_epochs=2, train_loader=loader, val_loader=loader, **train)
+    with contextlib.redirect_stdout(io.StringIO()):
+        run = NNModel(net_params=net, params=model).train(params, callbacks=[EpochCounter()], salt=salt)
+    return run, EpochCounter.trained
+
+
+def _run_dirs():
+    import os
+
+    return sorted(d for d in os.listdir("runs") if not d.startswith(".") and d != "best")
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["salt", "data_id", "parent_run_id", "resume_from_checkpoint", "resume_from_run_id", "metric_name", "monitor"],
+)
+def test_numpy_strings_train_save_and_reload_with_the_plain_str_run_id(field, tmp_path, monkeypatch):
+    """Ticket #515 Example 2: each `np.str_` field trained one epoch, then
+    run.yaml failed to save and the run directory was deleted."""
+    import numpy as np
+
+    from nnx import MetricSpec, MonitorSpec
+    from nnx.nn.params.nn_run import NNRun
+
+    monkeypatch.chdir(tmp_path)
+    parent, _ = _fit()
+
+    def config(text):
+        return {
+            "salt": dict(salt=text("exp-a")),
+            "data_id": dict(data_id=text("ds-1")),
+            # tag "first": with the default "last" this run would share its id with the resume
+            "parent_run_id": dict(parent_run_id=text(parent.id), resume_from_checkpoint="first"),
+            "resume_from_checkpoint": dict(parent_run_id=parent.id, resume_from_checkpoint=text("best")),
+            "resume_from_run_id": dict(resume_from_run_id=text(parent.id)),
+            "metric_name": dict(metrics=(MetricSpec("accuracy", name=text("acc")),)),
+            "monitor": dict(monitor=MonitorSpec(metric=text("loss"), split=text("val"), mode=text("min"))),
+        }[field]
+
+    run, trained = _fit(**config(np.str_))
+    assert trained == 2
+    loaded = NNRun.load(run.id)
+    assert loaded.id == run.id and len({idp.epoch_idx for idp in loaded.idps}) == 2  # a resume numbers on
+    assert type(run.salt) is type(loaded.salt) is (str if field == "salt" else type(None))
+    plain = config(str)
+    salt = plain.pop("salt", None)
+    net, model = _tiny_net_and_model()
+    assert run.id == NNRun(net=net, model=model, train=NNTrainParams(n_epochs=2, **plain), salt=salt).id
+
+
+@pytest.mark.parametrize("lineage", [12345, "", "  ", "run"])
+def test_parent_run_id_must_be_a_run_id_string_before_any_epoch(lineage, tmp_path, monkeypatch):
+    """Ticket #515 Example 3: an int lineage trained and was recorded; an
+    NNRun (a forgotten `.id`) trained one epoch, then failed to save."""
+    monkeypatch.chdir(tmp_path)
+    parent, _ = _fit()
+    value = parent if lineage == "run" else lineage
+    match = r"parent_run_id.*\.id" if lineage == "run" else "parent_run_id must be a non-empty run id string"
+    with pytest.raises(ValueError, match=match) as refused:
+        NNTrainParams(n_epochs=1, parent_run_id=value)
+    # The copy hint is for a lineage a saved run.yaml can hold; state() drops "".
+    assert ("a copy of them must set parent_run_id" in str(refused.value)) is (lineage in (12345, "  "))
+    before = _run_dirs()
+    with pytest.raises(ValueError, match=match):
+        _fit(parent_run_id=value)
+    assert _run_dirs() == before  # refused at construction: nothing trained or written
+
+
+_LEGACY_INT_LINEAGE_RUN_ID = "3e717f00b951b070b1982e6daccac701"
+# run.yaml (and idps.csv below) written at e69fd74 by
+# NNModel.train(NNTrainParams(n_epochs=1, parent_run_id=12345)), which that
+# version accepted.
+_LEGACY_INT_LINEAGE_RUN_YAML = f"""id: {_LEGACY_INT_LINEAGE_RUN_ID}
+model:
+  device: cpu
+  loss: cross_entropy
+  net: feed_fwd
+net:
+  activation: relu
+  dropout_prob: 0.0
+  hidden_dims: '[3]'
+  input_dim: 4
+  output_dim: 2
+train:
+  n_epochs: 1
+  optim:
+    max_lr: 0.01
+    momentum: (0.9, 0.999)
+    name: adam
+    weight_decay: 5.0e-05
+  parent_checkpoint: last
+  parent_run_id: 12345
+  scheduler:
+    cooldown: 2
+    factor: 0.95
+    min_lr: 1.0e-07
+    patience: 8
+    threshold: 0.001
+"""
+
+
+def test_a_run_saved_with_an_int_lineage_still_loads_with_its_id(tmp_path, monkeypatch):
+    """The new parent_run_id check must not orphan a run saved before it."""
+    from nnx.nn.params.nn_run import NNRun
+
+    run_dir = tmp_path / "runs" / _LEGACY_INT_LINEAGE_RUN_ID
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.yaml").write_text(_LEGACY_INT_LINEAGE_RUN_YAML, encoding="utf-8")
+    (run_dir / "idps.csv").write_text(
+        ",lr,iter_idx,epoch_idx,batch_idx,val_edp,train_edp.f1,train_edp.recall,train_edp.accuracy,"
+        "train_edp.precision,train_edp.loss,train_edp.error\n"
+        "0,0.01,0,0,0,,0.38461538461538464,0.5,0.625,0.3125,0.68516606092453,0.375\n"
+        "1,0.01,1,0,1,,0.2,0.5,0.25,0.125,0.9307830333709717,0.75\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    loaded = NNRun.load(_LEGACY_INT_LINEAGE_RUN_ID)
+    assert loaded.id == _LEGACY_INT_LINEAGE_RUN_ID
+    assert loaded.train.parent_run_id == 12345 and loaded.train.state()["parent_run_id"] == 12345
+    # Only from_state admits it: a copy goes back through the constructor
+    # and says how to fix it, and replacing the lineage makes it copyable.
+    import dataclasses
+
+    with pytest.raises(ValueError, match="a copy of them must set parent_run_id to a run id string or None"):
+        loaded.train.with_train_loader([])
+    with pytest.raises(ValueError, match="NNTrainParams.parent_run_id"):
+        dataclasses.replace(loaded.train)
+    for lineage in (None, "12345"):
+        assert dataclasses.replace(loaded.train, parent_run_id=lineage).with_train_loader([]).parent_run_id == lineage

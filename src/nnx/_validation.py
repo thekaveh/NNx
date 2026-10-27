@@ -28,6 +28,10 @@ anything but a 3-tuple fails with the tuple contract before a dataset
 factory, tokenizer or split runs. Nothing here coerces numeric strings or
 touches ``state()``.
 
+`plain_real` and `plain_str` turn an already-validated NumPy scalar or
+``str`` subclass into the plain Python value it equals, keeping an exact
+``int`` / ``float`` / ``str`` as given so existing run ids never shift.
+
 Internal; not part of the public API.
 """
 
@@ -92,6 +96,17 @@ def plain_real(value: Any) -> Any:
         return value
     # A NumPy integer is the same setting as the Python int (and run id).
     return int(value) if isinstance(value, numbers.Integral) else float(value)
+
+
+def plain_str(value: Any) -> Any:
+    """``value`` as a plain Python ``str`` for ``state()``: a validated
+    ``str`` subclass (a ``numpy.str_``, say) becomes the ``str`` it equals,
+    so ``run.yaml`` can serialize it and the run id hashes the plain text.
+    An exact ``str`` is kept as given; anything else is returned unchanged
+    for the caller's own check to report."""
+    if type(value) is str or not isinstance(value, str):
+        return value
+    return str.__str__(value)
 
 
 def require_count(
