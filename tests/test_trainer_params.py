@@ -233,3 +233,92 @@ def test_optimizer_and_scheduler_names_must_be_non_empty_strings(names):
     optims = {key: _g_optim() for key in names}
     with pytest.raises(ValueError, match="names must be non-empty strings"):
         NNTrainerParams(n_epochs=1, optims=optims)
+
+
+def test_trainer_params_store_numpy_strings_as_plain_values():
+    """#515 twins of NNTrainParams: identity, lineage, optimizer and
+    scheduler names, metrics and monitor reach state() as plain str."""
+    import numpy as np
+    import yaml
+
+    from nnx import MetricSpec, MonitorSpec
+
+    s = np.str_
+    run_id = "4c968b3c916f88b0f36bdfd2fc855938"
+    common = dict(
+        n_epochs=1,
+        optims={s("G"): _g_optim(), "D": _d_optim()},
+        schedulers={s("G"): _sched()},
+        data_id=s("ds-1"),
+        metrics=(MetricSpec(s("accuracy"), name=s("acc")),),
+        monitor=MonitorSpec(
+            metric=s("acc"), split=s("val"), mode=s("max"), on_missing=s("error"), on_nonfinite=s("skip")
+        ),
+    )
+    for lineage in (
+        dict(parent_run_id=s(run_id), resume_from_checkpoint=s("best")),
+        dict(resume_from_run_id=s(run_id), resume_from_checkpoint=s("best")),
+    ):
+        p = NNTrainerParams(**common, **lineage)
+        state = p.state()
+        yaml.safe_dump(state)  # raised RepresenterError on the first numpy.str_
+        assert all(type(name) is str for name in (*p.optims, *p.schedulers, *state["optims"], *state["schedulers"]))
+        assert all(type(state[key]) is str for key in ("data_id", "parent_run_id", "parent_checkpoint"))
+        assert type(p.resume_from_run_id or p.parent_run_id) is str
+        assert (type(state["metrics"][0]["id"]), type(state["metrics"][0]["name"])) == (str, str)
+        assert all(
+            type(state["monitor"][key]) is str for key in ("metric", "split", "mode", "on_missing", "on_nonfinite")
+        )
+        plain = {key: str(value) for key, value in lineage.items()}
+        assert (
+            state
+            == NNTrainerParams(
+                n_epochs=1,
+                optims={"G": _g_optim(), "D": _d_optim()},
+                schedulers={"G": _sched()},
+                data_id="ds-1",
+                metrics=(MetricSpec("accuracy", name="acc"),),
+                monitor=MonitorSpec(metric="acc", split="val", mode="max", on_missing="error"),
+                **plain,
+            ).state()
+        )
+
+
+@pytest.mark.parametrize("lineage", [12345, "", "  ", "run"])
+def test_trainer_params_refuse_a_parent_run_id_that_is_not_a_run_id_string(lineage):
+    """#515 Example 3 twin: NNTrainerParams accepted an int (recorded as the
+    lineage) and an NNRun (failed the first run.yaml write)."""
+    from nnx import Activations, Devices, Losses, Nets, NNModelParams, NNParams, NNTrainParams
+    from nnx.nn.params.nn_run import NNRun
+
+    if lineage == "run":
+        lineage = NNRun(
+            net=NNParams(input_dim=4, output_dim=2, hidden_dims=[3], dropout_prob=0.0, activation=Activations.RELU),
+            model=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+            train=NNTrainParams(n_epochs=1),
+        )
+        match = r"NNTrainerParams\.parent_run_id .*got an NNRun; pass its \.id"
+    else:
+        match = "NNTrainerParams.parent_run_id must be a non-empty run id string"
+    with pytest.raises(ValueError, match=match) as refused:
+        NNTrainerParams(n_epochs=1, optims={"G": _g_optim()}, parent_run_id=lineage)
+    assert ("a copy of them must set parent_run_id" in str(refused.value)) is (lineage in (12345, "  "))
+
+
+def test_trainer_params_from_state_keeps_a_saved_non_string_lineage():
+    """run.yaml written before #515 may record `parent_run_id: 12345`; the
+    run must reload with that lineage, so its id does not change."""
+    from dataclasses import replace
+
+    from nnx import NNTrainerParamsBuilder
+
+    saved = {**NNTrainerParams(n_epochs=1, optims={"G": _g_optim()}).state()}
+    saved.update(parent_run_id=12345, parent_checkpoint="last")
+    p = NNTrainerParams.from_state(saved)
+    assert p.parent_run_id == 12345 and p.state() == saved
+    # A copy is refused until the lineage is a run id string or None.
+    with pytest.raises(ValueError, match="a copy of them must set parent_run_id"):
+        p.with_val_loader([])
+    with pytest.raises(ValueError, match="NNTrainerParams.parent_run_id"):
+        NNTrainerParamsBuilder.from_params(p).build()
+    assert NNTrainerParamsBuilder.from_params(replace(p, parent_run_id=None)).build().parent_run_id is None

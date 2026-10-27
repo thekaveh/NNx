@@ -60,7 +60,7 @@ from ._confusion import AVERAGES, ConfusionCounts
 from ._probability import brier_terms as _brier_terms
 from ._probability import nll_terms as _nll_terms
 from ._update_engine import trains
-from ._validation import require_count
+from ._validation import plain_str, require_count
 
 if TYPE_CHECKING:
     from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -131,7 +131,8 @@ _REGISTRY: dict[tuple[str, int], MetricDefinition] = {}
 def _require_slug(value: object, what: str) -> str:
     if not isinstance(value, str) or _SLUG.fullmatch(value) is None:
         raise ValueError(f"{what} must be a slug (letters, digits, '.', '_', '-'), got {value!r}")
-    return value
+    # A numpy.str_ slug is stored (and serialized) as the plain str (#515).
+    return plain_str(value)
 
 
 def _require_version(value: object, owner: str) -> int:
@@ -220,7 +221,7 @@ class MetricSpec:
             raise TypeError(f"MetricSpec config must be a str-keyed mapping, got {type(config).__name__}")
         object.__setattr__(self, "config", _freeze_config(config, "", "MetricSpec"))
         if name is not None:
-            _require_slug(name, "MetricSpec name")
+            name = _require_slug(name, "MetricSpec name")
         object.__setattr__(self, "name", name)
         if self.label in _RECORD_FIELDS:
             raise ValueError(f"MetricSpec name {self.label!r} is reserved for the record's own {self.label!r} field")
@@ -465,7 +466,7 @@ class MonitorSpec:
     on_nonfinite: str = "skip"
 
     def __post_init__(self) -> None:
-        _require_slug(self.metric, "MonitorSpec metric")
+        object.__setattr__(self, "metric", _require_slug(self.metric, "MonitorSpec metric"))
         if self.split not in _SPLITS:
             raise ValueError(f"MonitorSpec split must be 'val' or 'train', got {self.split!r}")
         if self.mode is not None and self.mode not in _MODES:
@@ -479,6 +480,10 @@ class MonitorSpec:
         for name in ("on_missing", "on_nonfinite"):
             if getattr(self, name) not in _POLICIES:
                 raise ValueError(f"MonitorSpec {name} must be 'skip' or 'error', got {getattr(self, name)!r}")
+        # Checked names reach state() as plain str: a numpy.str_ failed the
+        # first run.yaml write and shifted the run id (#515).
+        for name in ("split", "mode", "on_missing", "on_nonfinite"):
+            object.__setattr__(self, name, plain_str(getattr(self, name)))
 
     @property
     def key(self) -> str:

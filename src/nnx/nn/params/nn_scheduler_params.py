@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Optional
 
-from ..._validation import plain_real, require_count, require_finite_real
+from ..._validation import plain_real, plain_str, require_count, require_finite_real
 from ..enum.schedulers import Schedulers
 
 if TYPE_CHECKING:
@@ -48,6 +48,7 @@ class NNSchedulerParams:
             raise TypeError(f"NNSchedulerParams kind must be a Schedulers member or None, got {self.kind!r}")
         if self.clock not in SCHEDULER_CLOCKS:
             raise ValueError(f"NNSchedulerParams clock must be 'epoch' or 'optimizer_update', got {self.clock!r}")
+        object.__setattr__(self, "clock", plain_str(self.clock))  # a numpy.str_ is not YAML-safe (#515)
         if self.clock == "optimizer_update" and self.kind in (None, Schedulers.REDUCE_LR_ON_PLATEAU):
             raise ValueError(
                 "a plateau scheduler reads a monitored metric at the epoch boundary, not an optimizer-update "
