@@ -61,7 +61,6 @@ gradients, and carry a :class:`CompileRecord` on their reports.
 from __future__ import annotations
 
 import contextlib
-import types
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Optional
@@ -251,81 +250,29 @@ def _message(error: BaseException) -> str:
 _LIMIT_NAMES = ("recompile_limit", "cache_size_limit")  # torch >= 2.6 / older
 
 
-def _traced_functions(net: torch.nn.Module, compiled: Any = None) -> list[Any]:
-    """The functions whose frames dynamo traces for the net: the class's
-    forward and, given the ``compiled`` wrapper, the function it hands
-    dynamo. Torch's own modules (``nn.Sequential`` for one) and skipped
-    forwards are traced through a wrapper function whose code all of them
-    share."""
-    functions = [type(net).forward]
-    handed = getattr(getattr(compiled, "forward", None), "_torchdynamo_orig_callable", None)
-    if handed is not None:
-        functions.append(handed)
-    return [function for function in functions if isinstance(getattr(function, "__code__", None), types.CodeType)]
-
-
-def _cached_entries(net: torch.nn.Module, compiled: Any = None) -> int:
-    """How many dynamo cache entries the :func:`_traced_functions` hold
-    (other fits of the same class, earlier in this process, and anything
-    else that shares their code)."""
+def _cached_entries(net: torch.nn.Module) -> int:
+    """Dynamo cache entries already held for the net class's forward (other
+    fits of the same class, earlier in this process)."""
     try:
         from torch._dynamo.eval_frame import _debug_get_cache_entry_list
 
-        codes = {function.__code__ for function in _traced_functions(net, compiled)}
-        return sum(len(_debug_get_cache_entry_list(code)) for code in codes)
+        return len(_debug_get_cache_entry_list(type(net).forward.__code__))
     except Exception:  # a private helper: absent or changed in this torch
         return 0
 
 
-@contextlib.contextmanager
-def _graph_ran(net: torch.nn.Module, compiled: Any) -> Iterator[list[bool]]:
-    """Yields a flag set once a graph dynamo already cached for the net runs:
-    one of the :func:`_traced_functions`, the forward of any module in the
-    net, or a resume function after a graph break in one of them (where a
-    forward that breaks first keeps its graphs). A cached frame calls its
-    graph through a ``__compiled_fn*`` global of its function's module;
-    each is wrapped for the duration and restored after. Holding a cached
-    graph is no proof: the wrapper code that torch's own modules share
-    holds the graphs of every such module compiled in the process, and a
-    forward disabled on one instance still leaves its class's entries."""
-    ran = [False]
-    wrapped: list[tuple[dict[str, Any], str, Any]] = []
-
-    def marking(graph: Any) -> Callable[..., Any]:
-        def run(*args: Any, **kwargs: Any) -> Any:
-            ran[0] = True
-            return graph(*args, **kwargs)
-
-        return run
-
+def _most_cached_entries() -> int:
+    """The most dynamo cache entries any code object traced in this process
+    holds: a benchmark's own graphs may be cached on any of them (a helper
+    function, another method, a resume function after a graph break)."""
     try:
+        from torch._dynamo.convert_frame import input_codes
         from torch._dynamo.eval_frame import _debug_get_cache_entry_list
 
-        functions = [*_traced_functions(net, compiled), *(type(module).forward for module in net.modules())]
-        pending = [(function.__code__, function.__globals__) for function in functions if hasattr(function, "__code__")]
-        seen: set[Any] = set()
-        marked: set[tuple[int, str]] = set()  # an entry of two traced codes is wrapped once
-        while pending:
-            code, scope = pending.pop()
-            if code in seen or not isinstance(code, types.CodeType):
-                continue
-            seen.add(code)
-            for entry in _debug_get_cache_entry_list(code):
-                for name in getattr(getattr(entry, "code", None), "co_names", ()):
-                    name = str(name)
-                    if name.startswith("__compiled_fn") and name in scope and (id(scope), name) not in marked:
-                        marked.add((id(scope), name))
-                        wrapped.append((scope, name, scope[name]))
-                        scope[name] = marking(scope[name])
-                    elif name.startswith("__resume_at") and name in scope:  # a function, or its code
-                        pending.append((getattr(scope[name], "__code__", scope[name]), scope))
-    except Exception:  # a private helper: absent or changed in this torch (no graph is seen run)
-        pass
-    try:
-        yield ran
-    finally:
-        for scope, name, graph in reversed(wrapped):
-            scope[name] = graph
+        codes = [code for code in (ref() for ref in list(input_codes.seen)) if code is not None]
+        return max((len(_debug_get_cache_entry_list(code)) for code in codes), default=0)
+    except Exception:  # private helpers: absent or changed in this torch
+        return 0
 
 
 def _strict_recompiles(allowance: int, *, extend_without_strict: bool = False) -> Any:
@@ -506,19 +453,53 @@ class _CompileSession:
         self._backward_proven = True
 
 
+class _CountedBackend:
+    """One benchmark's own backend: the spec's, resolved as ``torch.compile``
+    resolves it (``mode`` included), with every graph it compiles counting
+    its calls. Dynamo guards each cache entry on the backend that compiled
+    it, so a graph cached for another benchmark or a fit never runs, or
+    counts, under this one."""
+
+    def __init__(self, spec: CompileSpec) -> None:
+        if spec.backend == "inductor":
+            self._real: Any = torch._TorchCompileInductorWrapper(spec.mode, None, spec.dynamic)
+        else:
+            self._real = torch._TorchCompileWrapper(spec.backend, spec.mode, None, spec.dynamic)
+        self.__name__ = spec.backend  # torch's name for the backend in its messages
+        self.calls = 0
+
+    def __call__(self, gm: torch.fx.GraphModule, example_inputs: Any) -> Callable[..., Any]:
+        graph = self._real(gm, example_inputs)
+
+        def run(*args: Any, **kwargs: Any) -> Any:
+            self.calls += 1
+            return graph(*args, **kwargs)
+
+        return run
+
+    def reset(self) -> None:
+        if hasattr(self._real, "reset"):
+            self._real.reset()
+
+
 class _InferenceSession(_CompileSession):
     """A compiled no-grad forward for measurement (:mod:`nnx.benchmarking`),
     under a fit's recompile allowance, failure policy and compiled-nothing
-    check. The caller holds :meth:`strict` around all of its calls, once:
-    patching dynamo's config costs more than a small forward. After the
-    first call nothing else wraps the compiled module (no snapshot or
-    counters), so a timed call measures the module alone; a compile failure
-    there is still handled by the policy, retried eagerly without a
-    snapshot."""
+    check. It compiles with a :class:`_CountedBackend` of its own: the run
+    is compiled only when a graph compiled for it ran in the first call.
+    The caller holds :meth:`strict` around all of its calls, once: patching
+    dynamo's config costs more than a small forward. After the first call
+    nothing else wraps the compiled module (no snapshot or counters), so a
+    timed call measures the module alone; a compile failure there is still
+    handled by the policy, retried eagerly without a snapshot."""
 
     def __init__(self, net: torch.nn.Module, spec: CompileSpec) -> None:
         super().__init__(net, spec)
-        self._allowance = _cached_entries(net, self._compiled)
+        self._backend = _CountedBackend(spec)
+        self._compiled = torch.compile(net, backend=self._backend, fullgraph=spec.fullgraph, dynamic=spec.dynamic)
+        # Each benchmark adds entries to every code object it traces, so it
+        # gets the configured limit on top of the most any of them holds.
+        self._allowance = _most_cached_entries()
 
     def strict(self) -> Any:
         """The recompile allowance (extended even where torch cannot make
@@ -538,23 +519,19 @@ class _InferenceSession(_CompileSession):
                 return self._restart(error, None, args, kwargs)
         snapshot = _Snapshot(self._net)
         graphs_before, breaks_before = _unique_graphs(), _counter("graph_break")
-        # A first call that compiles no graph is served from dynamo's cache
-        # only when a graph cached for the net ran, else dynamo skipped the
-        # frame (a ``torch.compiler.disable`` forward, one it cannot trace,
-        # or, where torch cannot make the recompile limit an error, one at
-        # the limit) and ran it eagerly.
         try:
-            with _graph_ran(self._net, compiled) as cached_ran:
-                output = compiled(*args, **kwargs)
+            output = compiled(*args, **kwargs)
         except Exception as error:
             if not _is_compile_failure(error):
                 raise
             return self._restart(error, snapshot, args, kwargs)
-        compiled_now = _unique_graphs() > graphs_before
-        if not compiled_now and not cached_ran[0]:
+        if not self._backend.calls:
+            # No graph compiled for this benchmark ran: dynamo skipped the
+            # frame (a ``torch.compiler.disable`` forward, one it cannot
+            # trace, or one at the recompile limit) and ran it eagerly.
             self._skipped(snapshot)
             return output
-        self._compiled_first(graphs_before, breaks_before, compiled_now)
+        self._compiled_first(graphs_before, breaks_before, _unique_graphs() > graphs_before)
         return output
 
 

@@ -3434,23 +3434,21 @@ cancellation, and never runs inside a timed region.
 The helpers compile through `nnx.compilation`, as a fit does:
 
 - **Recompile allowance.** Each helper call gets dynamo's recompile limit
-  afresh, on top of the entries that earlier compiles of the class hold
-  (fits included). A sweep over many models in one process keeps compiling.
+  afresh, on top of the most entries any code dynamo traced holds (fits
+  included). A sweep over many models in one process keeps compiling.
 - **Failure policy.** `CompileSpec.on_failure` applies. Under `"error"`, a
   forward that fails to compile raises `CompileFailed`, with torch's error
   as its `__cause__`. Under `"eager"`, the run restarts that forward eagerly
   and runs the rest eagerly.
-- **Compiled nothing.** A run that compiled nothing is never labelled
-  compiled. Examples are a forward under `torch.compiler.disable`, one
-  dynamo skips (an `nn.LSTM`, a forward with no torch op), or one dynamo
-  leaves to eager at the recompile limit. A first call that compiles no
-  graph counts as served from dynamo's cache only when a graph cached
-  earlier for the model ran. That graph can belong to the model's forward,
-  to a child module's forward or to the code after a graph break. Cache
-  entries alone are no proof: torch's own modules (an `nn.Sequential`)
-  share one wrapper's cache, and a forward disabled on one instance leaves
-  its class's entries in place. A run that compiled nothing fails as a
-  compile failure does.
+- **Compiled nothing.** A run is compiled only when a graph compiled for
+  that benchmark ran in its first call. Each benchmark compiles with a
+  backend of its own: the `CompileSpec` backend, wrapped to count the calls
+  of each graph it compiles. Dynamo reuses a cached graph only under the
+  backend that compiled it, so a graph cached for another benchmark or a
+  fit never counts. A forward under `torch.compiler.disable`, one dynamo
+  skips (an `nn.LSTM`, a forward with no torch op) or one dynamo leaves to
+  eager at the recompile limit compiled nothing, and fails as a compile
+  failure does.
 - **Recorded.** `BenchmarkReport.compile` and `ProfileReport.compile` hold the
   `CompileRecord`: `effective` is `compiled`, or `eager` with the `restart`.
   `BenchmarkReport.state()` includes it. A report's default `label` and its
