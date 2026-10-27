@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import replace
 
+import numpy as np
 import pytest
 import torch
 
@@ -559,3 +560,178 @@ def test_a_transformation_recipe_round_trips_through_safetensors(tmp_path):
     x = torch.randn(5, 6)
     with torch.no_grad():
         torch.testing.assert_close(rebuilt.net(x), model.net(x), rtol=1e-5, atol=1e-6)
+
+
+# --- FIX-075 (#543): NumPy scalars in a custom step's records ----------------------------------
+
+_NUMPY_SCALARS = [np.float32(0.375), np.float16(0.375), np.int64(3), np.int8(-3), np.uint8(200), np.bool_(True)]
+_RECORD_FIELDS = ["loss", "f1", "recall", "accuracy", "precision", "error", "extra", "metrics"]
+
+
+def _edp_holding(field_name: str, value) -> NNEvaluationDataPoint:
+    if field_name in ("extra", "metrics"):
+        return NNEvaluationDataPoint(loss=0.5, **{field_name: {"v": value}})
+    return NNEvaluationDataPoint(**{field_name: value})
+
+
+def _field_of(edp: NNEvaluationDataPoint, field_name: str):
+    return getattr(edp, field_name)["v"] if field_name in ("extra", "metrics") else getattr(edp, field_name)
+
+
+def _metadata(path) -> dict[str, str]:
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework="pt") as handle:
+        return dict(handle.metadata())
+
+
+def test_safetensors_exports_numpy_scalars_from_custom_train_and_eval_steps(tmp_path, monkeypatch):
+    """The ticket's reproduction: a custom train step (and a custom eval
+    step) reports NumPy values; the safetensors export stores the Python
+    numbers they hold, equal to the pickle checkpoint's."""
+    from nnx import Checkpoints, NNTrainParams, set_seed
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def step(ctx):
+        x, y = ctx.batch
+        ctx.optimizer.zero_grad()
+        logits = ctx.model.net(x)
+        loss = ctx.model.loss_fn(logits, y)
+        loss.backward()
+        ctx.optimizer.step()
+        pred = logits.argmax(1).numpy()
+        return NNEvaluationDataPoint(loss=loss.detach().numpy()[()], extra={"n_correct": np.sum(pred == y.numpy())})
+
+    def eval_step(ctx):
+        return NNEvaluationDataPoint(loss=np.float32(0.25), accuracy=np.float16(0.5), extra={"seen": np.bool_(True)})
+
+    X = torch.randn(16, 4, generator=torch.Generator().manual_seed(1))
+    Y = (X[:, 0] > 0).long()
+    loader = [(X[:8], Y[:8]), (X[8:], Y[8:])]
+    set_seed(0)
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[3], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    run = model.train(
+        NNTrainParams(n_epochs=2, train_loader=loader, val_loader=loader), train_step_fn=step, eval_step_fn=eval_step
+    )
+    last = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert last is not None
+    assert type(last.idp.train_edp.loss) is np.float32  # the record holds the step's NumPy values
+
+    last.to_file(str(tmp_path / "last.pt"))
+    last.to_file(str(tmp_path / "last.safetensors"), format="safetensors")
+    pickled = NNCheckpoint.from_file(str(tmp_path / "last.pt"))
+    exported = NNCheckpoint.from_file(str(tmp_path / "last.safetensors"))
+    assert pickled is not None and exported is not None
+    train, val = exported.idp.train_edp, exported.idp.val_edp
+    assert val is not None and pickled.idp.val_edp is not None
+    assert type(train.loss) is float and train.loss == pickled.idp.train_edp.loss
+    assert (
+        type(train.extra["n_correct"]) is int and train.extra["n_correct"] == pickled.idp.train_edp.extra["n_correct"]
+    )
+    assert (type(val.loss), type(val.accuracy), type(val.extra["seen"])) == (float, float, bool)
+    assert (val.loss, val.accuracy, val.extra["seen"]) == (0.25, 0.5, True)
+
+
+@pytest.mark.parametrize("value", _NUMPY_SCALARS, ids=lambda value: type(value).__name__)
+@pytest.mark.parametrize("field_name", _RECORD_FIELDS)
+def test_safetensors_exports_numpy_scalars_in_every_record_field(tmp_path, field_name, value):
+    """Every record field of `train_edp` and `val_edp` stores a NumPy scalar
+    as the Python number it holds — the same metadata a plain-number
+    record writes — and reads it back as that number."""
+    model = _tiny_model()
+    plain = value.item()
+
+    def checkpoint_with(field_value) -> NNCheckpoint:
+        idp = NNIterationDataPoint(
+            lr=1e-3,
+            iter_idx=0,
+            epoch_idx=0,
+            batch_idx=0,
+            train_edp=_edp_holding(field_name, field_value),
+            val_edp=_edp_holding(field_name, field_value),
+        )
+        return NNCheckpoint(
+            idp=idp, model_params=model.params, net_params=model.net_params, net_state=model.net.state_dict()
+        )
+
+    numpy_path, plain_path = tmp_path / "numpy.safetensors", tmp_path / "plain.safetensors"
+    checkpoint_with(value).to_file(str(numpy_path), format="safetensors")
+    checkpoint_with(plain).to_file(str(plain_path), format="safetensors")
+
+    assert _metadata(numpy_path) == _metadata(plain_path)
+    loaded = NNCheckpoint.from_file(str(numpy_path))
+    assert loaded is not None and loaded.idp.val_edp is not None
+    for edp in (loaded.idp.train_edp, loaded.idp.val_edp):
+        stored = _field_of(edp, field_name)
+        assert type(stored) is type(plain) and stored == plain
+
+
+def test_safetensors_metadata_of_a_plain_record_is_unchanged(tmp_path):
+    """A record without NumPy values writes the metadata strings `e69fd74`
+    wrote (strings compared, not files: the header key order varies)."""
+    model = _tiny_model()
+    train = NNEvaluationDataPoint(
+        f1=0.5,
+        recall=0.25,
+        accuracy=0.75,
+        precision=0.125,
+        loss=0.4,
+        error=0.25,
+        extra={"n_correct": 3, "hit": True, "nan": float("nan")},
+    )
+    val = NNEvaluationDataPoint(loss=0.3, kind="categorical", count=8, status="ok", metrics={"acc": 0.875, "n": 7})
+    idp = NNIterationDataPoint(lr=1e-3, iter_idx=3, epoch_idx=1, batch_idx=1, train_edp=train, val_edp=val)
+    checkpoint = NNCheckpoint(
+        idp=idp, model_params=model.params, net_params=model.net_params, net_state=model.net.state_dict()
+    )
+    path = tmp_path / "plain.safetensors"
+    checkpoint.to_file(str(path), format="safetensors")
+
+    assert _metadata(path) == {
+        "nnx_format_version": "1",
+        "model_params": '{"net": "feed_fwd", "loss": "cross_entropy", "device": "cpu"}',
+        "net_params": (
+            '{"input_dim": 4, "output_dim": 2, "dropout_prob": 0.0, "hidden_dims": "[8]", "activation": "relu"}'
+        ),
+        "idp": (
+            '{"lr": 0.001, "iter_idx": 3, "epoch_idx": 1, "batch_idx": 1, "train_edp": {"f1": 0.5, "recall": 0.25, '
+            '"accuracy": 0.75, "precision": 0.125, "loss": 0.4, "error": 0.25, "extra": {"hit": true, '
+            '"n_correct": 3, "nan": NaN}}, "val_edp": {"f1": null, "recall": null, "accuracy": null, '
+            '"precision": null, "loss": 0.3, "error": null, "kind": "categorical", "count": 8, "status": "ok", '
+            '"metrics": {"acc": 0.875, "n": 7}}}'
+        ),
+        "transforms": "[]",
+        "training_state_id": "",
+        "training_state_present": "null",
+    }
+
+
+class _Opaque:
+    pass
+
+
+@pytest.mark.parametrize(
+    "value",
+    [torch.tensor([1.0, 2.0]), torch.tensor(0.5), _Opaque(), np.complex64(1 + 2j), np.datetime64("2026-01-01")],
+    ids=["multi_element_tensor", "zero_dim_tensor", "object", "complex64", "datetime64"],
+)
+def test_safetensors_export_refuses_unserializable_record_values(tmp_path, value):
+    """A value the metadata cannot hold still raises TypeError naming its
+    type, before the destination or a temporary file exists."""
+    model = _tiny_model()
+    idp = NNIterationDataPoint(
+        lr=1e-3, iter_idx=0, epoch_idx=0, batch_idx=0, train_edp=NNEvaluationDataPoint(loss=0.5, extra={"v": value})
+    )
+    checkpoint = NNCheckpoint(
+        idp=idp, model_params=model.params, net_params=model.net_params, net_state=model.net.state_dict()
+    )
+    path = tmp_path / "bad.safetensors"
+
+    with pytest.raises(TypeError, match=type(value).__name__):
+        checkpoint.to_file(str(path), format="safetensors")
+    assert list(tmp_path.iterdir()) == []

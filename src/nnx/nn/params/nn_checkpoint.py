@@ -17,6 +17,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import Any, BinaryIO, Literal, Optional, cast
 
+import numpy as np
 import torch
 from filelock import FileLock
 
@@ -40,6 +41,20 @@ _TRAINING_STATE_FORMAT_VERSION = 4
 # Filename-safe slug a ModelCheckpoint tag must match; its files are
 # "<tag>_e<epoch>.pt", and a resume accepts that stem (FEAT-005).
 _MODEL_CHECKPOINT_TAG = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+
+
+def _metadata_scalar(value: Any) -> Any:
+    """``json.dumps`` hook for the safetensors metadata: a NumPy bool, integer
+    or float scalar (a custom step's record, say) becomes the Python number it
+    holds. Anything else — a tensor, 0-d included, or an arbitrary object —
+    is refused naming its type, before any file is written."""
+    if isinstance(value, (np.bool_, np.integer, np.floating)):
+        return value.item()
+    raise TypeError(f"a safetensors checkpoint cannot store a {type(value).__name__} in its JSON metadata")
+
+
+def _metadata_json(value: Any) -> str:
+    return json.dumps(value, default=_metadata_scalar)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -535,7 +550,12 @@ class NNCheckpoint:
                   NNParams + NNModelParams + NNIterationDataPoint + transform
                   recipes
                   JSON-serialized into the metadata dict (str→str only,
-                  per the safetensors spec). Safe to mmap, readable by
+                  per the safetensors spec). A NumPy bool, integer or
+                  float scalar in a record (a custom step's ``loss`` or
+                  ``extra``, say) is stored as the Python number it holds;
+                  a value JSON cannot hold (a tensor, an arbitrary object)
+                  raises ``TypeError`` naming its type before any file is
+                  written. Safe to mmap, readable by
                   ComfyUI/vLLM/AutoGPTQ/HF tools, and proof against
                   arbitrary-code-execution on load. Requires the
                   ``thekaveh-nnx[hub]`` extra. Portable, so a runtime-only
@@ -584,15 +604,16 @@ class NNCheckpoint:
 
         # safetensors metadata is str→str only — every value must be a
         # string. We JSON-encode each subsection so the reader can parse
-        # them back without ambiguity.
+        # them back without ambiguity; NumPy scalars in a custom step's
+        # records are stored as the Python numbers they hold.
         metadata = {
             "nnx_format_version": _SAFETENSORS_FORMAT_VERSION,
-            "model_params": json.dumps(self.model_params.state()),
-            "net_params": json.dumps(self.net_params.state() if self.net_params is not None else None),
-            "idp": json.dumps(self.idp.state()),
-            "transforms": json.dumps([transform.state() for transform in self.transforms]),
+            "model_params": _metadata_json(self.model_params.state()),
+            "net_params": _metadata_json(self.net_params.state() if self.net_params is not None else None),
+            "idp": _metadata_json(self.idp.state()),
+            "transforms": _metadata_json([transform.state() for transform in self.transforms]),
             "training_state_id": self.training_state_id or "",
-            "training_state_present": json.dumps(self.training_state_present),
+            "training_state_present": _metadata_json(self.training_state_present),
         }
 
         # safetensors save_file doesn't accept OrderedDict (only dict). The
