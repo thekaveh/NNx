@@ -120,6 +120,20 @@ def test_empty_and_all_masked_streams_finalize_unavailable_with_count_zero():
     assert snapshot.count == 0 and snapshot.values == {} and snapshot.unavailable == ("mae",)
 
 
+def test_continuous_update_logits_accepts_a_flat_target_for_one_output():
+    # The regression task accepts an (N,) target for an (N, 1) output; the
+    # logit update documents deriving inputs as evaluate() does (#549).
+    acc = StreamingMetrics([MetricSpec("mae"), MetricSpec("mse")], "continuous")
+    scored = acc.update_logits(torch.tensor([1.0, 3.0]), torch.tensor([[2.0], [1.0]]))
+    assert scored == 2
+    assert acc.finalize().values == {"mae": pytest.approx(1.5), "mse": pytest.approx(2.5)}
+    # Bernoulli keeps the strict same-shape rule.
+    with pytest.raises(ValueError, match="logits must be shaped like the targets"):
+        StreamingMetrics([MetricSpec("brier")], "bernoulli").update_logits(
+            torch.tensor([1.0, 0.0]), torch.tensor([[0.9], [0.2]])
+        )
+
+
 def test_bernoulli_and_continuous_semantics_and_logit_updates():
     acc = StreamingMetrics([MetricSpec("accuracy"), MetricSpec("brier")], "bernoulli", threshold=0.7)
     acc.update(np.array([[1, 0], [1, np.nan]]), probabilities=np.array([[0.8, 0.6], [0.6, 0.5]]))
