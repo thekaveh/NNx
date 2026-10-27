@@ -815,3 +815,207 @@ def test_ranking_validation_widens_scores_off_the_device(monkeypatch):
     monkeypatch.setattr(RankingTask, "scores", lambda self, *a, **k: real(self, *a, **k).as_subclass(_DeviceScores))
     record = task.eval_step()(_Ctx(_scorer(), _loader(_data(3, seed=1), batch_size=5)))
     assert record.metrics
+
+
+# --- #516: bf16 training loss and the NDCG grade domain ----------------------------------------------
+
+CANDIDATES = 4
+FP32_REFERENCE = {"query": 0.7037, "pair": 0.7040}  # the 3000-query batch below, weights frozen
+
+
+def _query_batch(n_queries: int, seed: int = 0):
+    """One microbatch of ``n_queries`` queries x ``CANDIDATES`` candidates, graded 0 / 1."""
+    g = torch.Generator().manual_seed(seed)
+    x = torch.randn(n_queries * CANDIDATES, 6, generator=g)
+    queries = torch.arange(n_queries).repeat_interleave(CANDIDATES) + seed * n_queries  # distinct per batch
+    candidates = torch.arange(CANDIDATES).repeat(n_queries)
+    return x, queries, candidates, torch.randint(0, 2, (n_queries * CANDIDATES,), generator=g)
+
+
+def _precision_scorer(precision) -> NNModel:
+    from nnx.precision import PrecisionPolicy
+
+    torch.manual_seed(0)
+    return NNModel(
+        net_params=NNParams(input_dim=6, output_dim=1, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.MEAN_SQUARED_ERROR,
+            precision=None if precision is None else PrecisionPolicy(precision),
+        ),
+    )
+
+
+FROZEN = NNOptimParams.builder().sgd(max_lr=1e-9).build()  # weights effectively frozen: fp32 and bf16 see one model
+
+
+@pytest.mark.parametrize("weighting", ["query", "pair"])
+def test_bf16_ranking_train_loss_matches_fp32_through_nnmodel_train(weighting):
+    from nnx.precision import REFERENCE_TOLERANCES
+
+    task = RankingTask(k=(1,), weighting=weighting)
+    batch = _query_batch(3000)
+    records = {}
+    for precision in (None, "bf16"):
+        run = _precision_scorer(precision).train(
+            params=NNTrainParams(
+                n_epochs=1, train_loader=[batch], val_loader=[batch], seed=0, overwrite_existing=True, optim=FROZEN
+            ),
+            objective=task.objective(),
+            eval_step_fn=task.eval_step(),
+        )
+        records[precision] = run.idps[-1]
+    fp32, bf16 = records[None], records["bf16"]
+    assert fp32.train_edp.loss == pytest.approx(FP32_REFERENCE[weighting], abs=1e-4)
+    assert abs(bf16.train_edp.loss - fp32.train_edp.loss) <= REFERENCE_TOLERANCES["bf16"].loss
+    assert bf16.val_edp.loss == pytest.approx(fp32.val_edp.loss, abs=REFERENCE_TOLERANCES["bf16"].loss)
+
+
+@pytest.mark.parametrize("weighting", ["query", "pair"])
+def test_bf16_ranking_train_loss_matches_fp32_through_trainer_summaries_and_monitor(weighting):
+    from nnx import NNTrainerParams, Trainer
+    from nnx.precision import REFERENCE_TOLERANCES
+
+    task = RankingTask(k=(1,), weighting=weighting)
+    batches = [_query_batch(1000, seed=seed) for seed in range(3)]  # several microbatches of 1000 queries
+    runs = {}
+    for precision in (None, "bf16"):
+        params = (
+            NNTrainerParams.builder()
+            .n_epochs(1)
+            .train_loader(batches)
+            .optimizer("default", FROZEN)
+            .monitor(MonitorSpec("loss", split="train"))
+            .seed(0)
+            .overwrite_existing(True)
+            .save_phase_checkpoints(False)
+            .build()
+        )
+        runs[precision] = Trainer(_precision_scorer(precision)).train(params=params, objective=task.objective())
+    tolerance = REFERENCE_TOLERANCES["bf16"].loss
+    fp32, bf16 = runs[None].idps, runs["bf16"].idps
+    assert len(fp32) == len(bf16) == len(batches)
+    for full, reduced in zip(fp32, bf16, strict=True):
+        assert abs(reduced.train_edp.loss - full.train_edp.loss) <= tolerance
+    assert fp32[-1].train_summary is not None and bf16[-1].train_summary is not None
+    assert abs(bf16[-1].train_summary.loss - fp32[-1].train_summary.loss) <= tolerance
+    assert fp32[-1].selection is not None and bf16[-1].selection is not None
+    assert abs(bf16[-1].selection.value - fp32[-1].selection.value) <= tolerance
+
+
+def test_ranking_objective_numerator_is_float32_under_bf16_and_unchanged_in_fp32():
+    from nnx.precision import PrecisionPolicy
+
+    task = RankingTask(k=(1,))
+    batch = _query_batch(64)
+    model = _precision_scorer(None)
+    # fp32: the objective's numerator and gradients are the plain pairwise loss on the scorer's output.
+    result = _objective_step(task, model, batch)
+    numerator = result.terms[0].numerator
+    assert numerator.dtype == torch.float32
+    numerator.backward()
+    grads = [p.grad.clone() for p in model.net.parameters()]
+    model.net.zero_grad()
+    expected, _ = pairwise_logistic_loss(model.net(batch[0])[:, 0], batch[3], batch[1].tolist())
+    assert torch.equal(numerator.detach(), expected.detach())
+    expected.backward()
+    assert all(torch.equal(g, p.grad) for g, p in zip(grads, model.net.parameters(), strict=True))
+    # bf16: the scores are bfloat16 under the policy's autocast; the numerator is float32.
+    resolved = PrecisionPolicy("bf16").resolve("cpu")
+    with resolved.autocast():
+        result = task.objective()(
+            ObjectiveContext(model=model, batch=batch, epoch_idx=0, batch_idx=0, precision=resolved)
+        )
+        assert model.net(batch[0]).dtype == torch.bfloat16
+    assert result.terms[0].numerator.dtype == torch.float32
+
+
+def test_pairwise_logistic_loss_widens_only_reduced_precision_scores():
+    grades, queries = torch.tensor([1, 0, 2, 0, 1, 1]), ["a", "a", "a", "b", "b", "c"]
+    scores = torch.tensor([0.3, -1.2, 2.5, 0.7, 0.1, 4.0], dtype=torch.float64)
+    reference = (
+        torch.nn.functional.softplus(-(scores[0] - scores[1]))
+        + torch.nn.functional.softplus(-(scores[2] - scores[0]))
+        + torch.nn.functional.softplus(-(scores[2] - scores[1]))
+    ) / 3 + torch.nn.functional.softplus(-(scores[4] - scores[3]))
+    for dtype in (torch.float32, torch.float64):
+        numerator, denominator = pairwise_logistic_loss(scores.to(dtype), grades, queries)
+        assert numerator.dtype == dtype and denominator == 2
+        assert numerator == pytest.approx(float(reference), rel=1e-6 if dtype == torch.float32 else 1e-12)
+    for dtype in (torch.float16, torch.bfloat16):
+        reduced = scores.to(dtype).requires_grad_()
+        numerator, _ = pairwise_logistic_loss(reduced, grades, queries)
+        assert numerator.dtype == torch.float32
+        numerator.backward()
+        assert reduced.grad is not None and reduced.grad.dtype == dtype
+    # The cross-query sum of many queries no longer stalls in bfloat16.
+    s = torch.zeros(4000, dtype=torch.bfloat16)
+    numerator, denominator = pairwise_logistic_loss(s, torch.tensor([1, 0] * 2000), [i // 2 for i in range(4000)])
+    assert float(numerator) / denominator == pytest.approx(math.log(2), rel=1e-3)
+
+
+def _scaled_ndcg_reference(grades, scores, ids, k):
+    """NDCG from exact integer gains (Python ints never overflow)."""
+    from fractions import Fraction
+
+    order = sorted(range(len(scores)), key=lambda i: (-scores[i], ids[i]))[:k]
+    ideal = sorted(grades, reverse=True)[:k]
+    discount = [Fraction(1 / math.log2(r + 2)) for r in range(k)]
+    dcg = sum((2 ** grades[i] - 1) * discount[r] for r, i in enumerate(order))
+    return float(dcg / sum((2**g - 1) * discount[r] for r, g in enumerate(ideal)))
+
+
+def test_ndcg_is_finite_for_large_grades():
+    cases = [
+        ([1023] * 3, [0.9, 0.5, 0.1], 3, 1.0),
+        ([1023, 1023, 1023, 0], [0.9, 0.8, 0.1, 0.5], 3, 0.765),  # the grade-0 candidate ranked third
+        ([1100, 0], [0.9, 0.1], 2, 1.0),
+    ]
+    for grades, scores, k, expected in cases:
+        ids = list(range(len(grades)))
+        value = ndcg_at_k(grades, scores, ids, k)
+        assert math.isfinite(value) and value == pytest.approx(expected, abs=1e-3)
+        assert value == pytest.approx(_scaled_ndcg_reference(grades, scores, ids, k), rel=1e-12)
+    # Mixed large and small grades keep their exact ratio.
+    grades, scores, ids = [1000, 999, 3, 0], [0.1, 0.9, 0.5, 0.7], [1, 2, 3, 4]
+    assert ndcg_at_k(grades, scores, ids, 3) == pytest.approx(_scaled_ndcg_reference(grades, scores, ids, 3))
+
+
+def test_ranking_task_records_the_reference_ndcg_for_large_grades():
+    means, *_ = RankingTask(k=(3,), max_relevance=1023).evaluate_rows(
+        [(0, 0, 0.9, 1023), (0, 1, 0.5, 1023), (0, 2, 0.1, 1023)]
+    )
+    assert means["ndcg_at_3"] == 1.0
+    means, *_ = RankingTask(k=(3,), max_relevance=1023).evaluate_rows(
+        [(0, 0, 0.9, 1023), (0, 1, 0.8, 1023), (0, 2, 0.1, 1023), (0, 3, 0.5, 0)]
+    )
+    assert means["ndcg_at_3"] == pytest.approx(0.765, abs=1e-3)
+    means, *_ = RankingTask(k=(2,), max_relevance=2000).evaluate_rows([(0, 0, 0.9, 1100), (0, 1, 0.1, 0)])
+    assert means["ndcg_at_2"] == 1.0
+    # Through the eval step: every query's record matches ndcg_at_k on the same scores.
+    x, q, c, _ = _data(3, seed=1, zero_query=False)
+    r = torch.tensor([1023, 0, 1023, 1023] * 3)
+    model = _scorer()
+    record = RankingTask(k=(3,), max_relevance=1023).eval_step()(_Ctx(model, _loader((x, q, c, r), 5)))
+    with torch.no_grad():
+        s = model.net(x)[:, 0].double().tolist()
+    per_query = [
+        ndcg_at_k(r[rows].tolist(), [s[i] for i in rows], c[rows].tolist(), 3)
+        for rows in (list(range(i * GROUP, (i + 1) * GROUP)) for i in range(3))
+    ]
+    assert record.status == "ok" and math.isfinite(record.metrics["ndcg_at_3"])
+    assert record.metrics["ndcg_at_3"] == pytest.approx(sum(per_query) / 3)
+
+
+@pytest.mark.parametrize("grades", [[-1, 0], [-1, -1], [1, -5], [1.5, 0], [True, 0], [1, False], [1.0, 0]])
+def test_ndcg_refuses_out_of_domain_grades(grades):
+    with pytest.raises(RankingError, match="non-negative integers"):
+        ndcg_at_k(grades, [0.9, 0.1], [0, 1], 2)
+
+
+def test_ndcg_accepts_numpy_integer_grades():
+    import numpy as np
+
+    grades = [np.int64(2), np.int32(0), np.int64(1)]
+    assert ndcg_at_k(grades, [3.0, 2.0, 1.0], [1, 2, 3], 2) == ndcg_at_k([2, 0, 1], [3.0, 2.0, 1.0], [1, 2, 3], 2)
