@@ -300,8 +300,9 @@ def test_trainer_params_refuse_a_parent_run_id_that_is_not_a_run_id_string(linea
         match = r"NNTrainerParams\.parent_run_id .*got an NNRun; pass its \.id"
     else:
         match = "NNTrainerParams.parent_run_id must be a non-empty run id string"
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(ValueError, match=match) as refused:
         NNTrainerParams(n_epochs=1, optims={"G": _g_optim()}, parent_run_id=lineage)
+    assert ("a copy of them must set parent_run_id" in str(refused.value)) is (lineage in (12345, "  "))
 
 
 def test_trainer_params_from_state_keeps_a_saved_non_string_lineage():
