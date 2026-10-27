@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import json
 import math
-import numbers
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Protocol, cast
@@ -60,7 +59,7 @@ from ._confusion import AVERAGES, ConfusionCounts
 from ._probability import brier_terms as _brier_terms
 from ._probability import nll_terms as _nll_terms
 from ._update_engine import trains
-from ._validation import plain_str, require_count
+from ._validation import plain_str, require_count, require_finite_real, shown
 
 if TYPE_CHECKING:
     from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -473,10 +472,14 @@ class MonitorSpec:
             raise ValueError(f"MonitorSpec mode must be 'min', 'max' or None, got {self.mode!r}")
         if self.mode is None and self.metric in _RECORD_FIELDS:
             object.__setattr__(self, "mode", _RECORD_FIELDS[self.metric])
-        delta = self.min_delta
-        if isinstance(delta, bool) or not isinstance(delta, numbers.Real) or not math.isfinite(delta) or delta < 0:
-            raise ValueError(f"MonitorSpec min_delta must be a finite number >= 0, got {delta!r}")
-        object.__setattr__(self, "min_delta", float(delta))
+        delta = require_finite_real(  # 10**400 is refused by name, not with an OverflowError
+            self.min_delta,
+            "min_delta",
+            owner="MonitorSpec",
+            minimum=0,
+            domain_message=f"MonitorSpec min_delta must be a finite number >= 0, got {shown(self.min_delta, real=True)}",
+        )
+        object.__setattr__(self, "min_delta", delta)
         for name in ("on_missing", "on_nonfinite"):
             if getattr(self, name) not in _POLICIES:
                 raise ValueError(f"MonitorSpec {name} must be 'skip' or 'error', got {getattr(self, name)!r}")

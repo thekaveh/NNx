@@ -19,6 +19,8 @@ guard lives in `test_trainer_params.py`.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from nnx.nn.params.nn_params import NNParams
@@ -2625,3 +2627,341 @@ def test_a_run_saved_with_an_int_lineage_still_loads_with_its_id(tmp_path, monke
         dataclasses.replace(loaded.train)
     for lineage in (None, "12345"):
         assert dataclasses.replace(loaded.train, parent_run_id=lineage).with_train_loader([]).parent_run_id == lineage
+
+
+# --- #544: integers too large for a float, and NumPy dropout -------------------------------------
+
+_HUGE = 10**400  # float(_HUGE) raises OverflowError
+_UNPRINTABLE = 10**5000  # past Python's 4300-digit int-to-str limit: repr() raises ValueError
+_TRANSFORMER = dict(input_dim=8, output_dim=8, n_heads=2, vocab_size=8, n_layers=1, d_model=8, max_seq_len=8)
+_VIT = dict(input_dim=48, output_dim=8, n_heads=2, image_size=4, patch_size=2, d_model=8, n_layers=1)
+_CONV = dict(input_dim=64, output_dim=2, hidden_dims=[8], conv_channels=[4])
+
+
+def _dropout_sites():
+    from nnx import NNConvParams, NNMoEParams, NNTransformerParams, NNViTParams
+
+    base = dict(input_dim=2, output_dim=2, hidden_dims=[4])
+    state = NNParams(dropout_prob=0.0, **base).state()
+    return [
+        pytest.param(
+            lambda v: NNParams(dropout_prob=v, **base), "0.0 <= dropout_prob <= 1.0", id="NNParams.dropout_prob"
+        ),
+        pytest.param(
+            lambda v: NNParams(dropout_prob=0.0, dropout_probs=[v], **base),
+            "0.0 <= dropout_probs[i] <= 1.0",
+            id="NNParams.dropout_probs",
+        ),
+        pytest.param(
+            lambda v: NNParams.from_state({**state, "dropout_prob": v}),
+            "0.0 <= dropout_prob <= 1.0",
+            id="NNParams.from_state",
+        ),
+        pytest.param(
+            lambda v: NNTransformerParams(dropout_prob=0.0, attn_dropout=v, **_TRANSFORMER),
+            "0.0 <= attn_dropout <= 1.0",
+            id="NNTransformerParams.attn_dropout",
+        ),
+        pytest.param(
+            lambda v: NNTransformerParams(dropout_prob=0.0, resid_dropout=v, **_TRANSFORMER),
+            "0.0 <= resid_dropout <= 1.0",
+            id="NNTransformerParams.resid_dropout",
+        ),
+        pytest.param(
+            lambda v: NNTransformerParams(dropout_prob=v, **_TRANSFORMER),
+            "0.0 <= dropout_prob <= 1.0",
+            id="NNTransformerParams.dropout_prob",
+        ),
+        pytest.param(
+            lambda v: NNViTParams(dropout_prob=v, **_VIT), "0.0 <= dropout_prob <= 1.0", id="NNViTParams.dropout_prob"
+        ),
+        pytest.param(
+            lambda v: NNViTParams(dropout_prob=0.0, attn_dropout=v, **_VIT),
+            "attn_dropout",
+            id="NNViTParams.attn_dropout",
+        ),
+        pytest.param(
+            lambda v: NNViTParams(dropout_prob=0.0, resid_dropout=v, **_VIT),
+            "resid_dropout",
+            id="NNViTParams.resid_dropout",
+        ),
+        pytest.param(
+            lambda v: NNConvParams(dropout_prob=v, **_CONV),
+            "0.0 <= dropout_prob <= 1.0",
+            id="NNConvParams.dropout_prob",
+        ),
+        pytest.param(
+            lambda v: NNConvParams(dropout_prob=0.0, dropout_probs=[v], **_CONV),
+            "0.0 <= dropout_probs[i] <= 1.0",
+            id="NNConvParams.dropout_probs",
+        ),
+        pytest.param(
+            lambda v: NNMoEParams(dropout_prob=v, num_experts=2, **base),
+            "0.0 <= dropout_prob <= 1.0",
+            id="NNMoEParams.dropout_prob",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [_HUGE, -_HUGE, _UNPRINTABLE, True, "0.1", float("nan"), float("inf"), 2],
+    ids=["10**400", "-10**400", "10**5000", "True", "str", "nan", "inf", "2"],
+)
+@pytest.mark.parametrize(("make", "wording"), _dropout_sites())
+def test_a_dropout_probability_outside_the_reals_in_0_1_is_refused_by_name(make, wording, value):
+    """#544: 10**400 raised a raw OverflowError from math.isfinite (a
+    regression); now it is out of range like 2, with the established
+    "0.0 <= x <= 1.0" wording (NNViTParams' own probabilities name the
+    field in require_finite_real's wording)."""
+    with pytest.raises(ValueError, match=re.escape(wording)):
+        make(value)
+
+
+@pytest.mark.parametrize("value", [_HUGE, -_HUGE, _UNPRINTABLE], ids=["10**400", "-10**400", "10**5000"])
+@pytest.mark.parametrize(("make", "wording"), _dropout_sites())
+def test_a_dropout_probability_too_large_for_a_float_is_described_not_printed(make, wording, value):
+    """#544: the refusal calls it "an integer too large for a float", as
+    require_finite_real does, rather than printing 401 digits — or, past
+    4300 digits, failing with Python's own int-to-str limit error while
+    the message was built, so the field was never named."""
+    with pytest.raises(ValueError, match=re.escape(wording)) as caught:
+        make(value)
+    assert "too large for a float" in str(caught.value) and "0000000000" not in str(caught.value)
+
+
+def test_valid_dropout_states_hash_as_before():
+    import numpy as np
+
+    plain = NNParams(input_dim=2, output_dim=2, hidden_dims=[4], dropout_prob=0.25, dropout_probs=[1])
+    assert plain.state()["dropout_prob"] == 0.25 and plain.dropout_probs == [1] and type(plain.dropout_probs[0]) is int
+    numpy = NNParams(
+        input_dim=2, output_dim=2, hidden_dims=[4], dropout_prob=np.float64(0.25), dropout_probs=[np.int64(1)]
+    )
+    assert numpy.state() == plain.state()
+
+
+def _kd_teacher():
+    from nnx import Devices, Losses, Nets, NNModel, NNModelParams
+
+    return NNModel(
+        net_params=NNParams(input_dim=4, output_dim=3, hidden_dims=[8], dropout_prob=0.0),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+
+def _oversized_sites():
+    import torch
+
+    from nnx.embeddings import text_contrastive_train_step_factory, train_contrastive
+    from nnx.generation.logits_processors import RepetitionPenalty, TemperatureScaling
+    from nnx.monitors import MonitorSpec
+    from nnx.objectives import KDObjective, LossTerm
+    from nnx.paradigms import (
+        cutmix_train_step_factory,
+        dpo_train_step_factory,
+        feature_kd_train_step_factory,
+        kd_train_step_factory,
+        mixup_train_step_factory,
+        moe_train_step_factory,
+        nt_xent_loss,
+        random_block_mask,
+        simclr_train_step_factory,
+    )
+    from nnx.streaming import StreamingMetrics
+    from nnx.tasks import TaskSpec
+
+    pairs = [("a", "b"), ("c", "d")]
+    return [
+        pytest.param(lambda v: TaskSpec("multilabel", threshold=v), "threshold", id="TaskSpec.threshold"),
+        pytest.param(lambda v: MonitorSpec("loss", min_delta=v), "min_delta", id="MonitorSpec.min_delta"),
+        pytest.param(lambda v: LossTerm("t", torch.tensor(1.0), 1, weight=v), "weight", id="LossTerm.weight"),
+        pytest.param(lambda v: LossTerm("t", torch.tensor(1.0), v), "denominator", id="LossTerm.denominator"),
+        pytest.param(
+            lambda v: StreamingMetrics([], "bernoulli", threshold=v), "threshold", id="StreamingMetrics.threshold"
+        ),
+        pytest.param(lambda v: kd_train_step_factory(_kd_teacher(), temperature=v), "temperature", id="kd.temperature"),
+        pytest.param(
+            lambda v: feature_kd_train_step_factory(_kd_teacher(), auxiliary_layers={"0": "0"}, temperature=v),
+            "temperature",
+            id="feature_kd.temperature",
+        ),
+        pytest.param(lambda v: KDObjective(_kd_teacher(), temperature=v), "temperature", id="KDObjective.temperature"),
+        pytest.param(lambda v: mixup_train_step_factory(alpha=v), "alpha", id="mixup.alpha"),
+        pytest.param(lambda v: cutmix_train_step_factory(alpha=v), "alpha", id="cutmix.alpha"),
+        pytest.param(lambda v: moe_train_step_factory(aux_loss_weight=v), "aux_loss_weight", id="moe.aux_loss_weight"),
+        pytest.param(lambda v: dpo_train_step_factory(_kd_teacher(), beta=v), "beta", id="dpo.beta"),
+        pytest.param(lambda v: simclr_train_step_factory(temperature=v), "temperature", id="simclr.temperature"),
+        pytest.param(
+            lambda v: nt_xent_loss(torch.randn(4, 3), torch.randn(4, 3), temperature=v),
+            "temperature",
+            id="nt_xent.temperature",
+        ),
+        pytest.param(
+            lambda v: text_contrastive_train_step_factory(temperature=v),
+            "temperature",
+            id="text_contrastive.temperature",
+        ),
+        pytest.param(
+            lambda v: train_contrastive(torch.nn.Linear(2, 2), pairs, temperature=v),
+            "temperature",
+            id="train_contrastive.temperature",
+        ),
+        pytest.param(lambda v: train_contrastive(torch.nn.Linear(2, 2), pairs, lr=v), "lr", id="train_contrastive.lr"),
+        pytest.param(
+            lambda v: train_contrastive(torch.nn.Linear(2, 2), pairs, grad_clip_norm=v),
+            "grad_clip_norm",
+            id="train_contrastive.grad_clip_norm",
+        ),
+        pytest.param(
+            lambda v: random_block_mask(n_patches=16, grid_size=4, block_aspect=(0.5, v)),
+            "block_aspect[1]",
+            id="random_block_mask.block_aspect",
+        ),
+        pytest.param(lambda v: TemperatureScaling(v), "temperature", id="TemperatureScaling"),
+        pytest.param(lambda v: RepetitionPenalty(v), "repetition_penalty", id="RepetitionPenalty"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "value", [_HUGE, -_HUGE, _UNPRINTABLE, -_UNPRINTABLE], ids=["10**400", "-10**400", "10**5000", "-10**5000"]
+)
+@pytest.mark.parametrize(("make", "field"), _oversized_sites())
+def test_an_integer_too_large_for_a_float_is_refused_by_name(make, field, value):
+    """#544: these sites raised a raw OverflowError for 10**400 (or, from the
+    paradigm factories fixed since, accepted it); each now raises a
+    ValueError — or its module's ValueError subclass — naming the field."""
+    with pytest.raises(ValueError, match=re.escape(field)):
+        make(value)
+
+
+def _count_sites():
+    import torch
+
+    from nnx import ResumeStatus, distributed
+    from nnx.components import ComponentSpec
+    from nnx.embeddings import embed_texts
+    from nnx.quantize.qat import QATLifecycleCallback
+    from nnx.search import IntParam
+
+    def partition(**kwargs):
+        return distributed.RankPartition(**{"n": 8, "rank": 0, "world_size": 2, **kwargs})
+
+    return [
+        pytest.param(lambda v: partition(seed=v), "seed", id="RankPartition.seed"),
+        pytest.param(lambda v: partition(n=-abs(v)), "requires n >= 0", id="RankPartition.n"),
+        pytest.param(lambda v: partition(rank=abs(v)), "rank", id="RankPartition.rank"),
+        pytest.param(lambda v: partition(world_size=-abs(v)), "world_size", id="RankPartition.world_size"),
+        pytest.param(lambda v: partition().set_epoch(-abs(v)), "epoch", id="RankPartition.set_epoch"),
+        pytest.param(
+            lambda v: distributed.ShardedLoader([0, 1], partition(n=2), batch_size=-abs(v)),
+            "batch_size",
+            id="ShardedLoader.batch_size",
+        ),
+        pytest.param(lambda v: distributed.shutdown(timeout_seconds=v), "timeout_seconds", id="shutdown.timeout"),
+        pytest.param(lambda v: IntParam(name="k", low=0, high=-abs(v)), "k", id="IntParam.high"),
+        pytest.param(lambda v: ComponentSpec("x", version=-abs(v)), "version", id="ComponentSpec.version"),
+        pytest.param(lambda v: ResumeStatus(source_epoch=-abs(v)), "source_epoch", id="ResumeStatus.source_epoch"),
+        pytest.param(lambda v: QATLifecycleCallback(groupsize=-abs(v)), "groupsize", id="QAT.groupsize"),
+        pytest.param(
+            lambda v: embed_texts(torch.nn.Linear(2, 2), ["a"], batch_size=-abs(v)), "batch_size", id="embed_texts"
+        ),
+        pytest.param(lambda v: NNParams(input_dim=-abs(v), output_dim=2, dropout_prob=0.0), "input_dim", id="NNParams"),
+    ]
+
+
+@pytest.mark.parametrize("value", [_UNPRINTABLE, -_UNPRINTABLE], ids=["10**5000", "-10**5000"])
+@pytest.mark.parametrize(("make", "field"), _count_sites())
+def test_an_integer_past_the_str_limit_is_refused_by_name(make, field, value):
+    """#544: an integer past Python's 4300-digit int-to-str limit made the
+    refusal itself fail (repr() raised "Exceeds the limit (4300 digits)"
+    while the message was built), so the field was never named; the message
+    now gives the integer's size instead."""
+    with pytest.raises((ValueError, TypeError), match=re.escape(field)) as caught:
+        make(value)
+    assert "Exceeds the limit" not in str(caught.value)
+
+
+def test_shown_quotes_a_value_and_describes_an_unprintable_integer():
+    import numpy as np
+
+    from nnx._validation import shown
+
+    assert shown(2**64) == "18446744073709551616" and shown(np.int64(3)) == repr(np.int64(3))
+    assert shown(0.5) == "0.5" and shown("x") == "'x'" and shown(True) == "True"
+    assert shown(_UNPRINTABLE) == "an integer of 16610 bits" == shown(-_UNPRINTABLE)
+    assert shown(_HUGE, real=True) == "an integer too large for a float" and shown(2, real=True) == "2"
+
+
+def test_born_again_refuses_an_oversized_temperature_before_generation_zero(tmp_path, monkeypatch):
+    import torch
+
+    from nnx import NNOptimParams
+    from nnx.paradigms import born_again_train
+
+    monkeypatch.chdir(tmp_path)
+    params = NNTrainParams(
+        n_epochs=1,
+        train_loader=[(torch.randn(4, 4), torch.randint(0, 3, (4,)))],
+        optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+    )
+    for value in (_HUGE, -_HUGE):
+        with pytest.raises(ValueError, match="temperature"):
+            born_again_train(_kd_teacher(), generations=2, train_params=params, temperature=value)
+    assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"temperature": _HUGE}, {"repetition_penalty": _HUGE}, {"repetition_penalty": -_HUGE}],
+    ids=["temperature", "repetition_penalty", "-repetition_penalty"],
+)
+def test_generate_refuses_an_oversized_sampling_setting_by_name(kwargs, tmp_path):
+    pytest.importorskip("tokenizers")
+    from nnx import Devices, Losses, Nets, NNModelParams, NNTransformerParams
+    from nnx.nn.generative_nn_model import GenerativeNNModel
+    from nnx.nn.params.nn_tokenizer_params import NNTokenizerParams, train_bpe
+
+    tk = train_bpe(files=None, texts=["the cat sat on the mat"], vocab_size=32, special_tokens=["<unk>"])
+    tokenizer = NNTokenizerParams.of(tokenizer=tk, path=str(tmp_path / "tok.json"))
+    vocab = tokenizer.vocab_size
+    model = GenerativeNNModel(
+        net_params=NNTransformerParams(
+            input_dim=vocab,
+            output_dim=vocab,
+            dropout_prob=0.0,
+            vocab_size=vocab,
+            n_layers=1,
+            n_heads=2,
+            d_model=8,
+            max_seq_len=8,
+        ),
+        params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+        tokenizer=tokenizer,
+    )
+    (field,) = kwargs
+    with pytest.raises(ValueError, match=field):
+        model.generate("the cat", max_new_tokens=1, **kwargs)
+
+
+@pytest.mark.parametrize("value", [True, "tensor"], ids=["bool", "tensor"])
+def test_the_logits_processors_take_a_plain_real_not_a_bool_or_tensor(value):
+    """#544 (documented in the CHANGELOG): TemperatureScaling and
+    RepetitionPenalty now validate like the paradigm step factories, so a
+    bool or a 0-dim tensor (accepted before) is refused by name; a NumPy
+    number is still the plain float it equals."""
+    import numpy as np
+    import torch
+
+    from nnx.generation.logits_processors import RepetitionPenalty, TemperatureScaling
+
+    for make, field, setting in (
+        (TemperatureScaling, "temperature", 0.75),
+        (RepetitionPenalty, "repetition_penalty", 1.25),
+    ):
+        bad = torch.tensor(setting) if value == "tensor" else value
+        with pytest.raises(ValueError, match=field):
+            make(bad)
+        processor = make(np.float32(setting))
+        stored = processor.temperature if field == "temperature" else processor.penalty
+        assert stored == setting and type(stored) is float

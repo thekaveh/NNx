@@ -4912,7 +4912,7 @@ Under torchrun; see Architecture §3.
 nnx.distributed.init_process_group(backend: 'Optional[str]' = None, *, timeout_seconds: 'float' = 120.0) -> 'tuple[int, int]'
 ```
 
-Join the process group ``torchrun`` described in the environment (``env://``) and return ``(rank, world_size)``. ``backend`` defaults to ``nccl`` when CUDA is available, else ``gloo``; ``timeout_seconds`` bounds every collective, so a rank that dies cannot hang the others forever. Under ``nccl`` each process takes ``cuda:LOCAL_RANK`` (``torch.cuda.set_device``); any other backend selects no device, so a CUDA model under ``gloo`` needs ``torch.cuda.set_device(local_rank)`` before it is built (otherwise every rank's model sits on ``cuda:0``).
+Join the process group ``torchrun`` described in the environment (``env://``) and return ``(rank, world_size)``. ``backend`` defaults to ``nccl`` when CUDA is available, else ``gloo``; ``timeout_seconds`` bounds every collective, so a rank that dies cannot hang the others forever (at most ``3e9`` s, about 95 years: torch's nanosecond deadlines hold no more on every platform). Under ``nccl`` each process takes ``cuda:LOCAL_RANK`` (``torch.cuda.set_device``); any other backend selects no device, so a CUDA model under ``gloo`` needs ``torch.cuda.set_device(local_rank)`` before it is built (otherwise every rank's model sits on ``cuda:0``).
 
 
 #### `nnx.distributed.shutdown`
@@ -4950,7 +4950,7 @@ initialized (``init_process_group()`` returns it as is), so exit.
 nnx.distributed.train_loader(dataset: 'Any', batch_size: 'int', *, policy: 'str' = 'pad', seed: 'int' = 0, shuffle: 'bool' = True, collate_fn: 'Optional[Callable[[list[Any]], Any]]' = None) -> 'ShardedLoader'
 ```
 
-This rank's training loader: a per-epoch seeded partition of ``dataset`` evened out by ``policy`` (``"pad"`` or ``"drop"``), so every rank takes the same number of steps.
+This rank's training loader: a per-epoch seeded partition of ``dataset`` evened out by ``policy`` (``"pad"`` or ``"drop"``), so every rank takes the same number of steps. ``seed`` is an integer in ``[0, 2**64 - 1]`` (NumPy integers included), refused here otherwise; each epoch draws its order from ``(seed + epoch) % 2**64``.
 
 
 #### `nnx.distributed.validation_loader`
@@ -4991,12 +4991,18 @@ This rank's dataset indices, per epoch.
 **Details**
 
 ```text
-``kind="train"``: a seeded permutation of ``range(n)`` (``seed + epoch``;
-identity order with ``shuffle=False``), evened out by ``policy`` —
-``"pad"`` repeats leading indices, ``"drop"`` drops the tail — and
-dealt ``rank::world_size``, so every rank serves the same count.
+``kind="train"``: a seeded permutation of ``range(n)``
+(``(seed + epoch) % 2**64``; identity order with ``shuffle=False``),
+evened out by ``policy`` — ``"pad"`` repeats leading indices, ``"drop"``
+drops the tail — and dealt ``rank::world_size``, so every rank serves
+the same count.
 ``kind="validation"``: rows ``rank::world_size`` in order, unpadded
 (counts may differ; a rank may serve none).
+
+``n``, ``rank``, ``world_size``, ``seed`` and ``set_epoch``'s epoch are
+integers (NumPy integers are stored as ``int``); ``seed`` is in
+``[0, 2**64 - 1]``, torch's generator range, so a larger one is refused
+here rather than when an epoch first draws.
 ```
 
 ##### `nnx.distributed.RankPartition.set_epoch`
@@ -9455,7 +9461,7 @@ The graphs with these ids, in the order given.
 nnx.graph_tasks.GraphCollection.loader(self, batch_size: 'int', *, shuffle: 'bool' = False, seed: 'Optional[int]' = None) -> 'Any'
 ```
 
-A PyG loader over whole graphs (in collection order unless ``shuffle``; a ``seed`` makes the shuffle reproducible and is refused without it).
+A PyG loader over whole graphs (in collection order unless ``shuffle``; a ``seed`` in ``[0, 2**64 - 1]``, torch's generator range, makes the shuffle reproducible and is refused without it).
 
 
 #### `nnx.graph_tasks.GraphClassifier`
@@ -15474,7 +15480,7 @@ No public description is currently available.
 nnx.paradigms.offline_distillation.TeacherDataset.loader(self, batch_size: 'int', *, shuffle: 'bool' = False, seed: 'Optional[int]' = None) -> 'DataLoader'
 ```
 
-A ``DataLoader`` of `TeacherBatch`es; ``shuffle`` draws its order from ``seed`` (a generator a stateful resume restores).
+A ``DataLoader`` of `TeacherBatch`es; ``shuffle`` draws its order from ``seed`` (a generator a stateful resume restores), an integer in ``[-2**63, 2**64 - 1]``, torch's generator range. NumPy integers are passed on as plain ``int``.
 
 ##### `nnx.paradigms.offline_distillation.TeacherDataset.objective`
 

@@ -813,6 +813,22 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         except BaseException as error:  # noqa: BLE001
             out["error"] = type(error).__name__
             out["message"] = str(error)
+    elif name == "largest_seed":
+        # #544: seed + epoch overflowed torch's generator at epoch 1; a seed
+        # beyond its range is refused before any run directory exists.
+        try:
+            nnx_dist.train_loader(train_set(), batch_size=2, seed=2**64)
+            out["too_large"] = None
+        except Exception as error:  # noqa: BLE001 - recorded for the test
+            out["too_large"] = f"{type(error).__name__}: {error}"
+        out["runs_after_refusal"] = (
+            sorted(n for n in os.listdir("runs") if not n.startswith(".")) if os.path.isdir("runs") else []
+        )
+        run = model().train(
+            params=params(nnx_dist.train_loader(train_set(), batch_size=2, seed=2**64 - 1), n_epochs=2),
+            distributed=nnx_dist.DDP(),
+        )
+        out.update(summary(run))
     elif name == "empty_validation_rank":
         m = model()
         stopper = EarlyStopping(monitor=MonitorSpec("loss"), patience=0)

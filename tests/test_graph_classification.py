@@ -500,3 +500,8 @@ def test_round_two_unlabeled_y_subset_iterators_and_unshuffled_seeds():
     with pytest.raises(GraphTaskError, match="shuffled loader"):
         collection.loader(batch_size=1, seed=3)
     assert len(list(collection.loader(batch_size=1, shuffle=True, seed=3))) == 2
+    # #544: torch's generator range; 2**64 failed with its raw "Overflow when unpacking long long".
+    assert len(list(collection.loader(batch_size=np.int64(1), shuffle=True, seed=2**64 - 1))) == 2
+    for bad in (2**64, -1, 10**5000):  # 10**5000: past the int-to-str limit, still named
+        with pytest.raises(GraphTaskError, match=r"seed must be an integer in \[0, 18446744073709551615\]"):
+            collection.loader(batch_size=1, shuffle=True, seed=bad)
