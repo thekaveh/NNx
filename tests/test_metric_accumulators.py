@@ -618,3 +618,20 @@ def test_update_and_update_logits_score_the_same_uint8_rows(as_array):
     with pytest.raises(ValueError, match=r"above 2\*\*63 - 1 do not fit int64"):
         wide.update(above, probabilities=probabilities)
     assert wide.count == 0
+
+
+@pytest.mark.parametrize("dtype", [torch.uint8, torch.uint16, torch.uint32, torch.uint64])
+def test_update_logits_scores_unsigned_bernoulli_and_continuous_targets_like_update(dtype):
+    """Torch 2.4 cannot mask a uint16/32/64 tensor: update_logits() crashed
+    there on the bernoulli and continuous targets update() scores."""
+    target = torch.tensor([[1, 0], [1, 2]], dtype=dtype)
+    logits = torch.tensor([[2.0, -1.0], [0.5, 3.0]])
+    binary = torch.tensor([[1, 0], [1, 0]], dtype=dtype)
+    by_logits = StreamingMetrics([MetricSpec("accuracy"), MetricSpec("brier")], "bernoulli")
+    by_probs = StreamingMetrics([MetricSpec("accuracy"), MetricSpec("brier")], "bernoulli")
+    assert by_logits.update_logits(binary, logits) == by_probs.update(binary, probabilities=torch.sigmoid(logits)) == 4
+    assert dict(by_logits.finalize().values) == pytest.approx(dict(by_probs.finalize().values))
+    by_logits = StreamingMetrics([MetricSpec("mae"), MetricSpec("mse")], "continuous")
+    by_values = StreamingMetrics([MetricSpec("mae"), MetricSpec("mse")], "continuous")
+    assert by_logits.update_logits(target, logits) == by_values.update(target, values=logits) == 4
+    assert dict(by_logits.finalize().values) == pytest.approx(dict(by_values.finalize().values))
