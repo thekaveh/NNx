@@ -444,6 +444,45 @@ def test_a_forward_served_from_dynamos_cache_is_reported_compiled(helper, tmp_pa
     assert not any("_graph_ran" in getattr(graph, "__qualname__", "") for graph in held)
 
 
+class _BreaksFirst(torch.nn.Module):
+    """A forward that graph-breaks before any torch op (a print or log
+    call): its graph is in a resume function, not in the forward's entry."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lin = torch.nn.Linear(4, 2)
+
+    def forward(self, x):
+        torch._dynamo.graph_break()
+        return self.lin(x)
+
+
+class _BreaksInside(torch.nn.Module):
+    """The leading graph break in a nested module's forward."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.block, self.head = _BreaksFirst(), torch.nn.Linear(2, 2)
+
+    def forward(self, x):
+        return self.head(self.block(x))
+
+
+@pytest.mark.parametrize("policy", ["error", "eager"])
+@pytest.mark.parametrize("helper", HELPERS)
+@pytest.mark.parametrize("make", [_BreaksFirst, _BreaksInside], ids=["leading", "nested"])
+def test_a_forward_with_a_leading_graph_break_served_from_cache_is_reported_compiled(helper, policy, make, tmp_path):
+    """Benchmarked again in one process (the same model, or a new one of the
+    class), its cached graphs run though its own entry holds none."""
+    spec = dataclasses.replace(FAST, on_failure=policy)
+    same = make()
+    for attempt, net in enumerate([same, same, make(), make()]):
+        report = _run(helper, net, spec, tmp_path / str(attempt))
+        assert report.compile.effective == "compiled" and report.compile.restart is None, attempt
+        if not isinstance(report, ProfileReport):
+            assert (report.label, report.backend) == ("compiled", "aot_eager")
+
+
 @pytest.mark.parametrize("helper", HELPERS)
 def test_a_spent_cache_is_never_reported_compiled(helper, tmp_path, monkeypatch):
     """With no allowance for the entries already held, a recompile limit of
@@ -548,6 +587,25 @@ def test_max_abs_diff_reads_every_head_and_dataclass_fields():
     plus_100 = _perturbing("nnx_test_plus_100", lambda i, t: t + 100)
     assert _diff(_TwoHeads(), plus_100) == pytest.approx(100.0, abs=1e-4)
     assert _diff(_DataclassOut(), plus_100) == pytest.approx(100.0, abs=1e-4)
+
+
+@dataclasses.dataclass
+class _WithUnset:
+    logits: torch.Tensor
+    cache: object = dataclasses.field(init=False)
+
+
+class _UnsetFieldOut(_DataclassOut):
+    def forward(self, x):
+        return _WithUnset(self.lin(x))
+
+
+def test_max_abs_diff_skips_a_dataclass_field_never_assigned():
+    plus_100 = _perturbing("nnx_test_plus_100", lambda i, t: t + 100)
+    assert _diff(_UnsetFieldOut(), plus_100) == pytest.approx(100.0, abs=1e-4)
+    unset, assigned = _WithUnset(torch.zeros(1)), _WithUnset(torch.zeros(1))
+    assigned.cache = None
+    assert benchmarking._flatten(unset)[1] != benchmarking._flatten(assigned)[1]  # refused as differently structured
 
 
 @pytest.mark.parametrize("masked_first", [True, False])

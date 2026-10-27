@@ -393,9 +393,13 @@ def compare_compile(
     return CompileComparison(eager=eager, compiled=compiled, max_abs_diff=diff)
 
 
+_UNSET = object()
+
+
 def _flatten(output: Any) -> tuple[list[Any], list[Any]]:
     """``output``'s leaves and structure, with dataclass leaves (which the
-    pytree leaves whole) opened field by field."""
+    pytree leaves whole) opened field by field; a field never assigned (an
+    ``init=False`` one) is left out, and so differs in the structure."""
     from torch.utils._pytree import tree_flatten
 
     leaves, spec = tree_flatten(output)
@@ -403,7 +407,11 @@ def _flatten(output: Any) -> tuple[list[Any], list[Any]]:
     structure: list[Any] = [spec]
     for leaf in leaves:
         if dataclasses.is_dataclass(leaf) and not isinstance(leaf, type):
-            fields = {item.name: getattr(leaf, item.name) for item in dataclasses.fields(leaf)}
+            fields = {
+                item.name: value
+                for item in dataclasses.fields(leaf)
+                if (value := getattr(leaf, item.name, _UNSET)) is not _UNSET
+            }
             inner, inner_structure = _flatten(fields)
             flat.extend(inner)
             structure.extend([type(leaf), *inner_structure])
