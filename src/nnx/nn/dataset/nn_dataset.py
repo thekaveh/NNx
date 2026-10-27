@@ -42,6 +42,8 @@ class NNDataset(NNDatasetBase):
     instantiated — zero never disables a split; ``val_proportion=0.0`` does
     (``val_loader`` is then ``None``; the resolved val size is a placeholder
     ``1`` when requested as ``None``, and an explicit size is kept).
+    ``download`` is forwarded to both factories and must be a real ``bool``;
+    anything else is rejected before either runs.
 
     ``transform`` is handed to both torchvision factories and applies to
     every split. Split transforms: ``train_transform`` and
@@ -83,6 +85,10 @@ class NNDataset(NNDatasetBase):
             )
         if not 0.0 <= self.val_proportion < 1.0:
             raise ValueError(f"val_proportion must be in [0, 1), got {self.val_proportion}")
+        # A real bool (#545): the factory runs `if download:`, so the string
+        # "false" would download.
+        if not isinstance(self.download, bool):
+            raise ValueError(f"NNDataset.download must be a bool, got {self.download!r}")
         # Validate the request before the factories run (FIX-022): `None`
         # is the only full-split sentinel; zero / False / malformed tuples
         # fail here, not after a download or deep inside DataLoader.

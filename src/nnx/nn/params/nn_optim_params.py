@@ -21,32 +21,13 @@ _ADAM_FAMILY = frozenset({Optims.ADAM, Optims.ADAM_AMSGRAD, Optims.ADAMW})
 _SGD_FAMILY = frozenset({Optims.SGD, Optims.SGD_NESTEROV})
 
 
-def _validate_optim_scalars(obj: Any, owner: str) -> None:
-    """Validate the scalar knobs every optimizer config shares (built-in
-    ``NNOptimParams`` and registered ``NNOptimFactoryParams``).
-
-    Fails fast on out-of-range scalars — each constructs fine but
-    misbehaves silently/obscurely deep in the train loop:
-      * accumulate_grad_batches < 1: =0 dies mid-training with
-        `ZeroDivisionError` on `batch_idx % accumulate_grad_batches`
-        (AFTER printing the whole run-config table); <0 scales the
-        loss by 1/N < 0 and silently performs gradient *ascent*.
-      * grad_clip_norm <= 0 (when not the None "off" sentinel): 0.0
-        passes the `is not None` clip-enable check and zeros every
-        gradient, so training runs to completion making no progress.
-      * accumulate_grad_batches is an integer count (FIX-021): a
-        fractional value such as 2.5 used to reach the modulo and
-        silently step every five batches. NumPy integers are
-        normalized to a plain `int` so state() stays YAML-portable.
-      * max_lr < 0: a negative LR performs gradient *ascent*. max_lr=0
-        is allowed — it is an explicit "freeze updates" choice (used as a
-        no-update idiom, e.g. probing a loss without changing weights);
-        unlike the knobs above, 0 is intended, not a silent footgun.
-      * weight_decay < 0: grows weights instead of decaying them (matches
-        the per-group NNParamGroupSpec guard).
-    Finite-real first (NaN passes every inequality), then the domain
-    (FIX-020). Meaningful zeros stay valid; nothing here touches state().
-    """
+def _validate_step_knobs(obj: Any, owner: str) -> None:
+    """Validate the two knobs a training step reads — ``accumulate_grad_batches``
+    (an integer count >= 1, normalized to a plain ``int``) and
+    ``grad_clip_norm`` (``None`` or a finite real > 0) — on ``obj`` in
+    place. One predicate for the optimizer configs and a hand-built
+    ``TrainStepContext`` (#545); see :func:`_validate_optim_scalars` for
+    the failures each refusal prevents."""
     accumulate = obj.accumulate_grad_batches
     object.__setattr__(
         obj,
@@ -74,6 +55,37 @@ def _validate_optim_scalars(obj: Any, owner: str) -> None:
                 f"grad_clip_norm must be > 0 when set, got {grad_clip_norm} (use None to disable clipping, not 0)."
             ),
         )
+
+
+def _validate_optim_scalars(obj: Any, owner: str) -> None:
+    """Validate the scalar knobs every optimizer config shares (built-in
+    ``NNOptimParams`` and registered ``NNOptimFactoryParams``).
+
+    Fails fast on out-of-range scalars — each constructs fine but
+    misbehaves silently/obscurely deep in the train loop:
+      * accumulate_grad_batches < 1: =0 dies mid-training with
+        `ZeroDivisionError` on `batch_idx % accumulate_grad_batches`
+        (AFTER printing the whole run-config table); <0 scales the
+        loss by 1/N < 0 and silently performs gradient *ascent*.
+      * grad_clip_norm <= 0 (when not the None "off" sentinel): 0.0
+        passes the `is not None` clip-enable check and zeros every
+        gradient, so training runs to completion making no progress.
+      * accumulate_grad_batches is an integer count (FIX-021): a
+        fractional value such as 2.5 used to reach the modulo and
+        silently step every five batches. NumPy integers are
+        normalized to a plain `int` so state() stays YAML-portable.
+      * max_lr < 0: a negative LR performs gradient *ascent*. max_lr=0
+        is allowed — it is an explicit "freeze updates" choice (used as a
+        no-update idiom, e.g. probing a loss without changing weights);
+        unlike the knobs above, 0 is intended, not a silent footgun.
+      * weight_decay < 0: grows weights instead of decaying them (matches
+        the per-group NNParamGroupSpec guard).
+    Finite-real first (NaN passes every inequality), then the domain
+    (FIX-020). Meaningful zeros stay valid; nothing here touches state().
+    The two step knobs are :func:`_validate_step_knobs`, which a
+    hand-built ``TrainStepContext`` shares (#545).
+    """
+    _validate_step_knobs(obj, owner)
     max_lr = obj.max_lr
     require_finite_real(
         max_lr,

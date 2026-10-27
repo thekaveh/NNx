@@ -207,3 +207,61 @@ def test_empty_train_mask_rejected(sampler):
     ds_class = _graph_class(train=[], val=[4], test=[6])
     with pytest.raises(ValueError, match="train_mask"):
         NNGraphDataset(ds_class=ds_class, sampler=sampler, **_mode_kwargs(sampler))
+
+
+class _CountingGraph(_TinyGraph):
+    """Counts its constructions: a refusal must come before any (a real PyG
+    dataset such as Planetoid downloads on construction)."""
+
+    builds = 0
+
+    def __init__(self, root, transform=None):
+        type(self).builds += 1
+        super().__init__(root, transform=transform)
+
+
+@pytest.mark.parametrize("n_workers", [-1, "2", 2.5, True, None], ids=repr)
+def test_an_invalid_n_workers_is_refused_before_the_dataset_is_built(n_workers):
+    """#545: n_workers was never checked — a negative or string failed after
+    the dataset was built, and a float or bool was stored in state()."""
+    _CountingGraph.builds = 0
+    with pytest.raises(ValueError, match="NNGraphDataset requires n_workers"):
+        NNGraphDataset(ds_class=_CountingGraph, n_neighbors=[2], n_workers=n_workers)
+    assert _CountingGraph.builds == 0
+
+
+def test_a_numpy_n_workers_is_stored_as_a_plain_int():
+    import numpy as np
+
+    ds = NNGraphDataset(ds_class=_TinyGraph, n_neighbors=[2], n_workers=np.int64(2))
+    assert ds.state()["n_workers"] == 2 and type(ds.state()["n_workers"]) is int
+    assert ds.train_loader.num_workers == 2 and type(ds.train_loader.num_workers) is int
+    assert NNGraphDataset(ds_class=_TinyGraph, n_neighbors=[2], n_workers=0).state()["n_workers"] == 0
+
+
+@pytest.mark.parametrize("n_neighbors", [[2.5], "2", 2, [], [True], [-2], [2, None], {"a": [2]}], ids=repr)
+def test_an_invalid_n_neighbors_is_refused_before_the_dataset_is_built(n_neighbors):
+    """#545: n_neighbors was only checked for None and stored as given."""
+    _CountingGraph.builds = 0
+    with pytest.raises(ValueError, match="NNGraphDataset requires n_neighbors"):
+        NNGraphDataset(ds_class=_CountingGraph, n_neighbors=n_neighbors, n_workers=0)
+    assert _CountingGraph.builds == 0
+
+
+@pytest.mark.parametrize("n_neighbors", [[-1], [0], [10, 5], (10, 5)], ids=repr)
+def test_valid_n_neighbors_keep_their_state(n_neighbors):
+    """-1 is PyG's "all neighbors"; 0 samples none. The value (list or tuple)
+    is stored as given."""
+    import numpy as np
+
+    ds = NNGraphDataset(ds_class=_TinyGraph, n_neighbors=n_neighbors, n_workers=0)
+    assert ds.state()["n_neighbors"] == n_neighbors
+    assert type(ds.state()["n_neighbors"]) is type(n_neighbors)
+    numpy_entries = type(n_neighbors)(np.int64(k) for k in n_neighbors)
+    stored = NNGraphDataset(ds_class=_TinyGraph, n_neighbors=numpy_entries, n_workers=0).state()["n_neighbors"]
+    assert stored == n_neighbors and all(type(k) is int for k in stored)
+
+
+def test_the_full_sampler_still_ignores_the_neighbor_fields():
+    ds = NNGraphDataset(ds_class=_TinyGraph, sampler="full", n_neighbors="ignored", n_workers=-1)
+    assert "n_workers" not in ds.state() and "n_neighbors" not in ds.state()
