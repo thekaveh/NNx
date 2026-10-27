@@ -41,8 +41,10 @@ def _restore_training_modes(modes: list[tuple[torch.nn.Module, bool]]) -> None:
     """Restore exact flags while honoring custom ``Module.train`` hooks.
 
     Each custom hook runs once, bottom-up, with its descendants' ``train``
-    suppressed. The stock ``Module.train`` would only set the flag already
-    set here, so it is not replayed: the cost is O(modules) plus the
+    suppressed. With those suppressed, the stock ``Module.train`` only sets
+    its own flag, so it is replayed as that flag write in the same bottom-up
+    order, which also undoes a hook's writes to a module outside its subtree
+    that comes earlier in pre-order. The cost is O(modules) plus the
     subtrees of the modules that override ``train``, however deep the net.
     """
     for module, training in reversed(modes):
@@ -53,6 +55,7 @@ def _restore_training_modes(modes: list[tuple[torch.nn.Module, bool]]) -> None:
 
     for module, training in reversed(modes):
         if not _overrides_train(module):
+            module.training = training
             continue
         child_train_overrides = []
         for child in list(module.modules())[1:]:
