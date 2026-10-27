@@ -75,6 +75,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import numbers
 import os
 import time
 import uuid
@@ -83,6 +84,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Optional, Union
 
+from ._validation import checked, plain_real, plain_str, require_count, require_finite_real
 from .nn.callbacks import Callback
 
 __all__ = [
@@ -115,10 +117,10 @@ def _name(value: Any) -> str:
     return value
 
 
-def _finite(value: Any, what: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        raise ValueError(f"{what} must be a finite number, got {value!r}")
-    return float(value)
+def _finite(value: Any, what: str, *, owner: str) -> float:
+    """A finite real as a plain float: NumPy numbers included; a bool, NaN,
+    ±inf or an integer too large for a float (``10**400``) is refused by name."""
+    return require_finite_real(value, what, owner=owner)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -134,7 +136,8 @@ class FloatParam:
 
     def __post_init__(self) -> None:
         _name(self.name)
-        low, high = _finite(self.low, f"{self.name}.low"), _finite(self.high, f"{self.name}.high")
+        low = _finite(self.low, f"{self.name}.low", owner="FloatParam")
+        high = _finite(self.high, f"{self.name}.high", owner="FloatParam")
         if low >= high:
             raise ValueError(f"{self.name}: low must be < high, got [{low}, {high}]")
         if not isinstance(self.log, bool):
@@ -142,9 +145,14 @@ class FloatParam:
         if self.log and low <= 0:
             raise ValueError(f"{self.name}: a log scale needs low > 0, got {low}")
         if self.step is not None:
-            step = _finite(self.step, f"{self.name}.step")
+            step = _finite(self.step, f"{self.name}.step", owner="FloatParam")
             if step <= 0 or self.log:
                 raise ValueError(f"{self.name}: step must be > 0 and cannot combine with log")
+            object.__setattr__(self, "step", step)
+        # Plain floats: a NumPy bound is the same space (state(), digest())
+        # and reaches Optuna as a Python number.
+        object.__setattr__(self, "low", low)
+        object.__setattr__(self, "high", high)
 
     def state(self) -> dict[str, Any]:
         """Fields that differ from their defaults; bounds as floats (so
@@ -173,9 +181,13 @@ class IntParam:
 
     def __post_init__(self) -> None:
         _name(self.name)
-        for what, value in (("low", self.low), ("high", self.high), ("step", self.step)):
-            if isinstance(value, bool) or not isinstance(value, int):
-                raise TypeError(f"{self.name}.{what} must be an int, got {value!r}")
+        for what in ("low", "high", "step"):
+            # Any integer, NumPy integers included, stored as a plain int (a
+            # raw numpy.int64 would fail digest()'s json.dumps).
+            value = checked(
+                require_count, getattr(self, what), f"{self.name}.{what}", owner="IntParam", error=TypeError
+            )
+            object.__setattr__(self, what, value)
         if self.low >= self.high:
             raise ValueError(f"{self.name}: low must be < high, got [{self.low}, {self.high}]")
         if self.step < 1:
@@ -207,7 +219,7 @@ class CategoricalParam:
 
     def __post_init__(self) -> None:
         _name(self.name)
-        choices = tuple(self.choices)
+        choices = tuple(_plain_choice(choice) for choice in self.choices)
         if len(choices) < 1:
             raise ValueError(f"{self.name}: choices must not be empty")
         if not all(choice is None or isinstance(choice, (bool, int, float, str)) for choice in choices):
@@ -223,6 +235,17 @@ class CategoricalParam:
 
     def suggest(self, trial: Any) -> Any:
         return trial.suggest_categorical(self.name, list(self.choices))
+
+
+def _plain_choice(choice: Any) -> Any:
+    """A NumPy integer, float or ``numpy.str_`` choice as the plain value it
+    equals (``state()`` and ``digest()`` alike); anything else unchanged for
+    the type check, so a NumPy bool stays refused (it is neither a bool nor a
+    number)."""
+    numpy_real = type(choice).__module__ == "numpy" and isinstance(choice, numbers.Real)
+    if not isinstance(choice, bool) and (isinstance(choice, numbers.Integral) or numpy_real):
+        return plain_real(choice)
+    return plain_str(choice)
 
 
 SearchParam = Union[FloatParam, IntParam, CategoricalParam]
@@ -263,16 +286,16 @@ class SearchBudget:
     deadline_seconds: Optional[float] = None
 
     def __post_init__(self) -> None:
-        if isinstance(self.trials, bool) or not isinstance(self.trials, int) or self.trials < 1:
-            raise ValueError(f"SearchBudget.trials must be an int >= 1, got {self.trials!r}")
-        if self.updates_per_trial is not None and (
-            isinstance(self.updates_per_trial, bool)
-            or not isinstance(self.updates_per_trial, int)
-            or self.updates_per_trial < 1
-        ):
-            raise ValueError(f"SearchBudget.updates_per_trial must be an int >= 1, got {self.updates_per_trial!r}")
-        if self.deadline_seconds is not None and _finite(self.deadline_seconds, "deadline_seconds") <= 0:
-            raise ValueError(f"SearchBudget.deadline_seconds must be > 0, got {self.deadline_seconds!r}")
+        # NumPy numbers are stored as the plain int / float they equal.
+        object.__setattr__(self, "trials", require_count(self.trials, "trials", owner="SearchBudget", minimum=1))
+        if self.updates_per_trial is not None:
+            updates = require_count(self.updates_per_trial, "updates_per_trial", owner="SearchBudget", minimum=1)
+            object.__setattr__(self, "updates_per_trial", updates)
+        if self.deadline_seconds is not None:
+            deadline = require_finite_real(
+                self.deadline_seconds, "deadline_seconds", owner="SearchBudget", minimum=0, exclusive_min=True
+            )
+            object.__setattr__(self, "deadline_seconds", deadline)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

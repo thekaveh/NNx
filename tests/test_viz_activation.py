@@ -148,3 +148,18 @@ def test_activation_map_renders_many_channels_in_a_wide_grid():
 def test_activation_map_validates_its_grid_arguments(bad):
     with pytest.raises(ValueError, match="positive integer"):
         activation_map(nn.Sequential(nn.Conv2d(1, 2, 1)), torch.randn(1, 1, 2, 2), "0", **bad)
+
+
+def test_activation_map_passes_numpy_grid_arguments_on_as_ints():
+    """#544: NumPy integers are grid sizes (a regression: plotly's
+    make_subplots(cols=) refuses a numpy.int64, so a plain int is passed on)."""
+    import numpy as np
+
+    model = nn.Sequential(nn.Conv2d(1, 4, 1))
+    x = torch.randn(1, 1, 2, 2)
+    plain = activation_map(model, x, "0", max_channels=3, cols=2)
+    fig = activation_map(model, x, "0", max_channels=np.int64(3), cols=np.int32(2))
+    assert len(fig.data) == len(plain.data) == 3 and fig.layout == plain.layout
+    for bad in ({"max_channels": 2.0}, {"cols": True}):
+        with pytest.raises(ValueError, match="positive integer"):
+            activation_map(model, x, "0", **bad)

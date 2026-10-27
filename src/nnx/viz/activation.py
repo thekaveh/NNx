@@ -24,6 +24,7 @@ Returning a Plotly `Figure` keeps the module consistent with
 from __future__ import annotations
 
 import math
+import numbers
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Union
 
@@ -89,9 +90,12 @@ def activation_map(
     """
     # The figure needs the plots extra: refuse before running the model (FEAT-031).
     require("plotly.graph_objects", "nnx.viz.activation_map")
+    # Any integer, NumPy integers included, passed on as a plain int: plotly's
+    # make_subplots(cols=) refuses a numpy.int64.
     for name, value in (("max_channels", max_channels), ("cols", cols)):
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < 1:
             raise ValueError(f"activation_map: {name} must be a positive integer, got {value!r}")
+    max_channels, cols = int(max_channels), int(cols)
     # Local import to avoid a circular import at package init time.
     from ..nn.nn_model import NNModel
 

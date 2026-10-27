@@ -118,7 +118,8 @@ arrives or the group's timeout expires. Without a process group, or after a
 successful call, it does nothing.
 
 **Partitions.** `nnx.distributed.train_loader(dataset, batch_size, policy=, seed=)`
-deals each epoch's permutation (seeded by `seed + epoch`) to the ranks. It
+deals each epoch's permutation (seeded by `(seed + epoch) % 2**64`, for a
+`seed` in `[0, 2**64 - 1]`) to the ranks. It
 first pads (`"pad"` repeats leading rows) or drops (`"drop"`) the tail, so
 every rank takes the same number of steps. A mismatch fails on every rank
 before the epoch. `validation_loader(dataset, batch_size)` shards rows `rank::world`

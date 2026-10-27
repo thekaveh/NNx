@@ -7,6 +7,7 @@ compare it with a reference computed here in one process.
 
 from __future__ import annotations
 
+import datetime
 import os
 import re
 import subprocess
@@ -213,6 +214,91 @@ def test_train_partitions_pad_or_drop_and_reseed_per_epoch():
         RankPartition(11, rank=2, world_size=2)
     with pytest.raises(ValueError):
         RankPartition(11, rank=0, world_size=2, policy="wrap")
+
+
+def test_numpy_counts_are_stored_as_ints_with_the_plain_descriptor():
+    """#544: NumPy integers (sweep grids, rng.integers seeds) are the plain
+    ints they equal; bools, floats and strings stay refused."""
+    from unittest import mock
+
+    import numpy as np
+
+    from nnx import distributed as nnx_dist
+
+    plain = RankPartition(8, rank=1, world_size=2, seed=3)
+    numpy = RankPartition(np.int64(8), rank=np.int64(1), world_size=np.int32(2), seed=np.int64(3))
+    assert numpy.descriptor() == plain.descriptor() and numpy.indices() == plain.indices()
+    assert all(type(getattr(numpy, field)) is int for field in ("n", "rank", "world_size", "seed"))
+    numpy.set_epoch(np.int64(2))
+    plain.set_epoch(2)
+    assert type(numpy.epoch) is int and numpy.indices() == plain.indices()
+    data = torch.utils.data.TensorDataset(torch.arange(8.0))
+    sharded = nnx_dist.ShardedLoader(data, np.int64(2), RankPartition(8, rank=0, world_size=2))
+    assert (
+        type(sharded.batch_size) is int
+        and sharded.descriptor() == nnx_dist.ShardedLoader(data, 2, RankPartition(8, rank=0, world_size=2)).descriptor()
+    )
+    with mock.patch.object(nnx_dist, "_world", return_value=(0, 2)):
+        train = nnx_dist.train_loader(data, np.int64(2), seed=np.int64(5))
+        assert train.descriptor() == nnx_dist.train_loader(data, 2, seed=5).descriptor()
+        validation = nnx_dist.validation_loader(data, np.int32(3))
+        assert validation.descriptor() == nnx_dist.validation_loader(data, 3).descriptor()
+    assert type(train.batch_size) is int and type(train.partition.seed) is int and type(validation.batch_size) is int
+    writer = nnx_dist.DDP(writer_rank=np.int64(1))
+    assert writer == nnx_dist.DDP(writer_rank=1) and type(writer.writer_rank) is int
+    refusing = (
+        lambda v: RankPartition(v, rank=0, world_size=2),
+        lambda v: RankPartition(8, rank=v, world_size=2),
+        lambda v: RankPartition(8, rank=0, world_size=v),
+        lambda v: RankPartition(8, rank=0, world_size=2, seed=v),
+        lambda v: RankPartition(8, rank=0, world_size=2).set_epoch(v),
+        lambda v: nnx_dist.ShardedLoader(data, v, RankPartition(8, rank=0, world_size=2)),
+        lambda v: nnx_dist.DDP(writer_rank=v),
+    )
+    for bad in (True, 1.0, "1", np.float64(1.0)):
+        for make in refusing:
+            with pytest.raises(ValueError):
+                make(bad)
+
+
+def test_the_partition_seed_domain_is_torchs_generator_range(tmp_path, monkeypatch):
+    """#544: seed + epoch overflowed torch's generator ("Overflow when
+    unpacking long long") at epoch 1 for 2**64 - 1 and at epoch 0 for
+    2**64, after the run had started. The largest seed now draws at every
+    epoch, and a larger one is refused by name at construction."""
+    from unittest import mock
+
+    from nnx import distributed as nnx_dist
+
+    largest = RankPartition(8, rank=0, world_size=2, seed=2**64 - 1)
+    orders = []
+    for epoch in (0, 1, 2):
+        largest.set_epoch(epoch)
+        orders.append(largest.global_order())
+        assert sorted(orders[-1]) == list(range(8))
+    assert orders[1] == RankPartition(8, rank=0, world_size=2, seed=0).global_order()  # (seed + 1) % 2**64
+    for bad in (2**64, 2**65, -1):
+        with pytest.raises(ValueError, match="seed"):
+            RankPartition(8, rank=0, world_size=2, seed=bad)
+    monkeypatch.chdir(tmp_path)
+    data = torch.utils.data.TensorDataset(torch.arange(8.0))
+    with mock.patch.object(nnx_dist, "_world", return_value=(0, 2)), pytest.raises(ValueError, match="seed"):
+        nnx_dist.train_loader(data, 2, seed=2**64)
+    assert not (tmp_path / "runs").exists()
+    doc = " ".join((nnx_dist.train_loader.__doc__ or "").split()) + " ".join((RankPartition.__doc__ or "").split())
+    assert "[0, 2**64 - 1]" in doc and "(seed + epoch) % 2**64" in doc
+
+
+def test_the_largest_partition_seed_trains_both_epochs_on_every_rank(tmp_path):
+    """#544, the ticket's 2-rank script: seed=2**64 - 1 failed on every rank
+    at epoch 1, after the run's checkpoints were written; 2**64 is refused
+    on every rank before any run directory exists."""
+    out = tmp_path / "largest-seed"
+    launch("largest_seed", out)
+    for result in results(out):
+        assert result["epochs"] == [0, 1], result
+        assert result["too_large"].startswith("ValueError: ") and "seed" in result["too_large"]
+        assert result["runs_after_refusal"] == []
 
 
 def test_one_rank_matches_the_local_path(tmp_path):
@@ -626,6 +712,41 @@ def test_init_process_group_checks_its_timeout_before_the_environment(monkeypatc
             nnx_dist.init_process_group(timeout_seconds=bad)  # type: ignore[arg-type]
     with pytest.raises(RuntimeError, match="no torchrun environment"):
         nnx_dist.init_process_group(timeout_seconds=5)
+
+
+def test_timeouts_take_numpy_numbers_and_refuse_what_timedelta_cannot_hold(monkeypatch):
+    """#544: np.float32(60) / np.int64(60) are timeouts; 10**400 (an
+    OverflowError) and 1e300 (accepted, then datetime.timedelta's
+    OverflowError) are refused by name before the environment is read."""
+    from unittest import mock
+
+    import numpy as np
+    import torch.distributed as dist
+
+    from nnx import distributed as nnx_dist
+
+    for name in ("RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
+        monkeypatch.delenv(name, raising=False)
+    for good in (np.float32(60), np.int64(60), 999_999_999 * 86_400):
+        nnx_dist.shutdown(timeout_seconds=good)
+        with pytest.raises(RuntimeError, match="no torchrun environment"):
+            nnx_dist.init_process_group(timeout_seconds=good)
+    for bad in (10**400, -(10**400), 1e300, 999_999_999 * 86_400 + 1):
+        with pytest.raises(ValueError, match="timeout_seconds"):
+            nnx_dist.shutdown(timeout_seconds=bad)
+        with pytest.raises(ValueError, match="timeout_seconds"):
+            nnx_dist.init_process_group(timeout_seconds=bad)
+    for name, value in dict(RANK="0", WORLD_SIZE="1", MASTER_ADDR="127.0.0.1", MASTER_PORT="0").items():
+        monkeypatch.setenv(name, value)
+    timeouts: list = []
+    with (
+        mock.patch.object(dist, "is_initialized", return_value=False),
+        mock.patch.object(dist, "init_process_group", side_effect=lambda backend, timeout: timeouts.append(timeout)),
+        mock.patch.object(dist, "get_rank", return_value=0),
+        mock.patch.object(dist, "get_world_size", return_value=1),
+    ):
+        nnx_dist.init_process_group("gloo", timeout_seconds=np.float32(60))
+    assert timeouts == [datetime.timedelta(seconds=60)]
 
 
 def test_shutdown_leaves_the_group_together_and_a_second_call_is_a_no_op(tmp_path):

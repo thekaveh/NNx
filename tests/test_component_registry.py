@@ -48,6 +48,35 @@ def test_component_spec_validation():
         ComponentSpec("x", required="yes")  # type: ignore[arg-type]
 
 
+def test_a_numpy_version_is_stored_as_an_int_and_its_sidecar_loads_weights_only(tmp_path):
+    """#544: any integer is a version, NumPy integers included, stored as the
+    plain int the weights-only sidecar reader accepts (a raw numpy.int64
+    raised UnpicklingError there)."""
+    import numpy as np
+
+    from nnx import ResumeStatus
+
+    for version in (np.int64(2), np.int32(2)):
+        spec = ComponentSpec("my.counter", version=version)
+        assert spec.version == 2 and type(spec.version) is int
+    component = Counter("my.counter", version=np.int64(2))  # type: ignore[arg-type]
+    component.count = 5
+    path = tmp_path / "training_state.pt"
+    torch.save({"components": ComponentRegistry([component]).collect()}, path)
+    saved = torch.load(path, weights_only=True)["components"]
+    assert saved["my.counter"]["version"] == 2 and type(saved["my.counter"]["version"]) is int
+    restored = ComponentRegistry([Counter("my.counter", version=2)])
+    assert restored.restore(restored.plan(saved)) == ("my.counter",)
+    for bad in (True, 1.0, "1", 0, np.float64(2.0)):
+        with pytest.raises(ValueError, match="version"):
+            ComponentSpec("x", version=bad)  # type: ignore[arg-type]
+    status = ResumeStatus(mode="stateful", source_epoch=np.int64(3))  # type: ignore[arg-type]
+    assert status.source_epoch == 3 and type(status.source_epoch) is int
+    for bad in (True, 1.0, -1):
+        with pytest.raises(ValueError, match="source_epoch"):
+            ResumeStatus(source_epoch=bad)  # type: ignore[arg-type]
+
+
 def test_names_are_unique_and_discovery_is_ordered():
     registry = ComponentRegistry([Counter("a"), Counter("b")])
     assert registry.names == ("a", "b")

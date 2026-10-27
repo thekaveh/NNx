@@ -319,3 +319,14 @@ def test_export_to_faiss_refuses_an_unknown_index_type_before_embedding(tmp_path
 def test_embed_texts_refuses_a_batch_size_below_one(bad):
     with pytest.raises(ValueError, match="batch_size"):
         embed_texts(_HashEmbedder(vocab_size=64, dim=8), ["a"], batch_size=bad)
+
+
+def test_embed_texts_takes_a_numpy_batch_size():
+    """#544, a regression: np.int64(2) was refused; it embeds like 2."""
+    import numpy as np
+
+    texts = ["a", "bb", "ccc", "dddd"]
+    backbone = _HashEmbedder(vocab_size=64, dim=8)
+    expected = embed_texts(backbone, texts, batch_size=2)
+    for batch_size in (np.int64(2), np.int32(2)):
+        torch.testing.assert_close(embed_texts(backbone, texts, batch_size=batch_size), expected)

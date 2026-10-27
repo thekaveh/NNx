@@ -96,7 +96,6 @@ from __future__ import annotations
 import contextlib
 import datetime
 import gc
-import math
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -105,6 +104,8 @@ from typing import Any, Optional, cast
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, Sampler
+
+from ._validation import require_count, require_finite_real
 
 __all__ = [
     "DDP",
@@ -120,6 +121,12 @@ __all__ = [
 
 PARTITION_POLICIES: tuple[str, ...] = ("pad", "drop")
 """How a train partition evens out its tail across ranks."""
+
+# The largest partition seed: torch's generator takes [0, 2**64 - 1], and an
+# epoch's draw seeds it with (seed + epoch) % 2**64.
+_MAX_SEED = 2**64 - 1
+# The longest timeout_seconds: datetime.timedelta holds at most 999,999,999 days.
+_MAX_TIMEOUT_SECONDS = 999_999_999 * 86_400
 
 
 class DistributedFailure(RuntimeError):
@@ -156,7 +163,7 @@ def shutdown(*, timeout_seconds: float = 60.0) -> None:
     group's timeout instead. Without a process group, or after a successful
     call, it does nothing; after a failed call the group is still
     initialized (``init_process_group()`` returns it as is), so exit."""
-    _check_timeout(timeout_seconds)
+    timeout_seconds = _check_timeout(timeout_seconds)
     if not dist.is_available() or not dist.is_initialized():
         return
     # A DDP wrapper still reachable only through garbage (an exception's
@@ -177,14 +184,18 @@ def shutdown(*, timeout_seconds: float = 60.0) -> None:
     dist.destroy_process_group()
 
 
-def _check_timeout(timeout_seconds: object) -> None:
-    if (
-        isinstance(timeout_seconds, bool)
-        or not isinstance(timeout_seconds, (int, float))
-        or not math.isfinite(timeout_seconds)
-        or timeout_seconds <= 0
-    ):
-        raise ValueError(f"timeout_seconds must be a finite number > 0, got {timeout_seconds!r}")
+def _check_timeout(timeout_seconds: object) -> float:
+    """``timeout_seconds`` as a plain float in ``(0, _MAX_TIMEOUT_SECONDS]``:
+    NumPy numbers included; a bool, ``10**400`` or ``1e300`` is refused by
+    name before ``datetime.timedelta`` overflows on it."""
+    return require_finite_real(
+        timeout_seconds,
+        "timeout_seconds",
+        owner="nnx.distributed",
+        minimum=0,
+        exclusive_min=True,
+        maximum=_MAX_TIMEOUT_SECONDS,
+    )
 
 
 def _refuse_multi_rank(entry: str) -> None:
@@ -204,10 +215,10 @@ def _refuse_multi_rank(entry: str) -> None:
         )
 
 
-def _int(value: Any, what: str, *, minimum: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise ValueError(f"{what} must be an int >= {minimum}, got {value!r}")
-    return value
+def _int(value: Any, what: str, *, owner: str, minimum: int, maximum: Optional[int] = None) -> int:
+    """A count as a plain ``int``: any non-bool integer, NumPy integers
+    included (a float, ``True`` or a string is refused)."""
+    return require_count(value, what, owner=owner, minimum=minimum, maximum=maximum)
 
 
 def init_process_group(backend: Optional[str] = None, *, timeout_seconds: float = 120.0) -> tuple[int, int]:
@@ -219,7 +230,7 @@ def init_process_group(backend: Optional[str] = None, *, timeout_seconds: float 
     (``torch.cuda.set_device``); any other backend selects no device, so a
     CUDA model under ``gloo`` needs ``torch.cuda.set_device(local_rank)``
     before it is built (otherwise every rank's model sits on ``cuda:0``)."""
-    _check_timeout(timeout_seconds)
+    timeout_seconds = _check_timeout(timeout_seconds)
     if not dist.is_available():
         raise RuntimeError("this torch build has no torch.distributed")
     if dist.is_initialized():
@@ -243,12 +254,18 @@ def init_process_group(backend: Optional[str] = None, *, timeout_seconds: float 
 class RankPartition(Sampler[int]):
     """This rank's dataset indices, per epoch.
 
-    ``kind="train"``: a seeded permutation of ``range(n)`` (``seed + epoch``;
-    identity order with ``shuffle=False``), evened out by ``policy`` —
-    ``"pad"`` repeats leading indices, ``"drop"`` drops the tail — and
-    dealt ``rank::world_size``, so every rank serves the same count.
+    ``kind="train"``: a seeded permutation of ``range(n)``
+    (``(seed + epoch) % 2**64``; identity order with ``shuffle=False``),
+    evened out by ``policy`` — ``"pad"`` repeats leading indices, ``"drop"``
+    drops the tail — and dealt ``rank::world_size``, so every rank serves
+    the same count.
     ``kind="validation"``: rows ``rank::world_size`` in order, unpadded
-    (counts may differ; a rank may serve none)."""
+    (counts may differ; a rank may serve none).
+
+    ``n``, ``rank``, ``world_size``, ``seed`` and ``set_epoch``'s epoch are
+    integers (NumPy integers are stored as ``int``); ``seed`` is in
+    ``[0, 2**64 - 1]``, torch's generator range, so a larger one is refused
+    here rather than when an epoch first draws."""
 
     def __init__(
         self,
@@ -261,9 +278,9 @@ class RankPartition(Sampler[int]):
         shuffle: bool = True,
         seed: int = 0,
     ) -> None:
-        self.n = _int(n, "n", minimum=0)
-        self.world_size = _int(world_size, "world_size", minimum=1)
-        self.rank = _int(rank, "rank", minimum=0)
+        self.n = _int(n, "n", owner="RankPartition", minimum=0)
+        self.world_size = _int(world_size, "world_size", owner="RankPartition", minimum=1)
+        self.rank = _int(rank, "rank", owner="RankPartition", minimum=0)
         if self.rank >= self.world_size:
             raise ValueError(f"rank {rank} is outside a world of {world_size}")
         if kind not in ("train", "validation"):
@@ -273,11 +290,11 @@ class RankPartition(Sampler[int]):
         if not isinstance(shuffle, bool):
             raise TypeError(f"shuffle must be a bool, got {shuffle!r}")
         self.kind, self.policy, self.shuffle = kind, policy, shuffle
-        self.seed = _int(seed, "seed", minimum=0)
+        self.seed = _int(seed, "seed", owner="RankPartition", minimum=0, maximum=_MAX_SEED)
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
-        self.epoch = _int(epoch, "epoch", minimum=0)
+        self.epoch = _int(epoch, "epoch", owner="RankPartition.set_epoch", minimum=0)
 
     def global_order(self) -> list[int]:
         """Every rank's indices for this epoch, before dealing (train: after
@@ -285,7 +302,8 @@ class RankPartition(Sampler[int]):
         if self.kind == "validation" or not self.shuffle:
             order = list(range(self.n))
         else:
-            generator = torch.Generator().manual_seed(self.seed + self.epoch)
+            # Wrapped into torch's range: the largest seed still draws at epoch 1.
+            generator = torch.Generator().manual_seed((self.seed + self.epoch) % 2**64)
             order = torch.randperm(self.n, generator=generator).tolist()
         if self.kind == "train":
             remainder = len(order) % self.world_size
@@ -337,7 +355,7 @@ class ShardedLoader:
         if len(dataset) != partition.n:
             raise ValueError(f"the partition covers {partition.n} rows, the dataset has {len(dataset)}")
         self.dataset = dataset
-        self.batch_size = _int(batch_size, "batch_size", minimum=1)
+        self.batch_size = _int(batch_size, "batch_size", owner="ShardedLoader", minimum=1)
         self.partition = partition
         self.collate_fn = collate_fn
 
@@ -377,7 +395,9 @@ def train_loader(
 ) -> ShardedLoader:
     """This rank's training loader: a per-epoch seeded partition of
     ``dataset`` evened out by ``policy`` (``"pad"`` or ``"drop"``), so
-    every rank takes the same number of steps."""
+    every rank takes the same number of steps. ``seed`` is an integer in
+    ``[0, 2**64 - 1]`` (NumPy integers included), refused here otherwise;
+    each epoch draws its order from ``(seed + epoch) % 2**64``."""
     rank, world_size = _world()
     partition = RankPartition(
         len(dataset), rank=rank, world_size=world_size, kind="train", policy=policy, shuffle=shuffle, seed=seed
@@ -409,7 +429,7 @@ class DDP:
     find_unused_parameters: bool = False
 
     def __post_init__(self) -> None:
-        _int(self.writer_rank, "writer_rank", minimum=0)
+        object.__setattr__(self, "writer_rank", _int(self.writer_rank, "writer_rank", owner="DDP", minimum=0))
         if not isinstance(self.find_unused_parameters, bool):
             raise TypeError(f"find_unused_parameters must be a bool, got {self.find_unused_parameters!r}")
 
