@@ -409,7 +409,7 @@ class TeacherDataset(torch.utils.data.Dataset):
     def loader(self, batch_size: int, *, shuffle: bool = False, seed: Optional[int] = None) -> DataLoader:
         """A ``DataLoader`` of :class:`TeacherBatch`es; ``shuffle`` draws
         its order from ``seed`` (a generator a stateful resume restores), an
-        integer in ``[0, 2**64 - 1]``, torch's generator range. NumPy
+        integer in ``[-2**63, 2**64 - 1]``, torch's generator range. NumPy
         integers are passed on as plain ``int``."""
         batch_size = checked(
             require_count,
@@ -430,7 +430,7 @@ class TeacherDataset(torch.utils.data.Dataset):
                 "seed",
                 owner="TeacherDataset.loader",
                 error=TeacherRecordError,
-                minimum=0,
+                minimum=-(2**63),
                 maximum=2**64 - 1,
             )
             generator = torch.Generator().manual_seed(drawn)

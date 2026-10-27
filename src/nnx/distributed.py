@@ -125,8 +125,11 @@ PARTITION_POLICIES: tuple[str, ...] = ("pad", "drop")
 # The largest partition seed: torch's generator takes [0, 2**64 - 1], and an
 # epoch's draw seeds it with (seed + epoch) % 2**64.
 _MAX_SEED = 2**64 - 1
-# The longest timeout_seconds: datetime.timedelta holds at most 999,999,999 days.
-_MAX_TIMEOUT_SECONDS = 999_999_999 * 86_400
+# The longest timeout_seconds (about 285 years): torch adds a timeout to the
+# monotonic clock in int64 nanoseconds, so a Gloo group fails to form from
+# (2**63 - 1) / 1e9 s (about 292 years) less the host's uptime; this leaves
+# years of uptime headroom, well inside datetime.timedelta's range.
+_MAX_TIMEOUT_SECONDS = 9_000_000_000
 
 
 class DistributedFailure(RuntimeError):
@@ -186,8 +189,9 @@ def shutdown(*, timeout_seconds: float = 60.0) -> None:
 
 def _check_timeout(timeout_seconds: object) -> float:
     """``timeout_seconds`` as a plain float in ``(0, _MAX_TIMEOUT_SECONDS]``:
-    NumPy numbers included; a bool, ``10**400`` or ``1e300`` is refused by
-    name before ``datetime.timedelta`` overflows on it."""
+    NumPy numbers included; a bool, ``10**400``, ``1e300`` or a timeout
+    torch's nanosecond clock cannot hold is refused by name before
+    ``datetime.timedelta`` or the process group overflows on it."""
     return require_finite_real(
         timeout_seconds,
         "timeout_seconds",
@@ -226,7 +230,8 @@ def init_process_group(backend: Optional[str] = None, *, timeout_seconds: float 
     (``env://``) and return ``(rank, world_size)``. ``backend`` defaults to
     ``nccl`` when CUDA is available, else ``gloo``; ``timeout_seconds``
     bounds every collective, so a rank that dies cannot hang the others
-    forever. Under ``nccl`` each process takes ``cuda:LOCAL_RANK``
+    forever (at most ``9e9`` s, about 285 years: torch's clock holds no
+    more). Under ``nccl`` each process takes ``cuda:LOCAL_RANK``
     (``torch.cuda.set_device``); any other backend selects no device, so a
     CUDA model under ``gloo`` needs ``torch.cuda.set_device(local_rank)``
     before it is built (otherwise every rank's model sits on ``cuda:0``)."""
