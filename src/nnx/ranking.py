@@ -157,7 +157,8 @@ def _grades(relevance: Sequence[int]) -> list[int]:
 
 def _gain(grade: int, top: int) -> float:
     # ``(2^grade - 1) / 2^top``: scaled by the query's top grade, so it never overflows; a power-of-two
-    # scale is exact, so NDCG (a ratio of such gains) is unchanged wherever the unscaled sum is finite.
+    # scale is exact, so NDCG (a ratio of such gains) is unchanged while the scaled gains stay normal
+    # floats (top grade below about 1022; above that, low grades' gains go subnormal and lose low bits).
     return math.ldexp(1.0, grade - top) - math.ldexp(1.0, -top)
 
 
