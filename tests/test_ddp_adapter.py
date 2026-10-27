@@ -716,8 +716,9 @@ def test_init_process_group_checks_its_timeout_before_the_environment(monkeypatc
 
 def test_timeouts_take_numpy_numbers_and_refuse_what_timedelta_cannot_hold(monkeypatch):
     """#544: np.float32(60) / np.int64(60) are timeouts; 10**400 (an
-    OverflowError) and 1e300 (accepted, then datetime.timedelta's
-    OverflowError) are refused by name before the environment is read."""
+    OverflowError), 1e300 (accepted, then datetime.timedelta's
+    OverflowError) and anything past the cap torch's nanosecond clock holds
+    are refused by name before the environment is read."""
     from unittest import mock
 
     import numpy as np
@@ -727,11 +728,11 @@ def test_timeouts_take_numpy_numbers_and_refuse_what_timedelta_cannot_hold(monke
 
     for name in ("RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
         monkeypatch.delenv(name, raising=False)
-    for good in (np.float32(60), np.int64(60), 999_999_999 * 86_400):
+    for good in (np.float32(60), np.int64(60), nnx_dist._MAX_TIMEOUT_SECONDS):
         nnx_dist.shutdown(timeout_seconds=good)
         with pytest.raises(RuntimeError, match="no torchrun environment"):
             nnx_dist.init_process_group(timeout_seconds=good)
-    for bad in (10**400, -(10**400), 1e300, 999_999_999 * 86_400 + 1):
+    for bad in (10**400, -(10**400), 1e300, 999_999_999 * 86_400, nnx_dist._MAX_TIMEOUT_SECONDS + 1):
         with pytest.raises(ValueError, match="timeout_seconds"):
             nnx_dist.shutdown(timeout_seconds=bad)
         with pytest.raises(ValueError, match="timeout_seconds"):
@@ -752,6 +753,19 @@ def test_timeouts_take_numpy_numbers_and_refuse_what_timedelta_cannot_hold(monke
 def test_shutdown_leaves_the_group_together_and_a_second_call_is_a_no_op(tmp_path):
     out = tmp_path / "shutdown"
     launch("shutdown", out)
+    for result in results(out):
+        assert result["initialized_after"] is False and result["second_call"] == "no-op"
+
+
+def test_the_longest_timeout_forms_a_real_gloo_group(tmp_path, monkeypatch):
+    """#544: the largest accepted timeout_seconds forms a Gloo group and
+    leaves it; the timedelta bound (999,999,999 days) failed in torch's
+    int64-nanosecond clock with a DistNetworkError naming no field."""
+    from nnx import distributed as nnx_dist
+
+    monkeypatch.setenv("NNX_DDP_TIMEOUT", str(nnx_dist._MAX_TIMEOUT_SECONDS))
+    out = tmp_path / "longest-timeout"
+    launch("shutdown", out, timeout=120)
     for result in results(out):
         assert result["initialized_after"] is False and result["second_call"] == "no-op"
 
