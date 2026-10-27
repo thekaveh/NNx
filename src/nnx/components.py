@@ -48,7 +48,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol, cast, runtime_checkable
 
-from ._validation import require_count
+from ._validation import require_count, shown
 
 __all__ = [
     "COMPONENT_STATE_VERSION",
@@ -117,7 +117,7 @@ class ComponentSpec:
             "version",
             owner="ComponentSpec",
             minimum=1,
-            domain_message=f"ComponentSpec version must be a positive integer, got {self.version!r}",
+            domain_message=f"ComponentSpec version must be a positive integer, got {shown(self.version)}",
         )
         object.__setattr__(self, "version", version)
         if not isinstance(self.required, bool):
@@ -238,7 +238,7 @@ class ResumeStatus:
                 "source_epoch",
                 owner="ResumeStatus",
                 minimum=0,
-                domain_message=f"ResumeStatus source_epoch must be a non-negative integer or None, got {epoch!r}",
+                domain_message=f"ResumeStatus source_epoch must be a non-negative integer or None, got {shown(epoch)}",
             )
             object.__setattr__(self, "source_epoch", epoch)
         for name in ("attempt_token", "source_attempt_token"):

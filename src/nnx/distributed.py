@@ -105,7 +105,7 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, Sampler
 
-from ._validation import require_count, require_finite_real
+from ._validation import require_count, require_finite_real, shown
 
 __all__ = [
     "DDP",
@@ -287,7 +287,7 @@ class RankPartition(Sampler[int]):
         self.world_size = _int(world_size, "world_size", owner="RankPartition", minimum=1)
         self.rank = _int(rank, "rank", owner="RankPartition", minimum=0)
         if self.rank >= self.world_size:
-            raise ValueError(f"rank {rank} is outside a world of {world_size}")
+            raise ValueError(f"rank {shown(self.rank)} is outside a world of {shown(self.world_size)}")
         if kind not in ("train", "validation"):
             raise ValueError(f"kind must be 'train' or 'validation', got {kind!r}")
         if policy not in PARTITION_POLICIES:
@@ -516,7 +516,7 @@ class _DDPSession:
     def __init__(self, net: torch.nn.Module, spec: DDP, device: torch.device) -> None:
         self.rank, self.world_size = _world()
         if spec.writer_rank >= self.world_size:
-            raise ValueError(f"writer_rank {spec.writer_rank} is outside a world of {self.world_size}")
+            raise ValueError(f"writer_rank {shown(spec.writer_rank)} is outside a world of {shown(self.world_size)}")
         self.spec = spec
         self.writer = self.rank == spec.writer_rank
         self.device = device

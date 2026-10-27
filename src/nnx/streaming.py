@@ -60,7 +60,7 @@ import torch
 
 from ._confusion import integers
 from ._probability import to_numpy
-from ._validation import require_finite_real
+from ._validation import require_finite_real, shown
 from .monitors import (
     MetricAccumulator,
     MetricSpec,
@@ -390,7 +390,7 @@ class StreamingMetrics:
             maximum=1,
             exclusive_min=True,
             exclusive_max=True,
-            domain_message=f"threshold must be a probability in (0, 1), got {threshold!r}",
+            domain_message=f"threshold must be a probability in (0, 1), got {shown(threshold, real=True)}",
         )
         if ignore_index is not None and (
             semantics != "categorical"

@@ -132,7 +132,7 @@ def test_the_loader_takes_numpy_integers_and_bounds_its_seed():
     assert type(loader.batch_size) is int and [batch.sample_ids for batch in loader] == order
     for edge in (2**64 - 1, -1, -(2**63)):  # torch's whole generator range, negative seeds included
         assert sum(len(batch.sample_ids) for batch in dataset.loader(batch_size=2, shuffle=True, seed=edge)) == 3
-    for bad in (2**64, -(2**63) - 1, True, 1.0, None):
+    for bad in (2**64, -(2**63) - 1, 10**5000, True, 1.0, None):
         with pytest.raises(TeacherRecordError, match="seed"):
             dataset.loader(batch_size=2, shuffle=True, seed=bad)
     for bad in (0, True, 2.0):

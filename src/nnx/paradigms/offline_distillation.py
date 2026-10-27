@@ -70,7 +70,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from .._step_helpers import full_precision
-from .._validation import checked, require_count
+from .._validation import checked, require_count, shown
 from ..components import ComponentSpec
 from ..objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult
 from ..utils import _writable
@@ -418,7 +418,7 @@ class TeacherDataset(torch.utils.data.Dataset):
             owner="TeacherDataset.loader",
             error=TeacherRecordError,
             minimum=1,
-            domain_message=f"batch_size must be a positive integer, got {batch_size!r}",
+            domain_message=f"batch_size must be a positive integer, got {shown(batch_size)}",
         )
         generator = None
         if shuffle:

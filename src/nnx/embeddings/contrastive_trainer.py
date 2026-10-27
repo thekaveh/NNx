@@ -41,7 +41,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from .._step_helpers import finalize_step, imperative_step
-from .._validation import require_count, require_finite_real
+from .._validation import require_count, require_finite_real, shown
 from ..nn.nn_model import TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..paradigms.contrastive import nt_xent_loss
@@ -222,7 +222,7 @@ def embed_texts(
         "batch_size",
         owner="embed_texts",
         minimum=1,
-        domain_message=f"embed_texts batch_size must be an integer >= 1, got {batch_size!r}",
+        domain_message=f"embed_texts batch_size must be an integer >= 1, got {shown(batch_size)}",
     )
     # Encode where the backbone lives (its weights are never moved) and hand
     # the result over on ``device``.
@@ -413,7 +413,7 @@ def train_contrastive(
         # AdamW accepts lr=0.0: every epoch would run and leave the backbone
         # untouched. A bool, NaN, ±inf or an integer too large for a float
         # (10**400, an OverflowError before) gets the same refusal.
-        raise ValueError(f"lr must be positive and finite, got {lr!r}") from None
+        raise ValueError(f"lr must be positive and finite, got {shown(lr, real=True)}") from None
     if grad_clip_norm is not None:
         # `None` disables clipping; a non-positive norm would otherwise slip
         # past the `is not None` guard below and clip_grad_norm_(..., 0.0)
@@ -426,7 +426,7 @@ def train_contrastive(
             owner="train_contrastive",
             minimum=0,
             exclusive_min=True,
-            domain_message=f"grad_clip_norm must be positive and finite, or None to disable, got {grad_clip_norm}",
+            domain_message=f"grad_clip_norm must be positive and finite, or None to disable, got {shown(grad_clip_norm, real=True)}",
         )
 
     if isinstance(dataset, list):

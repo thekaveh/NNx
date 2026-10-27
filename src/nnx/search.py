@@ -84,7 +84,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Optional, Union
 
-from ._validation import checked, plain_real, plain_str, require_count, require_finite_real
+from ._validation import checked, plain_real, plain_str, require_count, require_finite_real, shown
 from .nn.callbacks import Callback
 
 __all__ = [
@@ -189,7 +189,7 @@ class IntParam:
             )
             object.__setattr__(self, what, value)
         if self.low >= self.high:
-            raise ValueError(f"{self.name}: low must be < high, got [{self.low}, {self.high}]")
+            raise ValueError(f"{self.name}: low must be < high, got [{shown(self.low)}, {shown(self.high)}]")
         if self.step < 1:
             raise ValueError(f"{self.name}: step must be >= 1")
         if not isinstance(self.log, bool):

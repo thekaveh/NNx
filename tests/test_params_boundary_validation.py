@@ -2632,6 +2632,7 @@ def test_a_run_saved_with_an_int_lineage_still_loads_with_its_id(tmp_path, monke
 # --- #544: integers too large for a float, and NumPy dropout -------------------------------------
 
 _HUGE = 10**400  # float(_HUGE) raises OverflowError
+_UNPRINTABLE = 10**5000  # past Python's 4300-digit int-to-str limit: repr() raises ValueError
 _TRANSFORMER = dict(input_dim=8, output_dim=8, n_heads=2, vocab_size=8, n_layers=1, d_model=8, max_seq_len=8)
 _VIT = dict(input_dim=48, output_dim=8, n_heads=2, image_size=4, patch_size=2, d_model=8, n_layers=1)
 _CONV = dict(input_dim=64, output_dim=2, hidden_dims=[8], conv_channels=[4])
@@ -2704,8 +2705,8 @@ def _dropout_sites():
 
 @pytest.mark.parametrize(
     "value",
-    [_HUGE, -_HUGE, True, "0.1", float("nan"), float("inf"), 2],
-    ids=["10**400", "-10**400", "True", "str", "nan", "inf", "2"],
+    [_HUGE, -_HUGE, _UNPRINTABLE, True, "0.1", float("nan"), float("inf"), 2],
+    ids=["10**400", "-10**400", "10**5000", "True", "str", "nan", "inf", "2"],
 )
 @pytest.mark.parametrize(("make", "wording"), _dropout_sites())
 def test_a_dropout_probability_outside_the_reals_in_0_1_is_refused_by_name(make, wording, value):
@@ -2715,6 +2716,18 @@ def test_a_dropout_probability_outside_the_reals_in_0_1_is_refused_by_name(make,
     field in require_finite_real's wording)."""
     with pytest.raises(ValueError, match=re.escape(wording)):
         make(value)
+
+
+@pytest.mark.parametrize("value", [_HUGE, -_HUGE, _UNPRINTABLE], ids=["10**400", "-10**400", "10**5000"])
+@pytest.mark.parametrize(("make", "wording"), _dropout_sites())
+def test_a_dropout_probability_too_large_for_a_float_is_described_not_printed(make, wording, value):
+    """#544: the refusal calls it "an integer too large for a float", as
+    require_finite_real does, rather than printing 401 digits — or, past
+    4300 digits, failing with Python's own int-to-str limit error while
+    the message was built, so the field was never named."""
+    with pytest.raises(ValueError, match=re.escape(wording)) as caught:
+        make(value)
+    assert "too large for a float" in str(caught.value) and "0000000000" not in str(caught.value)
 
 
 def test_valid_dropout_states_hash_as_before():
@@ -2810,7 +2823,9 @@ def _oversized_sites():
     ]
 
 
-@pytest.mark.parametrize("value", [_HUGE, -_HUGE], ids=["10**400", "-10**400"])
+@pytest.mark.parametrize(
+    "value", [_HUGE, -_HUGE, _UNPRINTABLE, -_UNPRINTABLE], ids=["10**400", "-10**400", "10**5000", "-10**5000"]
+)
 @pytest.mark.parametrize(("make", "field"), _oversized_sites())
 def test_an_integer_too_large_for_a_float_is_refused_by_name(make, field, value):
     """#544: these sites raised a raw OverflowError for 10**400 (or, from the
@@ -2818,6 +2833,64 @@ def test_an_integer_too_large_for_a_float_is_refused_by_name(make, field, value)
     ValueError — or its module's ValueError subclass — naming the field."""
     with pytest.raises(ValueError, match=re.escape(field)):
         make(value)
+
+
+def _count_sites():
+    import torch
+
+    from nnx import ResumeStatus, distributed
+    from nnx.components import ComponentSpec
+    from nnx.embeddings import embed_texts
+    from nnx.quantize.qat import QATLifecycleCallback
+    from nnx.search import IntParam
+
+    def partition(**kwargs):
+        return distributed.RankPartition(**{"n": 8, "rank": 0, "world_size": 2, **kwargs})
+
+    return [
+        pytest.param(lambda v: partition(seed=v), "seed", id="RankPartition.seed"),
+        pytest.param(lambda v: partition(n=-abs(v)), "requires n >= 0", id="RankPartition.n"),
+        pytest.param(lambda v: partition(rank=abs(v)), "rank", id="RankPartition.rank"),
+        pytest.param(lambda v: partition(world_size=-abs(v)), "world_size", id="RankPartition.world_size"),
+        pytest.param(lambda v: partition().set_epoch(-abs(v)), "epoch", id="RankPartition.set_epoch"),
+        pytest.param(
+            lambda v: distributed.ShardedLoader([0, 1], partition(n=2), batch_size=-abs(v)),
+            "batch_size",
+            id="ShardedLoader.batch_size",
+        ),
+        pytest.param(lambda v: distributed.shutdown(timeout_seconds=v), "timeout_seconds", id="shutdown.timeout"),
+        pytest.param(lambda v: IntParam(name="k", low=0, high=-abs(v)), "k", id="IntParam.high"),
+        pytest.param(lambda v: ComponentSpec("x", version=-abs(v)), "version", id="ComponentSpec.version"),
+        pytest.param(lambda v: ResumeStatus(source_epoch=-abs(v)), "source_epoch", id="ResumeStatus.source_epoch"),
+        pytest.param(lambda v: QATLifecycleCallback(groupsize=-abs(v)), "groupsize", id="QAT.groupsize"),
+        pytest.param(
+            lambda v: embed_texts(torch.nn.Linear(2, 2), ["a"], batch_size=-abs(v)), "batch_size", id="embed_texts"
+        ),
+        pytest.param(lambda v: NNParams(input_dim=-abs(v), output_dim=2, dropout_prob=0.0), "input_dim", id="NNParams"),
+    ]
+
+
+@pytest.mark.parametrize("value", [_UNPRINTABLE, -_UNPRINTABLE], ids=["10**5000", "-10**5000"])
+@pytest.mark.parametrize(("make", "field"), _count_sites())
+def test_an_integer_past_the_str_limit_is_refused_by_name(make, field, value):
+    """#544: an integer past Python's 4300-digit int-to-str limit made the
+    refusal itself fail (repr() raised "Exceeds the limit (4300 digits)"
+    while the message was built), so the field was never named; the message
+    now gives the integer's size instead."""
+    with pytest.raises((ValueError, TypeError), match=re.escape(field)) as caught:
+        make(value)
+    assert "Exceeds the limit" not in str(caught.value)
+
+
+def test_shown_quotes_a_value_and_describes_an_unprintable_integer():
+    import numpy as np
+
+    from nnx._validation import shown
+
+    assert shown(2**64) == "18446744073709551616" and shown(np.int64(3)) == repr(np.int64(3))
+    assert shown(0.5) == "0.5" and shown("x") == "'x'" and shown(True) == "True"
+    assert shown(_UNPRINTABLE) == "an integer of 16610 bits" == shown(-_UNPRINTABLE)
+    assert shown(_HUGE, real=True) == "an integer too large for a float" and shown(2, real=True) == "2"
 
 
 def test_born_again_refuses_an_oversized_temperature_before_generation_zero(tmp_path, monkeypatch):

@@ -6,7 +6,7 @@ import numbers
 from dataclasses import dataclass, field
 from typing import Optional
 
-from ..._validation import plain_real, require_count
+from ..._validation import plain_real, require_count, shown
 from ..enum.activations import Activations
 
 
@@ -135,7 +135,7 @@ class NNParams:
                 self, "n_heads", require_count(self.n_heads, "n_heads", owner=owner, minimum=0, exclusive_min=True)
             )
         if not _is_probability(self.dropout_prob):
-            raise ValueError(f"NNParams requires 0.0 <= dropout_prob <= 1.0, got {self.dropout_prob!r}")
+            raise ValueError(f"NNParams requires 0.0 <= dropout_prob <= 1.0, got {shown(self.dropout_prob, real=True)}")
         object.__setattr__(self, "dropout_prob", plain_real(self.dropout_prob))
 
         # Per-layer overrides (#85): length must equal the number of hidden
@@ -152,7 +152,8 @@ class NNParams:
                     f"({n_hidden}), got {len(self.dropout_probs)}"
                 )
             if not all(_is_probability(q) for q in self.dropout_probs):
-                raise ValueError(f"NNParams requires 0.0 <= dropout_probs[i] <= 1.0, got {self.dropout_probs}")
+                shown_probs = ", ".join(shown(q, real=True) for q in self.dropout_probs)
+                raise ValueError(f"NNParams requires 0.0 <= dropout_probs[i] <= 1.0, got [{shown_probs}]")
             object.__setattr__(self, "dropout_probs", [plain_real(q) for q in self.dropout_probs])
 
         if self.activations is not None:
