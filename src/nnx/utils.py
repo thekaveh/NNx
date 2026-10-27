@@ -32,8 +32,21 @@ def _capture_training_modes(module: torch.nn.Module) -> list[tuple[torch.nn.Modu
     return [(child, child.training) for child in module.modules()]
 
 
+def _overrides_train(module: torch.nn.Module) -> bool:
+    """Whether ``module.train`` is anything but the stock ``Module.train``."""
+    return type(module).train is not torch.nn.Module.train or "train" in module.__dict__
+
+
 def _restore_training_modes(modes: list[tuple[torch.nn.Module, bool]]) -> None:
-    """Restore exact flags while honoring custom ``Module.train`` hooks."""
+    """Restore exact flags while honoring custom ``Module.train`` hooks.
+
+    Each custom hook runs once, bottom-up, with its descendants' ``train``
+    suppressed. With those suppressed, the stock ``Module.train`` only sets
+    its own flag, so it is replayed as that flag write in the same bottom-up
+    order, which also undoes a hook's writes to a module outside its subtree
+    that comes earlier in pre-order. The cost is O(modules) plus the
+    subtrees of the modules that override ``train``, however deep the net.
+    """
     for module, training in reversed(modes):
         module.training = training
 
@@ -41,6 +54,9 @@ def _restore_training_modes(modes: list[tuple[torch.nn.Module, bool]]) -> None:
         return child
 
     for module, training in reversed(modes):
+        if not _overrides_train(module):
+            module.training = training
+            continue
         child_train_overrides = []
         for child in list(module.modules())[1:]:
             previous = child.__dict__.get("train")

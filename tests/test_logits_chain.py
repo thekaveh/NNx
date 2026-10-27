@@ -155,3 +155,74 @@ def test_greedy_refuses_custom_processors_it_would_corrupt():
     with pytest.raises(ValueError, match="OrderedLogitsPipeline"):
         LogitsChainBuilder().temperature(0.0).custom(ban).build()
     LogitsChainBuilder().temperature(0.7).custom(ban).build()  # sampling keeps custom stages
+
+
+def _count_tensor_bools(monkeypatch) -> list[int]:
+    """Count tensor-to-bool conversions (each one a device-to-host sync on CUDA)."""
+    count = [0]
+    original = torch.Tensor.__bool__
+
+    def counting(self):
+        count[0] += 1
+        return original(self)
+
+    monkeypatch.setattr(torch.Tensor, "__bool__", counting)
+    return count
+
+
+def test_temperature_one_returns_the_logits_without_a_sync(monkeypatch):
+    """Default generate() runs TemperatureScaling(1.0): it is the identity,
+    with no upcast and no tensor-to-bool conversion (#578), through all
+    three construction routes."""
+    from nnx.generation.pipeline import LogitsStage, OrderedLogitsPipeline
+
+    logits = torch.randn(1, 64)
+    count = _count_tensor_bools(monkeypatch)
+    assert TemperatureScaling(1.0)(logits, []) is logits
+    assert TemperatureScaling(1)(logits, []) is logits
+    assert LogitsChain.builder().temperature(1.0).build().apply(logits, token_history=[]) is logits
+    assert OrderedLogitsPipeline.of(LogitsStage.temperature(1.0))(logits, []) is logits
+    assert count[0] == 0
+
+
+@pytest.mark.parametrize("temperature", [1.0 + 1e-7, 2.0, 1e30])
+def test_temperature_above_one_only_divides(monkeypatch, temperature):
+    """T > 1 cannot overflow, so the result is exactly logits / T, with no
+    tensor-to-bool conversion, extreme inputs included (#578)."""
+    from nnx.generation.pipeline import LogitsStage, OrderedLogitsPipeline
+
+    big = torch.finfo(torch.float32).max
+    tiny = torch.finfo(torch.float32).smallest_normal / 4  # a denormal
+    logits = torch.tensor([[big, -big, tiny, -tiny, float("inf"), float("-inf"), float("nan"), 0.0, 3.5]])
+    expected = logits / temperature
+    count = _count_tensor_bools(monkeypatch)
+    outs = (
+        TemperatureScaling(temperature)(logits, []),
+        LogitsChain.builder().temperature(temperature).build().apply(logits, token_history=[]),
+        OrderedLogitsPipeline.of(LogitsStage.temperature(temperature))(logits, []),
+    )
+    assert count[0] == 0
+    for out in outs:
+        torch.testing.assert_close(out, expected, rtol=0, atol=0, equal_nan=True)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("temperature", [1.0, 2.0])
+def test_temperature_at_or_above_one_keeps_half_precision(dtype, temperature):
+    """At T >= 1 half-precision logits keep their dtype, as before the
+    small-temperature guard (#578); only 0 < T < 1 upcasts to float32."""
+    logits = torch.randn(1, 16).to(dtype)
+    out = TemperatureScaling(temperature)(logits, [])
+    assert out.dtype == dtype
+    torch.testing.assert_close(out, logits / temperature, rtol=0, atol=0)
+    assert TemperatureScaling(0.5)(logits, []).dtype == torch.float32
+
+
+def test_temperature_below_one_keeps_the_overflow_guard(monkeypatch):
+    """0 < T < 1 still runs the guard: an overflow marks the argmax."""
+    logits = torch.tensor([[1.0e30, 3.0e38, -1.0]])
+    count = _count_tensor_bools(monkeypatch)
+    out = TemperatureScaling(1e-30)(logits, [])
+    assert count[0] > 0
+    assert out.argmax().item() == 1
+    assert out.tolist() == [[float("-inf"), float("inf"), float("-inf")]]
