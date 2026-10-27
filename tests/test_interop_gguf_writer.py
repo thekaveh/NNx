@@ -545,10 +545,10 @@ def test_a_factorized_projection_is_refused_with_a_type_error():
         _refuse_adapters(net)
 
 
-@pytest.mark.parametrize("case", ["not-a-transformer", "lora", "factorized"])
+@pytest.mark.parametrize("case", ["not-a-transformer", "lora", "factorized", "tokenizer"])
 def test_a_refused_gguf_export_creates_no_directory(tmp_path, case):
-    """The network is read (and refused) before the parent directory is
-    created: a refused export leaves nothing on disk."""
+    """The network and the tokenizer are read (and refused) before the
+    parent directory is created: a refused export leaves nothing on disk."""
     import torch
 
     from nnx.interop.gguf import write_gguf
@@ -561,15 +561,19 @@ def test_a_refused_gguf_export_creates_no_directory(tmp_path, case):
         net = _tiny_transformer()
         if case == "lora":
             apply_lora_to(net, "blocks.*.attn.w_qkv", r=2)
-        else:
+        elif case == "factorized":
             net.blocks[0].ffn.w1 = low_rank_factorize(net.blocks[0].ffn.w1, rank=4)
     path = tmp_path / "gguf" / "model.gguf"
-    with pytest.raises((AttributeError, TypeError)):
+    with (
+        pytest.raises(AttributeError, match="get_vocab")
+        if case == "tokenizer"
+        else pytest.raises((AttributeError, TypeError))
+    ):
         write_gguf(net, None, path)  # type: ignore[arg-type]
     assert not (tmp_path / "gguf").exists()
 
 
-@pytest.mark.parametrize("case", ["quantization", "lora"])
+@pytest.mark.parametrize("case", ["quantization", "lora", "tokenizer"])
 def test_a_refused_ollama_export_creates_no_directory(tmp_path, case):
     from nnx.interop.ollama import export_ollama_modelfile
     from nnx.peft import apply_lora_to
@@ -578,9 +582,12 @@ def test_a_refused_ollama_export_creates_no_directory(tmp_path, case):
     if case == "quantization":
         with pytest.raises(ValueError, match="Q9_BAD"):
             export_ollama_modelfile(None, None, out, quantization="Q9_BAD")  # type: ignore[arg-type]
-    else:
+    elif case == "lora":
         net = _tiny_transformer()
         apply_lora_to(net, "blocks.*.attn.w_qkv", r=2)
         with pytest.raises(TypeError, match="PEFT adapter"):
             export_ollama_modelfile(net, None, out)  # type: ignore[arg-type]
+    else:
+        with pytest.raises(AttributeError, match="get_vocab"):
+            export_ollama_modelfile(_tiny_transformer(), None, out)  # type: ignore[arg-type]
     assert not (tmp_path / "ollama").exists()

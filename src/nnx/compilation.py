@@ -251,20 +251,27 @@ def _message(error: BaseException) -> str:
 _LIMIT_NAMES = ("recompile_limit", "cache_size_limit")  # torch >= 2.6 / older
 
 
+def _traced_functions(net: torch.nn.Module, compiled: Any = None) -> list[Any]:
+    """The functions whose frames dynamo traces for the net: the class's
+    forward and, given the ``compiled`` wrapper, the function it hands
+    dynamo. Torch's own modules (``nn.Sequential`` for one) and skipped
+    forwards are traced through a wrapper function whose code all of them
+    share."""
+    functions = [type(net).forward]
+    handed = getattr(getattr(compiled, "forward", None), "_torchdynamo_orig_callable", None)
+    if handed is not None:
+        functions.append(handed)
+    return [function for function in functions if isinstance(getattr(function, "__code__", None), types.CodeType)]
+
+
 def _cache_entries(net: torch.nn.Module, compiled: Any = None) -> list[Any]:
-    """Dynamo cache entries held for the net class's forward (other fits
-    of the same class, earlier in this process) and, given the ``compiled``
-    wrapper, for the function it hands dynamo: torch's own modules
-    (``nn.Sequential`` for one) and skipped forwards are traced through a
-    wrapper function whose code all of them share."""
+    """Dynamo cache entries held for the :func:`_traced_functions` (other
+    fits of the same class, earlier in this process, and anything else
+    that shares their code)."""
     try:
         from torch._dynamo.eval_frame import _debug_get_cache_entry_list
 
-        codes = {type(net).forward.__code__}
-        handed = getattr(getattr(compiled, "forward", None), "_torchdynamo_orig_callable", None)
-        code = getattr(handed, "__code__", None)
-        if isinstance(code, types.CodeType):
-            codes.add(code)
+        codes = {function.__code__ for function in _traced_functions(net, compiled)}
         return [entry for code in codes for entry in _debug_get_cache_entry_list(code)]
     except Exception:  # a private helper: absent or changed in this torch
         return []
@@ -275,18 +282,41 @@ def _cached_entries(net: torch.nn.Module, compiled: Any = None) -> int:
     return len(_cache_entries(net, compiled))
 
 
-def _holds_graph(entry: Any) -> bool:
-    """Whether a cache entry runs a compiled graph (dynamo also caches a
-    frame it skipped, with no graph); ``True`` when torch does not say."""
-    names = getattr(getattr(entry, "code", None), "co_names", None)
-    return names is None or any(str(name).startswith("__compiled_fn") for name in names)
+@contextlib.contextmanager
+def _graph_ran(net: torch.nn.Module, compiled: Any) -> Iterator[list[bool]]:
+    """Yields a flag set once a graph dynamo already cached for the net's
+    :func:`_traced_functions` runs. A cached frame calls its graph through
+    a ``__compiled_fn*`` global of the traced function's module; each is
+    wrapped for the duration and restored after. Holding a cached graph is
+    no proof: the wrapper code that torch's own modules share holds the
+    graphs of every such module compiled in the process."""
+    ran = [False]
+    wrapped: list[tuple[dict[str, Any], str, Any]] = []
 
+    def marking(graph: Any) -> Callable[..., Any]:
+        def run(*args: Any, **kwargs: Any) -> Any:
+            ran[0] = True
+            return graph(*args, **kwargs)
 
-def _recompile_limit() -> Optional[int]:
-    import torch._dynamo.config as config
+        return run
 
-    name = next((name for name in _LIMIT_NAMES if hasattr(config, name)), None)
-    return None if name is None else int(getattr(config, name))
+    try:
+        from torch._dynamo.eval_frame import _debug_get_cache_entry_list
+
+        for function in _traced_functions(net, compiled):
+            scope = function.__globals__
+            for entry in _debug_get_cache_entry_list(function.__code__):
+                for name in getattr(getattr(entry, "code", None), "co_names", ()):
+                    if str(name).startswith("__compiled_fn") and name in scope:
+                        wrapped.append((scope, name, scope[name]))
+                        scope[name] = marking(scope[name])
+    except Exception:  # a private helper: absent or changed in this torch (no graph is seen run)
+        pass
+    try:
+        yield ran
+    finally:
+        for scope, name, graph in reversed(wrapped):
+            scope[name] = graph
 
 
 def _strict_recompiles(allowance: int, *, extend_without_strict: bool = False) -> Any:
@@ -420,7 +450,7 @@ class _CompileSession:
 
     def _skipped(self, snapshot: _Snapshot) -> None:
         """Dynamo skipped the whole first forward (it compiled nothing and
-        holds no graph for it): never recorded as compiled."""
+        ran no graph for it): never recorded as compiled."""
         skipped = RuntimeError(
             "torch.compile compiled nothing: dynamo skipped the forward frame (see TORCH_LOGS=+dynamo)"
         )
@@ -499,36 +529,23 @@ class _InferenceSession(_CompileSession):
                 return self._restart(error, None, args, kwargs)
         snapshot = _Snapshot(self._net)
         graphs_before, breaks_before = _unique_graphs(), _counter("graph_break")
-        entries_before = _cached_entries(self._net, compiled)
         try:
-            output = compiled(*args, **kwargs)
+            with _graph_ran(self._net, compiled) as cached_ran:
+                output = compiled(*args, **kwargs)
         except Exception as error:
             if not _is_compile_failure(error):
                 raise
             return self._restart(error, snapshot, args, kwargs)
         compiled_now = _unique_graphs() > graphs_before
-        if not compiled_now and not self._served_from_cache(entries_before):
+        # A first call that compiled no graph must have run a cached one:
+        # otherwise dynamo skipped the frame (a ``torch.compiler.disable``
+        # forward, one it cannot trace, or, where torch cannot make the
+        # recompile limit an error, one at the limit) and ran it eagerly.
+        if not compiled_now and not cached_ran[0]:
             self._skipped(snapshot)
             return output
         self._compiled_first(graphs_before, breaks_before, compiled_now)
         return output
-
-    def _served_from_cache(self, entries_before: int) -> bool:
-        """Whether a first call that compiled no graph ran a cached one. Not
-        for a forward marked ``torch.compiler.disable``, nor when dynamo
-        added an entry for it (it cached the skipped frame) or holds no
-        graph for the forward; nor, where torch cannot make the recompile
-        limit an error, when the entries reach the limit (dynamo then runs
-        the frame eagerly without a word)."""
-        import torch._dynamo.config as config
-
-        if getattr(self._net.forward, "_torchdynamo_disable", False):
-            return False
-        entries = _cache_entries(self._net, self._compiled)
-        if len(entries) > entries_before or not any(_holds_graph(entry) for entry in entries):
-            return False
-        limit = _recompile_limit()
-        return hasattr(config, "fail_on_recompile_limit_hit") or limit is None or len(entries) < limit
 
 
 @dataclass

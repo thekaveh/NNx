@@ -126,8 +126,8 @@ def export_ollama_modelfile(
 
     out_dir = Path(out_dir).expanduser().resolve()
     # No mkdir here: write_gguf creates ``out_dir`` (its parent directory)
-    # only once the quantization label and the network are valid, so a
-    # refused export leaves nothing behind.
+    # only once the quantization label, the network and the tokenizer are
+    # valid, so a refused export leaves nothing behind.
     gguf_path = out_dir / "model.gguf"
     write_gguf(
         transformer_nn,

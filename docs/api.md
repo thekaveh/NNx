@@ -16712,7 +16712,8 @@ Raises:
         IA3 / prefix tuning), or a projection (``w_qkv`` / ``w_o`` /
         ``w1``–``w3`` / ``lm_head``) is not a plain ``nn.Linear`` (a
         low-rank factorized one): GGUF stores plain weights. Nothing is
-        written, and no directory is created.
+        written, and no directory is created; the same holds for a
+        tokenizer that cannot be read (its own error propagates).
 ```
 
 

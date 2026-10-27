@@ -3441,9 +3441,11 @@ The helpers compile through `nnx.compilation`, as a fit does:
   as its `__cause__`. Under `"eager"`, the run restarts that forward eagerly
   and runs the rest eagerly.
 - **Compiled nothing.** A run that compiled nothing is never labelled
-  compiled. Examples are a forward under `torch.compiler.disable`, or one
-  dynamo leaves to eager at the recompile limit. Such a run fails as a
-  compile failure does.
+  compiled. Examples are a forward under `torch.compiler.disable`, one
+  dynamo skips (an `nn.LSTM`, a forward with no torch op), or one dynamo
+  leaves to eager at the recompile limit. A first call that compiles no
+  graph counts as compiled only when a graph dynamo cached earlier ran.
+  Such a run fails as a compile failure does.
 - **Recorded.** `BenchmarkReport.compile` and `ProfileReport.compile` hold the
   `CompileRecord`: `effective` is `compiled`, or `eager` with the `restart`.
   `BenchmarkReport.state()` includes it. A report's default `label` and its

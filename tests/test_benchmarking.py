@@ -386,6 +386,64 @@ def test_a_skipped_forward_is_never_reported_compiled(helper, tmp_path):
         assert report.compile.effective == "eager" and "compiled nothing" in report.compile.restart["message"]
 
 
+class _NoOps(torch.nn.Module):
+    def forward(self, x):
+        return x
+
+
+@pytest.mark.parametrize("policy", ["error", "eager"])
+@pytest.mark.parametrize("helper", HELPERS)
+@pytest.mark.parametrize("make", [lambda: torch.nn.LSTM(4, 8), torch.nn.Identity, _NoOps], ids=["lstm", "id", "noops"])
+def test_a_forward_dynamo_skips_is_never_reported_compiled(helper, policy, make, tmp_path):
+    """Torch's own modules share the wrapper code dynamo traces, so the
+    graph cached first for an nn.Sequential is held for an nn.LSTM too: it
+    proves nothing ran compiled. Dynamo skips an LSTM (``allow_rnn`` is
+    off) and a forward with no torch op; an nn.Identity too, except on the
+    2.4 floor, which compiles a graph for it."""
+    from torch._dynamo.utils import counters
+
+    assert benchmark_forward(_net(), _inputs(), compile=FAST, warmup=0, repeats=1).label == "compiled"
+    spec = dataclasses.replace(FAST, on_failure=policy)
+    for attempt in range(2):  # the second meets the skipped frame dynamo cached
+        graphs = counters["stats"]["unique_graphs"]
+        try:
+            report = _run(helper, make(), spec, tmp_path / str(attempt))
+        except CompileFailed as caught:
+            assert policy == "error" and "compiled nothing" in str(caught)
+            continue
+        if counters["stats"]["unique_graphs"] > graphs:
+            assert make is torch.nn.Identity and report.compile.effective == "compiled"
+            continue
+        assert policy == "eager", "compiled nothing, yet no CompileFailed"
+        assert report.compile.effective == "eager" and "compiled nothing" in report.compile.restart["message"]
+        if not isinstance(report, ProfileReport):
+            assert (report.label, report.backend) == ("eager", None)
+
+
+@pytest.mark.parametrize("helper", HELPERS)
+def test_a_forward_served_from_dynamos_cache_is_reported_compiled(helper, tmp_path):
+    """A second copy of a module compiles no graph of its own where torch
+    does not guard on the instance (it does on the 2.4 floor): the cached
+    graph ran, so it is compiled. The cached graphs are left as found."""
+    from torch._dynamo.utils import counters
+
+    assert benchmark_forward(_net(), _inputs(), compile=FAST, warmup=0, repeats=1).label == "compiled"
+    graphs = counters["stats"]["unique_graphs"]
+    if helper == "benchmark_forward":
+        report = benchmark_forward(_net(), _inputs(), compile=FAST, warmup=0, repeats=1)
+    elif helper == "compare_compile":
+        report = compare_compile(_net(), _inputs(), compile=FAST, warmup=0, repeats=1).compiled
+    else:
+        report = profile_forward(_net(), _inputs(), compile=FAST, output_dir=tmp_path, wait=0, warmup=0, active=1)
+    served = counters["stats"]["unique_graphs"] == graphs
+    assert served or torch.__version__ < "2.5"
+    assert report.compile.effective == "compiled"
+    if not isinstance(report, ProfileReport):
+        assert (report.label, report.backend) == ("compiled", "aot_eager")
+    held = [value for name, value in vars(torch._dynamo.external_utils).items() if name.startswith("__compiled_fn")]
+    assert not any("_graph_ran" in getattr(graph, "__qualname__", "") for graph in held)
+
+
 @pytest.mark.parametrize("helper", HELPERS)
 def test_a_spent_cache_is_never_reported_compiled(helper, tmp_path, monkeypatch):
     """With no allowance for the entries already held, a recompile limit of
