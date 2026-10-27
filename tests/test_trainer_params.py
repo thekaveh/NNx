@@ -307,7 +307,17 @@ def test_trainer_params_refuse_a_parent_run_id_that_is_not_a_run_id_string(linea
 def test_trainer_params_from_state_keeps_a_saved_non_string_lineage():
     """run.yaml written before #515 may record `parent_run_id: 12345`; the
     run must reload with that lineage, so its id does not change."""
+    from dataclasses import replace
+
+    from nnx import NNTrainerParamsBuilder
+
     saved = {**NNTrainerParams(n_epochs=1, optims={"G": _g_optim()}).state()}
     saved.update(parent_run_id=12345, parent_checkpoint="last")
     p = NNTrainerParams.from_state(saved)
     assert p.parent_run_id == 12345 and p.state() == saved
+    # A copy is refused until the lineage is a run id string or None.
+    with pytest.raises(ValueError, match="a copy of them must set parent_run_id"):
+        p.with_val_loader([])
+    with pytest.raises(ValueError, match="NNTrainerParams.parent_run_id"):
+        NNTrainerParamsBuilder.from_params(p).build()
+    assert NNTrainerParamsBuilder.from_params(replace(p, parent_run_id=None)).build().parent_run_id is None

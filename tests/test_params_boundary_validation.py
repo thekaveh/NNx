@@ -2613,3 +2613,13 @@ def test_a_run_saved_with_an_int_lineage_still_loads_with_its_id(tmp_path, monke
     loaded = NNRun.load(_LEGACY_INT_LINEAGE_RUN_ID)
     assert loaded.id == _LEGACY_INT_LINEAGE_RUN_ID
     assert loaded.train.parent_run_id == 12345 and loaded.train.state()["parent_run_id"] == 12345
+    # Only from_state admits it: a copy goes back through the constructor
+    # and says how to fix it, and replacing the lineage makes it copyable.
+    import dataclasses
+
+    with pytest.raises(ValueError, match="a copy of them must set parent_run_id to a run id string or None"):
+        loaded.train.with_train_loader([])
+    with pytest.raises(ValueError, match="NNTrainParams.parent_run_id"):
+        dataclasses.replace(loaded.train)
+    for lineage in (None, "12345"):
+        assert dataclasses.replace(loaded.train, parent_run_id=lineage).with_train_loader([]).parent_run_id == lineage
