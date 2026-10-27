@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import numbers
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -38,6 +39,26 @@ class _FrozenMetrics(Mapping[str, float]):
 
 
 _RECORD_STATUSES = ("ok", "empty")
+
+
+def _is_count(value: Any) -> bool:
+    """Whether ``value`` is a non-negative whole number. CSV reload yields
+    floats for integer columns, so an integral float (``3.0``) counts; a
+    non-integral value is tested for finiteness *before* ``int()`` (#545),
+    which raised an unnamed ``ValueError`` for NaN and an ``OverflowError``
+    for ±inf. An integer is never passed to ``math.isfinite``, so
+    ``10**400`` stays a count."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return False
+    number = cast(Any, value)
+    if not isinstance(value, numbers.Integral):
+        try:
+            finite = math.isfinite(number)
+        except OverflowError:  # a Fraction too large for a float is finite
+            finite = True
+        if not finite or number != int(number):
+            return False
+    return number >= 0
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -94,9 +115,8 @@ class NNEvaluationDataPoint:
             return
         if not isinstance(self.kind, str) or not self.kind:
             raise ValueError(f"NNEvaluationDataPoint kind must be a non-empty string, got {self.kind!r}")
-        count = self.count
-        # CSV reload yields floats for integer columns: accept integral values.
-        if isinstance(count, bool) or not isinstance(count, numbers.Real) or count != int(count) or count < 0:
+        count: Any = self.count
+        if not _is_count(count):
             raise ValueError(f"NNEvaluationDataPoint count must be a non-negative integer, got {count!r}")
         object.__setattr__(self, "count", int(count))
         expected = "ok" if self.count else "empty"
