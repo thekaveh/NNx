@@ -326,6 +326,25 @@ def test_generate_logits_chain_matches_equivalent_inline_kwargs(tmp_path):
     )
 
 
+def test_default_temperature_generate_matches_an_empty_chain(tmp_path):
+    """generate()'s default temperature 1.0 is the identity (#578): the
+    seeded text equals an empty chain's, through the kwargs, the builder
+    and the ordered-pipeline routes."""
+    from nnx import LogitsChain
+    from nnx.generation.pipeline import LogitsStage, OrderedLogitsPipeline
+
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(0)
+    model = _make_model(tokenizer)
+
+    empty = model.generate(prompt="the", max_new_tokens=8, logits_chain=LogitsChain(processors=[]), seed=7)
+    assert model.generate(prompt="the", max_new_tokens=8, seed=7) == empty
+    chain = LogitsChain.builder().temperature(1.0).build()
+    assert model.generate(prompt="the", max_new_tokens=8, logits_chain=chain, seed=7) == empty
+    pipeline = OrderedLogitsPipeline.of(LogitsStage.temperature(1.0))
+    assert model.generate(prompt="the", max_new_tokens=8, logits_pipeline=pipeline, seed=7) == empty
+
+
 # ---------------- KV-cache ----------------
 
 

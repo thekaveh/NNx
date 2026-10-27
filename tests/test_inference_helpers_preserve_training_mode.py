@@ -468,6 +468,153 @@ def test_training_mode_restore_suppresses_direct_grandchild_hook_calls():
     assert calls == 1
 
 
+def _nested_chain(depth: int) -> nn.Sequential:
+    chain = nn.Sequential(nn.Linear(4, 4))
+    for _ in range(depth - 1):
+        chain = nn.Sequential(nn.Linear(4, 4), chain)
+    return chain
+
+
+def _count_module_walks(monkeypatch) -> list[int]:
+    """Count the modules yielded by every outermost ``named_modules`` walk
+    (``modules()`` included; the walk's own recursion is not counted again)."""
+    visits = [0]
+    walking = [False]
+    original = nn.Module.named_modules
+
+    def counting(self, *args, **kwargs):
+        if walking[0]:
+            yield from original(self, *args, **kwargs)
+            return
+        walking[0] = True
+        try:
+            for item in original(self, *args, **kwargs):
+                visits[0] += 1
+                yield item
+        finally:
+            walking[0] = False
+
+    monkeypatch.setattr(nn.Module, "named_modules", counting)
+    return visits
+
+
+def test_training_mode_restore_is_linear_in_modules_for_deep_nets(monkeypatch):
+    """A depth-128 chain of stock modules restores its exact mixed modes
+    without re-walking each module's subtree (#578): the old restore
+    installed a ``train`` override on 16,640 descendants per call."""
+    root = _nested_chain(128)
+    for index, module in enumerate(root.modules()):
+        module.training = index % 3 == 0
+    before = [module.training for module in root.modules()]
+    modes = _capture_training_modes(root)
+    root.eval()
+
+    visits = _count_module_walks(monkeypatch)
+    _restore_training_modes(modes)
+    monkeypatch.undo()
+
+    assert visits[0] <= len(modes)
+    assert [module.training for module in root.modules()] == before
+
+
+def test_training_mode_restore_replays_only_overridden_train_hooks(monkeypatch):
+    """Only a module whose ``train`` is custom (by class or instance) is
+    replayed, once, with its own subtree's hooks suppressed; the rest of a
+    deep chain costs nothing beyond its flags (#578)."""
+    calls = []
+
+    class Hooked(nn.Sequential):
+        def train(self, mode: bool = True):
+            calls.append(("class", mode))
+            return super().train(mode)
+
+    inner = _nested_chain(16)
+    hooked = Hooked(nn.Linear(4, 4), inner)
+    root = nn.Sequential(nn.Linear(4, 4), hooked)
+    for _ in range(63):
+        root = nn.Sequential(nn.Linear(4, 4), root)
+    leaf = inner[0]
+    original = leaf.train
+
+    def instance_train(mode=True):
+        calls.append(("instance", mode))
+        return original(mode)
+
+    leaf.train = instance_train
+    root.train()
+    inner.eval()
+    before = [module.training for module in root.modules()]
+    modes = _capture_training_modes(root)
+    root.eval()
+    calls.clear()
+
+    visits = _count_module_walks(monkeypatch)
+    _restore_training_modes(modes)
+    monkeypatch.undo()
+
+    assert calls == [("instance", False), ("class", True)]
+    assert [module.training for module in root.modules()] == before
+    assert visits[0] <= len(modes) + sum(1 for _ in hooked.modules())
+
+
+def test_training_mode_restore_undoes_a_hook_write_outside_its_subtree():
+    """A hook that switches an unregistered peer (a teacher, an EMA copy)
+    is undone where the peer comes earlier in pre-order, as the stock
+    ``train`` replay always did, so the captured modes come back (#578)."""
+
+    class Student(nn.Module):
+        def __init__(self, teacher: nn.Module):
+            super().__init__()
+            self.lin = nn.Linear(2, 2)
+            self._teacher = [teacher]  # a list, so it is not registered
+
+        def train(self, mode: bool = True):
+            super().train(mode)
+            self._teacher[0].eval()
+            return self
+
+    teacher = nn.Sequential(nn.Linear(2, 2))
+    root = nn.Sequential(teacher, Student(teacher))
+    root.train()
+    teacher.train()
+    before = [module.training for module in root.modules()]
+    modes = _capture_training_modes(root)
+    root.eval()
+
+    _restore_training_modes(modes)
+
+    assert before == [True] * 5
+    assert [module.training for module in root.modules()] == before
+
+
+def test_iter_predict_restores_deep_mixed_modes_before_each_batch():
+    """Each streamed batch hands back the exact mixed modes of a deep net
+    with a custom ``train`` hook, which runs once per batch (#578)."""
+    hook_calls = []
+
+    class Hooked(nn.Sequential):
+        def train(self, mode: bool = True):
+            hook_calls.append(mode)
+            return super().train(mode)
+
+    net = nn.Sequential(Hooked(_nested_chain(32)), nn.Linear(4, 3))
+    for index, module in enumerate(net.modules()):
+        module.training = index % 2 == 0
+    net[0].training = True
+    before = [module.training for module in net.modules()]
+    model = NNModel(module=net, params=NNModelParams(device=Devices.CPU, loss=Losses.CROSS_ENTROPY))
+    loader = DataLoader(TensorDataset(torch.randn(12, 4), torch.zeros(12, dtype=torch.long)), batch_size=4)
+
+    batches = 0
+    with model.iter_predict(loader) as stream:
+        for _ in stream:
+            batches += 1
+            assert [module.training for module in net.modules()] == before
+    assert batches == 3
+    assert hook_calls == [False, True] * 3  # eval(), then the restore
+    assert [module.training for module in net.modules()] == before
+
+
 @pytest.mark.parametrize("dynamo", [False, True], ids=["torchscript", "dynamo"])
 def test_to_onnx_keeps_parameters_gradients_and_mixed_modes(tmp_path, dynamo: bool):
     """Both exporters leave the model as they found it: parameters, the

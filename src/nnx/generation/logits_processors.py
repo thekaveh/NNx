@@ -37,6 +37,11 @@ class TemperatureScaling:
     decoding (argmax). We map argmax positions to +inf and others to
     -inf so the downstream sampler picks deterministically without
     branching on the temperature value.
+
+    ``temperature == 1`` returns ``logits`` itself and ``temperature > 1``
+    returns ``logits / temperature`` in their own dtype: dividing by
+    ``T >= 1`` cannot overflow. Only ``0 < T < 1`` upcasts half-precision
+    logits to float32 and guards against overflow.
     """
 
     def __init__(self, temperature: float):
@@ -56,6 +61,12 @@ class TemperatureScaling:
             argmax = logits.argmax(dim=-1, keepdim=True)
             out.scatter_(dim=-1, index=argmax, value=float("inf"))
             return out
+        # |x / T| <= |x| for T >= 1, so the guard below can never fire: skip
+        # it, its upcast and its two tensor-to-bool syncs (default generate()).
+        if self.temperature == 1.0:
+            return logits
+        if self.temperature > 1.0:
+            return logits / self.temperature
         if logits.dtype in (torch.float16, torch.bfloat16):
             # A small T overflows half-precision logits to +inf, which the
             # sampler reads as the greedy marker (the first +inf, not the argmax).
