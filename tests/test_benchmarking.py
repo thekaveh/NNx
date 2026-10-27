@@ -386,6 +386,26 @@ def test_a_skipped_forward_is_never_reported_compiled(helper, tmp_path):
         assert report.compile.effective == "eager" and "compiled nothing" in report.compile.restart["message"]
 
 
+@pytest.mark.parametrize("policy", ["error", "eager"])
+@pytest.mark.parametrize("helper", HELPERS)
+def test_a_forward_disabled_on_one_instance_is_never_reported_compiled(helper, policy, tmp_path):
+    """The class holds cached graphs from an earlier benchmark, but this
+    instance's forward is disabled: none of them runs, so nothing compiled."""
+    spec = dataclasses.replace(_counting(), on_failure=policy)
+    assert _run(helper, _BreaksFirst(), spec, tmp_path / "first").compile.effective == "compiled"
+    net = _BreaksFirst()
+    net.forward = torch.compiler.disable(net.forward)
+    before = _CALLS["n"]
+    try:
+        report = _run(helper, net, spec, tmp_path / "disabled")
+    except CompileFailed as caught:
+        assert policy == "error" and "compiled nothing" in str(caught)
+    else:
+        assert policy == "eager", "compiled nothing, yet no CompileFailed"
+        assert report.compile.effective == "eager" and "compiled nothing" in report.compile.restart["message"]
+    assert _CALLS["n"] == before
+
+
 class _NoOps(torch.nn.Module):
     def forward(self, x):
         return x
@@ -468,12 +488,40 @@ class _BreaksInside(torch.nn.Module):
         return self.head(self.block(x))
 
 
+class _BreaksMidway(torch.nn.Module):
+    """A graph break between two torch ops: the second graph is in a
+    resume function."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.a, self.b = torch.nn.Linear(4, 4), torch.nn.Linear(4, 2)
+
+    def forward(self, x):
+        h = self.a(x)
+        torch._dynamo.graph_break()
+        return self.b(h)
+
+
+def _sequential_breaking_first() -> torch.nn.Module:
+    return torch.nn.Sequential(_BreaksFirst(), torch.nn.Linear(2, 2))
+
+
+def _sequential_breaking_midway() -> torch.nn.Module:
+    return torch.nn.Sequential(_BreaksMidway(), torch.nn.Linear(2, 2))
+
+
 @pytest.mark.parametrize("policy", ["error", "eager"])
 @pytest.mark.parametrize("helper", HELPERS)
-@pytest.mark.parametrize("make", [_BreaksFirst, _BreaksInside], ids=["leading", "nested"])
+@pytest.mark.parametrize(
+    "make",
+    [_BreaksFirst, _BreaksInside, _sequential_breaking_first, _sequential_breaking_midway],
+    ids=["leading", "nested", "sequential-leading", "sequential-midway"],
+)
 def test_a_forward_with_a_leading_graph_break_served_from_cache_is_reported_compiled(helper, policy, make, tmp_path):
     """Benchmarked again in one process (the same model, or a new one of the
-    class), its cached graphs run though its own entry holds none."""
+    class), its cached graphs run though its own entry holds none: they sit
+    in a resume function or a child's frame, and an ``nn.Sequential`` is
+    traced through torch's shared wrapper."""
     spec = dataclasses.replace(FAST, on_failure=policy)
     same = make()
     for attempt, net in enumerate([same, same, make(), make()]):
@@ -492,21 +540,23 @@ def test_a_spent_cache_is_never_reported_compiled(helper, tmp_path, monkeypatch)
     import nnx.compilation as compilation
 
     config = torch._dynamo.config
-    monkeypatch.setattr(config, "recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit", 1)
     monkeypatch.setattr(compilation._InferenceSession, "strict", lambda self: compilation._strict_recompiles(0))
     spec, refused = _counting(), []
-    for depth in (1, 2, 3):
-        before = _CALLS["n"]
-        try:
-            report = _run(helper, _feed_fwd_net(depth), spec, tmp_path / str(depth))
-        except CompileFailed:
-            refused.append(depth)
-            continue
-        assert report.compile.effective == "compiled" and _CALLS["n"] > before, depth
-    if hasattr(config, "fail_on_recompile_limit_hit"):
-        assert refused == [2, 3]
-        report = _run(helper, _feed_fwd_net(4), dataclasses.replace(spec, on_failure="eager"), tmp_path / "4")
-        assert report.compile.effective == "eager"
+    # dynamo's own patch, not monkeypatch: pytest >= 9.2 undoes a setattr on
+    # its config module with a delattr, which hides the option for the worker.
+    with config.patch(**{"recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit": 1}):
+        for depth in (1, 2, 3):
+            before = _CALLS["n"]
+            try:
+                report = _run(helper, _feed_fwd_net(depth), spec, tmp_path / str(depth))
+            except CompileFailed:
+                refused.append(depth)
+                continue
+            assert report.compile.effective == "compiled" and _CALLS["n"] > before, depth
+        if hasattr(config, "fail_on_recompile_limit_hit"):
+            assert refused == [2, 3]
+            report = _run(helper, _feed_fwd_net(4), dataclasses.replace(spec, on_failure="eager"), tmp_path / "4")
+            assert report.compile.effective == "eager"
 
 
 @pytest.mark.parametrize("policy", ["error", "eager"])

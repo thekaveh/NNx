@@ -264,41 +264,30 @@ def _traced_functions(net: torch.nn.Module, compiled: Any = None) -> list[Any]:
     return [function for function in functions if isinstance(getattr(function, "__code__", None), types.CodeType)]
 
 
-def _traces_own_forward(compiled: Any) -> bool:
-    """Whether dynamo traces the class's own forward frame (the ``compiled``
-    wrapper hands it the module's ``__call__``), whose cache entries only
-    that class holds. Torch's own modules and skipped forwards are traced
-    through the shared wrapper of :func:`_traced_functions` instead."""
-    handed = getattr(getattr(compiled, "forward", None), "_torchdynamo_orig_callable", None)
-    return handed is None or getattr(handed, "__name__", "") in ("_call_impl", "_wrapped_call_impl")
-
-
-def _cache_entries(net: torch.nn.Module, compiled: Any = None) -> list[Any]:
-    """Dynamo cache entries held for the :func:`_traced_functions` (other
-    fits of the same class, earlier in this process, and anything else
-    that shares their code)."""
+def _cached_entries(net: torch.nn.Module, compiled: Any = None) -> int:
+    """How many dynamo cache entries the :func:`_traced_functions` hold
+    (other fits of the same class, earlier in this process, and anything
+    else that shares their code)."""
     try:
         from torch._dynamo.eval_frame import _debug_get_cache_entry_list
 
         codes = {function.__code__ for function in _traced_functions(net, compiled)}
-        return [entry for code in codes for entry in _debug_get_cache_entry_list(code)]
+        return sum(len(_debug_get_cache_entry_list(code)) for code in codes)
     except Exception:  # a private helper: absent or changed in this torch
-        return []
-
-
-def _cached_entries(net: torch.nn.Module, compiled: Any = None) -> int:
-    """How many :func:`_cache_entries` there are."""
-    return len(_cache_entries(net, compiled))
+        return 0
 
 
 @contextlib.contextmanager
 def _graph_ran(net: torch.nn.Module, compiled: Any) -> Iterator[list[bool]]:
-    """Yields a flag set once a graph dynamo already cached for the net's
-    :func:`_traced_functions` runs. A cached frame calls its graph through
-    a ``__compiled_fn*`` global of the traced function's module; each is
-    wrapped for the duration and restored after. Holding a cached graph is
-    no proof: the wrapper code that torch's own modules share holds the
-    graphs of every such module compiled in the process."""
+    """Yields a flag set once a graph dynamo already cached for the net runs:
+    one of the :func:`_traced_functions`, the forward of any module in the
+    net, or a resume function after a graph break in one of them (where a
+    forward that breaks first keeps its graphs). A cached frame calls its
+    graph through a ``__compiled_fn*`` global of its function's module;
+    each is wrapped for the duration and restored after. Holding a cached
+    graph is no proof: the wrapper code that torch's own modules share
+    holds the graphs of every such module compiled in the process, and a
+    forward disabled on one instance still leaves its class's entries."""
     ran = [False]
     wrapped: list[tuple[dict[str, Any], str, Any]] = []
 
@@ -312,13 +301,24 @@ def _graph_ran(net: torch.nn.Module, compiled: Any) -> Iterator[list[bool]]:
     try:
         from torch._dynamo.eval_frame import _debug_get_cache_entry_list
 
-        for function in _traced_functions(net, compiled):
-            scope = function.__globals__
-            for entry in _debug_get_cache_entry_list(function.__code__):
+        functions = [*_traced_functions(net, compiled), *(type(module).forward for module in net.modules())]
+        pending = [(function.__code__, function.__globals__) for function in functions if hasattr(function, "__code__")]
+        seen: set[Any] = set()
+        marked: set[tuple[int, str]] = set()  # an entry of two traced codes is wrapped once
+        while pending:
+            code, scope = pending.pop()
+            if code in seen or not isinstance(code, types.CodeType):
+                continue
+            seen.add(code)
+            for entry in _debug_get_cache_entry_list(code):
                 for name in getattr(getattr(entry, "code", None), "co_names", ()):
-                    if str(name).startswith("__compiled_fn") and name in scope:
+                    name = str(name)
+                    if name.startswith("__compiled_fn") and name in scope and (id(scope), name) not in marked:
+                        marked.add((id(scope), name))
                         wrapped.append((scope, name, scope[name]))
                         scope[name] = marking(scope[name])
+                    elif name.startswith("__resume_at") and name in scope:  # a function, or its code
+                        pending.append((getattr(scope[name], "__code__", scope[name]), scope))
     except Exception:  # a private helper: absent or changed in this torch (no graph is seen run)
         pass
     try:
@@ -538,25 +538,20 @@ class _InferenceSession(_CompileSession):
                 return self._restart(error, None, args, kwargs)
         snapshot = _Snapshot(self._net)
         graphs_before, breaks_before = _unique_graphs(), _counter("graph_break")
-        # A first call that compiles no graph is served from dynamo's cache,
-        # or dynamo skipped the frame (a ``torch.compiler.disable`` forward,
-        # one it cannot trace, or, where torch cannot make the recompile
-        # limit an error, one at the limit) and ran it eagerly. A class's
-        # own forward is served when it held entries before the call, as a
-        # fit's is (its graphs may sit in resume functions or nested frames,
-        # after a leading graph break); a forward traced through the shared
-        # wrapper only when a graph cached for that wrapper ran.
-        own = _traces_own_forward(compiled)
-        held = _cached_entries(self._net) if own else 0
+        # A first call that compiles no graph is served from dynamo's cache
+        # only when a graph cached for the net ran, else dynamo skipped the
+        # frame (a ``torch.compiler.disable`` forward, one it cannot trace,
+        # or, where torch cannot make the recompile limit an error, one at
+        # the limit) and ran it eagerly.
         try:
-            with contextlib.nullcontext([False]) if own else _graph_ran(self._net, compiled) as cached_ran:
+            with _graph_ran(self._net, compiled) as cached_ran:
                 output = compiled(*args, **kwargs)
         except Exception as error:
             if not _is_compile_failure(error):
                 raise
             return self._restart(error, snapshot, args, kwargs)
         compiled_now = _unique_graphs() > graphs_before
-        if not compiled_now and not (held if own else cached_ran[0]):
+        if not compiled_now and not cached_ran[0]:
             self._skipped(snapshot)
             return output
         self._compiled_first(graphs_before, breaks_before, compiled_now)
