@@ -3444,11 +3444,13 @@ The helpers compile through `nnx.compilation`, as a fit does:
   compiled. Examples are a forward under `torch.compiler.disable`, one
   dynamo skips (an `nn.LSTM`, a forward with no torch op), or one dynamo
   leaves to eager at the recompile limit. A first call that compiles no
-  graph is served from dynamo's cache when the class's own forward already
-  held cache entries, as for a fit, even when a leading graph break leaves
-  its graphs in other frames. Torch's own modules and skipped forwards
-  share one wrapper's cache, so for them a graph cached earlier must have
-  run. A run that compiled nothing fails as a compile failure does.
+  graph counts as served from dynamo's cache only when a graph cached
+  earlier for the model ran. That graph can belong to the model's forward,
+  to a child module's forward or to the code after a graph break. Cache
+  entries alone are no proof: torch's own modules (an `nn.Sequential`)
+  share one wrapper's cache, and a forward disabled on one instance leaves
+  its class's entries in place. A run that compiled nothing fails as a
+  compile failure does.
 - **Recorded.** `BenchmarkReport.compile` and `ProfileReport.compile` hold the
   `CompileRecord`: `effective` is `compiled`, or `eager` with the `restart`.
   `BenchmarkReport.state()` includes it. A report's default `label` and its
