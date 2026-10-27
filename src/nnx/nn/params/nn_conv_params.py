@@ -65,8 +65,11 @@ class NNConvParams(NNParams):
         # normalized to plain `int` BEFORE the immutable-list capture and the
         # `%` / `isqrt` / floor arithmetic below. `padding` is the one
         # nonnegative count (zero = valid, no padding); the rest are positive.
-        all_positive = f"NNConvParams requires non-empty conv_channels with all > 0, got {list(self.conv_channels)}"
-        if not self.conv_channels:
+        # Materialized once (#545): a truthy one-shot iterator passed the
+        # emptiness test, then the message consumed it and [] was stored.
+        channels = tuple(self.conv_channels)
+        all_positive = f"NNConvParams requires non-empty conv_channels with all > 0, got {list(channels)}"
+        if not channels:
             raise ValueError(all_positive)
         object.__setattr__(
             self,
@@ -80,7 +83,7 @@ class NNConvParams(NNParams):
                     exclusive_min=True,
                     domain_message=all_positive,
                 )
-                for i, c in enumerate(self.conv_channels)
+                for i, c in enumerate(channels)
             ),
         )
         for name in ("in_channels", "kernel_size", "stride", "pool_size"):

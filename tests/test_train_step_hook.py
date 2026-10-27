@@ -409,3 +409,135 @@ def test_nll_default_step_matches_cross_entropy(tmp_path, monkeypatch):
     assert losses[0] is not None and losses[1] is not None and abs(losses[0] - losses[1]) < 1e-6
     for (name, p_ce), (_, p_nll) in zip(ce2.net.named_parameters(), nll2.net.named_parameters(), strict=False):
         assert torch.allclose(p_ce, p_nll, atol=1e-6), name
+
+
+_BAD_KNOBS = [
+    {"accumulate_grad_batches": 0},
+    {"accumulate_grad_batches": -1},
+    {"accumulate_grad_batches": 2.5},
+    {"accumulate_grad_batches": True},
+    {"grad_clip_norm": 0.0},
+    {"grad_clip_norm": -1.0},
+    {"grad_clip_norm": float("nan")},
+    {"grad_clip_norm": float("inf")},
+]
+
+
+def _weights(model):
+    return [p.detach().clone() for p in model.net.parameters()]
+
+
+def _context(model, optimizer, batch, **knobs):
+    kwargs = {"grad_clip_norm": None, "accumulate_grad_batches": 1, **knobs}
+    return TrainStepContext(
+        model=model,
+        batch=batch,
+        optimizer=optimizer,
+        scaler=None,
+        extra_metrics=None,
+        batch_idx=0,
+        epoch_idx=0,
+        is_last_batch=True,
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("knobs", _BAD_KNOBS, ids=repr)
+def test_out_of_domain_step_knobs_are_refused_before_any_step(knobs):
+    """#545: a hand-built context trusted its knobs — accumulate=-1 performed
+    gradient ascent, 0 raised ZeroDivisionError mid-step, grad_clip_norm=0.0
+    zeroed every gradient and -1.0 flipped them. Each path that builds a
+    context — `default_train_step` and `finalize_step` callers by hand,
+    `NNModel._train_step` from its arguments — is now refused by name at
+    construction, with the weights untouched."""
+    from nnx._step_helpers import finalize_step
+
+    field = next(iter(knobs))
+    model = _make_model()
+    optimizer = torch.optim.SGD(model.net.parameters(), lr=0.5)
+    batch = next(iter(_make_loader(n=8)))
+    before = _weights(model)
+
+    with pytest.raises(ValueError, match=field):
+        default_train_step(_context(model, optimizer, batch, **knobs))
+    with pytest.raises(ValueError, match=field):
+        X, y = batch
+        finalize_step(model.loss_fn(model.net(X), y), _context(model, optimizer, batch, **knobs), paradigm="test")
+    with pytest.raises(ValueError, match=field):
+        model._train_step(batch, optimizer, None, **knobs)
+    for a, b in zip(before, _weights(model), strict=True):
+        assert torch.equal(a, b)
+
+
+def test_valid_step_knobs_train_as_before():
+    """None, a NumPy count and a clip norm that never binds take the same
+    step; a binding clip norm clips to it — on every hand-built path."""
+    import numpy as np
+
+    from nnx._step_helpers import finalize_step
+
+    batch = next(iter(_make_loader(n=8)))
+
+    def stepped(path, **knobs):
+        torch.manual_seed(0)
+        model = _make_model()
+        optimizer = torch.optim.SGD(model.net.parameters(), lr=0.5)
+        if path == "default":
+            default_train_step(_context(model, optimizer, batch, **knobs))
+        elif path == "finalize":
+            model.net.zero_grad()
+            X, y = batch
+            finalize_step(model.loss_fn(model.net(X), y), _context(model, optimizer, batch, **knobs), paradigm="t")
+        else:
+            model._train_step(batch, optimizer, None, **knobs)
+        return model, _weights(model)
+
+    for path in ("default", "finalize", "wrapper"):
+        _, plain = stepped(path)
+        for knobs in ({"grad_clip_norm": 1e9}, {"accumulate_grad_batches": np.int64(1)}, {"grad_clip_norm": None}):
+            for a, b in zip(plain, stepped(path, **knobs)[1], strict=True):
+                assert torch.equal(a, b), (path, knobs)
+        clipped, after = stepped(path, grad_clip_norm=1e-3)
+        torch.manual_seed(0)
+        start = _weights(_make_model())
+        update = torch.cat([(s - a).flatten() for s, a in zip(start, after, strict=True)])
+        assert float(update.norm()) <= 0.5 * 1e-3 * (1 + 1e-4), path
+
+
+def test_valid_optim_knobs_train_through_nnmodel_train_unchanged(tmp_path, monkeypatch):
+    """NNModel.train builds every context from its validated optimizer
+    config: the knobs arrive as configured and a run with a pass-through
+    step hook equals the plain run bit for bit."""
+    monkeypatch.chdir(tmp_path)
+    seen = []
+
+    def spy(ctx):
+        seen.append((ctx.grad_clip_norm, ctx.accumulate_grad_batches))
+        return default_train_step(ctx)
+
+    def fit(sub, **kw):
+        (tmp_path / sub).mkdir()
+        monkeypatch.chdir(tmp_path / sub)
+        torch.manual_seed(0)
+        model = _make_model()
+        params = NNTrainParams(
+            n_epochs=2,
+            train_loader=_make_loader(n=32),
+            optim=NNOptimParams(
+                name=Optims.SGD,
+                max_lr=0.1,
+                momentum=0.0,
+                weight_decay=0.0,
+                grad_clip_norm=0.5,
+                accumulate_grad_batches=2,
+            ),
+            scheduler=NNSchedulerParams(min_lr=1e-7, factor=0.5, patience=1, cooldown=1, threshold=1e-3),
+        )
+        model.train(params=params, **kw)
+        return _weights(model)
+
+    plain = fit("plain")
+    hooked = fit("hooked", train_step_fn=spy)
+    assert seen and set(seen) == {(0.5, 2)}
+    for a, b in zip(plain, hooked, strict=True):
+        assert torch.equal(a, b)

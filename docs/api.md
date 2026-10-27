@@ -652,6 +652,11 @@ is fully responsible for forward, backward, optimizer.step,
 gradient accumulation, AMP scale/unscale, grad clipping, and the
 NaN/Inf guard — the context tells it what knobs are set; honoring
 them is on the caller.
+
+``accumulate_grad_batches`` (an integer >= 1) and ``grad_clip_norm``
+(``None`` or a finite real > 0) are checked at construction against the
+same domain as ``NNOptimParams``, so a context built by hand cannot
+divide by zero, ascend the gradient or zero / flip every gradient.
 ```
 
 
@@ -12329,6 +12334,8 @@ the ``batch_sizes[i] (split)`` slot named before ``ds_class`` is
 instantiated — zero never disables a split; ``val_proportion=0.0`` does
 (``val_loader`` is then ``None``; the resolved val size is a placeholder
 ``1`` when requested as ``None``, and an explicit size is kept).
+``download`` is forwarded to both factories and must be a real ``bool``;
+anything else is rejected before either runs.
 
 ``transform`` is handed to both torchvision factories and applies to
 every split. Split transforms: ``train_transform`` and
@@ -12372,6 +12379,12 @@ is kept verbatim; NumPy integers are normalized to ``int``. Zero,
 rejected with the ``batch_sizes[i] (split)`` slot named before
 ``ds_class`` is instantiated. ``sampler="full"`` rejects every explicit
 size (the complete split is always one batch).
+
+With the neighbor sampler, ``n_workers`` is an integer >= 0 and
+``n_neighbors`` a non-empty list (or tuple) of integers >= -1, one
+fan-out per hop (``-1`` = all neighbors); NumPy integers become ``int``.
+Anything else is rejected by name before ``ds_class`` is instantiated.
+``sampler="full"`` ignores both.
 
 An empty ``val_mask`` / ``test_mask`` is an *absent* split in both
 sampler modes: that loader is ``None`` — the optional-loader

@@ -58,6 +58,11 @@ class NNModelParams:
 
             if not isinstance(self.task, TaskSpec):
                 raise TypeError(f"NNModelParams.task must be a TaskSpec or None, got {type(self.task).__name__}")
+        # A real bool, like the sibling flags (#545): the string "false" is
+        # truthy, so it selected FP16 + GradScaler on CUDA while state() and
+        # the run id recorded True.
+        if not isinstance(self.mixed_precision, bool):
+            raise ValueError(f"NNModelParams.mixed_precision must be a bool, got {self.mixed_precision!r}")
         if self.precision is not None:
             if not isinstance(self.precision, PrecisionPolicy):
                 raise TypeError(

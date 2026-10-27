@@ -163,3 +163,26 @@ def test_a_random_base_transform_probe_leaves_the_global_stream_alone(tmp_path):
     torch.manual_seed(0)
     NNDataset(ds_class=_TinyVision, root_dir=str(tmp_path), download=False, seed=1, transform=_Jitter())
     assert torch.equal(torch.rand(1), expected)
+
+
+def test_a_non_bool_download_is_refused_before_the_factory_runs(tmp_path):
+    """#545: `download` went to the factory raw, so the string "false" was
+    truthy and torchvision downloaded. Every non-bool is refused by name
+    before the dataset class is called; real bools are forwarded as given."""
+    import numpy as np
+    import pytest
+
+    seen = []
+
+    class _Recording(_TinyVision):
+        def __init__(self, root, train=True, download=False, transform=None):
+            seen.append(download)
+            super().__init__(root, train=train, download=download, transform=transform)
+
+    for value in ("false", "true", 0, 1, None, np.bool_(False)):
+        with pytest.raises(ValueError, match=r"NNDataset\.download must be a bool"):
+            NNDataset(ds_class=_Recording, root_dir=str(tmp_path), download=value)
+    assert seen == []
+    for flag in (False, True):
+        NNDataset(ds_class=_Recording, root_dir=str(tmp_path), download=flag, seed=0)
+    assert seen == [False, False, True, True]

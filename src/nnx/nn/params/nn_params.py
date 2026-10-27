@@ -119,7 +119,11 @@ class NNParams:
             self, "output_dim", require_count(self.output_dim, "output_dim", owner=owner, minimum=0, exclusive_min=True)
         )
         if self.hidden_dims is not None:
-            all_positive = f"{owner} requires all hidden_dims > 0, got {list(self.hidden_dims)}"
+            # Materialized once (#545): an iterator such as
+            # `map(int, "64,32".split(","))` would otherwise be consumed by
+            # the message below and validated — and stored — as [].
+            hidden = tuple(self.hidden_dims)
+            all_positive = f"{owner} requires all hidden_dims > 0, got {list(hidden)}"
             object.__setattr__(
                 self,
                 "hidden_dims",
@@ -127,7 +131,7 @@ class NNParams:
                     require_count(
                         d, f"hidden_dims[{i}]", owner=owner, minimum=0, exclusive_min=True, domain_message=all_positive
                     )
-                    for i, d in enumerate(self.hidden_dims)
+                    for i, d in enumerate(hidden)
                 ),
             )
         if self.n_heads is not None:
