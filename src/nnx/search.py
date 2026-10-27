@@ -241,9 +241,11 @@ def _plain_choice(choice: Any) -> Any:
     """A NumPy integer, float or ``numpy.str_`` choice as the plain value it
     equals (``state()`` and ``digest()`` alike); anything else unchanged for
     the type check, so a NumPy bool stays refused (it is neither a bool nor a
-    number)."""
-    numpy_real = type(choice).__module__ == "numpy" and isinstance(choice, numbers.Real)
-    if not isinstance(choice, bool) and (isinstance(choice, numbers.Integral) or numpy_real):
+    number) and an ``IntEnum`` / ``str`` subclass member is still the member
+    ``suggest()`` returns."""
+    if type(choice).__module__ != "numpy":
+        return choice
+    if not isinstance(choice, bool) and isinstance(choice, numbers.Real):
         return plain_real(choice)
     return plain_str(choice)
 

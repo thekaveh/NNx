@@ -169,6 +169,20 @@ def test_numpy_bounds_budgets_and_choices_are_the_plain_values():
     )
 
 
+def test_enum_choices_stay_the_members_suggest_returns():
+    """#544 review: only NumPy scalars are normalized; an IntEnum member is
+    kept as given (state() and digest() as before), so suggest() hands it back."""
+    import enum
+
+    class Width(enum.IntEnum):
+        NARROW = 16
+        WIDE = 32
+
+    choices = CategoricalParam(name="w", choices=(Width.NARROW, Width.WIDE))
+    assert all(type(choice) is Width for choice in choices.choices)
+    assert choices.state() == CategoricalParam(name="w", choices=(16, 32)).state()
+
+
 @pytest.mark.parametrize(
     ("make", "field"),
     [

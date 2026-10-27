@@ -2869,3 +2869,26 @@ def test_generate_refuses_an_oversized_sampling_setting_by_name(kwargs, tmp_path
     (field,) = kwargs
     with pytest.raises(ValueError, match=field):
         model.generate("the cat", max_new_tokens=1, **kwargs)
+
+
+@pytest.mark.parametrize("value", [True, "tensor"], ids=["bool", "tensor"])
+def test_the_logits_processors_take_a_plain_real_not_a_bool_or_tensor(value):
+    """#544 (documented in the CHANGELOG): TemperatureScaling and
+    RepetitionPenalty now validate like the paradigm step factories, so a
+    bool or a 0-dim tensor (accepted before) is refused by name; a NumPy
+    number is still the plain float it equals."""
+    import numpy as np
+    import torch
+
+    from nnx.generation.logits_processors import RepetitionPenalty, TemperatureScaling
+
+    for make, field, setting in (
+        (TemperatureScaling, "temperature", 0.75),
+        (RepetitionPenalty, "repetition_penalty", 1.25),
+    ):
+        bad = torch.tensor(setting) if value == "tensor" else value
+        with pytest.raises(ValueError, match=field):
+            make(bad)
+        processor = make(np.float32(setting))
+        stored = processor.temperature if field == "temperature" else processor.penalty
+        assert stored == setting and type(stored) is float
