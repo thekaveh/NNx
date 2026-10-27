@@ -746,6 +746,8 @@ def _batch_inputs(
             valid = valid.reshape(-1) if valid is not None else None
         if valid is None and ignore_index is not None:
             valid = _not_ignored(target, ignore_index)
+        if not target.is_floating_point():
+            target = target.long()  # class indices are int64; torch 2.4 cannot index uint16/32/64
         if valid is not None:
             output, target = output[valid], target[valid]
         inputs: dict[str, np.ndarray] = {}
