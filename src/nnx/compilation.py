@@ -264,6 +264,15 @@ def _traced_functions(net: torch.nn.Module, compiled: Any = None) -> list[Any]:
     return [function for function in functions if isinstance(getattr(function, "__code__", None), types.CodeType)]
 
 
+def _traces_own_forward(compiled: Any) -> bool:
+    """Whether dynamo traces the class's own forward frame (the ``compiled``
+    wrapper hands it the module's ``__call__``), whose cache entries only
+    that class holds. Torch's own modules and skipped forwards are traced
+    through the shared wrapper of :func:`_traced_functions` instead."""
+    handed = getattr(getattr(compiled, "forward", None), "_torchdynamo_orig_callable", None)
+    return handed is None or getattr(handed, "__name__", "") in ("_call_impl", "_wrapped_call_impl")
+
+
 def _cache_entries(net: torch.nn.Module, compiled: Any = None) -> list[Any]:
     """Dynamo cache entries held for the :func:`_traced_functions` (other
     fits of the same class, earlier in this process, and anything else
@@ -529,19 +538,25 @@ class _InferenceSession(_CompileSession):
                 return self._restart(error, None, args, kwargs)
         snapshot = _Snapshot(self._net)
         graphs_before, breaks_before = _unique_graphs(), _counter("graph_break")
+        # A first call that compiles no graph is served from dynamo's cache,
+        # or dynamo skipped the frame (a ``torch.compiler.disable`` forward,
+        # one it cannot trace, or, where torch cannot make the recompile
+        # limit an error, one at the limit) and ran it eagerly. A class's
+        # own forward is served when it held entries before the call, as a
+        # fit's is (its graphs may sit in resume functions or nested frames,
+        # after a leading graph break); a forward traced through the shared
+        # wrapper only when a graph cached for that wrapper ran.
+        own = _traces_own_forward(compiled)
+        held = _cached_entries(self._net) if own else 0
         try:
-            with _graph_ran(self._net, compiled) as cached_ran:
+            with contextlib.nullcontext([False]) if own else _graph_ran(self._net, compiled) as cached_ran:
                 output = compiled(*args, **kwargs)
         except Exception as error:
             if not _is_compile_failure(error):
                 raise
             return self._restart(error, snapshot, args, kwargs)
         compiled_now = _unique_graphs() > graphs_before
-        # A first call that compiled no graph must have run a cached one:
-        # otherwise dynamo skipped the frame (a ``torch.compiler.disable``
-        # forward, one it cannot trace, or, where torch cannot make the
-        # recompile limit an error, one at the limit) and ran it eagerly.
-        if not compiled_now and not cached_ran[0]:
+        if not compiled_now and not (held if own else cached_ran[0]):
             self._skipped(snapshot)
             return output
         self._compiled_first(graphs_before, breaks_before, compiled_now)
