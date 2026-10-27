@@ -48,7 +48,7 @@ NNTrainerParams  # multi-optim version: dict of optims + dict of schedulers
 
 The rebuilt object need not equal the original. Runtime-only fields are not carried: loaders, `extra_metrics` and `resume_mode`, for example. Nor are omitted defaults, such as an `activations` list that repeats the net-wide activation. A resume request comes back as `parent_run_id` lineage (§8.4).
 
-Constructors store a NumPy scalar or a `str` subclass such as `numpy.str_` (a sweep-grid point, a DataFrame cell) as the plain Python value it equals, so `state()` stays YAML-safe and the configuration hashes like the one written with `float(value)`, `int(value)` or `str(value)`. A plain `int`, `float` or `str` is kept as given, so `weight_decay=0` and `weight_decay=0.0` remain different run ids.
+The run-configuration params and specs (`NNParams`, `NNOptimParams`, `NNSchedulerParams`, `NNTransformerParams`, `NNTrainParams` / `NNTrainerParams`, `NNParamGroupSpec`, `MetricSpec` / `MonitorSpec`, `TaskSpec`, `ModelSpec`, `OptimizerFactorySpec` and `NNRun.salt`) store a NumPy scalar or a `str` subclass such as `numpy.str_` (a sweep-grid point, a DataFrame cell) as the plain Python value it equals, so `state()` stays YAML-safe and the configuration hashes like the one written with `float(value)`, `int(value)` or `str(value)`. A plain `int`, `float` or `str` is kept as given, so `weight_decay=0` and `weight_decay=0.0` remain different run ids. Other constructors may still keep a `numpy.str_` as given (`CompileSpec(backend=...)`, for example), so pass `str(value)` there.
 
 ### 2.2. The omit-when-default invariant
 
@@ -1363,7 +1363,7 @@ The resumed run's epochs continue from the saved epoch. Each named optimizer is 
 
 A mismatch fails before the model, an optimizer or the RNG is touched. Step ownership is unchanged: the step function still owns every optimizer update.
 
-`resume_from_run_id` / `resume_from_checkpoint` serialize only as `parent_run_id` / `parent_checkpoint` lineage, and `resume_mode` is runtime-only. So a configuration without them keeps its `state()` and run id. The controls survive `builder()`, `NNTrainerParamsBuilder.from_params` and the `with_*_loader` copies. `from_state()` restores the lineage only (`parent_run_id` and the checkpoint tag), never a resume request or its mode. `parent_run_id` must be a non-empty run id string (`run.id`, not the `NNRun`), on `NNTrainParams` as on `NNTrainerParams`; a run saved before this check with another lineage value still loads with its id.
+`resume_from_run_id` / `resume_from_checkpoint` serialize only as `parent_run_id` / `parent_checkpoint` lineage, and `resume_mode` is runtime-only. So a configuration without them keeps its `state()` and run id. The controls survive `builder()`, `NNTrainerParamsBuilder.from_params` and the `with_*_loader` copies. `from_state()` restores the lineage only (`parent_run_id` and the checkpoint tag), never a resume request or its mode. `parent_run_id` must be a non-empty run id string (`run.id`, not the `NNRun`), on `NNTrainParams` as on `NNTrainerParams`; a run saved before this check with another lineage value still loads with its id. A copy of those loaded params (`with_*_loader`, `dataclasses.replace`, a builder, an `ExperimentPlan`) raises `ValueError` until `parent_run_id` is set to a run id string or `None`.
 
 A checkpoint written by `NNModel.train` (one optimizer) resumes only through `NNModel.train`. A Trainer checkpoint resumes only through `Trainer.train`. The exception is `resume_mode="weights_only"`, which warm-starts from the weights alone.
 

@@ -73,7 +73,8 @@ def _parent_run_id(value: object, owner: str) -> Optional[str]:
     got = (
         f"an NNRun; pass its .id ({value.id!r})"
         if isinstance(value, NNRun)
-        else f"{value!r} of type {type(value).__name__}"
+        else f"{value!r} of type {type(value).__name__}; params loaded from a run saved with such a "
+        "lineage keep it, but a copy of them must set parent_run_id to a run id string or None"
     )
     raise ValueError(f"{owner}.parent_run_id must be a non-empty run id string when provided, got {got}")
 
@@ -82,7 +83,14 @@ def _restore_saved_lineage(params: Any, lineage: object) -> Any:
     """Put a saved ``parent_run_id`` that the constructor now refuses back
     on ``params`` (built without it): ``run.yaml`` files written before #515
     may hold one (``parent_run_id: 12345``), and the run must still load
-    with its id."""
+    with its id.
+
+    Only this restore admits such a value: a copy of the loaded params
+    (``with_train_loader`` / ``with_val_loader``, ``dataclasses.replace``,
+    ``NNTrainerParamsBuilder.from_params(...).build()``, an
+    ``ExperimentPlan``) goes back through the constructor and raises
+    ``ValueError`` until ``parent_run_id`` is replaced by a run id string
+    or ``None``."""
     if lineage is not None and not _is_run_id_text(lineage):
         object.__setattr__(params, "parent_run_id", lineage)
     return params
