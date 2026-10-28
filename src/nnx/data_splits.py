@@ -55,6 +55,8 @@ from typing import Any, Optional, Union
 
 import numpy as np
 
+from ._artifacts import check_keys, parse_json, read_text
+from ._json_depth import MAX_JSON_DEPTH, too_deep
 from ._validation import require_count, require_finite_real
 from .provenance import IdentityRef, _freeze, _thaw, canonical_bytes, hash_bytes
 
@@ -79,6 +81,7 @@ built by hand from memberships you already have."""
 _PLANNED = STRATEGIES[:3]
 _INSUFFICIENT = ("raise", "train")
 _MEMBERS = (*SPLITS, "excluded")
+_STATE_KEYS = ("format", "strategy", "ids", "source", "parameters", "seed", *_MEMBERS)  # all always written
 
 SampleId = Union[str, int]
 
@@ -203,6 +206,11 @@ class SplitManifest:
         object.__setattr__(self, "source", _source(self.source))
         if not isinstance(self.parameters, Mapping):
             raise TypeError(f"parameters must be a mapping, got {type(self.parameters).__name__}")
+        if too_deep(self.parameters, MAX_JSON_DEPTH - 1):  # a top-level key of the file; before the recursive copy
+            raise ValueError(
+                f"parameters nest more than {MAX_JSON_DEPTH - 1} levels; a split manifest file holds at most "
+                f"{MAX_JSON_DEPTH}"
+            )
         object.__setattr__(self, "parameters", _freeze(json.loads(canonical_bytes(dict(self.parameters)))))
         if self.seed is not None:
             object.__setattr__(self, "seed", require_count(self.seed, "seed", owner="SplitManifest"))
@@ -238,16 +246,43 @@ class SplitManifest:
 
     @staticmethod
     def from_state(state: Mapping[str, Any]) -> SplitManifest:
+        """Rebuild a manifest from :meth:`state`, exactly or not at all.
+
+        The state holds exactly the keys :meth:`state` writes: nothing is
+        defaulted, so an edited file cannot load as a different plan.
+
+        Raises:
+            SplitError: for a non-mapping state, another ``format``, unknown
+                or missing keys (named), a member that is not a list of ids,
+                ``parameters`` that are not a mapping, a ``source`` that is not
+                exactly ``identity`` and ``value``, and any value the
+                constructor refuses (a mix of id types, a repeated id, an
+                unknown ``strategy``, a ``seed`` that is not a count).
+        """
+        if not isinstance(state, Mapping):
+            raise SplitError(f"a split manifest state is a mapping, got {type(state).__name__}")
         if state.get("format") != FORMAT:
-            raise ValueError(f"unsupported split manifest format {state.get('format')!r}; expected {FORMAT!r}")
-        return SplitManifest(
-            strategy=state["strategy"],
-            ids=state.get("ids", "sample"),
-            source=IdentityRef.from_state(state["source"]),
-            parameters=state.get("parameters") or {},
-            seed=state.get("seed"),
-            **{name: tuple(state.get(name) or ()) for name in _MEMBERS},
-        )
+            raise SplitError(f"unsupported split manifest format {state.get('format')!r}; expected {FORMAT!r}")
+        check_keys(state, required=_STATE_KEYS, what="split manifest", error=SplitError)
+        for name in _MEMBERS:
+            if not isinstance(state[name], (list, tuple)):
+                raise SplitError(f"the split manifest's {name!r} must be a list of ids, got {state[name]!r}")
+        if not isinstance(state["parameters"], Mapping):
+            raise SplitError(f"the split manifest's 'parameters' must be a mapping, got {state['parameters']!r}")
+        source = IdentityRef.from_state(state["source"], error=SplitError, what="split manifest's source")
+        try:
+            return SplitManifest(
+                strategy=state["strategy"],
+                ids=state["ids"],
+                source=source,
+                parameters=state["parameters"],
+                seed=state["seed"],
+                **{name: tuple(state[name]) for name in _MEMBERS},
+            )
+        except (TypeError, ValueError) as exc:
+            if isinstance(exc, SplitError):
+                raise
+            raise SplitError(f"malformed split manifest: {exc}") from exc
 
     @cached_property
     def _canonical(self) -> bytes:
@@ -273,7 +308,15 @@ class SplitManifest:
 
     @staticmethod
     def from_json(text: str) -> SplitManifest:
-        return SplitManifest.from_state(json.loads(text))
+        """Rebuild a manifest from :meth:`to_json` text.
+
+        Raises:
+            SplitError: for text that is not strict JSON (truncated, ``NaN``,
+                an integer too long to parse), that nests more than 256
+                levels (the bound of NNx's JSON files), or that holds a state
+                :meth:`from_state` refuses.
+        """
+        return SplitManifest.from_state(parse_json(text, "split manifest", SplitError, max_depth=MAX_JSON_DEPTH))
 
     def save(self, path: Union[str, os.PathLike[str]]) -> None:
         """Write the manifest as JSON, atomically."""
@@ -283,8 +326,13 @@ class SplitManifest:
 
     @staticmethod
     def load(path: Union[str, os.PathLike[str]]) -> SplitManifest:
-        with open(path, encoding="utf-8") as handle:
-            return SplitManifest.from_json(handle.read())
+        """Read a manifest written by :meth:`save`.
+
+        Raises:
+            SplitError: for a file that is not UTF-8, or whose text
+                :meth:`from_json` refuses. A missing file raises ``OSError``.
+        """
+        return SplitManifest.from_json(read_text(path, "split manifest", SplitError))
 
     def resolve(self, ids: Iterable[Any], *, source: Union[IdentityRef, str, None] = None) -> SplitIndices:
         """Map this manifest onto a source whose rows carry ``ids``.
