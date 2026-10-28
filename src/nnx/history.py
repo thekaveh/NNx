@@ -305,17 +305,6 @@ def _fsync_path(path: str) -> None:
         os.close(fd)
 
 
-def _read_published(path: str) -> Optional[str]:
-    """The text :func:`~nnx.nn.params.nn_run._atomic_write_text` wrote to
-    ``path`` (``None``: there is no file), as that writer takes it: written
-    back through it, the file gets the same bytes on every platform."""
-    try:
-        with open(path, encoding="utf-8", newline="") as handle:
-            return handle.read().replace(os.linesep, "\n")  # the writer turns "\n" into os.linesep
-    except FileNotFoundError:
-        return None
-
-
 def _unpublish(path: str, previous: Optional[str]) -> None:
     """Undo a history step's rename that its epoch cannot commit — the
     rename's flush, or a save after it, failed (#552): write back
@@ -788,13 +777,19 @@ class _EagerHistory:
         return lambda callback: None
 
     def save_epoch(self, run: NNRun) -> None:
-        csv_path = os.path.join(_run_directory(run), "idps.csv")
-        previous = _read_published(csv_path)  # the previous epoch's history (None: before the first)
         run.with_idps(self.records).save(update_best=False)
         try:
             _fsync_run_directory(run)  # idps.csv's rename is durable before LAST
         except BaseException:
-            _unpublish(csv_path, previous)  # the epoch fails as if its history was never saved
+            from .nn.params.nn_run import _idps_csv_text, _quietly
+
+            # The epoch fails as if its history was never saved: idps.csv is
+            # the previous epoch's again, rebuilt from the records it was
+            # written from (no later epoch changes them), or, before the
+            # first epoch, gone. Nothing is read back from disk each epoch.
+            committed = self.records[: self._epoch_start]
+            csv_path = os.path.join(_run_directory(run), "idps.csv")
+            _quietly(lambda: _unpublish(csv_path, _idps_csv_text(committed) if committed else None))
             raise
 
     def rollback_epoch(self, run: NNRun) -> None:
