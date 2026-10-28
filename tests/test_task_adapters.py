@@ -444,8 +444,11 @@ def test_a_zero_row_multilabel_batch_trains_and_validates_as_without_it(tmp_path
     for tag in ("with", "without"):
         model, with_empty, without = _zero_row_multilabel_case()
         loader = with_empty if tag == "with" else without
+        # The bounded step only validates, so it trains on the clean loader: the
+        # zero-row batch then reaches streaming_eval_step and nothing earlier.
+        train_loader = without if step == "streaming_eval_step" else loader
         params = NNTrainParams(
-            n_epochs=1, optim=_sgd(), train_loader=loader, val_loader=loader, data_id=f"{step}-{tag}"
+            n_epochs=1, optim=_sgd(), train_loader=train_loader, val_loader=loader, data_id=f"{step}-{tag}"
         )
         runs.append((model, model.train(params=params, **kwargs).idps[-1]))
     (model, idp), (reference, reference_idp) = runs
