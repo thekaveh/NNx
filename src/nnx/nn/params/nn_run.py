@@ -395,6 +395,11 @@ def _read_run_idps(run_path: str) -> list[NNIterationDataPoint]:
     return _read_idps_csv(csv_path)
 
 
+def _idps_csv_text(idps: list[NNIterationDataPoint]) -> str:
+    """The ``idps.csv`` that ``NNRun.save`` writes for ``idps``."""
+    return pd.json_normalize(data=[idp.state() for idp in idps]).to_csv()
+
+
 def _read_idps_csv(csv_path: str, *, exact: bool = True) -> list[NNIterationDataPoint]:
     """Every record of an ``idps.csv``, its floats parsed round-trip, so a
     loaded run's finite values equal the trained run's bit for bit
@@ -1101,12 +1106,9 @@ class NNRun:
         _atomic_write_text(metadata_path, yaml.safe_dump(metadata, sort_keys=True))
 
         if self.history is None:
-            _atomic_write_text(
-                csv_path,
-                # `or []`: idps defaults to None on the dataclass; an empty
-                # frame round-trips cleanly through read_csv on load.
-                pd.json_normalize(data=[idp.state() for idp in (self.idps or [])]).to_csv(),
-            )
+            # `or []`: idps defaults to None on the dataclass; an empty
+            # frame round-trips cleanly through read_csv on load.
+            _atomic_write_text(csv_path, _idps_csv_text(self.idps or []))
         # A journal run (FEAT-036) has written and published its records in
         # runs/<id>/history/ already; `idps` is only its window.
 
