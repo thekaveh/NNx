@@ -5487,6 +5487,20 @@ nnx.provenance.hash_file(path: 'Union[str, os.PathLike[str]]', *, chunk_size: 'i
 
 A verified ``sha256:<hex>`` identity of a file's bytes — the one call here that reads data, and only when you make it.
 
+**Details**
+
+```text
+Args:
+    path: the file to hash.
+    chunk_size: bytes read per step, an integer ``>= 1`` (NumPy integers
+        included); it changes the memory used, never the digest.
+
+Raises:
+    ValueError: if ``chunk_size`` is not an integer ``>= 1`` (``0``, a
+        negative, ``None``, a ``bool``, a float or a string), before the
+        file is opened.
+```
+
 
 #### `nnx.provenance.hash_bytes`
 
