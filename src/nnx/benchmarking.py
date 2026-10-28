@@ -424,22 +424,37 @@ def _flatten(output: Any) -> tuple[list[Any], list[Any]]:
     return flat, structure
 
 
+_DIFF_CHUNK = 1 << 20
+
+
 def _abs_diff(a: torch.Tensor, b: torch.Tensor) -> float:
     """The largest ``|a - b|`` in float64 (complex128 for complex tensors):
     equal values, matching infinities and two-sided NaN differ by ``0.0``;
-    a one-sided NaN or infinity counts as ``inf``."""
+    a one-sided NaN or infinity counts as ``inf``. Widened ``_DIFF_CHUNK``
+    elements at a time, so the float64 temporaries stay small however large
+    the outputs are."""
     if a.shape != b.shape:
         raise RuntimeError(f"eager and compiled forwards returned differently shaped outputs: {a.shape} vs {b.shape}")
     if not a.numel():
         return 0.0
-    # Moved to the CPU before widening: MPS has no float64, and a combined
-    # device-and-dtype ``.to`` converts on the source device first.
     wide = torch.complex128 if a.is_complex() or b.is_complex() else torch.float64
-    x, y = a.detach().cpu().to(wide), b.detach().cpu().to(wide)
-    same = (x == y) | (x.isnan() & y.isnan())
-    # ``posinf`` too: ``nan_to_num`` maps ``inf`` to the largest finite value.
-    gap = (x - y).abs().nan_to_num(nan=float("inf"), posinf=float("inf")).masked_fill(same, 0.0)
-    return float(gap.max())
+    # MPS has no float64, so its chunks move to the CPU before widening (a
+    # combined device-and-dtype ``.to`` converts on the source device first);
+    # other devices widen in place.
+    host = a.device != b.device or "mps" in (a.device.type, b.device.type)
+    xs, ys = a.detach().reshape(-1), b.detach().reshape(-1)
+    worst = 0.0
+    for start in range(0, xs.numel(), _DIFF_CHUNK):
+        x, y = xs[start : start + _DIFF_CHUNK], ys[start : start + _DIFF_CHUNK]
+        if host:
+            x, y = x.cpu(), y.cpu()
+        x, y = x.to(wide), y.to(wide)  # may alias a float64 output: never written to
+        same = (x == y) | (x.isnan() & y.isnan())
+        gap = (x - y).abs()
+        # ``posinf`` too: ``nan_to_num`` maps ``inf`` to the largest finite value.
+        gap.nan_to_num_(nan=float("inf"), posinf=float("inf")).masked_fill_(same, 0.0)
+        worst = max(worst, float(gap.max()))
+    return worst
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

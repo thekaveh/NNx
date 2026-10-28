@@ -86,3 +86,13 @@ def test_compare_compile_diffs_an_mps_model_in_float64_on_the_cpu():
         net, torch.randn(3, 4, device="mps"), compile=CompileSpec(backend="aot_eager"), warmup=0, repeats=1
     )
     assert comparison.compiled.compile.effective == "compiled" and comparison.max_abs_diff == 0.0
+
+
+def test_max_abs_diff_widens_every_mps_chunk_on_the_cpu(monkeypatch):
+    import nnx.benchmarking as benchmarking
+
+    monkeypatch.setattr(benchmarking, "_DIFF_CHUNK", 4)
+    a = torch.arange(10, dtype=torch.float32, device="mps")
+    b = a.clone()
+    b[-1] += 2
+    assert benchmarking._abs_diff(a, b) == 2.0
