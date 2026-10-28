@@ -13,6 +13,8 @@ from typing import Any, cast
 
 from torch import nn
 
+from .._reparameterization import legacy_reparameterizations
+
 
 def get_module(root: nn.Module, dotted: str) -> nn.Module:
     """Return the submodule of ``root`` named by ``dotted``.
@@ -123,21 +125,14 @@ def refuse_parametrized(module: nn.Module, what: str) -> None:
             f"{what} carries a parametrization ({sorted(cast(Any, module).parametrizations)}); a surgery primitive "
             "would drop it silently. Remove it first (torch.nn.utils.parametrize.remove_parametrizations)"
         )
-    from torch.nn.utils.prune import BasePruningMethod
-    from torch.nn.utils.spectral_norm import SpectralNorm
-    from torch.nn.utils.weight_norm import WeightNorm
-
-    hooks = [hook for hook in module._forward_pre_hooks.values() if isinstance(hook, (WeightNorm, SpectralNorm))]
-    if hooks:
-        names = sorted(getattr(hook, "name", "?") for hook in hooks)
+    masks, norms = legacy_reparameterizations(module)
+    if norms:
         raise ValueError(
-            f"{what} carries a legacy weight_norm / spectral_norm on {names}; a surgery primitive would drop it "
+            f"{what} carries a legacy weight_norm / spectral_norm on {norms}; a surgery primitive would drop it "
             "silently. Remove it first (torch.nn.utils.remove_weight_norm / remove_spectral_norm)"
         )
-    masks = [hook for hook in module._forward_pre_hooks.values() if isinstance(hook, BasePruningMethod)]
     if masks:
-        names = sorted(getattr(hook, "_tensor_name", "?") for hook in masks)
         raise ValueError(
-            f"{what} carries an unbaked prune mask on {names}; a surgery primitive would read a stale weight and "
+            f"{what} carries an unbaked prune mask on {masks}; a surgery primitive would read a stale weight and "
             "drop the mask. Bake it first (torch.nn.utils.prune.remove, or magnitude_prune(bake=True))"
         )

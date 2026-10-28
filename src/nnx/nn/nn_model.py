@@ -26,6 +26,7 @@ from typing_extensions import Self
 
 from .._confusion import LabelCounts, label_counts, label_kind, record_scores
 from .._metrics import _resolve_metric_with_provenance, _resolve_scheduler_metric, classification_edp
+from .._reparameterization import UNNAMED, legacy_reparameterizations
 from .._scheduler_clock import (
     HORIZON_KINDS,
     NO_UPDATE_REPORTER,
@@ -1083,27 +1084,17 @@ def _reparameterizing_hooks(net: torch.nn.Module, base_keys: set[str]) -> tuple[
     ``weight_norm`` / ``spectral_norm`` recompute in a forward pre-hook,
     found by hook type wherever they sit (below a PEFT wrapper too), unless
     the descriptor's own net carries that reparameterization."""
-    from torch.nn.utils.prune import BasePruningMethod
-    from torch.nn.utils.spectral_norm import SpectralNorm
-    from torch.nn.utils.weight_norm import WeightNorm
-
     masked: set[str] = set()
     normed: set[str] = set()
     for path, module in net.named_modules():
-        for hook in module._forward_pre_hooks.values():
-            if isinstance(hook, BasePruningMethod):
-                name = getattr(hook, "_tensor_name", None)
-                found, own = masked, ("_mask",)
-            elif isinstance(hook, (WeightNorm, SpectralNorm)):
-                name = getattr(hook, "name", None)
-                found, own = normed, ("_g", "_orig")
-            else:
-                continue
-            if name is None:
-                continue
-            key = f"{path}.{name}" if path else name
-            if not any(f"{key}{suffix}" in base_keys for suffix in own):
-                found.add(key)
+        masks, norms = legacy_reparameterizations(module)
+        for names, found, own in ((masks, masked, ("_mask",)), (norms, normed, ("_g", "_orig"))):
+            for name in names:
+                if name == UNNAMED:
+                    continue
+                key = f"{path}.{name}" if path else name
+                if not any(f"{key}{suffix}" in base_keys for suffix in own):
+                    found.add(key)
     return masked, normed
 
 
