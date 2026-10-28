@@ -1316,15 +1316,23 @@ def _legacy_weight_norm(net):
     ],
     ids=["prune_then_lora", "lora_then_prune", "weight_norm_then_lora", "prune_then_ia3"],
 )
-def test_training_refuses_a_mask_or_legacy_norm_below_a_peft_wrapper_before_reserving_a_run(prepare, match):
-    """All four trained at e69fd74: the key checks matched ``layers.0.weight_orig``,
-    never ``layers.0.base.weight_orig``."""
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_training_refuses_a_mask_or_legacy_norm_below_a_peft_wrapper_before_reserving_a_run(prepare, match, loop):
+    """All four trained at e69fd74 in both loops: the key checks matched ``layers.0.weight_orig``,
+    never ``layers.0.base.weight_orig``. ``Trainer.train(objective=...)`` shares the preflight."""
     import os
+
+    from nnx import NNTrainerParams, Trainer
+    from nnx.objectives import supervised_objective
 
     model = _model()
     prepare(model.net)
     with pytest.raises(ValueError, match=rf"layers\.0\.base\.weight {match}"):
-        _train(model, n_epochs=1)
+        if loop == "nnmodel":
+            _train(model, n_epochs=1)
+        else:
+            params = NNTrainerParams.builder().n_epochs(1).train_loader(_loader()).optimizer("default", _OPTIM).build()
+            Trainer(model).train(params=params, objective=supervised_objective())
     assert not os.path.exists("runs") or not os.listdir("runs")
 
 
