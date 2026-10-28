@@ -11,6 +11,7 @@ unknown, declared and verified values.
 
 from __future__ import annotations
 
+import json
 import math
 import socket
 
@@ -380,3 +381,53 @@ def test_a_manifest_with_config_none_reloads_with_its_fingerprint():
 
     manifest = ExperimentManifest(config=None)
     assert ExperimentManifest.from_state(manifest.state()).fingerprint() == manifest.fingerprint()
+
+
+# --- #551: manifests too deep to read back --------------------------------------------------------
+
+
+def _nested(levels: int, leaf=None) -> dict:
+    """``levels`` nested mappings (the innermost holds ``leaf`` when given),
+    built without recursion."""
+    value: dict = {} if leaf is None else {"k": leaf}
+    for _ in range(levels - 1):
+        value = {"k": value}
+    return value
+
+
+@pytest.mark.parametrize("field", ["task", "model", "objective", "config"])
+def test_a_manifest_field_too_deep_to_read_back_is_refused_naming_its_path(field):
+    """FIX-083: provenance.json wraps a field in two levels and reads 256,
+    so 255 levels were written and then refused on load (``NNRun.load``
+    dropped ``run.provenance``), and 1500 overflowed the recursive copies
+    with a raw RecursionError."""
+    for levels in (255, 511, 1500):
+        with pytest.raises(ValueError, match=rf"^\$\.{field}: nested more than 254 levels"):
+            ExperimentManifest(**{field: _nested(levels)})
+    deepest = ExperimentManifest(**{field: _nested(254)})
+    assert ExperimentManifest.from_state(deepest.state()) == deepest
+    # An identity reference is an object once canonical: it counts as a level.
+    ExperimentManifest(**{field: _nested(253, leaf=hash_bytes(b"x"))})
+    with pytest.raises(ValueError, match=rf"^\$\.{field}: nested more than 254 levels"):
+        ExperimentManifest(**{field: _nested(254, leaf=hash_bytes(b"x"))})
+
+
+def test_a_self_containing_config_is_refused_not_a_recursion_error():
+    config: dict = {}
+    config["self"] = config
+    with pytest.raises(ValueError, match=r"^\$\.config: nested more than 254 levels"):
+        ExperimentManifest(config=config)
+
+
+def test_a_provenance_file_deeper_than_the_manifest_bound_is_unreadable(tmp_path):
+    """The reader's bound is the one construction applies: a 300-level
+    config (which an older NNx wrote) parses, then is refused as too deep."""
+    from nnx.provenance import FORMAT, MANIFEST_FILE, load_provenance
+
+    run = tmp_path / "runs" / ("a" * 32)
+    run.mkdir(parents=True)
+    document = {"format": FORMAT, "manifest": {"config": "__DEEP__"}, "fingerprint": "sha256:0"}
+    deep = '{"k":' * 299 + "{}" + "}" * 299
+    (run / MANIFEST_FILE).write_text(json.dumps(document).replace('"__DEEP__"', deep), encoding="utf-8")
+    with pytest.raises(ValueError, match="nested too deeply"):
+        load_provenance("a" * 32, root=str(tmp_path))

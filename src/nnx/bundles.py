@@ -72,6 +72,7 @@ import numpy as np
 import torch
 
 from ._config import _freeze_config
+from ._json_depth import too_deep
 from .calibration import _FINGERPRINT_SEED, TemperatureCalibrator, _fingerprint_header, _state_fingerprint
 from .components import ComponentRegistry, ComponentRestoreError
 from .models import BatchAdapter, MissingModelFactoryError, ModelFactory, ModelSpec, RuntimeModule
@@ -412,19 +413,6 @@ def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return seen
 
 
-def _too_deep(value: Any) -> bool:
-    """Whether a parsed JSON value nests more than ``_MAX_DEPTH`` levels,
-    measured without recursion."""
-    stack = [(value, 1)]
-    while stack:
-        item, depth = stack.pop()
-        if isinstance(item, (dict, list)):
-            if depth > _MAX_DEPTH:
-                return True
-            stack.extend((child, depth + 1) for child in (item.values() if isinstance(item, dict) else item))
-    return False
-
-
 def _parse_json(data: bytes, what: str) -> Any:
     def constant(name: str) -> Any:
         raise BundleIntegrityError(f"{what} is strict JSON; {name} is not a JSON number")
@@ -437,9 +425,9 @@ def _parse_json(data: bytes, what: str) -> Any:
         raise BundleIntegrityError(f"{what} is nested too deeply") from None
     except (UnicodeDecodeError, ValueError) as exc:
         raise BundleIntegrityError(f"{what} is not valid UTF-8 JSON: {exc}") from None
-    # The decoder's own limit varies by Python version (3.14 parses 100,000
-    # levels), so the depth is refused here, the same on every version.
-    if _too_deep(value):
+    # The decoder's own limit varies by Python version and stack size, so the
+    # depth is refused here, the same on every version.
+    if too_deep(value, _MAX_DEPTH):
         raise BundleIntegrityError(f"{what} is nested too deeply")
     return value
 

@@ -151,6 +151,15 @@ def test_spec_rejects_invalid_identity_and_config(kwargs, error):
         OptimizerFactorySpec(**kwargs)
 
 
+def test_spec_rejects_a_config_nested_past_the_json_depth_bound():
+    """FIX-083 (#551): the recursive freeze overflowed with a raw RecursionError."""
+    deep: dict = {}
+    for _ in range(1499):
+        deep = {"k": deep}
+    with pytest.raises(ValueError, match="config nests more than 256 levels"):
+        OptimizerFactorySpec(id="ok", version=1, config=deep)
+
+
 def test_spec_equality_is_type_strict_and_hash_consistent():
     """1, 1.0 and True serialize differently (and give different run ids),
     so they are different specs; equal specs hash equally."""

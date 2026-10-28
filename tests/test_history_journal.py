@@ -1357,3 +1357,108 @@ def test_the_attempt_tokens_are_omitted_from_state_when_unset_and_validated():
         for bad in ("", 3):
             with pytest.raises(ValueError, match=field):
                 ResumeStatus(**{field: bad})  # type: ignore[arg-type]
+
+
+# --- #551: journal JSON nested too deeply to read --------------------------------------------------
+
+
+def _deep(levels: int) -> bytes:
+    return b"[" * levels + b"]" * levels
+
+
+def _publish_manifest(directory: str, **changes) -> None:
+    """Rewrite journal.json with ``changes``, as an edit that keeps it valid would."""
+    path = os.path.join(directory, "journal.json")
+    with open(path, encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    manifest.update(changes)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(history_module._manifest_text(manifest))
+
+
+def _publish_index(directory: str, lines: list[bytes]) -> None:
+    """Rewrite index.jsonl and re-chain it in the manifest, so only a line's content is wrong."""
+    with open(os.path.join(directory, "index.jsonl"), "wb") as handle:
+        handle.write(b"".join(lines))
+    chain = history_module._GENESIS
+    for line in lines:
+        chain = history_module._chain(chain, line)
+    _publish_manifest(directory, index_bytes=sum(map(len, lines)), index_chain=chain)
+
+
+def _publish_deep_extra(directory: str, deep: str) -> None:
+    """Give an otherwise valid journal.json an extra key holding ``deep`` (JSON text)."""
+    path = os.path.join(directory, "journal.json")
+    _publish_manifest(directory, extra="__DEEP__")
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text.replace('"__DEEP__"', deep))
+
+
+@pytest.mark.parametrize("levels", [1500, 20000])
+def test_a_deeply_nested_journal_manifest_is_corruption(levels):
+    """FIX-083: the reader mapped only ValueError, so the parser's
+    RecursionError (its limit varies by Python version) escaped NNRun.load,
+    iter_history and the notebook chart's fallback. The deep value sits
+    under a key of a valid manifest, so where the parser reads it (1500
+    levels on 3.12+) only the depth bound refuses it."""
+    run = _fit("model", HistoryJournal(retention=4))
+    _publish_deep_extra(_journal(run), _deep(levels).decode())
+    with pytest.raises(HistoryCorruptionError):
+        NNRun.load(run.id)
+    with pytest.raises(HistoryCorruptionError):
+        list(iter_history(run.id))
+    with pytest.warns(RuntimeWarning, match="journal is unreadable"):
+        assert "<table" in run._repr_html_()
+
+
+def test_a_valid_journal_manifest_with_a_deeply_nested_extra_key_is_refused():
+    run = _fit("model", HistoryJournal(retention=4))
+    _publish_deep_extra(_journal(run), '{"k":' * 599 + "{}" + "}" * 599)
+    for read in (lambda: NNRun.load(run.id), lambda: list(iter_history(run.id))):
+        with pytest.raises(HistoryCorruptionError, match="nested more than 256 levels"):
+            read()
+
+
+def test_a_deeply_nested_committed_line_is_corruption_even_behind_its_hash():
+    """Index lines pass the hash chain and chunk lines their SHA-256, and
+    epoch rows only their byte length, so an edit that recomputes those
+    reaches the parser."""
+    run = _fit("model", HistoryJournal(retention=2, chunk_size=2))
+    directory = _journal(run)
+    with open(os.path.join(directory, "index.jsonl"), "rb") as handle:
+        lines = handle.read().splitlines(keepends=True)
+    _publish_index(directory, [*lines[:-1], _deep(20000) + b"\n"])
+    with pytest.raises(HistoryCorruptionError, match="committed index .* malformed: a line is nested"):
+        NNRun.load(run.id)
+    _publish_index(directory, lines)  # restored: the next case edits a chunk
+    NNRun.load(run.id)
+
+    chunk = os.path.join(directory, "chunk-00000000.jsonl")
+    with open(chunk, "rb") as handle:
+        records = handle.read().splitlines(keepends=True)
+    edited = b"".join([_deep(20000) + b"\n", *records[1:]])
+    with open(chunk, "wb") as handle:
+        handle.write(edited)
+    entry = json.loads(lines[0])
+    entry["sha256"] = hashlib.sha256(edited).hexdigest()
+    _publish_index(directory, [history_module._json_line(entry), *lines[1:]])
+    with pytest.raises(HistoryCorruptionError, match="record of committed history chunk 0 .* nested"):
+        list(iter_history(run.id))
+    with open(chunk, "wb") as handle:
+        handle.write(b"".join(records))
+    _publish_index(directory, lines)  # restored: the last case edits an epoch row
+    assert len(list(iter_history(run.id))) == 15
+
+    rows = os.path.join(directory, "epochs.jsonl")
+    with open(rows, "rb") as handle:
+        epoch_lines = handle.read().splitlines(keepends=True)
+    deep_rows = b"".join([_deep(20000) + b"\n", *epoch_lines[1:]])
+    with open(rows, "wb") as handle:
+        handle.write(deep_rows)
+    _publish_manifest(directory, epochs_bytes=len(deep_rows))
+    with pytest.raises(HistoryCorruptionError, match="epoch rows .* unreadable: a row is nested"):
+        history_module._JournalReader(directory, index=False).epoch_rows(None)
+    with pytest.warns(RuntimeWarning, match="journal is unreadable"):
+        assert "<table" in run._repr_html_()
