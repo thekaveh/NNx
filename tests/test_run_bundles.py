@@ -8,15 +8,18 @@ model, and resuming one epoch from the bundle equals the continuous run.
 
 from __future__ import annotations
 
+import errno
 import json
 import math
 import os
+import types
 from collections import OrderedDict
 
 import numpy as np
 import pytest
 import torch
 
+import nnx.nn.params.nn_checkpoint as nn_checkpoint
 from nnx import (
     Activations,
     Devices,
@@ -46,6 +49,7 @@ from nnx.bundles import (
     export_bundle,
     inspect_bundle,
     reconstruct_bundle,
+    validate_bundle,
 )
 from nnx.calibration import TemperatureCalibrator, model_fingerprint
 from nnx.nn.callbacks import EarlyStopping, ModelCheckpoint
@@ -494,3 +498,106 @@ def test_a_bundle_childs_lineage_starts_at_the_child_with_the_bundle_warning(bes
     assert count == len(own) and len(messages) == 1 and "bundle" in messages[0]
     export_history_csv(child.id, tmp_path / "own.csv")
     assert filecmp.cmp(tmp_path / "lineage.csv", tmp_path / "own.csv", shallow=False)
+
+
+# --- #552: a real flush I/O error fails the export ---------------------------------------------
+
+
+def _fail_flushes(patch, code: int, applies=lambda fd: True) -> None:
+    """Fail the flush primitives on the descriptors ``applies`` selects:
+    ``F_FULLFSYNC`` (stood in for where the platform lacks it) and ``os.fsync``."""
+    real_fsync = os.fsync
+
+    def fail_or_flush(fd, *args):
+        if applies(fd):
+            raise OSError(code, os.strerror(code))
+        return real_fsync(fd)
+
+    patch.setattr(nn_checkpoint, "fcntl", types.SimpleNamespace(F_FULLFSYNC=51, fcntl=fail_or_flush))
+    patch.setattr(os, "fsync", fail_or_flush)
+
+
+def _generations(target: str) -> set[str]:
+    return {entry[2:] for entry in os.listdir(target) if entry.startswith("g-")}
+
+
+def _published(target: str) -> str:
+    with open(os.path.join(target, "bundle.json"), encoding="utf-8") as handle:
+        return json.load(handle)["generation"]
+
+
+def _two_exports():
+    _, batches = _data()
+    torch.manual_seed(7)
+    run = _classifier().train(params=_params(1, "flush", batches))
+    first = export_bundle(run.id, "bundle").generation
+    second = export_bundle(run.id, "bundle").generation
+    return run, first, second
+
+
+def test_an_io_error_on_every_flush_fails_the_export_and_keeps_the_published_generations(monkeypatch):
+    run, first, second = _two_exports()
+    with monkeypatch.context() as patch:
+        _fail_flushes(patch, errno.EIO)
+        with pytest.raises(OSError) as caught:
+            export_bundle(run.id, "bundle")
+    assert caught.value.errno == errno.EIO
+    assert _published("bundle") == second
+    assert _generations("bundle") == {first, second}  # nothing pruned, no new generation left behind
+    assert validate_bundle("bundle").verified
+
+
+@pytest.mark.parametrize("code", [errno.ENOTSUP, errno.EINVAL], ids=["ENOTSUP", "EINVAL"])
+def test_an_unsupported_flush_does_not_fail_the_export(monkeypatch, code):
+    run, _, second = _two_exports()
+    with monkeypatch.context() as patch:
+        _fail_flushes(patch, code)
+        info = export_bundle(run.id, "bundle")
+    assert info.verified and _published("bundle") == info.generation
+    assert _generations("bundle") == {second, info.generation}
+
+
+def test_an_io_error_after_the_manifest_rename_raises_without_pruning(monkeypatch):
+    """The rename that made the new generation live cannot be undone, so the
+    export raises before it prunes: the generations it replaced stay."""
+    run, first, second = _two_exports()
+    target = os.stat("bundle")
+
+    def the_republished_root(fd):
+        stat = os.fstat(fd)
+        return (stat.st_dev, stat.st_ino) == (target.st_dev, target.st_ino) and _published("bundle") != second
+
+    with monkeypatch.context() as patch:
+        _fail_flushes(patch, errno.EIO, the_republished_root)
+        with pytest.raises(OSError):
+            export_bundle(run.id, "bundle")
+    (third,) = _generations("bundle") - {first, second}
+    assert _published("bundle") == third
+    assert {first, second} < _generations("bundle")
+
+
+def test_every_bundle_file_and_directory_is_flushed(monkeypatch):
+    """Each payload, ``bundle.json``, the generation directory and the root
+    (before and after the manifest rename) reach the flush primitive."""
+    run, _, _ = _two_exports()
+    flushed: list[tuple[int, int]] = []
+    real = nn_checkpoint._full_fsync
+
+    def record(fd):
+        stat = os.fstat(fd)
+        flushed.append((stat.st_dev, stat.st_ino))
+        return real(fd)
+
+    monkeypatch.setattr(nn_checkpoint, "_full_fsync", record)
+    info = export_bundle(run.id, "bundle")
+
+    def key(path):
+        stat = os.stat(path)
+        return stat.st_dev, stat.st_ino
+
+    generation = os.path.join("bundle", f"g-{info.generation}")
+    payloads = [os.path.join(generation, name) for name in os.listdir(generation)]
+    assert payloads and all(key(path) in flushed for path in payloads)
+    assert key(os.path.join("bundle", "bundle.json")) in flushed
+    assert key(generation) in flushed
+    assert flushed.count(key("bundle")) == 2

@@ -213,7 +213,8 @@ def _full_fsync(fd: int) -> None:
 
 
 def _fsync_directory(path: str) -> None:
-    """Persist a rename: flush the directory (a no-op where unsupported)."""
+    """Persist a rename: flush the directory (a no-op where unsupported —
+    on Windows a directory cannot be opened); a real I/O error raises."""
     try:
         fd = os.open(path, os.O_RDONLY)
     except OSError:
@@ -712,7 +713,12 @@ class NNCheckpoint:
         between replacements leaves the previous generation resumable.
         """
         ckpt_path = _checkpoint_path(run, type, root=root)
-        os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
+        checkpoints_dir = os.path.dirname(ckpt_path)
+        if not os.path.isdir(checkpoints_dir):
+            os.makedirs(checkpoints_dir, exist_ok=True)
+            # The new checkpoints/ entry is durable before the first point is
+            # published there: the run's first LAST stays reachable (#552).
+            _fsync_directory(os.path.dirname(checkpoints_dir))
         sidecar_path = ckpt_path + ".opt.pt"
         with FileLock(ckpt_path + ".lock"):
             ordinal = _next_generation(ckpt_path)

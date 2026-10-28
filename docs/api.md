@@ -8040,6 +8040,13 @@ recorded topology transform NNx cannot replay from data (anything but an
 conversion — the error names its index and id), module extra state that
 is not a tensor, and training state that is not tensors and JSON
 primitives are refused before anything is written.
+
+Every file and directory is flushed to stable storage as resume points
+are (``F_FULLFSYNC`` on macOS, ``fsync`` elsewhere). A filesystem that
+does not support the flush does not fail the export; a real I/O error
+(``EIO``, a full disk) raises ``OSError`` and prunes nothing. Before
+``bundle.json`` is replaced, it still names the previous generation and
+the new one is removed; after, the generation it replaced stays.
 ```
 
 

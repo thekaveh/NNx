@@ -1130,6 +1130,8 @@ def _fingerprint_problems(
 
 def _write(path: str, chunks: Iterable[bytes]) -> dict[str, Any]:
     """Write ``chunks`` to a new file at ``path``; its manifest entry."""
+    from .nn.params.nn_checkpoint import _full_fsync
+
     digest = hashlib.sha256()
     size = 0
     with open(path, "xb") as handle:
@@ -1138,25 +1140,19 @@ def _write(path: str, chunks: Iterable[bytes]) -> dict[str, Any]:
             digest.update(chunk)
             size += len(chunk)
         handle.flush()
-        try:
-            os.fsync(handle.fileno())
-        except OSError:  # not every filesystem supports it (some network mounts)
-            pass
+        # The resume points' flush (#552): only one the filesystem does not
+        # support is tolerated; a real I/O error (EIO, ...) fails the export
+        # before bundle.json names the generation or anything is pruned.
+        _full_fsync(handle.fileno())
     return {"sha256": digest.hexdigest(), "size": size}
 
 
 def _fsync_directory(path: str) -> None:
-    """Persist ``path``'s entries where the OS allows it (not on Windows)."""
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(descriptor)
-    except OSError:
-        pass
-    finally:
-        os.close(descriptor)
+    """Persist ``path``'s entries where the OS allows it (a directory cannot
+    be opened on Windows); a real I/O error raises, as in :func:`_write`."""
+    from .nn.params.nn_checkpoint import _fsync_directory as fsync_directory
+
+    fsync_directory(path)
 
 
 def export_bundle(
@@ -1189,6 +1185,13 @@ def export_bundle(
     conversion — the error names its index and id), module extra state that
     is not a tensor, and training state that is not tensors and JSON
     primitives are refused before anything is written.
+
+    Every file and directory is flushed to stable storage as resume points
+    are (``F_FULLFSYNC`` on macOS, ``fsync`` elsewhere). A filesystem that
+    does not support the flush does not fail the export; a real I/O error
+    (``EIO``, a full disk) raises ``OSError`` and prunes nothing. Before
+    ``bundle.json`` is replaced, it still names the previous generation and
+    the new one is removed; after, the generation it replaced stays.
     """
     from filelock import FileLock
 
@@ -1367,7 +1370,9 @@ def _is_generation(root: str, entry: str) -> bool:
 def _publish(root: str, manifest: str) -> None:
     """Replace ``bundle.json`` atomically: a temporary ``.bundle.json.*``
     file, created like the payloads (so it is as readable as they are),
-    fsynced and renamed over it — then persist the rename."""
+    fsynced and renamed over it — then persist the rename. A flush that
+    fails after the rename raises before the export prunes anything, so the
+    generation it replaced stays on disk (#552)."""
     temporary = os.path.join(root, f".{_MANIFEST}.{uuid.uuid4().hex}.tmp")
     try:
         _write(temporary, [manifest.encode("utf-8")])

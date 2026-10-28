@@ -27,7 +27,7 @@ from ...history import HISTORY_DIR, HistoryCorruptionError, _journal_epoch_serie
 from ...precision import ResolvedPrecision
 from ...provenance import ProvenanceRecord, load_provenance
 from ..enum.checkpoints import Checkpoints
-from ..params.nn_checkpoint import NNCheckpoint, NNCheckpointTransform
+from ..params.nn_checkpoint import _UNSUPPORTED_FLUSH, NNCheckpoint, NNCheckpointTransform, _fsync_directory
 from ..params.nn_iteration_data_point import NNIterationDataPoint
 from ..params.nn_model_params import NNModelParams
 from ..params.nn_optim_params import NNOptimParams
@@ -208,9 +208,13 @@ def _atomic_write_text(path: str, content: str) -> None:
     file object that owns it, never by a bare descriptor number that
     another thread may have reused), unlinks that temp and re-raises the
     original exception; a cleanup error never replaces it. An ``fsync``
-    ``OSError`` is tolerated and does not abort the write. Once the rename
-    has returned, the temp name is never touched again. (FIX-025; ordinary
-    exceptions only — SIGKILL or power loss can still leave a stale temp.)
+    the filesystem does not support (``ENOTSUP``, ``EINVAL``, ...) is
+    tolerated and does not abort the write; a real I/O error (``EIO``, a
+    full disk) is raised before the rename, so the destination keeps its
+    previous content (#552). Once the rename has returned, the temp name is
+    never touched again. (FIX-025; ordinary exceptions only — SIGKILL or
+    power loss can still leave a stale temp.) The rename itself is not
+    flushed: a caller that needs it durable flushes the directory.
     """
     directory = os.path.dirname(os.path.abspath(path))
     fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=directory)
@@ -233,11 +237,12 @@ def _atomic_write_text(path: str, content: str) -> None:
                 f.flush()
                 try:
                     os.fsync(raw.fileno())
-                except OSError:
+                except OSError as error:
                     # fsync isn't supported on every filesystem (e.g., some
-                    # network mounts). Atomic rename is still useful even
-                    # without the fsync guarantee.
-                    pass
+                    # network mounts): the atomic rename is still useful
+                    # without it. Any other error is a failed write.
+                    if error.errno not in _UNSUPPORTED_FLUSH:
+                        raise
             except BaseException:
                 _quietly(f.close)
                 raise
@@ -1007,6 +1012,10 @@ class NNRun:
                 # must not strand the empty reservation, which would make a
                 # retry of the same run fail with "already exists".
                 _atomic_write_text(os.path.join(run_path, _HISTORY_PROTOCOL_FILE), "1\n")
+                # The new runs/<id>/ entry is durable before the first LAST
+                # (#552), as the entries inside it are (history.save_epoch,
+                # NNCheckpoint.save).
+                _fsync_directory(runs_root)
                 yield
             except BaseException:
                 _quietly(_release_empty_reservation, run_path)
