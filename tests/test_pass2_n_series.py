@@ -538,6 +538,59 @@ def test_review_nnrun_all_skips_non_run_entries(tmp_path, monkeypatch):
     assert NNRun.all() == []
 
 
+def _tiny_fit(data_id: str):
+    from nnx.nn.params.nn_train_params import NNTrainParams
+
+    generator = torch.Generator().manual_seed(1)
+    loader = DataLoader(
+        TensorDataset(torch.randn(16, 4, generator=generator), torch.randint(0, 2, (16,), generator=generator)),
+        batch_size=4,
+    )
+    torch.manual_seed(0)
+    return _model().train(NNTrainParams(n_epochs=1, seed=0, train_loader=loader, val_loader=loader, data_id=data_id))
+
+
+def test_review_nnrun_all_lists_a_run_interrupted_before_its_first_commit(tmp_path, monkeypatch):
+    """FIX-055 (#522): a Ctrl-C between a first save's run.yaml and its
+    idps.csv leaves a run.yaml-only run. NNRun.all() lists it with an empty
+    history beside the healthy run instead of raising FileNotFoundError."""
+    import os
+
+    import nnx.seeding
+    from nnx.nn.params.nn_run import NNRun
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    healthy = _tiny_fit("healthy")
+
+    def ctrl_c(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(nnx.seeding, "env_snapshot", ctrl_c)
+        with pytest.raises(KeyboardInterrupt):
+            _tiny_fit("interrupted")
+    (left,) = [name for name in os.listdir("runs") if name not in (healthy.id, "best") and not name.startswith(".")]
+    assert not os.path.exists(os.path.join("runs", left, "idps.csv"))
+    runs = {run.id: run for run in NNRun.all()}
+    assert sorted(runs) == sorted([healthy.id, left])
+    assert runs[left].idps == [] and runs[healthy.id].idps
+
+
+def test_review_nnrun_all_skips_a_stale_best_tmp(tmp_path, monkeypatch):
+    """FIX-055 (#522): an interrupt inside the runs/best repoint can strand
+    the runs/best.tmp symlink; NNRun.all() lists its target once."""
+    import os
+
+    from nnx.nn.params.nn_run import NNRun
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    run = _tiny_fit("only")
+    os.symlink(run.id, os.path.join("runs", "best.tmp"), target_is_directory=True)
+    assert [listed.id for listed in NNRun.all()] == [run.id]
+
+
 def test_review_callbacks_module_imports_without_ipython(monkeypatch):
     """Importing nnx.nn.callbacks must NOT trigger an IPython import.
     Otherwise every `import nnx` consumer pulls IPython transitively."""
