@@ -578,7 +578,13 @@ class StreamingMetrics:
 
             column = _flat_regression_target(logits_t, target_t)
             if valid is not None and column.ndim != target_t.ndim:  # a mask beside the (N,) target follows it
-                valid = _flat_regression_target(logits_t, _tensor(valid))
+                valid = _tensor(valid)
+                if tuple(valid.shape) not in (tuple(target_t.shape), tuple(column.shape)):
+                    # Named against the target the caller passed, not its (N, 1) column.
+                    raise ValueError(
+                        f"valid must be shaped like the targets {tuple(target_t.shape)}, got {tuple(valid.shape)}"
+                    )
+                valid = _flat_regression_target(logits_t, valid)
             target_t = column
         if self._semantics == "categorical" and logits_t.ndim < 2:
             raise ValueError(f"categorical logits need a class axis 1, (N, C, ...), got {tuple(logits_t.shape)}")
