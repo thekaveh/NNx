@@ -106,3 +106,42 @@ def test_a_parameterless_model_stays_on_cpu_and_two_double_inputs_get_two_dummie
     buffered = torch.nn.BatchNorm1d(3, affine=False)  # buffers only
     assert summary(buffered, input_size=(2, 3)) is not None
     assert summary(torch.nn.ReLU(), input_size=(2, 3)) is not None  # nothing to read a device from
+
+
+def _dora_net():
+    import torch
+
+    from nnx.peft import apply_dora_to
+
+    torch.manual_seed(0)
+    net = torch.nn.Sequential(torch.nn.Linear(6, 6), torch.nn.ReLU(), torch.nn.Linear(6, 2))
+    apply_dora_to(net, "0", r=2)
+    return net
+
+
+def test_summary_runs_on_a_dora_net():
+    # torchinfo hooks every submodule, DoRA's base included; DoRA refuses a user's hook on
+    # its base at forward (FIX-056), never the ones summary() installs for its one pass.
+    import torch
+
+    net = _dora_net()
+    x = torch.randn(4, 6)
+    assert summary(net, input_size=(4, 6)).total_params == 86
+    assert summary(net, input_data=[x]).total_params == 86
+    assert not net[0].base._forward_hooks and not net[0].base._forward_pre_hooks  # torchinfo removed its hooks
+
+
+def test_a_user_hook_on_a_dora_base_is_still_refused_after_and_inside_summary():
+    import torch
+
+    net = _dora_net()
+    x = torch.randn(4, 6)
+    summary(net, input_size=(4, 6))
+    handle = net[0].base.register_forward_hook(lambda m, i, o: o * 2)
+    with pytest.raises(TypeError, match="forward hook, added after wrapping"):
+        net(x)  # no exemption outlives summary()
+    with pytest.raises(RuntimeError, match="torchinfo") as raised:
+        summary(net, input_size=(4, 6))  # nor covers a hook that summary() did not install
+    assert isinstance(raised.value.__cause__, TypeError)
+    handle.remove()
+    net(x)

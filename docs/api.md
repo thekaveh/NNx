@@ -13878,7 +13878,9 @@ and a quantized weight (torchao int8), which DoRA cannot norm. The
 refusal comes before the base is frozen, at construction, and at
 forward for a base changed after wrapping. Use :class:`LoRALinear` for
 such a layer. A ``torch.nn.utils.parametrizations`` norm recomputes
-``weight`` on every access and is supported.
+``weight`` on every access and is supported. The hooks
+:func:`nnx.viz.summary` installs on every submodule for its one pass
+are exempt; a hook it did not install is still refused inside it.
 
 Args:
     base: the :class:`nn.Linear` to wrap. Its parameters are frozen
