@@ -1146,7 +1146,10 @@ class NNRun:
         """Load a saved run. Its history is ``idps.csv`` read whole — or, for
         a run with a history journal, the journal's committed tail:
         the last ``retention`` records, from the chunks that hold them. Either
-        way records past the LAST checkpoint's epoch are left out."""
+        way records past the LAST checkpoint's epoch are left out. A run
+        interrupted before its first commit (no LAST, no ``idps.csv``) loads
+        with an empty history; a committed or legacy run without
+        ``idps.csv`` raises ``ValueError`` naming the file."""
         return NNRun._load(id, root)
 
     @staticmethod
