@@ -6,7 +6,8 @@ renames of ``run.yaml``, ``metadata.yaml``, ``idps.csv`` (or the journal's
 ``runs/<id>/``, and ``<id>`` into ``runs/``. A real power loss cannot be
 scripted, so the order of the renames and the flushes — traced at the
 flush primitive — stands in for it. A real flush I/O error on
-``idps.csv`` or the journal's manifest fails the epoch before LAST.
+``idps.csv`` or the journal's manifest fails the epoch before LAST; one
+after their rename also puts back the file the rename replaced.
 """
 
 from __future__ import annotations
@@ -212,3 +213,150 @@ def test_an_io_error_flushing_the_history_fails_the_epoch_before_last(entry, jou
         with open(os.path.join("runs", run_id, name), encoding="utf-8") as handle:
             assert json.load(handle)["epochs"] == 1
     assert not [entry for entry in os.listdir(os.path.join("runs", run_id)) if entry.startswith(".idps.csv.")]
+
+
+# --- a failed flush after the manifest's rename republishes the previous one -----------------------
+
+
+class _FailTheRenameFlush(Callback):
+    """From ``epoch``'s end on — before its history is saved — fail, with
+    EIO at ``_full_fsync``, every flush of the directory holding ``name``
+    once ``name`` has been renamed: only the flush that makes the history
+    step's own rename durable, never a flush before it. Each injected error
+    is numbered, so the one the epoch raises can be told apart."""
+
+    def __init__(self, patch, name: str, epoch: int) -> None:
+        self.name, self.epoch, self.armed, self.renamed, self.raised = name, epoch, False, False, 0
+        self.previous: bytes | None = None
+        real_flush, real_replace = nn_checkpoint._full_fsync, os.replace
+
+        def replace(src, dst, *args, **kwargs):
+            real_replace(src, dst, *args, **kwargs)
+            if self.armed and os.path.abspath(dst) == os.path.abspath(self._path(name)):
+                self.renamed = True
+
+        def flush(fd):
+            if self.renamed and _key(os.fstat(fd)) == _key(os.stat(os.path.dirname(self._path(name)))):
+                self.raised += 1
+                raise OSError(errno.EIO, f"Input/output error (injected #{self.raised})")
+            return real_flush(fd)
+
+        patch.setattr(os, "replace", replace)
+        patch.setattr(nn_checkpoint, "_full_fsync", flush)
+
+    @staticmethod
+    def _path(name: str) -> str:
+        return os.path.join("runs", _the_run_id(), name)
+
+    def on_epoch_end(self, ctx) -> None:
+        if ctx.epoch == self.epoch:
+            self.armed, self.run_id = True, _the_run_id()
+            if os.path.exists(self._path(self.name)):
+                with open(self._path(self.name), "rb") as handle:
+                    self.previous = handle.read()  # the file the previous epoch committed
+
+
+@pytest.mark.parametrize("epoch", [0, 1], ids=["first-epoch", "later-epoch"])
+@pytest.mark.parametrize("entry", ["model", "trainer"])
+@pytest.mark.parametrize("journal", [False, True], ids=["idps.csv", "journal.json"])
+def test_a_failed_flush_of_the_history_rename_republishes_the_previous_file(entry, journal, epoch, monkeypatch):
+    """The history step's rename is made durable before LAST. If that flush
+    fails, the rename is undone — the previous epoch's file is put back
+    byte for byte, or removed before the first epoch — and the flush's own
+    error is raised, never one from the restore."""
+    name = os.path.join("history", "journal.json") if journal else "idps.csv"
+    with monkeypatch.context() as patch:
+        failing = _FailTheRenameFlush(patch, name, epoch)
+        with pytest.raises(OSError) as caught:
+            _fit(entry, HistoryJournal(retention=3, chunk_size=2) if journal else None, callbacks=[failing])
+    assert caught.value.errno == errno.EIO
+    assert "injected #1" in str(caught.value)  # the flush's own error, not the restore's
+    run_id = failing.run_id
+    path = os.path.join("runs", run_id, name)
+    if epoch == 0:
+        assert failing.previous is None
+        assert not os.path.exists(path)  # the run reads as uncommitted
+        if journal:
+            # Nothing but the journal was written: the reservation is released.
+            assert not os.path.exists(os.path.join("runs", run_id))
+            return
+        assert NNCheckpoint.load(run_id, Checkpoints.LAST) is None
+        assert not NNRun.load(run_id).idps
+    else:
+        assert failing.previous is not None
+        with open(path, "rb") as handle:
+            assert handle.read() == failing.previous
+        assert NNCheckpoint.load(run_id, Checkpoints.LAST).idp.epoch_idx == 0
+        assert {record.epoch_idx for record in NNRun.load(run_id).idps} == {0}
+    leftovers = [
+        entry for entry in os.listdir(os.path.dirname(path)) if entry.startswith(f".{os.path.basename(name)}.")
+    ]
+    assert not leftovers
+
+
+# --- the journal flushes history/ itself before its manifest is renamed ---------------------------
+
+
+@pytest.mark.parametrize("entry", ["model", "trainer"])
+def test_each_journal_epoch_flushes_history_after_its_writes_and_before_its_manifest(entry, monkeypatch):
+    """Every chunk rename and every new index or epoch-rows entry of an epoch
+    is flushed into ``history/`` before the manifest naming them is renamed
+    — by the epoch's own flush, not by the flush after the manifest."""
+    import nnx.history as history_module
+
+    with monkeypatch.context() as patch:
+        events = _trace(patch)
+        real_append = history_module._append_bytes
+
+        def append(path, data):
+            real_append(path, data)
+            events.append(("write", os.path.relpath(os.path.abspath(path), os.path.abspath("runs"))))
+
+        patch.setattr(history_module, "_append_bytes", append)
+        run = _fit(entry, HistoryJournal(retention=3, chunk_size=2), n_epochs=3)
+    history = os.path.join(run.id, "history")
+    manifest = ("rename", os.path.join(history, "journal.json"))
+    published = [i for i, event in enumerate(events) if event == manifest]
+    assert len(published) >= 3
+    for epoch, at in enumerate(published[:3]):
+        writes = [
+            i
+            for i in range(at)
+            if events[i][0] in ("rename", "write")
+            and os.path.dirname(str(events[i][1])) == history
+            and events[i] != manifest
+        ]
+        assert writes, f"epoch {epoch}: no journal write traced"
+        assert _flushed_between(events, writes[-1], at, os.path.join("runs", history)), f"epoch {epoch}"
+
+
+class _KeepTheFile(Callback):
+    """The bytes of the run's ``name`` at ``epoch``'s end, before its history is saved."""
+
+    def __init__(self, name: str, epoch: int = 1) -> None:
+        self.name, self.epoch, self.kept = name, epoch, None
+
+    def on_epoch_end(self, ctx) -> None:
+        if ctx.epoch == self.epoch:
+            with open(os.path.join("runs", _the_run_id(), self.name), "rb") as handle:
+                self.kept = handle.read()
+
+
+@pytest.mark.parametrize("entry", ["model", "trainer"])
+@pytest.mark.parametrize("name", ["run.yaml", "metadata.yaml"])
+def test_a_failed_run_file_save_after_the_journal_manifest_republishes_it(entry, name, monkeypatch):
+    """A journal epoch saves ``run.yaml`` and ``metadata.yaml`` after its
+    manifest's rename; if that save fails, the previous manifest is put back
+    as for a failed flush of the rename itself."""
+    manifest = os.path.join("history", "journal.json")
+    kept = _KeepTheFile(manifest)
+    with monkeypatch.context() as patch:
+        failing = _FailTheFlushOf(patch, name)
+        with pytest.raises(OSError) as caught:
+            _fit(entry, HistoryJournal(retention=3, chunk_size=2), callbacks=[kept, failing])
+    assert caught.value.errno == errno.EIO
+    run_id = _the_run_id()
+    with open(os.path.join("runs", run_id, manifest), "rb") as handle:
+        assert handle.read() == kept.kept
+    assert NNCheckpoint.load(run_id, Checkpoints.LAST).idp.epoch_idx == 0
+    assert {record.epoch_idx for record in NNRun.load(run_id).idps} == {0}

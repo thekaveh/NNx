@@ -32,9 +32,13 @@ the LAST checkpoint, which stays the epoch's commit marker. Readers show
 only records up to LAST's epoch: a crash while a chunk is written or before
 the manifest is replaced leaves the previous manifest, and a crash before
 LAST is replaced leaves an uncommitted tail that is ignored. A flush that
-fails with a real I/O error (``EIO``, ...) fails the epoch before its
-manifest and LAST are published; one the filesystem does not support is
-tolerated. A committed chunk whose bytes no longer match its SHA-256 raises
+fails with a real I/O error (``EIO``, ...) fails the epoch before LAST; one
+the filesystem does not support is tolerated. A failed flush of the epoch's
+files fails it before its manifest is replaced. If the manifest's rename
+cannot be flushed, or the run's ``run.yaml`` / ``metadata.yaml`` save after
+it fails, the manifest it replaced is written back (before the first epoch,
+the new one is removed) and the original error is raised. A committed
+chunk whose bytes no longer match its SHA-256 raises
 :class:`HistoryCorruptionError`.
 
 **Callbacks.** Built-in callbacks read ``ctx.idp`` (the epoch's last record),
@@ -301,6 +305,36 @@ def _fsync_path(path: str) -> None:
         os.close(fd)
 
 
+def _read_published(path: str) -> Optional[str]:
+    """The text :func:`~nnx.nn.params.nn_run._atomic_write_text` wrote to
+    ``path`` (``None``: there is no file), as that writer takes it: written
+    back through it, the file gets the same bytes on every platform."""
+    try:
+        with open(path, encoding="utf-8", newline="") as handle:
+            return handle.read().replace(os.linesep, "\n")  # the writer turns "\n" into os.linesep
+    except FileNotFoundError:
+        return None
+
+
+def _unpublish(path: str, previous: Optional[str]) -> None:
+    """Undo a history step's rename that its epoch cannot commit — the
+    rename's flush, or a save after it, failed (#552): write back
+    ``previous`` — the file the rename replaced, through the same atomic
+    writer — or, if there was none, remove the new file, then flush the
+    directory. Best effort: it runs while the epoch's error propagates, and
+    a failure here never replaces that error."""
+    from .nn.params.nn_run import _atomic_write_text, _quietly
+
+    def restore() -> None:
+        if previous is None:
+            os.remove(path)
+        else:
+            _atomic_write_text(path, previous)
+        _fsync_path(os.path.dirname(path))
+
+    _quietly(restore)
+
+
 def _fsync_run_directory(run: NNRun) -> None:
     """Persist an eager epoch's renames in ``runs/<id>/`` — ``idps.csv``
     with ``run.yaml`` and ``metadata.yaml`` — before its LAST, the commit
@@ -308,9 +342,14 @@ def _fsync_run_directory(run: NNRun) -> None:
     flushed into ``history/``; the run's first LAST also flushes
     ``runs/<id>/`` when it creates ``checkpoints/`` there."""
     from .nn.params.nn_checkpoint import _fsync_directory
+
+    _fsync_directory(_run_directory(run))
+
+
+def _run_directory(run: NNRun) -> str:
     from .nn.params.nn_run import _runs_root
 
-    _fsync_directory(os.path.join(_runs_root(None), run.id))
+    return os.path.join(_runs_root(None), run.id)
 
 
 def _append_bytes(path: str, data: bytes) -> None:
@@ -490,14 +529,29 @@ class _JournalWriter:
         }
 
     def publish(self) -> None:
+        """Replace the manifest and flush its rename into ``history/``, before
+        LAST, the commit marker. If that flush fails, the publish is undone
+        (:meth:`unpublish`) and the flush's error is raised (#552)."""
         from .nn.params.nn_run import _atomic_write_text
 
         self._ensure()
         text = _manifest_text(self.manifest())
         _atomic_write_text(os.path.join(self.directory, _MANIFEST), text)
-        _fsync_path(self.directory)  # the rename is durable before LAST, the commit marker
         self._previous, self._published = self._published, text
+        try:
+            _fsync_path(self.directory)  # the rename is durable before LAST, the commit marker
+        except BaseException:
+            self.unpublish()
+            raise
         self._committed = self._counters()
+
+    def unpublish(self) -> None:
+        """Undo the last :meth:`publish`, whose epoch failed before LAST
+        (#552): the manifest it replaced — what this writer last published
+        there — is republished, or, before the first one, the new manifest
+        is removed. Best effort, while the epoch's error propagates."""
+        _unpublish(os.path.join(self.directory, _MANIFEST), self._previous)
+        self._published = self._previous
 
     def rollback(self) -> None:
         """Republish the manifest of the previous epoch (the current epoch
@@ -734,8 +788,14 @@ class _EagerHistory:
         return lambda callback: None
 
     def save_epoch(self, run: NNRun) -> None:
+        csv_path = os.path.join(_run_directory(run), "idps.csv")
+        previous = _read_published(csv_path)  # the previous epoch's history (None: before the first)
         run.with_idps(self.records).save(update_best=False)
-        _fsync_run_directory(run)  # idps.csv's rename is durable before LAST
+        try:
+            _fsync_run_directory(run)  # idps.csv's rename is durable before LAST
+        except BaseException:
+            _unpublish(csv_path, previous)  # the epoch fails as if its history was never saved
+            raise
 
     def rollback_epoch(self, run: NNRun) -> None:
         run.with_idps(self.records[: self._epoch_start]).save(update_best=False)
@@ -849,7 +909,11 @@ class _JournalHistory:
     def save_epoch(self, run: NNRun) -> None:
         self._writer.end_epoch()
         self._writer.publish()  # before the LAST checkpoint, the epoch's commit marker
-        self._run(run).save(update_best=False)
+        try:
+            self._run(run).save(update_best=False)
+        except BaseException:
+            self._writer.unpublish()  # the epoch fails as if its manifest was never published
+            raise
 
     def rollback_epoch(self, run: NNRun) -> None:
         self._writer.rollback()
