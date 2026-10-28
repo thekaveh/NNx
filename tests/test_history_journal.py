@@ -425,7 +425,7 @@ def test_a_committed_or_legacy_run_without_idps_csv_still_fails_naming_the_file(
     """FIX-055 (#522): only a run that committed nothing reads a missing
     ``idps.csv`` as empty; a committed run, or a legacy run without the
     history marker, that lost it is malformed — a ``ValueError`` naming
-    the file, from every reader."""
+    the file, from NNRun.load, NNRun.all and nnx.history."""
     run = _fit("model", n_epochs=1)
     run_path = os.path.join("runs", run.id)
     os.remove(os.path.join(run_path, "idps.csv"))
