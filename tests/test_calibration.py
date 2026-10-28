@@ -1250,20 +1250,21 @@ def _with_deep_value(state: dict, levels: int) -> str:
 def test_a_deep_value_in_a_saved_calibrator_or_report_raises_the_module_error(tmp_path, levels):
     """FIX-083: the value parsed (every level up to the parser's own limit,
     which varies by Python version) and then overflowed the recursive freeze
-    with a raw RecursionError."""
+    with a raw RecursionError. The file's own bound refuses it, before
+    ``from_state`` (or the parser, on a Python whose limit is lower)."""
     calibrator = _calibrator()
     state = calibrator.state()
     state["fit"]["config"]["note"] = "__DEEP__"
     report = calibrator.report(K_LOGITS, K_TARGETS, labels=BINARY, model_id="run-9", split_id="test", override="o")
     report_state = report.state()
     report_state["override"]["mismatches"]["model_id"]["expected"] = "__DEEP__"
-    for load, text in (
-        (TemperatureCalibrator.load, _with_deep_value(state, levels)),
-        (CalibrationReport.load, _with_deep_value(report_state, levels)),
+    for load, what, text in (
+        (TemperatureCalibrator.load, "calibrator", _with_deep_value(state, levels)),
+        (CalibrationReport.load, "calibration report", _with_deep_value(report_state, levels)),
     ):
         path = tmp_path / "artifact.json"
         path.write_text(text, encoding="utf-8")
-        with pytest.raises(CalibrationError):
+        with pytest.raises(CalibrationError, match=f"^the {what} file (nests more than 256 levels|is JSON)"):
             load(path)
 
 

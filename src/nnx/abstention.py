@@ -618,9 +618,7 @@ class AbstentionPolicy(JsonArtifact):
 
     @staticmethod
     def from_json(text: str) -> AbstentionPolicy:
-        return AbstentionPolicy.from_state(
-            parse_json(text, "abstention policy", AbstentionError, max_depth=MAX_JSON_DEPTH)
-        )
+        return AbstentionPolicy.from_state(parse_json(text, "abstention policy", AbstentionError))
 
     @staticmethod
     def load(path: Any) -> AbstentionPolicy:
@@ -879,7 +877,7 @@ class CoverageReport(_Counted, JsonArtifact):
 
     @staticmethod
     def from_json(text: str) -> CoverageReport:
-        return CoverageReport.from_state(parse_json(text, "coverage report", AbstentionError, max_depth=MAX_JSON_DEPTH))
+        return CoverageReport.from_state(parse_json(text, "coverage report", AbstentionError))
 
     @staticmethod
     def load(path: Any) -> CoverageReport:

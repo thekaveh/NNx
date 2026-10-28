@@ -1330,13 +1330,14 @@ def _overridden_selection() -> abstention.ThresholdSelection:
 def test_a_deep_value_in_a_saved_threshold_selection_raises_the_module_error(tmp_path, levels):
     """FIX-083: the value parsed (every level up to the parser's own limit,
     which varies by Python version) and then overflowed the recursive freeze
-    with a raw RecursionError, or, shallower, loaded."""
+    with a raw RecursionError, or, shallower, loaded. The file's own bound
+    refuses it, before ``from_state`` (or the parser, on a lower limit)."""
     state = _overridden_selection().state()
     state["calibration_override"]["mismatches"]["model_id"]["expected"] = "__DEEP__"
     deep = '{"k":' * (levels - 1) + "{}" + "}" * (levels - 1)
     path = tmp_path / "selection.json"
     path.write_text(json.dumps(state).replace('"__DEEP__"', deep), encoding="utf-8")
-    with pytest.raises(AbstentionError):
+    with pytest.raises(AbstentionError, match="^the threshold selection file (nests more than 256 levels|is JSON)"):
         abstention.ThresholdSelection.load(path)
 
 
