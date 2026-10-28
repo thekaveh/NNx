@@ -1148,8 +1148,8 @@ def _write(path: str, chunks: Iterable[bytes]) -> dict[str, Any]:
 
 
 def _fsync_directory(path: str) -> None:
-    """Persist ``path``'s entries where the OS allows it (a directory cannot
-    be opened on Windows); a real I/O error raises, as in :func:`_write`."""
+    """:func:`nnx.nn.params.nn_checkpoint._fsync_directory`, kept as this
+    module's seam (tests intercept the export's directory flushes here)."""
     from .nn.params.nn_checkpoint import _fsync_directory as fsync_directory
 
     fsync_directory(path)

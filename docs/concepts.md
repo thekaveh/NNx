@@ -378,7 +378,7 @@ Every write inside `runs/<id>/` (`run.yaml`, `metadata.yaml`, `idps.csv`, every 
 
 The text writer creates its temp next to the resolved destination, also for a bare filename, so the rename never crosses filesystems. It owns the temp until the rename. A failure while opening, writing, flushing or closing it, or in the rename itself, releases the descriptor and unlinks that temp. The writer then re-raises the original exception; a cleanup error never masks it.
 
-The temp is flushed with `fsync` before the rename. A flush the filesystem does not support (`ENOTSUP`, `EINVAL`, ...) is tolerated. A real I/O error (`EIO`, a full disk) fails the write before the rename, so the destination keeps its previous content. After a successful rename the temp name is never touched. The same writer, and so the same flush policy, also saves every other NNx text artifact: split manifests, standardizers, calibration and abstention artifacts, provenance records, `export_history_csv` and the `runs/best` pointer.
+The temp is flushed with `fsync` before the rename. A flush the filesystem does not support (`ENOTSUP`, `EINVAL`, ...) is tolerated. A real I/O error (`EIO`, a full disk) fails the write before the rename, so the destination keeps its previous content. After a successful rename the temp name is never touched. The same writer, and so the same flush policy, also saves these other NNx text artifacts: split manifests, standardizers, calibration and abstention artifacts, provenance records, `export_history_csv` and the `runs/best` pointer.
 
 This is per-file cleanup for ordinary exceptions, not a multi-file transaction. `run.yaml`, `metadata.yaml` and `idps.csv` are still written one after another. An interrupt during a run's first save, for example a Ctrl-C while the environment snapshot for `metadata.yaml` runs `git`, can leave `run.yaml` without `idps.csv`. Nothing is committed yet, so the run loads with an empty history, `NNRun.all()` lists it, and `iter_history` and `export_history_csv` read no records. A plain retry is refused as for any existing run; retry with `overwrite_existing=True`. A committed or legacy run that has lost its `idps.csv` is malformed: loading it raises a `ValueError` naming the file. A SIGKILL or power loss can still strand a `.<name>.XXXXXX` temp, which later writes neither reuse nor delete. A failed write of the run's history marker also releases the still-empty `runs/<id>/` reservation, so the same run can be retried.
 
@@ -2077,9 +2077,10 @@ unsupported flush is tolerated, and a real I/O error raises.
 
 - **Run files.** `run.yaml`, `metadata.yaml`, `idps.csv` and the history
   journal's manifest are flushed with `os.fsync` before their rename (§4.2).
-  The same text writer saves NNx's other text artifacts (split manifests,
-  standardizers, calibration artifacts, provenance, `export_history_csv`),
-  so a real I/O error fails those saves too.
+  The same text writer saves these other NNx text artifacts: split manifests,
+  standardizers, calibration and abstention artifacts, provenance,
+  `export_history_csv` and the `runs/best` pointer, so a real I/O error
+  fails those saves too.
   The run directories are flushed like a resume point's: `runs/<id>/` after
   an eager epoch's history and when the first checkpoint creates
   `checkpoints/`, and `runs/` when a run is reserved. All of it happens
