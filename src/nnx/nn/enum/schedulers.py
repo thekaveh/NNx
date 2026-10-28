@@ -94,7 +94,9 @@ class Schedulers(Enum):
                 elif base_lr > 0:
                     # Also for one group: a Trainer's strict G.* x0.1 group
                     # peaks at 0.1 * max_lr whether or not a sibling exists.
-                    scaled = [params.max_lr * lr / base_lr for lr in group_lrs]
+                    # The ratio comes first: the default group's is exactly
+                    # 1.0, where max_lr * lr / base_lr can round 1 ulp off.
+                    scaled = [params.max_lr * (lr / base_lr) for lr in group_lrs]
                     max_lr = scaled if len(scaled) > 1 else scaled[0]
                 else:
                     max_lr = params.max_lr
