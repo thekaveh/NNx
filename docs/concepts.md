@@ -3425,8 +3425,9 @@ stdev.
 Its `max_abs_diff` covers every tensor in the outputs, including those in
 tuples, mappings and dataclasses. It compares them in float64 (complex128
 for complex outputs), a chunk at a time on the outputs' device (on the CPU
-for MPS), so large outputs need no full-size float64 copies. Matching infinities and NaN on both sides differ by
-`0.0`; a NaN or an infinity on one side only counts as `inf`.
+for MPS), so large outputs need no full-size float64 copies. Matching
+infinities and NaN on both sides differ by `0.0`; a NaN or an infinity on
+one side only counts as `inf`.
 `profile_forward` runs `torch.profiler` with a finite
 `wait / warmup / active / repeat` schedule into an explicit `output_dir`.
 It creates that directory only once every argument is valid. The profiler

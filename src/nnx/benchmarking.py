@@ -440,7 +440,7 @@ def _abs_diff(a: torch.Tensor, b: torch.Tensor) -> float:
     wide = torch.complex128 if a.is_complex() or b.is_complex() else torch.float64
     # MPS has no float64, so its chunks move to the CPU before widening (a
     # combined device-and-dtype ``.to`` converts on the source device first);
-    # other devices widen in place.
+    # other devices widen each chunk on their own device.
     host = a.device != b.device or "mps" in (a.device.type, b.device.type)
     xs, ys = a.detach().reshape(-1), b.detach().reshape(-1)
     worst = 0.0
