@@ -778,8 +778,10 @@ class _MultilabelAccumulator(TaskMetricAccumulator):
         self._label_valid += mask.sum(axis=axes)
         hits = (truth == prediction) & mask
         self._element_correct += int(hits.sum())
-        rows_with_valid = mask.reshape(mask.shape[0], -1).any(axis=1)
-        rows_correct = (hits | ~mask).reshape(mask.shape[0], -1).all(axis=1) & rows_with_valid
+        # An explicit row width: reshape(rows, -1) cannot infer it for zero rows.
+        width = int(np.prod(mask.shape[1:]))
+        rows_with_valid = mask.reshape(mask.shape[0], width).any(axis=1)
+        rows_correct = (hits | ~mask).reshape(mask.shape[0], width).all(axis=1) & rows_with_valid
         self._rows += int(rows_with_valid.sum())
         self._rows_correct += int(rows_correct.sum())
         self.count += int(mask.sum())
@@ -824,8 +826,7 @@ class _RegressionAdapter(TaskAdapter):
         self._check_width(int(output.size(1)), "targets")
         if not target.is_floating_point():
             raise TaskValidationError(f"regression targets must be floating point, got {target.dtype}")
-        if target.ndim == 1 and output.ndim == 2 and output.size(1) == 1 and target.size(0) == output.size(0):
-            target = target.unsqueeze(1)
+        target = _flat_regression_target(output, target)
         if tuple(target.shape) != tuple(output.shape):
             raise TaskValidationError(
                 f"regression targets must match the output shape {tuple(output.shape)}, got {tuple(target.shape)} "
@@ -850,6 +851,16 @@ class _RegressionAdapter(TaskAdapter):
         values = np.asarray(logits)
         ids = np.asarray(sample_ids, dtype=np.int64)
         return PredictionResult(logits=values, probabilities=None, decoded=values.copy(), sample_ids=ids, spec=None)
+
+
+def _flat_regression_target(output: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """An ``(N,)`` target (or mask) for an ``(N, 1)`` output, as ``(N, 1)``;
+    any other target unchanged. The regression task's one shape rule beyond
+    equal shapes (never a broadcast), shared with
+    ``StreamingMetrics.update_logits``."""
+    if target.ndim == 1 and output.ndim == 2 and output.size(1) == 1 and target.size(0) == output.size(0):
+        return target.unsqueeze(1)
+    return target
 
 
 class _RegressionAccumulator(TaskMetricAccumulator):
