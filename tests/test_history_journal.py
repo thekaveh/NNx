@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 
+import pandas as pd
 import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -380,6 +381,64 @@ def test_a_first_epoch_that_cannot_commit_leaves_an_empty_history_like_the_eager
     (journal,) = NNRun.all()
     assert eager.id == journal.id and eager.idps == journal.idps == []
     assert list(iter_history(journal.id)) == [] and journal._repr_html_()
+
+
+def _interrupt_the_first_save(patch) -> None:
+    """Ctrl-C during a process's first ``NNRun.save``: after ``run.yaml`` is
+    written, before ``idps.csv`` is — inside ``env_snapshot()``, which runs
+    git between the two writes (#522)."""
+    import nnx.seeding
+
+    def ctrl_c(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    patch.setattr(nnx.seeding, "env_snapshot", ctrl_c)
+
+
+@pytest.mark.parametrize("entry", ["model", "trainer"])
+@pytest.mark.parametrize("journal", [False, True], ids=["csv", "journal"])
+def test_a_run_interrupted_in_its_first_save_loads_empty_and_is_listed(entry, journal, monkeypatch, tmp_path):
+    """FIX-055 (#522): the leftover holds ``run.yaml`` and no ``idps.csv``
+    (or an empty journal). It loads with no records, ``NNRun.all()`` lists
+    it beside a healthy run, and ``iter_history`` / ``export_history_csv``
+    read an empty history instead of raising ``FileNotFoundError``."""
+    spec = HistoryJournal(retention=3, chunk_size=2) if journal else None
+    healthy = _fit(entry, spec, n_epochs=1, data_id="healthy")
+    with monkeypatch.context() as patch:
+        _interrupt_the_first_save(patch)
+        with pytest.raises(KeyboardInterrupt):
+            _fit(entry, spec, n_epochs=1, data_id="interrupted")
+    (run_id,) = [name for name in os.listdir("runs") if name not in (healthy.id, "best") and not name.startswith(".")]
+    left = os.listdir(os.path.join("runs", run_id))
+    assert "run.yaml" in left and "idps.csv" not in left and "checkpoints" not in left
+
+    assert NNRun.load(run_id).idps == []
+    assert sorted(run.id for run in NNRun.all()) == sorted([healthy.id, run_id])
+    assert list(iter_history(run_id)) == []
+    assert export_history_csv(run_id, tmp_path / "export.csv") == 0
+    with open(tmp_path / "export.csv", encoding="utf-8") as handle:
+        assert handle.read() == pd.json_normalize(data=[]).to_csv()  # what NNRun.save writes for no records
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["committed", "legacy"])
+def test_a_committed_or_legacy_run_without_idps_csv_still_fails_naming_the_file(legacy):
+    """FIX-055 (#522): only a run that committed nothing reads a missing
+    ``idps.csv`` as empty; a committed run, or a legacy run without the
+    history marker, that lost it is malformed — a ``ValueError`` naming
+    the file, from every reader."""
+    run = _fit("model", n_epochs=1)
+    run_path = os.path.join("runs", run.id)
+    os.remove(os.path.join(run_path, "idps.csv"))
+    if legacy:
+        os.remove(os.path.join(run_path, ".history-committed-by-last"))
+        os.remove(os.path.join(run_path, "checkpoints", "last.pt"))  # no LAST either: nothing says "uncommitted"
+    message = r"missing idps.csv at .*idps.csv"
+    with pytest.raises(ValueError, match=message):
+        NNRun.load(run.id)
+    with pytest.raises(ValueError, match=message):
+        NNRun.all()
+    with pytest.raises(ValueError, match=message):
+        list(iter_history(run.id))
 
 
 def test_a_corrupt_committed_chunk_is_flagged():

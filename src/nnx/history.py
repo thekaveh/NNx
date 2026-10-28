@@ -975,14 +975,15 @@ def _own_records(
 ) -> Iterator[NNIterationDataPoint]:
     """A run's records up to its committed epoch (``None``: all) — lazily
     for a journal; a legacy CSV is read whole, floats round-trip (its export
-    reproduces the file)."""
-    from .nn.params.nn_run import _read_idps_csv
+    reproduces the file). A run interrupted before its first commit, with
+    no ``idps.csv`` yet, has none (#522)."""
+    from .nn.params.nn_run import _read_run_idps
 
     reader = _reader(run_id, root, readers)
     if reader is not None:
         yield from reader.records(committed)
         return
-    for record in _read_idps_csv(os.path.join(_run_path(run_id, root), "idps.csv"), exact=True):
+    for record in _read_run_idps(_run_path(run_id, root)):
         if committed is None or record.epoch_idx <= committed:
             yield record
 
