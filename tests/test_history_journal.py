@@ -1386,14 +1386,25 @@ def _publish_index(directory: str, lines: list[bytes]) -> None:
     _publish_manifest(directory, index_bytes=sum(map(len, lines)), index_chain=chain)
 
 
+def _publish_deep_extra(directory: str, deep: str) -> None:
+    """Give an otherwise valid journal.json an extra key holding ``deep`` (JSON text)."""
+    path = os.path.join(directory, "journal.json")
+    _publish_manifest(directory, extra="__DEEP__")
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text.replace('"__DEEP__"', deep))
+
+
 @pytest.mark.parametrize("levels", [1500, 20000])
 def test_a_deeply_nested_journal_manifest_is_corruption(levels):
     """FIX-083: the reader mapped only ValueError, so the parser's
     RecursionError (its limit varies by Python version) escaped NNRun.load,
-    iter_history and the notebook chart's fallback."""
+    iter_history and the notebook chart's fallback. The deep value sits
+    under a key of a valid manifest, so where the parser reads it (1500
+    levels on 3.12+) only the depth bound refuses it."""
     run = _fit("model", HistoryJournal(retention=4))
-    with open(os.path.join(_journal(run), "journal.json"), "wb") as handle:
-        handle.write(_deep(levels))
+    _publish_deep_extra(_journal(run), _deep(levels).decode())
     with pytest.raises(HistoryCorruptionError):
         NNRun.load(run.id)
     with pytest.raises(HistoryCorruptionError):
@@ -1404,12 +1415,7 @@ def test_a_deeply_nested_journal_manifest_is_corruption(levels):
 
 def test_a_valid_journal_manifest_with_a_deeply_nested_extra_key_is_refused():
     run = _fit("model", HistoryJournal(retention=4))
-    path = os.path.join(_journal(run), "journal.json")
-    _publish_manifest(_journal(run), extra="__DEEP__")
-    with open(path, encoding="utf-8") as handle:
-        text = handle.read()
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text.replace('"__DEEP__"', '{"k":' * 599 + "{}" + "}" * 599))
+    _publish_deep_extra(_journal(run), '{"k":' * 599 + "{}" + "}" * 599)
     for read in (lambda: NNRun.load(run.id), lambda: list(iter_history(run.id))):
         with pytest.raises(HistoryCorruptionError, match="nested more than 256 levels"):
             read()
