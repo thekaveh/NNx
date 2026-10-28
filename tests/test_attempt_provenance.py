@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 
 import pytest
 import torch
@@ -416,3 +417,41 @@ def test_a_nested_fit_without_a_manifest_leaves_the_enclosing_attempts_parent():
     for record in (child.provenance, load_provenance(child.id)):
         parent = record.attempt.parent
         assert (parent["epoch"], parent["generation"]) == expected, parent
+
+
+# --- #551: every manifest that constructs reads back -----------------------------------------------
+
+
+def _nested(levels: int) -> dict:
+    """A mapping nested ``levels`` deep, built without recursion."""
+    value: dict = {}
+    for _ in range(levels - 1):
+        value = {"k": value}
+    return value
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_the_deepest_manifest_round_trips_and_a_deeper_one_never_trains(loop):
+    """FIX-083: a config nested 511 levels constructed and trained, but
+    provenance.json then read back as too deep, so NNRun.load dropped
+    run.provenance with only a RuntimeWarning."""
+    from nnx.objectives import supervised_objective
+
+    def fit(manifest):
+        if loop == "nnmodel":
+            return _model().train(params=_params(1), provenance=manifest)
+        return Trainer(_model()).train(params=_trainer_params(1), objective=supervised_objective(), provenance=manifest)
+
+    for levels in (511, 1500):
+        with pytest.raises(ValueError, match=r"\$\.config: nested more than 254 levels"):
+            ExperimentManifest(config=_nested(levels))
+    deepest = ExperimentManifest(
+        task=_nested(254), model=_nested(254), objective=_nested(254), config=_nested(254), data=PLAN.data
+    )
+    run = fit(deepest)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        loaded = NNRun.load(run.id)
+    assert not [w for w in caught if "provenance" in str(w.message)]  # an unreadable file warns and is dropped
+    assert loaded.provenance is not None and loaded.provenance.fingerprint == deepest.fingerprint()
+    assert loaded.provenance.manifest == deepest and load_provenance(run.id).manifest == deepest

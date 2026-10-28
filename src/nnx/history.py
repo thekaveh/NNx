@@ -68,6 +68,8 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Union
 
+from ._json_depth import MAX_JSON_DEPTH, too_deep
+
 if TYPE_CHECKING:
     from .nn.params.nn_iteration_data_point import NNIterationDataPoint
     from .nn.params.nn_run import NNRun
@@ -160,10 +162,27 @@ def _record_line(record: NNIterationDataPoint) -> bytes:
     return text.encode("utf-8") + b"\n"
 
 
-def _record(line: bytes) -> NNIterationDataPoint:
+def _loads(data: Union[str, bytes], what: str) -> Any:
+    """``json.loads`` for a journal file, refusing nesting past
+    ``MAX_JSON_DEPTH`` with :class:`HistoryCorruptionError`, the same on
+    every Python version: the parser's own limit (a ``RecursionError``)
+    varies by version and stack size, and below it a deep value parsed."""
+    # FIX-083: a deep journal.json raised a raw RecursionError, and a valid
+    # manifest with a deep extra key was silently accepted.
+    deep = f"{what} is nested more than {MAX_JSON_DEPTH} levels deep"
+    try:
+        value = json.loads(data)
+    except RecursionError:  # past the parser's own limit
+        raise HistoryCorruptionError(deep) from None
+    if too_deep(value, MAX_JSON_DEPTH):
+        raise HistoryCorruptionError(deep)
+    return value
+
+
+def _record(line: bytes, what: str) -> NNIterationDataPoint:
     from .nn.params.nn_checkpoint import _idp_from_nested_state
 
-    return _idp_from_nested_state(json.loads(line))
+    return _idp_from_nested_state(_loads(line, what))
 
 
 def _json_line(value: Any) -> bytes:
@@ -504,11 +523,13 @@ class _JournalReader:
         if manifest is None:
             try:
                 with open(path, encoding="utf-8") as handle:
-                    manifest = json.load(handle)
+                    manifest = _loads(handle.read(), f"the history journal manifest at {path}")
             except FileNotFoundError:
                 raise HistoryCorruptionError(f"the history journal at {directory} has no {_MANIFEST}") from None
             except OSError as exc:
                 raise HistoryCorruptionError(f"the history journal manifest at {path} is unreadable: {exc}") from None
+            except HistoryCorruptionError:
+                raise  # nested too deeply
             except ValueError as exc:
                 raise HistoryCorruptionError(f"the history journal manifest at {path} is not JSON: {exc}") from None
         if not isinstance(manifest, dict) or manifest.get("format") != JOURNAL_FORMAT:
@@ -555,7 +576,7 @@ class _JournalReader:
                     last_epoch=entry["last_epoch"],
                     sha256=entry["sha256"],
                 )
-                for entry in map(json.loads, lines)
+                for entry in (_loads(line, "a line") for line in lines)
             ]
         except (KeyError, TypeError, ValueError) as exc:
             raise HistoryCorruptionError(f"the committed index {path} is malformed: {exc}") from None
@@ -579,7 +600,8 @@ class _JournalReader:
         lines = [line for line in data.splitlines() if line]
         if len(lines) != chunk.records:
             raise HistoryCorruptionError(f"committed history chunk {chunk.seq} ({chunk.file}) has the wrong count")
-        return [_record(line) for line in lines]
+        what = f"a record of committed history chunk {chunk.seq} ({chunk.file})"
+        return [_record(line, what) for line in lines]
 
     def records(self, max_epoch: Optional[int]) -> Iterator[NNIterationDataPoint]:
         """Every published record up to ``max_epoch`` (``None``: all), in order."""
@@ -621,7 +643,7 @@ class _JournalReader:
                 data = handle.read(wanted)
             if len(data) != wanted:
                 raise ValueError(f"shorter than its committed {wanted} bytes")
-            rows = [json.loads(line) for line in data.splitlines() if line]
+            rows = [_loads(line, "a row") for line in data.splitlines() if line]
             return [row for row in rows if max_epoch is None or row["epoch"] <= max_epoch]
         except (OSError, KeyError, TypeError, ValueError) as exc:
             raise HistoryCorruptionError(f"the committed epoch rows {path} are unreadable: {exc}") from None

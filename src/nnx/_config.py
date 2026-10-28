@@ -13,6 +13,8 @@ from typing import Any
 
 import numpy as np
 
+from ._json_depth import MAX_JSON_DEPTH, too_deep
+
 # Identifier of a registered object (optimizer factory, metric) and of the
 # names specs report under: letters, digits, '_', '.', '-'; starts with a
 # letter or digit.
@@ -49,10 +51,20 @@ def _freeze_config(value: Any, path: str, owner: str = "OptimizerFactorySpec") -
 
     Accepted: ``None``, ``bool``, ``int``, finite ``float``, ``str``,
     lists/tuples of those (frozen to tuples) and mappings with string keys
-    (frozen to sorted read-only mappings). Callables, tensors, modules and
-    every other object are rejected, so a spec always serializes to plain
-    YAML and never smuggles executable state into ``run.yaml``.
+    (frozen to sorted read-only mappings), nested at most
+    ``MAX_JSON_DEPTH`` levels (``ValueError`` past it, checked before the
+    recursive copy). Callables, tensors, modules and every other object are
+    rejected, so a spec always serializes to plain YAML and never smuggles
+    executable state into ``run.yaml``.
     """
+    # FIX-083: the copy recurses once per level (twice on 3.10 / 3.11), so a
+    # deeper value raised a raw RecursionError.
+    if too_deep(value, MAX_JSON_DEPTH):
+        raise ValueError(f"{owner} config{path} nests more than {MAX_JSON_DEPTH} levels")
+    return _freeze_value(value, path, owner)
+
+
+def _freeze_value(value: Any, path: str, owner: str) -> Any:
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -69,13 +81,13 @@ def _freeze_config(value: Any, path: str, owner: str = "OptimizerFactorySpec") -
             raise ValueError(f"{owner} config{path} must be finite, got {value!r}")
         return real
     if isinstance(value, (list, tuple)):
-        return tuple(_freeze_config(item, f"{path}[{i}]", owner) for i, item in enumerate(value))
+        return tuple(_freeze_value(item, f"{path}[{i}]", owner) for i, item in enumerate(value))
     if isinstance(value, Mapping):
         frozen: dict[str, Any] = {}
         for key in sorted(value, key=lambda k: str(k)):
             if not isinstance(key, str):
                 raise TypeError(f"{owner} config{path} keys must be strings, got {key!r}")
-            frozen[str(key)] = _freeze_config(value[key], f"{path}[{key!r}]", owner)
+            frozen[str(key)] = _freeze_value(value[key], f"{path}[{key!r}]", owner)
         return _FrozenConfig(frozen)
     kind = "a callable" if callable(value) else f"a {type(value).__name__}"
     raise TypeError(
