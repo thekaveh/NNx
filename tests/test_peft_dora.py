@@ -644,3 +644,69 @@ def test_a_training_forward_runs_a_dora_base_parametrization_once():
     for _ in range(3):
         net(_X).sum().backward()
     assert len(calls) == 3
+
+
+# -------------------------------------------------------------------------
+# #523 review: NNx's own hook-based tools (nnx.viz.summary) stay exempt
+# -------------------------------------------------------------------------
+
+
+def test_only_hooks_an_nnx_tool_registers_are_exempt_and_never_after_it():
+    from nnx.peft.dora import _tool_hooks
+
+    net = _mlp()
+    apply_dora_to(net, "0", r=2)
+    before = net[0].base.register_forward_hook(lambda m, i, o: None)
+    with _tool_hooks():
+        with pytest.raises(TypeError, match="forward hook"):
+            net(_X)  # a user's hook from before the tool stays refused
+        before.remove()
+        tool = net[0].base.register_forward_pre_hook(lambda m, args: None)
+        with _tool_hooks():  # nested: the outer tool's hooks stay exempt inside
+            net(_X)
+        net(_X)  # the inner block's exit restores the outer one
+    with pytest.raises(TypeError, match="forward pre-hook"):
+        net(_X)  # nothing outlives the block
+    tool.remove()
+    net(_X)
+
+
+@pytest.mark.parametrize("kind", ["instance_forward", "prune_mask", "legacy_weight_norm", "legacy_spectral_norm"])
+def test_a_tool_block_relaxes_only_the_hook_check(kind):
+    from nnx.peft.dora import _tool_hooks
+
+    add, match = _BYPASSED[kind]
+    net = _mlp()
+    apply_dora_to(net, "0", r=2)
+    with _tool_hooks():
+        add(net[0].base)  # applied after wrapping, inside the block
+        with pytest.raises(TypeError, match=match.split(".*")[0]):
+            net(_X)
+
+
+def test_a_tool_block_does_not_reach_another_thread():
+    import threading
+
+    from nnx.peft.dora import _tool_hooks
+
+    net = _mlp()
+    apply_dora_to(net, "0", r=2)
+    errors: list[BaseException] = []
+    entered, hooked = threading.Event(), threading.Event()
+
+    def other() -> None:
+        entered.wait(5)
+        net[0].base.register_forward_hook(lambda m, i, o: None)
+        hooked.set()
+        try:
+            net(_X)
+        except TypeError as e:
+            errors.append(e)
+
+    worker = threading.Thread(target=other)
+    worker.start()
+    with _tool_hooks():
+        entered.set()
+        hooked.wait(5)
+        worker.join(5)
+    assert len(errors) == 1 and "forward hook" in str(errors[0])

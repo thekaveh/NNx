@@ -33,8 +33,13 @@ single vector of length ``out_features`` per wrapped layer).
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 import torch
 from torch import nn
+from torch.utils.hooks import RemovableHandle
 
 from .._reparameterization import legacy_reparameterizations
 from ._targets import wrap_selected_linears
@@ -63,7 +68,31 @@ def _is_torchao_tensor(t: torch.Tensor) -> bool:
     return any(cls.__module__.split(".")[0] == "torchao" for cls in type(t).__mro__)
 
 
-def _bypassed_feature(base: nn.Linear) -> tuple[str, str] | None:
+# The first hook handle id an NNx inspection tool (nnx.viz.summary: torchinfo hooks
+# every submodule, DoRA's base included) may have registered, while one runs; None
+# otherwise. A ContextVar, so the exemption is per thread / task and nests.
+_TOOL_HOOKS_SINCE: ContextVar[int | None] = ContextVar("nnx_dora_tool_hooks_since", default=None)
+
+
+@contextmanager
+def _tool_hooks() -> Iterator[None]:
+    """Exempt the hooks registered inside this block from DoRA's hook refusal.
+
+    For NNx's own tools that hook every submodule for one pass and remove the
+    hooks after (``nnx.viz.summary``). Only the generic-hook check is relaxed,
+    and only for hooks registered after the outermost such block began: a
+    user's hook from before is still refused, as are masks, legacy norms, an
+    instance ``forward`` and a quantized weight.
+    """
+    since = _TOOL_HOOKS_SINCE.get()
+    token = _TOOL_HOOKS_SINCE.set(RemovableHandle.next_id if since is None else since)
+    try:
+        yield
+    finally:
+        _TOOL_HOOKS_SINCE.reset(token)
+
+
+def _bypassed_feature(base: nn.Linear, *, at_forward: bool = False) -> tuple[str, str] | None:
     """The first part of ``base``'s own forward path that DoRA would skip,
     with why and how to resolve it; ``None`` when there is none (FIX-056).
 
@@ -81,6 +110,8 @@ def _bypassed_feature(base: nn.Linear) -> tuple[str, str] | None:
     step ``parametrizations.spectral_norm``'s power iteration in training).
     A quantized weight is recognized positively as a ``torchao`` tensor, so
     the FakeTensors of ``torch.export`` and fake-mode tracing still pass.
+    ``at_forward`` honors :func:`_tool_hooks`: inside it, a hook registered
+    since it began is an NNx tool's own and is not counted.
     """
     bypassed = "DoRA reads the layer's weight and never calls the layer, so it would be bypassed."
     hooked = f"{bypassed} Remove the hook, or use LoRA, which calls the base layer and its hooks."
@@ -100,12 +131,19 @@ def _bypassed_feature(base: nn.Linear) -> tuple[str, str] | None:
             f"{stale} Remove the norm (torch.nn.utils.remove_weight_norm / remove_spectral_norm) or use its "
             "torch.nn.utils.parametrizations form, which DoRA reads on every forward, or use LoRA.",
         )
-    if base._forward_pre_hooks:
-        return "a forward pre-hook", hooked
-    if base._forward_hooks:
-        return "a forward hook", hooked
-    if base._backward_hooks or base._backward_pre_hooks:
-        return "a backward hook", hooked
+    # Only a hooked base reads the ContextVar, so a hookless forward stays as traceable as before.
+    if base._forward_pre_hooks or base._forward_hooks or base._backward_hooks or base._backward_pre_hooks:
+        since = _TOOL_HOOKS_SINCE.get() if at_forward else None
+
+        def users(hooks: Iterable[int]) -> bool:  # hook dicts are keyed by handle id, which only grows
+            return any(since is None or key < since for key in hooks)
+
+        if users(base._forward_pre_hooks):
+            return "a forward pre-hook", hooked
+        if users(base._forward_hooks):
+            return "a forward hook", hooked
+        if users(base._backward_hooks) or users(base._backward_pre_hooks):
+            return "a backward hook", hooked
     for w in _stored_weights(base):  # a loop, not next(..., None): torch 2.4 dynamo cannot trace that
         if _is_torchao_tensor(w):
             return (
@@ -156,7 +194,9 @@ class DoRALinear(LoRALinear):
     refusal comes before the base is frozen, at construction, and at
     forward for a base changed after wrapping. Use :class:`LoRALinear` for
     such a layer. A ``torch.nn.utils.parametrizations`` norm recomputes
-    ``weight`` on every access and is supported.
+    ``weight`` on every access and is supported. The hooks
+    :func:`nnx.viz.summary` installs on every submodule for its one pass
+    are exempt; a hook it did not install is still refused inside it.
 
     Args:
         base: the :class:`nn.Linear` to wrap. Its parameters are frozen
@@ -205,7 +245,7 @@ class DoRALinear(LoRALinear):
                 f"DoRA's base is now a {type(self.base).__name__} with its own forward (QAT prepare, say), "
                 "which DoRA's recomposed matmul would bypass silently; use LoRA for a layer that QAT prepares"
             )
-        bypassed = _bypassed_feature(self.base)  # added after wrapping
+        bypassed = _bypassed_feature(self.base, at_forward=True)  # added after wrapping
         if bypassed is not None:
             feature, remedy = bypassed
             raise TypeError(f"DoRA's base now has {feature}, added after wrapping: {remedy}")
