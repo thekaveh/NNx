@@ -1533,14 +1533,17 @@ def _key(stat) -> tuple[int, int]:
     return stat.st_dev, stat.st_ino
 
 
-def _in_a_journal(fd: int) -> bool:
-    """Whether ``fd`` is a ``runs/<id>/history/`` directory or one of its files."""
+def _in_a_journal(fd: int, chosen=None) -> bool:
+    """Whether ``fd`` is a ``runs/<id>/history/`` directory or one of its
+    files — only a file whose name ``chosen`` selects, when it is given."""
     key = _key(os.fstat(fd))
     for run_id in os.listdir("runs") if os.path.isdir("runs") else ():
         directory = os.path.join("runs", run_id, "history")
-        if os.path.isdir(directory) and (
-            key == _key(os.stat(directory)) or any(key == _key(entry.stat()) for entry in os.scandir(directory))
-        ):
+        if not os.path.isdir(directory):
+            continue
+        if chosen is None and key == _key(os.stat(directory)):
+            return True
+        if any(key == _key(entry.stat()) for entry in os.scandir(directory) if chosen is None or chosen(entry.name)):
             return True
     return False
 
@@ -1548,14 +1551,15 @@ def _in_a_journal(fd: int) -> bool:
 class _FailFlushesFrom(Callback):
     """From ``epoch``'s end on — before its history is saved — fail the flush
     primitives (``F_FULLFSYNC``, stood in for where the platform lacks it,
-    and ``os.fsync``) on the journal's files with ``code``."""
+    and ``os.fsync``) on the journal's files with ``code`` (only on the files
+    whose names ``chosen`` selects, when it is given)."""
 
-    def __init__(self, patch, epoch: int, code: int) -> None:
+    def __init__(self, patch, epoch: int, code: int, chosen=None) -> None:
         self.epoch, self.failing = epoch, False
         real_fsync = os.fsync
 
         def fail_or_flush(fd, *args):
-            if self.failing and _in_a_journal(fd):
+            if self.failing and _in_a_journal(fd, chosen):
                 raise OSError(code, os.strerror(code))
             return real_fsync(fd)
 
@@ -1583,6 +1587,24 @@ def test_a_journal_flush_io_error_fails_the_epoch_before_its_manifest_and_last(e
         assert json.load(handle)["epochs"] == 1  # epoch 1's manifest was never published
     assert NNCheckpoint.load(run_id, Checkpoints.LAST).idp.epoch_idx == 0
     assert {record.epoch_idx for record in NNRun.load(run_id).idps} == {0}
+    assert {record.epoch_idx for record in iter_history(run_id)} == {0}
+
+
+@pytest.mark.parametrize("name", ["chunk-", "index.jsonl", "epochs.jsonl"])
+@pytest.mark.parametrize("entry", ["model", "trainer"])
+def test_an_io_error_flushing_one_journal_file_fails_the_epoch(entry, name, monkeypatch):
+    """Only one of the epoch's files fails (Linux reports a writeback error
+    per inode): the manifest's own flush succeeds, so the epoch fails only
+    if the history step raises the error that file's flush returned."""
+    with monkeypatch.context() as patch:
+        failing = _FailFlushesFrom(patch, 1, errno.EIO, chosen=lambda entry_name: entry_name.startswith(name))
+        with pytest.raises(OSError) as caught:
+            _fit(entry, HistoryJournal(retention=3, chunk_size=2), callbacks=[failing])
+    assert caught.value.errno == errno.EIO
+    run_id = _the_run_id()
+    with open(os.path.join("runs", run_id, "history", "journal.json"), encoding="utf-8") as handle:
+        assert json.load(handle)["epochs"] == 1  # epoch 1's manifest was never published
+    assert NNCheckpoint.load(run_id, Checkpoints.LAST).idp.epoch_idx == 0
     assert {record.epoch_idx for record in iter_history(run_id)} == {0}
 
 

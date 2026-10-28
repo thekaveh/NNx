@@ -547,6 +547,41 @@ def test_an_io_error_on_every_flush_fails_the_export_and_keeps_the_published_gen
     assert validate_bundle("bundle").verified
 
 
+def _new_entries(kind: str, published: set[str]) -> list[str]:
+    """The paths of the export's own ``kind`` of entry: its payload files,
+    its ``.bundle.json.*.tmp`` manifest or its generation directory."""
+    if kind == "manifest":
+        return [os.path.join("bundle", entry) for entry in os.listdir("bundle") if entry.startswith(".bundle.json.")]
+    directories = [os.path.join("bundle", f"g-{generation}") for generation in _generations("bundle") - published]
+    if kind == "directory":
+        return directories
+    return [os.path.join(directory, name) for directory in directories for name in os.listdir(directory)]
+
+
+@pytest.mark.parametrize("kind", ["payload", "manifest", "directory"])
+def test_an_io_error_flushing_one_new_entry_fails_the_export(monkeypatch, kind):
+    """Only one kind of the export's entries fails (Linux reports a writeback
+    error per inode): the others flush, so the export fails only if the
+    helper that flushed that entry raises its error."""
+    run, first, second = _two_exports()
+
+    def one_new_entry(fd):
+        stat = os.fstat(fd)
+        return any(
+            (stat.st_dev, stat.st_ino) == (entry.st_dev, entry.st_ino)
+            for entry in map(os.stat, _new_entries(kind, {first, second}))
+        )
+
+    with monkeypatch.context() as patch:
+        _fail_flushes(patch, errno.EIO, one_new_entry)
+        with pytest.raises(OSError) as caught:
+            export_bundle(run.id, "bundle")
+    assert caught.value.errno == errno.EIO
+    assert _published("bundle") == second
+    assert _generations("bundle") == {first, second}
+    assert validate_bundle("bundle").verified
+
+
 @pytest.mark.parametrize("code", [errno.ENOTSUP, errno.EINVAL], ids=["ENOTSUP", "EINVAL"])
 def test_an_unsupported_flush_does_not_fail_the_export(monkeypatch, code):
     run, _, second = _two_exports()
