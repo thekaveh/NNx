@@ -163,3 +163,16 @@ def test_activation_map_passes_numpy_grid_arguments_on_as_ints():
     for bad in ({"max_channels": 2.0}, {"cols": True}):
         with pytest.raises(ValueError, match="positive integer"):
             activation_map(model, x, "0", **bad)
+
+
+def test_activation_map_captures_a_dora_layer_and_refuses_its_base(tiny_feedfwd):
+    # DoRA never calls its base, so a hook on the base cannot fire: the map
+    # refuses it with DoRA's own reason (#523), not "did not fire".
+    from nnx.peft import apply_dora_to
+
+    apply_dora_to(tiny_feedfwd.net, "layers.0", r=2)
+    x = torch.randn(3, 4)
+    assert isinstance(activation_map(tiny_feedfwd, x, "layers.0"), go.Figure)
+    with pytest.raises(TypeError, match="DoRA's base now has a forward hook.*use LoRA"):
+        activation_map(tiny_feedfwd, x, "layers.0.base")
+    assert not tiny_feedfwd.net.layers[0].base._forward_hooks

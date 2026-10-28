@@ -509,3 +509,31 @@ def test_feature_kd_refuses_a_regression_task_before_any_run(tmp_path, monkeypat
     with pytest.raises(TaskValidationError, match="feature_kd_train_step_factory.*regression task"):
         tasks.fit(base, torch.randn(6, 2), train_step_fn=feature_kd_train_step_factory(teacher, auxiliary_layers=PAIRS))
     assert tasks.no_run_left(tmp_path)
+
+
+def _one_epoch(student: NNModel, step_fn) -> None:
+    student.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=_classification_loader(n=32, batch_size=8),
+            optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
+            overwrite_existing=True,
+        ),
+        train_step_fn=step_fn,
+    )
+
+
+def test_feature_kd_matches_a_dora_layer_and_refuses_its_base(tmp_path, monkeypatch):
+    # The hooks go on the named layers only: a DoRA wrapper trains as before, and
+    # its base, which DoRA never calls, is refused with DoRA's reason (#523), not
+    # the KeyError of a hook that cannot fire.
+    from nnx.peft import apply_dora_to
+
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    teacher, student = _make_classifier(16), _make_classifier(16)
+    apply_dora_to(student.net, "layers.0", r=2)
+    _one_epoch(student, feature_kd_train_step_factory(teacher, auxiliary_layers={"layers.0": "layers.0"}))
+    with pytest.raises(TypeError, match="DoRA's base now has a forward hook"):
+        _one_epoch(student, feature_kd_train_step_factory(teacher, auxiliary_layers={"layers.0": "layers.0.base"}))
+    assert not student.net.layers[0].base._forward_hooks
