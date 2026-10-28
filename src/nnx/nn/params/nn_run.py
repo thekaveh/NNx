@@ -555,7 +555,7 @@ def _elect_best(
     winner: Optional[str] = None
     winner_score = float("inf")
     for entry in sorted(os.listdir(runs_root)):
-        if entry == exclude or not _is_run_entry(runs_root, entry):
+        if entry == exclude:
             continue
         checkpoint = _committed_best_checkpoint(runs_root, entry, root)
         if checkpoint is None:
@@ -973,7 +973,7 @@ class NNRun:
                 # never advertised (FIX-008). Lock order: lease → admission
                 # → best; election only takes lockless snapshots of other
                 # runs, so it cannot block on a live run's lease/run lock.
-                best_run_path = os.path.join(runs_root, "best")
+                best_run_path = os.path.join(runs_root, _BEST_POINTER)
                 with FileLock(os.path.join(runs_root, ".best.lock")):
                     if _read_best_pointer(best_run_path) == self.id:
                         _publish_best(runs_root, best_run_path, _elect_best(runs_root, root, exclude=self.id))
@@ -1038,7 +1038,7 @@ class NNRun:
     def _save_locked(self, root: Optional[str] = None, *, update_best: bool = True) -> NNRun:
         runs_root = _runs_root(root)
         run_path = os.path.join(runs_root, self.id)
-        best_run_path = os.path.join(runs_root, "best")
+        best_run_path = os.path.join(runs_root, _BEST_POINTER)
 
         csv_path = os.path.join(run_path, "idps.csv")
         yaml_path = os.path.join(run_path, "run.yaml")
