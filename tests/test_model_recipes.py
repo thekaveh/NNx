@@ -19,6 +19,7 @@ from nnx.nn.params.nn_iteration_data_point import NNIterationDataPoint
 from nnx.nn.params.nn_optim_params import NNOptimParams
 from nnx.nn.params.nn_train_params import NNTrainParams
 from nnx.optimizers import build_optimizer
+from nnx.peft import apply_ia3_to, apply_lora_to
 from nnx.surgery import low_rank_factorize
 from nnx.transforms import RecipeError, TransformOp, TransformRecipe, check_optimizer, lora, low_rank
 
@@ -1280,3 +1281,54 @@ def test_training_refuses_a_top_level_parametrization_of_a_registered_module(tmp
         model.train(
             params=NNTrainParams(n_epochs=1, train_loader=loader, optim=NNOptimParams.builder().sgd(max_lr=0.1).build())
         )
+
+
+# --- FIX-056 (#523): masks and legacy norms below a PEFT wrapper ------------------------------------------
+
+
+def _prune(net, pattern):
+    from nnx.prune import magnitude_prune
+
+    magnitude_prune(net, 0.5, layer_pattern=pattern, bake=False)
+
+
+def _legacy_weight_norm(net):
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # its deprecation notice
+        torch.nn.utils.weight_norm(net.layers[0])
+
+
+@pytest.mark.parametrize(
+    "prepare, match",
+    [
+        (
+            lambda net: (_prune(net, "layers.0"), apply_lora_to(net, "layers.0", r=2)),
+            "carry a pruning reparameterization",
+        ),
+        (
+            lambda net: (apply_lora_to(net, "layers.0", r=2), _prune(net, "layers.0.base")),
+            "carry a pruning reparameterization",
+        ),
+        (lambda net: (_legacy_weight_norm(net), apply_lora_to(net, "layers.0", r=2)), "are reparameterized"),
+        (lambda net: (_prune(net, "layers.0"), apply_ia3_to(net, "layers.0")), "carry a pruning reparameterization"),
+    ],
+    ids=["prune_then_lora", "lora_then_prune", "weight_norm_then_lora", "prune_then_ia3"],
+)
+def test_training_refuses_a_mask_or_legacy_norm_below_a_peft_wrapper_before_reserving_a_run(prepare, match):
+    """All four trained at e69fd74: the key checks matched ``layers.0.weight_orig``,
+    never ``layers.0.base.weight_orig``."""
+    import os
+
+    model = _model()
+    prepare(model.net)
+    with pytest.raises(ValueError, match=rf"layers\.0\.base\.weight {match}"):
+        _train(model, n_epochs=1)
+    assert not os.path.exists("runs") or not os.listdir("runs")
+
+
+def test_a_lora_net_without_masks_or_legacy_norms_still_trains():
+    model = _model()
+    apply_lora_to(model.net, "layers.0", r=2)
+    assert _train(model, n_epochs=1).id

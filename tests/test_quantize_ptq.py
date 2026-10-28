@@ -440,3 +440,57 @@ def test_save_pretrained_refuses_quantized_weights_before_writing(tiny_model, tm
     with pytest.raises(ValueError, match="quantized tensor"):
         q.save_pretrained(target)
     assert not target.exists()
+
+
+# -------------------------------------------------------------------------
+# FIX-056 (#523): DoRA refuses an int8 base
+# -------------------------------------------------------------------------
+
+
+def _int8_linear() -> torch.nn.Linear:
+    from torchao.quantization import Int8WeightOnlyConfig, quantize_
+
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(64, 64)
+    quantize_(torch.nn.Sequential(lin), Int8WeightOnlyConfig(version=2))
+    return lin
+
+
+def test_dora_refuses_an_int8_base_before_freezing_it():
+    """It raised torchao's NotImplementedError (aten.linalg_vector_norm)
+    after freezing the base, leaving its bias frozen."""
+    from nnx.peft import DoRALinear, apply_dora_to
+
+    lin = _int8_linear()
+    assert lin.bias.requires_grad
+    with pytest.raises(TypeError, match="quantized weight.*Use LoRA"):
+        DoRALinear(lin, r=4)
+    assert lin.bias.requires_grad and lin.training
+    net = torch.nn.Sequential(lin)
+    with pytest.raises(TypeError, match="quantized weight.*Use LoRA"):
+        apply_dora_to(net, "0", r=4)
+    assert net[0] is lin and lin.bias.requires_grad
+
+
+def _adapted(apply) -> NNModel:
+    torch.manual_seed(0)
+    model = _make_model(hidden_dims=[64])
+    apply(model.net, "layers.0", r=4)
+    return model
+
+
+def test_a_quantized_dora_model_fails_at_forward_with_an_actionable_error():
+    """``quantize_int8(m).predict`` raised torchao's NotImplementedError
+    (aten.add.Tensor); LoRA's line is unchanged."""
+    from torchao.quantization import Int8WeightOnlyConfig, quantize_
+
+    from nnx.peft import apply_dora_to
+
+    X = torch.randn(8, 32, generator=torch.Generator().manual_seed(0))
+    quantize_int8(_adapted(apply_lora_to)).predict(X)
+    with pytest.raises(TypeError, match="DoRA's base now has a weight of type .*Use LoRA"):
+        quantize_int8(_adapted(apply_dora_to)).predict(X)
+    net = _adapted(apply_dora_to).net
+    quantize_(net, Int8WeightOnlyConfig(version=2))
+    with pytest.raises(TypeError, match="DoRA's base now has a weight of type .*Use LoRA"):
+        net(X)

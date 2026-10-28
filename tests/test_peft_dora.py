@@ -10,6 +10,7 @@ from nnx import (
     DoRALinear,
     LoRALinear,
     apply_dora_to,
+    apply_lora_to,
     load_lora_weights,
     save_lora_weights,
 )
@@ -442,3 +443,163 @@ def test_dora_wraps_a_subclass_without_its_own_forward_and_keeps_frozen_flags_on
     with pytest.raises(TypeError):
         apply_dora_to(refused, "*")
     assert [p.requires_grad for p in refused.parameters()] == flags
+
+
+# -------------------------------------------------------------------------
+# FIX-056 (#523): bases whose forward path DoRA's recomposed matmul skips
+# -------------------------------------------------------------------------
+
+
+_X = torch.randn(5, 6, generator=torch.Generator().manual_seed(3))
+
+
+def _mlp(seed: int = 0) -> nn.Sequential:
+    torch.manual_seed(seed)
+    return nn.Sequential(nn.Linear(6, 6), nn.ReLU(), nn.Linear(6, 2))
+
+
+def _instance_forward(layer: nn.Linear) -> None:
+    stock = layer.forward
+    layer.forward = lambda inp: stock(inp) + 1.0  # type: ignore[method-assign]
+
+
+def _legacy(norm: str):
+    import warnings
+
+    from torch.nn.utils import spectral_norm, weight_norm
+
+    def apply(layer: nn.Linear) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # legacy weight_norm's deprecation notice
+            (weight_norm if norm == "weight_norm" else spectral_norm)(layer)
+
+    return apply
+
+
+def _prune_mask(layer: nn.Linear) -> None:
+    from nnx.prune import magnitude_prune
+
+    magnitude_prune(nn.Sequential(layer), 0.5, bake=False)
+
+
+# Each feature with the remedy its refusal names. Context of #523 measured the
+# wrapper's silent step-0 drift: forward hook 0.3573, pre-hook 0.1937, instance
+# forward 0.7405, legacy spectral_norm 3.5342; masks and legacy weight_norm
+# crashed the second training step.
+_BYPASSED = {
+    "forward_hook": (lambda layer: layer.register_forward_hook(lambda m, i, o: o * 2), "forward hook.*LoRA"),
+    "forward_pre_hook": (
+        lambda layer: layer.register_forward_pre_hook(lambda m, args: (args[0] * 0.5,)),
+        "forward pre-hook.*LoRA",
+    ),
+    "backward_hook": (lambda layer: layer.register_full_backward_hook(lambda m, gi, go: None), "backward hook.*LoRA"),
+    "instance_forward": (_instance_forward, "instance forward override.*LoRA"),
+    "prune_mask": (_prune_mask, "unbaked prune mask.*Bake the mask"),
+    "legacy_weight_norm": (_legacy("weight_norm"), "legacy weight_norm.*Remove the norm"),
+    "legacy_spectral_norm": (_legacy("spectral_norm"), "legacy weight_norm / spectral_norm.*Remove the norm"),
+}
+
+
+def _state(net: nn.Module):
+    return (
+        [(name, type(m)) for name, m in net.named_modules()],
+        [(name, p.requires_grad) for name, p in net.named_parameters()],
+        [(name, m.training) for name, m in net.named_modules()],
+    )
+
+
+@pytest.mark.parametrize("kind", list(_BYPASSED))
+@pytest.mark.parametrize("how", ["apply_dora_to", "DoRALinear"])
+def test_dora_refuses_a_base_whose_forward_path_it_would_skip_and_changes_nothing(kind, how):
+    add, match = _BYPASSED[kind]
+    net = _mlp()
+    net[2].eval()  # a mixed-mode net: every flag must survive the refusal
+    add(net[0])
+    before = _state(net)
+    with pytest.raises(TypeError, match=match):
+        if how == "apply_dora_to":
+            apply_dora_to(net, "*", r=2)
+        else:
+            DoRALinear(net[0], r=2)
+    assert _state(net) == before
+
+
+def test_lora_still_wraps_every_base_dora_refuses():
+    for kind, (add, _) in _BYPASSED.items():
+        net = _mlp().eval()  # spectral_norm's power iteration runs in train mode only
+        add(net[0])
+        with torch.no_grad():
+            before = net(_X)
+            apply_lora_to(net, "0", r=2)
+            assert torch.equal(net(_X), before), kind
+
+
+def _l1_prune_base(wrapper: DoRALinear) -> None:
+    torch.nn.utils.prune.l1_unstructured(wrapper.base, "weight", 0.5)
+
+
+@pytest.mark.parametrize(
+    "change, match",
+    [
+        (lambda w: w.base.register_forward_hook(lambda m, i, o: None), "forward hook"),
+        (lambda w: w.base.register_forward_pre_hook(lambda m, args: None), "forward pre-hook"),
+        (lambda w: w.base.register_full_backward_hook(lambda m, gi, go: None), "backward hook"),
+        (_l1_prune_base, "unbaked prune mask"),
+    ],
+    ids=["forward_hook", "forward_pre_hook", "backward_hook", "l1_unstructured"],
+)
+def test_a_base_changed_after_wrapping_is_refused_at_forward(change, match):
+    """#523 Context: hooks on ``.base`` fired 0 times under DoRA (LoRA: 1),
+    and a mask on ``.base`` reloaded 0.6289 away from the saved model."""
+    net = _mlp()
+    apply_dora_to(net, "0", r=2)
+    change(net[0])
+    with pytest.raises(TypeError, match=f"DoRA's base now has an? {match}.*, added after wrapping"):
+        net(_X)
+
+
+def _parametrized(kind: str):
+    from torch.nn.utils import parametrizations
+
+    def apply(layer: nn.Linear) -> None:
+        (parametrizations.weight_norm if kind == "weight_norm" else parametrizations.spectral_norm)(layer)
+
+    return apply
+
+
+class _Tagged(nn.Linear):  # no forward of its own
+    pass
+
+
+def _tagged(net: nn.Sequential) -> None:
+    tagged = _Tagged(6, 6)
+    tagged.load_state_dict(net[0].state_dict())
+    net[0] = tagged
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        lambda net: _parametrized("weight_norm")(net[0]),
+        lambda net: _parametrized("spectral_norm")(net[0]),
+        _tagged,
+    ],
+    ids=["parametrizations.weight_norm", "parametrizations.spectral_norm", "subclass_without_forward"],
+)
+def test_dora_still_wraps_parametrized_and_subclassed_bases_with_parity_and_trains(prepare):
+    net = _mlp()
+    prepare(net)
+    net.eval()  # spectral_norm's power iteration runs in train mode only
+    with torch.no_grad():
+        before = net(_X)
+        assert apply_dora_to(net, "0", r=2) == 1
+        after = net(_X)
+    assert (after - before).abs().max() <= 1e-6
+    net.train()
+    opt = torch.optim.SGD([p for p in net.parameters() if p.requires_grad], lr=0.1)
+    for _ in range(3):  # the refused legacy forms crashed the second step
+        loss = net(_X).pow(2).sum()
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+    assert torch.isfinite(net(_X)).all()
