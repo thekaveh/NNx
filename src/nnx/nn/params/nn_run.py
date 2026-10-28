@@ -345,11 +345,25 @@ def _committed_epoch(run_id: str, run_path: str, root: Optional[str]) -> Optiona
     Shared by ``NNRun.load`` and ``nnx.history`` (FEAT-036)."""
     if not os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE)):
         return None
+    if _uncommitted(run_path):
+        return -1
     last = NNCheckpoint.load(run=run_id, type=Checkpoints.LAST, root=root)
-    last_path = os.path.join(run_path, "checkpoints", f"{Checkpoints.LAST}.pt")
-    if os.path.isfile(last_path) and last is None:
-        raise ValueError(f"malformed LAST checkpoint at {last_path}")
-    return -1 if last is None else last.idp.epoch_idx
+    if last is None:
+        raise ValueError(f"malformed LAST checkpoint at {_last_path(run_path)}")
+    return last.idp.epoch_idx
+
+
+def _last_path(run_path: str) -> str:
+    """A run's LAST checkpoint: the commit marker of the history protocol."""
+    return os.path.join(run_path, "checkpoints", f"{Checkpoints.LAST}.pt")
+
+
+def _uncommitted(run_path: str) -> bool:
+    """Whether a run under the history protocol has committed nothing yet:
+    its marker is present and its LAST is not (``_committed_epoch`` is
+    ``-1``). The one definition ``_committed_epoch`` and ``_read_run_idps``
+    share, so a leftover reads the same through both (#522)."""
+    return os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE)) and not os.path.isfile(_last_path(run_path))
 
 
 def _is_run_entry(runs_root: str, entry: str) -> bool:
@@ -371,11 +385,7 @@ def _read_run_idps(run_path: str) -> list[NNIterationDataPoint]:
     ``idps.csv``, committed nothing (#522). Without the file, any other run
     is malformed. Shared by ``NNRun.load`` and ``nnx.history``."""
     csv_path = os.path.join(run_path, "idps.csv")
-    if (
-        not os.path.lexists(csv_path)
-        and os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE))
-        and not os.path.exists(os.path.join(run_path, "checkpoints", f"{Checkpoints.LAST}.pt"))
-    ):
+    if not os.path.lexists(csv_path) and _uncommitted(run_path):
         return []
     return _read_idps_csv(csv_path)
 
