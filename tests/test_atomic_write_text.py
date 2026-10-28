@@ -125,13 +125,55 @@ def test_failure_leaves_no_owned_temp_or_descriptor(tmp_path, monkeypatch, fail,
     )
 
 
-def test_atomic_text_success_utf8(tmp_path, monkeypatch):
+@pytest.mark.parametrize("code", [errno.ENOTSUP, errno.EINVAL, errno.ENOTTY], ids=["ENOTSUP", "EINVAL", "ENOTTY"])
+def test_atomic_text_success_utf8(tmp_path, monkeypatch, code):
+    """A flush the filesystem does not support does not fail the write."""
     target = tmp_path / "run.yaml"
     target.write_bytes(b"old")
-    monkeypatch.setattr(nn_run.os, "fsync", mock.Mock(side_effect=OSError("fsync unsupported")))
+    monkeypatch.setattr(nn_run.os, "fsync", mock.Mock(side_effect=OSError(code, "fsync unsupported")))
     _atomic_write_text(str(target), "label: café\n")
     assert target.read_bytes() == "label: café\n".encode()
     assert sorted(p.name for p in tmp_path.iterdir()) == ["run.yaml"]
+
+
+@pytest.mark.parametrize("existing", [True, False], ids=["replace", "create"])
+def test_a_real_flush_io_error_fails_the_write_before_the_rename(tmp_path, monkeypatch, existing):
+    """#552: an EIO (a failing disk, an NFS write-back error) is a failed
+    write: it raises, the destination keeps its content and no temp is left."""
+    target = tmp_path / "journal.json"
+    if existing:
+        target.write_bytes(b"old")
+    replace = mock.Mock(wraps=os.replace)
+    monkeypatch.setattr(nn_run.os, "fsync", mock.Mock(side_effect=OSError(errno.EIO, "Input/output error")))
+    monkeypatch.setattr(nn_run.os, "replace", replace)
+    with pytest.raises(OSError) as caught:
+        _atomic_write_text(str(target), "new")
+    assert caught.value.errno == errno.EIO
+    replace.assert_not_called()
+    assert sorted(p.name for p in tmp_path.iterdir()) == (["journal.json"] if existing else [])
+    if existing:
+        assert target.read_bytes() == b"old"
+
+
+def test_the_temp_is_flushed_before_it_is_renamed(tmp_path, monkeypatch):
+    events = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync(fd):
+        stat = os.fstat(fd)
+        events.append(("flush", (stat.st_dev, stat.st_ino)))
+        return real_fsync(fd)
+
+    def replace(src, dst):
+        stat = os.stat(src)
+        events.append(("rename", (stat.st_dev, stat.st_ino)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(nn_run.os, "fsync", fsync)
+    monkeypatch.setattr(nn_run.os, "replace", replace)
+    _atomic_write_text(str(tmp_path / "idps.csv"), "x")
+    renamed = os.stat(tmp_path / "idps.csv")
+    assert events == [("flush", (renamed.st_dev, renamed.st_ino)), ("rename", (renamed.st_dev, renamed.st_ino))]
 
 
 def test_success_never_unlinks_the_renamed_temp_path(tmp_path, monkeypatch):

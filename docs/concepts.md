@@ -378,13 +378,15 @@ Every write inside `runs/<id>/` (`run.yaml`, `metadata.yaml`, `idps.csv`, every 
 
 The text writer creates its temp next to the resolved destination, also for a bare filename, so the rename never crosses filesystems. It owns the temp until the rename. A failure while opening, writing, flushing or closing it, or in the rename itself, releases the descriptor and unlinks that temp. The writer then re-raises the original exception; a cleanup error never masks it.
 
-An `fsync` error is tolerated, and after a successful rename the temp name is never touched.
+The temp is flushed with `fsync` before the rename. A flush the filesystem does not support (`ENOTSUP`, `EINVAL`, ...) is tolerated. A real I/O error (`EIO`, a full disk) fails the write before the rename, so the destination keeps its previous content. After a successful rename the temp name is never touched. The same writer, and so the same flush policy, also saves these other NNx text artifacts: split manifests, standardizers, calibration and abstention artifacts, provenance records, `export_history_csv` and the `runs/best` pointer.
 
 This is per-file cleanup for ordinary exceptions, not a multi-file transaction. `run.yaml`, `metadata.yaml` and `idps.csv` are still written one after another. An interrupt during a run's first save, for example a Ctrl-C while the environment snapshot for `metadata.yaml` runs `git`, can leave `run.yaml` without `idps.csv`. Nothing is committed yet, so the run loads with an empty history, `NNRun.all()` lists it, and `iter_history` and `export_history_csv` read no records. A plain retry is refused as for any existing run; retry with `overwrite_existing=True`. A committed or legacy run that has lost its `idps.csv` is malformed: loading it raises a `ValueError` naming the file. A SIGKILL or power loss can still strand a `.<name>.XXXXXX` temp, which later writes neither reuse nor delete. A failed write of the run's history marker also releases the still-empty `runs/<id>/` reservation, so the same run can be retried.
 
 Each checkpoint names an immutable generation-addressed training-state sidecar. The sidecar is committed first and the checkpoint last. An interrupted replacement therefore leaves the previous generation resumable instead of pairing new weights with stale optimizer state.
 
 The epoch transaction is history → LAST → phase/BEST → deferred callback checkpoints. If LAST fails, history rolls back to the preceding epoch. Once LAST commits, a later ancillary failure retains that history because the epoch is durable.
+
+The history step is on stable storage before LAST is published. An eager epoch flushes `runs/<id>/` after its `idps.csv` rename; a journal epoch flushes `history/` after its manifest rename. The run's first checkpoint flushes `runs/<id>/` once it creates `checkpoints/` there, and a new run's `<id>` is flushed into `runs/` when the run is reserved. A history step whose flush fails with a real I/O error fails the epoch before LAST, so a reload shows the previous committed epoch. If the flush after the `idps.csv` or manifest rename is the one that fails (for a journal, also the save of `run.yaml` / `metadata.yaml` after its manifest), the step writes the file it replaced back through the same writer, byte for byte (before the first epoch it removes the new file, so the run reads as uncommitted), and raises the original error; a failure of that restore never replaces it. The flush policy is in §14.3.
 
 `NNRun.load()` treats LAST as the commit marker and truncates any history newer than it after a process kill. It rejects an empty or corrupt LAST instead of erasing otherwise valid history. A run with a history journal (§4.5) follows the same transaction: its chunks and manifest are the "history" step.
 
@@ -531,7 +533,7 @@ runs/<id>/history/
 ```
 
 - **Memory and bytes.** Only the last `retention` records stay in memory (`ctx.idps`, `NNRun.idps`). `chunk_size ≤ retention` (default `min(250, retention)`, resolved as `HistoryJournal.chunk`), so records waiting for their chunk are always inside the window. Every record is written once, so bytes written grow linearly with the records; `idps.csv` is not written.
-- **Commit protocol.** Each epoch's records are written as chunks and indexed, and its summary row is appended. Every file the epoch wrote is flushed to disk once; chunks written mid-epoch are not fsynced one by one. The manifest is then published *before* LAST. The journal is the epoch transaction's "history" step (§4.2), and LAST stays the commit marker.
+- **Commit protocol.** Each epoch's records are written as chunks and indexed, and its summary row is appended. Every file the epoch wrote is flushed to disk once; chunks written mid-epoch are not fsynced one by one. The manifest is then published *before* LAST. A flush that fails with a real I/O error fails the epoch before LAST (§14.3). If a flush of the epoch's files fails, the manifest is never replaced. If the flush of the manifest's rename fails, or the save of `run.yaml` / `metadata.yaml` after it, the previous manifest is republished (before the first epoch, the new one is removed) and the original error is raised. The journal is the epoch transaction's "history" step (§4.2), and LAST stays the commit marker.
 - **Crashes.** A crash while a chunk is written, or before the manifest is replaced, leaves the previous manifest. A crash before LAST is replaced leaves an **uncommitted tail** on disk that no reader shows. Records newer than LAST's epoch are filtered, as for `idps.csv`.
 - **Failures and corruption.** If LAST fails, the previous manifest is republished. A committed chunk whose bytes no longer match its SHA-256, a missing chunk and an altered index raise `HistoryCorruptionError` (a `ValueError`).
 - **Lazy reads.** `NNRun.load` reads only the committed tail: the last `retention` records, from the chunks holding them. It returns a run whose `history` is the journal directory. Other readers read no records. The notebook chart (`_repr_html_`) reads the per-epoch rows. BEST and the `runs/best` election read checkpoints and the manifest and index. A resume reads only the source's checkpoint.
@@ -2068,8 +2070,32 @@ A filesystem that does not support the flush does not fail the save. The
 point is then only as durable as that filesystem. A real I/O error (`EIO`, a
 full disk) does fail the save. On Windows the files are flushed with
 `os.fsync`, but the renames are not, because a directory cannot be flushed
-there. These rules cover resume points. The run's other files (`run.yaml`,
-history, bundles) use `os.fsync`.
+there.
+
+The same policy covers the run's other files and run bundles: an
+unsupported flush is tolerated, and a real I/O error raises.
+
+- **Run files.** `run.yaml`, `metadata.yaml`, `idps.csv` and the history
+  journal's manifest are flushed with `os.fsync` before their rename (§4.2).
+  The same text writer saves these other NNx text artifacts: split manifests,
+  standardizers, calibration and abstention artifacts, provenance,
+  `export_history_csv` and the `runs/best` pointer, so a real I/O error
+  fails those saves too.
+  The run directories are flushed like a resume point's: `runs/<id>/` after
+  an eager epoch's history and when the first checkpoint creates
+  `checkpoints/`, and `runs/` when a run is reserved. All of it happens
+  before LAST, so LAST never gets ahead of the history after a power loss.
+- **History journal.** The chunks, the index, the epoch rows and `history/`
+  are flushed like a resume point's, before the manifest is renamed, and
+  `history/` again after it. A real I/O error fails the epoch before LAST.
+  If the error comes after the manifest's rename, the previous manifest is
+  republished first (before the first epoch, the new one is removed); an
+  eager epoch puts back the previous `idps.csv` the same way.
+- **Bundles.** `export_bundle` flushes every payload, `bundle.json` and the
+  directories like a resume point. A real I/O error raises before
+  `bundle.json` names the new generation, which is then removed. After that
+  rename, an error raises before anything is pruned, so the generation it
+  replaced stays on disk.
 
 The manifest is staged before the checkpoint is published and made live
 right after. A Ctrl-C in that window is held until the point is complete; a
