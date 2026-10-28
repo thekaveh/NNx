@@ -277,7 +277,9 @@ def test_a_failed_flush_of_the_history_rename_republishes_the_previous_file(entr
         assert failing.previous is None
         assert not os.path.exists(path)  # the run reads as uncommitted
         if journal:
-            # Nothing but the journal was written: the reservation is released.
+            # Nothing but the journal was written: the reservation is released
+            # (its release, not the manifest's removal, is what this asserts;
+            # the metadata.yaml first-epoch case below pins the removal).
             assert not os.path.exists(os.path.join("runs", run_id))
             return
         assert NNCheckpoint.load(run_id, Checkpoints.LAST) is None
@@ -331,32 +333,52 @@ def test_each_journal_epoch_flushes_history_after_its_writes_and_before_its_mani
 
 
 class _KeepTheFile(Callback):
-    """The bytes of the run's ``name`` at ``epoch``'s end, before its history is saved."""
+    """The bytes of the run's ``name`` at ``epoch``'s end, before its history
+    is saved (``None``: there is no file yet)."""
 
     def __init__(self, name: str, epoch: int = 1) -> None:
         self.name, self.epoch, self.kept = name, epoch, None
 
     def on_epoch_end(self, ctx) -> None:
         if ctx.epoch == self.epoch:
-            with open(os.path.join("runs", _the_run_id(), self.name), "rb") as handle:
-                self.kept = handle.read()
+            self.run_id = _the_run_id()
+            path = os.path.join("runs", self.run_id, self.name)
+            if os.path.exists(path):
+                with open(path, "rb") as handle:
+                    self.kept = handle.read()
 
 
+@pytest.mark.parametrize("epoch", [0, 1], ids=["first-epoch", "later-epoch"])
 @pytest.mark.parametrize("entry", ["model", "trainer"])
 @pytest.mark.parametrize("name", ["run.yaml", "metadata.yaml"])
-def test_a_failed_run_file_save_after_the_journal_manifest_republishes_it(entry, name, monkeypatch):
+def test_a_failed_run_file_save_after_the_journal_manifest_republishes_it(entry, name, epoch, monkeypatch):
     """A journal epoch saves ``run.yaml`` and ``metadata.yaml`` after its
     manifest's rename; if that save fails, the previous manifest is put back
-    as for a failed flush of the rename itself."""
+    as for a failed flush of the rename itself — or, before the first epoch,
+    the new manifest is removed."""
     manifest = os.path.join("history", "journal.json")
-    kept = _KeepTheFile(manifest)
+    kept = _KeepTheFile(manifest, epoch)
     with monkeypatch.context() as patch:
-        failing = _FailTheFlushOf(patch, name)
+        failing = _FailTheFlushOf(patch, name, epoch)
         with pytest.raises(OSError) as caught:
             _fit(entry, HistoryJournal(retention=3, chunk_size=2), callbacks=[kept, failing])
     assert caught.value.errno == errno.EIO
-    run_id = _the_run_id()
-    with open(os.path.join("runs", run_id, manifest), "rb") as handle:
+    run_id = kept.run_id
+    path = os.path.join("runs", run_id, manifest)
+    if epoch == 0:
+        assert kept.kept is None
+        if name == "run.yaml":
+            # No run file was saved: the reservation is released with its journal.
+            assert not os.path.exists(os.path.join("runs", run_id))
+            return
+        # run.yaml was saved, so the reservation stays: only the manifest's
+        # removal leaves the run uncommitted.
+        assert os.path.exists(os.path.join("runs", run_id, "run.yaml"))
+        assert not os.path.exists(path)
+        assert NNCheckpoint.load(run_id, Checkpoints.LAST) is None
+        assert not NNRun.load(run_id).idps
+        return
+    with open(path, "rb") as handle:
         assert handle.read() == kept.kept
     assert NNCheckpoint.load(run_id, Checkpoints.LAST).idp.epoch_idx == 0
     assert {record.epoch_idx for record in NNRun.load(run_id).idps} == {0}
