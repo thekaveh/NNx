@@ -51,6 +51,7 @@ import numpy as np
 
 from ._artifacts import JsonArtifact, check_keys, frozen_json, override_record, parse_json, read_text
 from ._config import _canonical_json, _freeze_config, _FrozenConfig, _thaw_config
+from ._json_depth import MAX_JSON_DEPTH
 from ._probability import (
     NLL_EPSILON,
     brier_terms,
@@ -442,8 +443,9 @@ class _Slope:
 
 def _frozen(value: Any, what: str) -> _FrozenConfig:
     """An immutable, picklable JSON-like copy of a mapping, so a calibrator's
-    state cannot drift from its digest."""
-    return frozen_json(value, what, CalibrationError)
+    state cannot drift from its digest. Bounded for the deepest place a
+    calibrator file holds one: ``state["fit"]["config"]`` / ``["result"]``."""
+    return frozen_json(value, what, CalibrationError, enclosing=2)
 
 
 @dataclass(frozen=True, eq=False)
@@ -850,7 +852,9 @@ class TemperatureCalibrator(JsonArtifact):
 
     @staticmethod
     def from_json(text: str) -> TemperatureCalibrator:
-        return TemperatureCalibrator.from_state(parse_json(text, "calibrator", CalibrationError))
+        return TemperatureCalibrator.from_state(
+            parse_json(text, "calibrator", CalibrationError, max_depth=MAX_JSON_DEPTH)
+        )
 
     @staticmethod
     def load(path: Union[str, os.PathLike[str]]) -> TemperatureCalibrator:
@@ -1268,7 +1272,9 @@ class CalibrationReport(JsonArtifact):
 
     @staticmethod
     def from_json(text: str) -> CalibrationReport:
-        return CalibrationReport.from_state(parse_json(text, "calibration report", CalibrationError))
+        return CalibrationReport.from_state(
+            parse_json(text, "calibration report", CalibrationError, max_depth=MAX_JSON_DEPTH)
+        )
 
     @staticmethod
     def load(path: Union[str, os.PathLike[str]]) -> CalibrationReport:

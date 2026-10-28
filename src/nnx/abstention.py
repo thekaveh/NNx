@@ -73,6 +73,7 @@ import numpy as np
 
 from ._artifacts import JsonArtifact, check_keys, override_record, parse_json, read_text
 from ._config import _thaw_config
+from ._json_depth import MAX_JSON_DEPTH
 from ._probability import (
     categorical_probabilities,
     categorical_probabilities_eps,
@@ -617,7 +618,9 @@ class AbstentionPolicy(JsonArtifact):
 
     @staticmethod
     def from_json(text: str) -> AbstentionPolicy:
-        return AbstentionPolicy.from_state(parse_json(text, "abstention policy", AbstentionError))
+        return AbstentionPolicy.from_state(
+            parse_json(text, "abstention policy", AbstentionError, max_depth=MAX_JSON_DEPTH)
+        )
 
     @staticmethod
     def load(path: Any) -> AbstentionPolicy:
@@ -876,7 +879,7 @@ class CoverageReport(_Counted, JsonArtifact):
 
     @staticmethod
     def from_json(text: str) -> CoverageReport:
-        return CoverageReport.from_state(parse_json(text, "coverage report", AbstentionError))
+        return CoverageReport.from_state(parse_json(text, "coverage report", AbstentionError, max_depth=MAX_JSON_DEPTH))
 
     @staticmethod
     def load(path: Any) -> CoverageReport:
@@ -1314,7 +1317,9 @@ class ThresholdSelection(JsonArtifact):
 
     @staticmethod
     def from_json(text: str) -> ThresholdSelection:
-        return ThresholdSelection.from_state(parse_json(text, "threshold selection", AbstentionError))
+        return ThresholdSelection.from_state(
+            parse_json(text, "threshold selection", AbstentionError, max_depth=MAX_JSON_DEPTH)
+        )
 
     @staticmethod
     def load(path: Any) -> ThresholdSelection:
