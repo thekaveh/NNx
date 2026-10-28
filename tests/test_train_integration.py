@@ -1895,6 +1895,54 @@ def test_best_re_elected_after_best_overwrite(tmp_path, monkeypatch, best_pointe
     assert _read_best_pointer(best) == a.id
 
 
+@pytest.mark.parametrize(
+    "entry_point",
+    ["absent pointer", "dangling pointer", "ineligible incumbent", "saver turned ineligible", "overwrite"],
+)
+def test_a_stale_best_tmp_is_never_elected(tmp_path, monkeypatch, entry_point):
+    """FIX-055 (#522): an interrupt inside `_point_best` (between its
+    symlink and its rename) strands `runs/best.tmp`, an alias of the run it
+    was publishing. No election may pick the alias: on a tie it sorted
+    before its target and won, and publishing it removed the stale temp,
+    leaving `runs/best -> best.tmp` dangling."""
+    from nnx.nn.params.nn_run import _point_best, _read_best_pointer
+
+    monkeypatch.chdir(tmp_path)
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    best = str(tmp_path / "runs" / "best")
+
+    def run_id(salt: str) -> str:
+        return NNRun(net=model.net_params, model=model.params, train=NNTrainParams(n_epochs=1), salt=salt).id
+
+    # A winner whose id sorts after "best.tmp" (about 1 in 4 ids), so the
+    # alias came first in the election's sorted scan and won the tie.
+    x_salt = next(f"X{i}" for i in range(100) if run_id(f"X{i}") > "best.tmp")
+    x = _completed_run(model, x_salt, 0.1)
+    y = _completed_run(model, "Y", 0.5)
+    if entry_point == "absent pointer":
+        os.remove(best)
+    elif entry_point == "dangling pointer":
+        os.remove(best)
+        os.symlink("gone", best, target_is_directory=True)
+    elif entry_point == "ineligible incumbent":
+        z = _completed_run(model, "Z", 0.05)
+        assert _read_best_pointer(best) == z.id
+        os.remove(tmp_path / "runs" / z.id / "checkpoints" / "best.pt")
+    else:  # the saver (or the run being overwritten) owns the pointer
+        _point_best(best, str(tmp_path / "runs" / y.id))
+        if entry_point == "saver turned ineligible":
+            os.remove(tmp_path / "runs" / y.id / "checkpoints" / "best.pt")
+    os.symlink(x.id, str(tmp_path / "runs" / "best.tmp"), target_is_directory=True)
+
+    if entry_point == "overwrite":
+        y.ensure_writable(overwrite=True)
+    else:
+        y.save()
+    assert _read_best_pointer(best) == x.id
+    assert os.path.isfile(os.path.join(best, "run.yaml"))  # resolves: never dangling
+
+
 def test_failed_best_overwrite_leaves_valid_survivor(tmp_path, monkeypatch):
     """A failed overwrite of the winner (before any replacement commit)
     must leave the best surviving run selected, never the emptied

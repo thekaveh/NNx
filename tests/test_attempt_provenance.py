@@ -296,6 +296,50 @@ def test_unreadable_provenance_never_breaks_loading_or_resuming(tmp_path):
     assert child.provenance.attempt.parent["generation"] is not None  # the checkpoint is still linked
 
 
+@pytest.mark.parametrize("action", ["default", "error"])
+def test_unreadable_provenance_never_moves_runs_best_and_warns_at_the_callers_line(action):
+    """FIX-055 (#522): the runs/best election reads no provenance. Under a
+    warnings-as-errors filter the better run R kept losing the pointer to a
+    worse Y (the raised warning made R ineligible), and by default saving Y
+    warned about R from a line inside NNx. A user's own `NNRun.load` still
+    warns once, at the user's line."""
+    import inspect
+
+    from nnx.nn.params.nn_run import _read_best_pointer
+
+    x = torch.randn(32, 4, generator=torch.Generator().manual_seed(1))
+    easy = DataLoader(TensorDataset(x, (x[:, 0] > 0).long()), batch_size=8)
+    noise = DataLoader(TensorDataset(x, torch.randint(0, 2, (32,), generator=torch.Generator().manual_seed(2))), 8)
+
+    def fit(data_id, loader, epochs, **kwargs):
+        model = _model()
+        params = NNTrainParams(n_epochs=epochs, seed=0, train_loader=loader, val_loader=loader, data_id=data_id)
+        return model.train(params, **kwargs)
+
+    r = fit("good", easy, 20, provenance=ExperimentManifest.for_model(_model()))
+    path = os.path.join("runs", r.id, "provenance.json")
+    with open(path, encoding="utf-8") as handle:
+        stored = json.load(handle)
+    stored["format"] = "nnx.provenance/99"  # e.g. written by a newer NNx: unreadable here
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(stored, handle)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter(action)
+        y = fit("bad", noise, 1)
+    assert not [w for w in caught if "unreadable provenance" in str(w.message)]
+    score = {run.id: NNCheckpoint.load(run=run.id, type=Checkpoints.BEST).idp.val_edp.error for run in (r, y)}
+    assert score[r.id] < score[y.id]
+    assert _read_best_pointer(os.path.join("runs", "best")) == r.id
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        line = inspect.currentframe().f_lineno + 1
+        assert NNRun.load(r.id).provenance is None
+    unreadable = [w for w in caught if "unreadable provenance" in str(w.message)]
+    assert [(w.category, w.filename, w.lineno) for w in unreadable] == [(RuntimeWarning, __file__, line)]
+
+
 def test_a_failed_completion_write_keeps_the_trained_run(monkeypatch):
     from nnx import provenance
 

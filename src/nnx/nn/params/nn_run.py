@@ -42,6 +42,8 @@ if TYPE_CHECKING:
 _HISTORY_PROTOCOL_FILE = ".history-committed-by-last"
 _PROVENANCE_MANIFEST_FILE = "provenance.json"  # nnx.provenance.MANIFEST_FILE
 _PROVENANCE_ATTEMPT_FILE = "attempt.json"  # nnx.provenance.ATTEMPT_FILE
+_BEST_POINTER = "best"
+_BEST_TEMP = f"{_BEST_POINTER}.tmp"  # _point_best's temporary symlink
 
 
 def _runs_root(root: Optional[str] = None) -> str:
@@ -343,11 +345,49 @@ def _committed_epoch(run_id: str, run_path: str, root: Optional[str]) -> Optiona
     Shared by ``NNRun.load`` and ``nnx.history`` (FEAT-036)."""
     if not os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE)):
         return None
+    if _uncommitted(run_path):
+        return -1
     last = NNCheckpoint.load(run=run_id, type=Checkpoints.LAST, root=root)
-    last_path = os.path.join(run_path, "checkpoints", f"{Checkpoints.LAST}.pt")
-    if os.path.isfile(last_path) and last is None:
-        raise ValueError(f"malformed LAST checkpoint at {last_path}")
-    return -1 if last is None else last.idp.epoch_idx
+    if last is None:
+        raise ValueError(f"malformed LAST checkpoint at {_last_path(run_path)}")
+    return last.idp.epoch_idx
+
+
+def _last_path(run_path: str) -> str:
+    """A run's LAST checkpoint: the commit marker of the history protocol."""
+    return os.path.join(run_path, "checkpoints", f"{Checkpoints.LAST}.pt")
+
+
+def _uncommitted(run_path: str) -> bool:
+    """Whether a run under the history protocol has committed nothing yet:
+    its marker is present and its LAST is not (``_committed_epoch`` is
+    ``-1``). The one definition ``_committed_epoch`` and ``_read_run_idps``
+    share, so a leftover reads the same through both (#522)."""
+    return os.path.isfile(os.path.join(run_path, _HISTORY_PROTOCOL_FILE)) and not os.path.isfile(_last_path(run_path))
+
+
+def _is_run_entry(runs_root: str, entry: str) -> bool:
+    """Whether ``runs/<entry>`` is a run: a directory holding ``run.yaml``,
+    and never the ``best`` pointer, the ``best.tmp`` temporary an interrupt
+    inside ``_point_best`` can strand, or a dot-name (``.leases``, locks).
+    Shared by ``NNRun.all`` and the ``runs/best`` election, so neither sees
+    a run twice through a stale alias (#522)."""
+    if entry in (_BEST_POINTER, _BEST_TEMP) or entry.startswith("."):
+        return False
+    run_path = os.path.join(runs_root, entry)
+    return os.path.isdir(run_path) and os.path.isfile(os.path.join(run_path, "run.yaml"))
+
+
+def _read_run_idps(run_path: str) -> list[NNIterationDataPoint]:
+    """A CSV run's ``idps.csv`` (see ``_read_idps_csv``). A run under the
+    history protocol with neither LAST nor ``idps.csv`` reads as empty: an
+    interrupt during its first save, after ``run.yaml`` and before
+    ``idps.csv``, committed nothing (#522). Without the file, any other run
+    is malformed. Shared by ``NNRun.load`` and ``nnx.history``."""
+    csv_path = os.path.join(run_path, "idps.csv")
+    if not os.path.lexists(csv_path) and _uncommitted(run_path):
+        return []
+    return _read_idps_csv(csv_path)
 
 
 def _read_idps_csv(csv_path: str, *, exact: bool = True) -> list[NNIterationDataPoint]:
@@ -363,6 +403,9 @@ def _read_idps_csv(csv_path: str, *, exact: bool = True) -> list[NNIterationData
         # leaves it out of the parameter's annotation.
         frame = pd.read_csv(csv_path, float_precision=cast(Any, "round_trip")) if exact else pd.read_csv(csv_path)
         raw_idps = frame.to_dict(orient="records")
+    except FileNotFoundError as e:
+        # A committed or legacy run that lost its history (#522): name the file.
+        raise ValueError(f"missing idps.csv at {csv_path}: {e.strerror}") from e
     except pd.errors.EmptyDataError as e:
         # A zero-byte file (external truncation — our own atomic
         # writes never produce one; even an idps-less run writes the
@@ -393,7 +436,7 @@ def _point_best(best_run_path: str, run_path: str) -> None:
     target_is_directory=True matters on Windows-with-developer-mode:
     without it a *file* symlink to a directory is created, which
     Windows cannot traverse — best tracking would silently break."""
-    tmp_link = best_run_path + ".tmp"
+    tmp_link = os.path.join(os.path.dirname(best_run_path), _BEST_TEMP)
     # The symlink target is the sibling run-dir BASENAME: a symlink
     # target resolves relative to the symlink's own directory (the runs
     # root), not the creator's cwd. A raw run_path target broke under a
@@ -470,9 +513,10 @@ def _committed_best_checkpoint(runs_root: str, run_id: str, root: Optional[str])
     `runs/best` candidate, else None (FIX-008).
 
     Eligible means: a real run directory carrying `run.yaml` (so `best`,
-    `.leases`, bare reservations and stray files are skipped), whose
-    metadata/history load through :meth:`NNRun.load` (malformed artifacts
-    are excluded, not fatal), whose BEST checkpoint parses, and — when the
+    a stale `best.tmp`, `.leases`, bare reservations and stray files are
+    skipped), whose run.yaml/history load through :meth:`NNRun.load`
+    (malformed artifacts are excluded, not fatal; `metadata.yaml` and
+    provenance are not read), whose BEST checkpoint parses, and — when the
     history protocol marker is present — whose BEST epoch is not beyond
     the committed LAST epoch (speculative history after a kill is not a
     winner). Legacy runs without the marker stay on their compatibility
@@ -481,13 +525,16 @@ def _committed_best_checkpoint(runs_root: str, run_id: str, root: Optional[str])
     `.best.lock` without touching any other run's lease or run lock.
     """
     run_path = os.path.join(runs_root, run_id)
-    if run_id == "best" or not os.path.isdir(run_path) or not os.path.isfile(os.path.join(run_path, "run.yaml")):
+    if not _is_run_entry(runs_root, run_id):
         return None
     try:
         # A journal run (FEAT-036) is checked through its manifest and index;
         # no history record is read to elect a winner. LAST is read once.
         committed_epoch = _committed_epoch(run_id, run_path, root)
-        NNRun._load(run_id, root, records=False, committed_epoch=committed_epoch)
+        # No metadata.yaml or provenance (#522): neither decides eligibility,
+        # and an unreadable provenance's warning (an error under `-W error`)
+        # must neither reach another run's save nor drop this run.
+        NNRun._load(run_id, root, records=False, committed_epoch=committed_epoch, sidecars=False)
         best = NNCheckpoint.load(run=run_id, type=Checkpoints.BEST, root=root)
         if best is None:
             return None
@@ -518,7 +565,7 @@ def _elect_best(
     winner: Optional[str] = None
     winner_score = float("inf")
     for entry in sorted(os.listdir(runs_root)):
-        if entry == exclude or entry == "best" or entry.startswith("."):
+        if entry == exclude:
             continue
         checkpoint = _committed_best_checkpoint(runs_root, entry, root)
         if checkpoint is None:
@@ -544,14 +591,15 @@ def _publish_best(runs_root: str, best_run_path: str, winner: Optional[str]) -> 
 def _load_provenance_tolerantly(run_id: str, root: Optional[str]) -> Optional[ProvenanceRecord]:
     """A run's provenance (FEAT-019), or ``None`` — with a warning when the
     files exist but are unreadable (truncated, edited, a newer format): like
-    ``metadata.yaml`` it is never needed to reload the run itself."""
+    ``metadata.yaml`` it is never needed to reload the run itself. The
+    warning names the caller's line, not one inside NNx (#522)."""
     try:
         return load_provenance(run_id, root)
     except (OSError, ValueError, KeyError, TypeError) as error:
-        warnings.warn(
-            f"run {run_id}: unreadable provenance ignored ({error}); run.provenance is None",
-            RuntimeWarning,
-            stacklevel=3,
+        from ..callbacks import _warn_at_user_frame
+
+        _warn_at_user_frame(
+            f"run {run_id}: unreadable provenance ignored ({error}); run.provenance is None", once_per_location=True
         )
         return None
 
@@ -935,7 +983,7 @@ class NNRun:
                 # never advertised (FIX-008). Lock order: lease → admission
                 # → best; election only takes lockless snapshots of other
                 # runs, so it cannot block on a live run's lease/run lock.
-                best_run_path = os.path.join(runs_root, "best")
+                best_run_path = os.path.join(runs_root, _BEST_POINTER)
                 with FileLock(os.path.join(runs_root, ".best.lock")):
                     if _read_best_pointer(best_run_path) == self.id:
                         _publish_best(runs_root, best_run_path, _elect_best(runs_root, root, exclude=self.id))
@@ -1000,7 +1048,7 @@ class NNRun:
     def _save_locked(self, root: Optional[str] = None, *, update_best: bool = True) -> NNRun:
         runs_root = _runs_root(root)
         run_path = os.path.join(runs_root, self.id)
-        best_run_path = os.path.join(runs_root, "best")
+        best_run_path = os.path.join(runs_root, _BEST_POINTER)
 
         csv_path = os.path.join(run_path, "idps.csv")
         yaml_path = os.path.join(run_path, "run.yaml")
@@ -1098,11 +1146,24 @@ class NNRun:
         """Load a saved run. Its history is ``idps.csv`` read whole — or, for
         a run with a history journal, the journal's committed tail:
         the last ``retention`` records, from the chunks that hold them. Either
-        way records past the LAST checkpoint's epoch are left out."""
+        way records past the LAST checkpoint's epoch are left out. A run
+        interrupted before its first commit (no LAST, no ``idps.csv``) loads
+        with an empty history; a committed or legacy run without
+        ``idps.csv`` raises ``ValueError`` naming the file."""
         return NNRun._load(id, root)
 
     @staticmethod
-    def _load(id: str, root: Optional[str] = None, *, records: bool = True, committed_epoch: Any = _COMPUTE) -> NNRun:
+    def _load(
+        id: str,
+        root: Optional[str] = None,
+        *,
+        records: bool = True,
+        committed_epoch: Any = _COMPUTE,
+        sidecars: bool = True,
+    ) -> NNRun:
+        # ``sidecars=False`` (the runs/best election) reads neither
+        # metadata.yaml nor provenance: the run loads without them.
+
         # Reject path-traversal identifiers before joining; see
         # `_validate_run_id` for the threat model. Internal callers pass
         # md5 hex (always safe), so this is a defense-in-depth guard on
@@ -1110,7 +1171,6 @@ class NNRun:
         id = _validate_run_id(id)
         run_path = os.path.join(_runs_root(root), id)
         yaml_path = os.path.join(run_path, "run.yaml")
-        csv_path = os.path.join(run_path, "idps.csv")
 
         with open(yaml_path, encoding="utf-8") as f:
             # safe_load — never FullLoader. NNRun.state() is a plain dict
@@ -1132,7 +1192,7 @@ class NNRun:
         journal = _JournalReader(os.path.join(run_path, HISTORY_DIR)) if has_journal(run_path) else None
         idps: list[NNIterationDataPoint] = []
         if journal is None:
-            idps = _read_idps_csv(csv_path)  # round-trip floats: the history as it was trained
+            idps = _read_run_idps(run_path)  # round-trip floats: the history as it was trained
 
         if committed_epoch is _COMPUTE:
             committed_epoch = _committed_epoch(id, run_path, root)
@@ -1156,7 +1216,7 @@ class NNRun:
                 trainer = None
 
             model = NNModelParams.from_state(rep["model"])
-            metadata = _read_metadata(os.path.join(run_path, "metadata.yaml"))
+            metadata = _read_metadata(os.path.join(run_path, "metadata.yaml")) if sidecars else None
             return NNRun(
                 # resolve_from_state: a TRANSFORMER run's net params must
                 # come back as NNTransformerParams, not be downgraded to
@@ -1171,7 +1231,7 @@ class NNRun:
                 resume_status=_load_resume_status(metadata),
                 precision=_load_precision(metadata),
                 compile=_load_compile(metadata),
-                provenance=_load_provenance_tolerantly(id, root),
+                provenance=_load_provenance_tolerantly(id, root) if sidecars else None,
                 # realpath: a run loaded through runs/best keeps its own journal.
                 history=os.path.realpath(journal.directory) if journal is not None else None,
             )
@@ -1183,21 +1243,13 @@ class NNRun:
     @staticmethod
     def all(root: Optional[str] = None) -> list[NNRun]:
         """List every saved NNRun under the runs root, skipping the `best`
-        pointer. Returns [] when the runs/ directory doesn't exist yet.
-        Non-directory entries (stray files, .DS_Store) are filtered out
-        so they don't trigger spurious NNRun.load failures."""
+        pointer and a stale `best.tmp` left by an interrupted repoint.
+        Returns [] when the runs/ directory doesn't exist yet. Non-directory
+        entries (stray files, .DS_Store), dot-names and directories without
+        run.yaml (a leftover from an aborted experiment) are filtered out so
+        they don't trigger spurious NNRun.load failures. A run interrupted
+        before its first commit loads with an empty history."""
         runs_root = _runs_root(root)
         if not os.path.isdir(runs_root):
             return []
-        result: list[NNRun] = []
-        for entry in os.listdir(runs_root):
-            if entry == "best":
-                continue
-            if not os.path.isdir(os.path.join(runs_root, entry)):
-                continue
-            # Defensive: a directory in runs/ that lacks run.yaml isn't a
-            # real run (could be a leftover from an aborted experiment).
-            if not os.path.isfile(os.path.join(runs_root, entry, "run.yaml")):
-                continue
-            result.append(NNRun.load(id=entry, root=root))
-        return result
+        return [NNRun.load(id=entry, root=root) for entry in os.listdir(runs_root) if _is_run_entry(runs_root, entry)]
