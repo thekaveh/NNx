@@ -367,6 +367,61 @@ def test_a_warmup_longer_than_its_schedule_is_refused():
         )
 
 
+def _scheduler_kwargs() -> dict:
+    return dict(min_lr=0.0, factor=0.5, patience=0, cooldown=0, threshold=0.0)
+
+
+@pytest.mark.parametrize(
+    "kind", ["ONE_CYCLE", "STEP", "COSINE_ANNEALING", "REDUCE_LR_ON_PLATEAU", None], ids=lambda k: str(k)
+)
+def test_a_kind_that_ignores_warmup_steps_accepts_one_longer_than_total_steps(kind):
+    """#546: only LINEAR_WARMUP_DECAY reads warmup_steps, so the other kinds
+    keep an unused one (a kind switch in a sweep or config dict), as on
+    0.4.1, and their saved runs load with the same state()."""
+    from nnx import NNSchedulerParams, Schedulers
+
+    p = NNSchedulerParams(
+        kind=None if kind is None else getattr(Schedulers, kind), total_steps=10, warmup_steps=20, **_scheduler_kwargs()
+    )
+    loaded = NNSchedulerParams.from_state(p.state())
+    assert loaded == p
+    assert loaded.state() == p.state()
+    assert p.state()["warmup_steps"] == 20
+
+
+def test_an_unused_warmup_steps_leaves_the_one_cycle_lr_trace_unchanged():
+    import torch
+
+    from nnx import NNSchedulerParams, Schedulers
+
+    def trace(**extra):
+        optimizer = torch.optim.SGD(torch.nn.Linear(2, 2).parameters(), lr=0.1)
+        params = NNSchedulerParams(
+            kind=Schedulers.ONE_CYCLE, max_lr=0.1, total_steps=10, **_scheduler_kwargs(), **extra
+        )
+        scheduler = Schedulers.ONE_CYCLE(optimizer, params, n_epochs=10)
+        lrs = []
+        for _ in range(10):
+            lrs.append(optimizer.param_groups[0]["lr"])
+            optimizer.step()
+            scheduler.step()
+        return lrs
+
+    assert trace(warmup_steps=20) == trace()
+
+
+def test_a_linear_warmup_longer_than_its_schedule_is_refused_by_from_state():
+    """The 0.3.0 rule: a saved LINEAR_WARMUP_DECAY run whose warm-up exceeds
+    its schedule no longer loads (it never reached its peak LR)."""
+    from nnx import NNSchedulerParams, Schedulers
+
+    with pytest.raises(ValueError, match="warmup_steps <= total_steps, got 5 > 2"):
+        NNSchedulerParams(kind=Schedulers.LINEAR_WARMUP_DECAY, warmup_steps=5, total_steps=2, **_scheduler_kwargs())
+    state = {**_scheduler_kwargs(), "kind": "linear_warmup_decay", "warmup_steps": 5, "total_steps": 2}
+    with pytest.raises(ValueError, match="warmup_steps <= total_steps, got 5 > 2"):
+        NNSchedulerParams.from_state(state)
+
+
 @pytest.mark.parametrize(("name", "momentum"), [("ADAM", 0.9), ("SGD", (0.9, 0.999))])
 def test_a_momentum_of_the_wrong_shape_fails_with_a_reason_when_built(name, momentum):
     """Constructible by design (ExperimentPlan.validate reports it); a
@@ -399,6 +454,11 @@ def test_a_warmup_longer_than_the_default_horizon_is_refused_when_built():
     optimizer = torch.optim.SGD(torch.nn.Linear(2, 2).parameters(), lr=0.1)
     with pytest.raises(ValueError, match="warmup_steps"):
         Schedulers.LINEAR_WARMUP_DECAY(optimizer, params, n_epochs=3)
+    # #546 scopes the constructor check to this kind; the build-time one
+    # still refuses a warm-up past a default horizon of 2 epochs.
+    short = NNSchedulerParams(kind=Schedulers.LINEAR_WARMUP_DECAY, warmup_steps=5, **_scheduler_kwargs())
+    with pytest.raises(ValueError, match=r"warmup_steps \(5\) must be <= the schedule's total_steps \(2\)"):
+        Schedulers.LINEAR_WARMUP_DECAY(optimizer, short, n_epochs=2)
 
 
 def test_predict_takes_numpy_float64_input():

@@ -2771,3 +2771,56 @@ def test_a_damaged_best_incumbent_does_not_fail_a_later_run(tmp_path, monkeypatc
     best.write_bytes(best.read_bytes()[: best.stat().st_size // 2])
     second = fit(1)  # used to raise PytorchStreamReader failed reading zip archive
     assert _read_best_pointer(os.path.join("runs", "best")) == second.id
+
+
+def test_a_one_cycle_run_with_an_unused_warmup_steps_loads_and_stays_best(tmp_path, monkeypatch):
+    """#546: a ONE_CYCLE run saved with an unused warmup_steps > total_steps
+    (valid on 0.4.1) loads, lists and stays runs/best after a worse run is
+    saved, with its id and state() unchanged."""
+    from nnx.nn.params.nn_run import _read_best_pointer
+
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+    x = torch.randn(256, 4)
+    loader = DataLoader(TensorDataset(x, (x[:, 0] > 0).long()), batch_size=32)
+    net_params, model_params = _make_params(input_dim=4, output_dim=2)
+
+    def fit(scheduler, lr, n_epochs=2):
+        return NNModel(net_params=net_params, params=model_params).train(
+            params=NNTrainParams(
+                n_epochs=n_epochs,
+                seed=0,
+                train_loader=loader,
+                val_loader=loader,
+                scheduler=scheduler,
+                optim=NNOptimParams(name=Optims.SGD, max_lr=lr, momentum=0.9, weight_decay=0.0),
+            )
+        )
+
+    def err(run_id):
+        return NNCheckpoint.load(run=run_id, type=Checkpoints.BEST).idp.val_edp.error
+
+    one_cycle = NNSchedulerParams(
+        min_lr=0.0,
+        factor=0.5,
+        patience=0,
+        cooldown=0,
+        threshold=0.0,
+        kind=Schedulers.ONE_CYCLE,
+        max_lr=0.1,
+        total_steps=10,
+        warmup_steps=20,
+    )
+    run = fit(one_cycle, lr=0.1)
+    assert _read_best_pointer(os.path.join("runs", "best")) == run.id
+
+    for loaded in (NNRun.load(run.id), NNRun.load("best")):
+        assert loaded.id == run.id
+        assert loaded.state() == run.state()
+        assert loaded.train.scheduler == one_cycle
+    assert [(r.id, r.state()) for r in NNRun.all()] == [(run.id, run.state())]
+
+    plateau = NNSchedulerParams(min_lr=0.0, factor=0.5, patience=0, cooldown=0, threshold=0.0)
+    worse = fit(plateau, lr=1e-4, n_epochs=1)
+    assert err(worse.id) > err(run.id)
+    assert _read_best_pointer(os.path.join("runs", "best")) == run.id

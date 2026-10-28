@@ -145,6 +145,28 @@ def test_trainer_params_state_picks_up_non_plateau_scheduler():
     assert p2.schedulers["G"].T_max == 10
 
 
+def test_trainer_params_round_trip_a_one_cycle_scheduler_with_an_unused_warmup():
+    """#546: NNRun.load reads a Trainer run's schedulers{} through
+    NNTrainerParams.from_state; a ONE_CYCLE entry keeps an unused
+    warmup_steps > total_steps (valid on 0.4.1) and its state()."""
+    one_cycle = NNSchedulerParams(
+        min_lr=0.0,
+        factor=0.5,
+        patience=0,
+        cooldown=0,
+        threshold=0.0,
+        kind=Schedulers.ONE_CYCLE,
+        max_lr=0.1,
+        total_steps=10,
+        warmup_steps=20,
+    )
+    p = NNTrainerParams(n_epochs=2, optims={"G": _g_optim()}, schedulers={"G": one_cycle})
+    p2 = NNTrainerParams.from_state(p.state())
+    assert p2 == p
+    assert p2.state() == p.state()
+    assert p2.schedulers["G"] == one_cycle
+
+
 def _metric_identity(y, y_hat):
     """Module-level so the pickle round-trip below can serialize it."""
     return 0.5
