@@ -457,16 +457,46 @@ def test_a_model_benchmarked_again_reuses_its_cached_graphs(helper, tmp_path):
 
 def test_another_spec_never_reuses_the_cached_graphs():
     """Another backend, or the same backend with other options, has a
-    counting backend of its own: it compiles and runs graphs of its own."""
+    counting backend of its own: it compiles and runs graphs of its own,
+    and none of the first spec's graphs counts for it."""
     from torch._dynamo.utils import counters
 
-    net = _feed_fwd_net(1)
+    import nnx.compilation as compilation
+
+    net, fast = _feed_fwd_net(1), compilation._counted_backend(FAST)
     assert benchmark_forward(net, _x(), compile=FAST, warmup=0, repeats=1).compile.effective == "compiled"
     for spec in (_counting(), dataclasses.replace(FAST, dynamic=False)):
-        graphs, before = counters["stats"]["unique_graphs"], _CALLS["n"]
+        backend = compilation._counted_backend(spec)
+        assert backend is not fast and backend is compilation._counted_backend(
+            dataclasses.replace(spec, on_failure="eager")
+        ), spec
+        graphs, before, fast_before, own_before = (
+            counters["stats"]["unique_graphs"],
+            _CALLS["n"],
+            fast.calls,
+            backend.calls,
+        )
         report = benchmark_forward(net, _x(), compile=spec, warmup=0, repeats=1)
         assert report.compile.effective == "compiled" and counters["stats"]["unique_graphs"] > graphs, spec
+        assert fast.calls == fast_before and backend.calls > own_before, spec
         assert (_CALLS["n"] > before) == (spec.backend == "nnx_test_counting")
+
+
+@pytest.mark.parametrize("policy", ["error", "eager"])
+@pytest.mark.parametrize("helper", HELPERS)
+def test_a_full_graph_spec_never_reuses_partial_graphs(helper, policy, tmp_path):
+    """``fullgraph`` is part of the spec: the partial graphs cached for a
+    graph-breaking model under ``fullgraph=False`` never serve a
+    ``fullgraph=True`` benchmark of it, which fails to compile."""
+    net = _BreaksMidway()
+    assert _run(helper, net, FAST, tmp_path / "partial").compile.effective == "compiled"
+    spec = dataclasses.replace(FAST, fullgraph=True, on_failure=policy)
+    if policy == "error":
+        with pytest.raises(CompileFailed):
+            _run(helper, net, spec, tmp_path / "full")
+        return
+    report = _run(helper, net, spec, tmp_path / "full")
+    assert report.compile.effective == "eager" and report.compile.restart is not None
 
 
 class _BreaksFirst(torch.nn.Module):

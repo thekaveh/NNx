@@ -460,10 +460,10 @@ class _CountedBackend:
     """The counting backend of one compile spec: the spec's backend,
     resolved as ``torch.compile`` resolves it (``mode`` included), with
     every graph it compiles counting its calls on :attr:`calls`. Dynamo
-    guards each cache entry on the backend that compiled it, so only graphs
-    compiled for this spec run under it (served from cache to any later
-    benchmark with the spec), and a graph cached for another spec or a fit
-    never runs, or counts, under it."""
+    guards each cache entry on the backend that compiled it, so a later
+    benchmark with the spec is served the graphs cached for it. Only those
+    graphs count: a graph cached for another spec or a fit never counts
+    under this spec, even when dynamo runs it at the recompile limit."""
 
     def __init__(self, spec: CompileSpec) -> None:
         if spec.backend == "inductor":
