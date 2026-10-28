@@ -289,8 +289,12 @@ def _fsync_path(path: str) -> None:
     try:
         # A file is opened for writing: Windows' fsync needs a writable handle.
         fd = os.open(path, os.O_RDONLY if os.path.isdir(path) else os.O_RDWR)
+    except FileNotFoundError:
+        return  # never written (the index of a migration with no records): nothing to flush
     except OSError:
-        return  # not openable (a directory, on Windows): nothing to flush
+        if os.path.isdir(path):
+            return  # a directory is not openable on Windows: nothing to flush
+        raise  # a file that cannot be reopened (EACCES, EIO, ...) was never flushed
     try:
         _full_fsync(fd)
     finally:
