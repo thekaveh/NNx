@@ -603,3 +603,44 @@ def test_dora_still_wraps_parametrized_and_subclassed_bases_with_parity_and_trai
         loss.backward()
         opt.step()
     assert torch.isfinite(net(_X)).all()
+
+
+@pytest.mark.parametrize("strict", [False, True], ids=["non_strict", "strict"])
+def test_a_plain_dora_net_still_exports(strict):
+    """#523 review: non-strict ``torch.export`` traces with FakeTensor weights,
+    which the quantized-weight check must not take for a quantized one."""
+    net = _mlp()
+    apply_dora_to(net, "0", r=2)
+    net.eval()
+    exported = torch.export.export(net, (_X,), strict=strict)
+    with torch.no_grad():
+        assert torch.allclose(exported.module()(_X), net(_X))
+
+
+def test_a_plain_dora_net_runs_under_fake_tensor_mode():
+    from torch._subclasses.fake_tensor import FakeTensorMode
+    from torch.func import functional_call
+
+    net = _mlp()
+    apply_dora_to(net, "0", r=2)
+    with FakeTensorMode(allow_non_fake_inputs=True) as mode:
+        fake = {k: mode.from_tensor(v) for k, v in net.state_dict().items()}
+        out = functional_call(net, fake, (mode.from_tensor(_X),))
+    assert out.shape == (5, 2)
+
+
+def test_a_training_forward_runs_a_dora_base_parametrization_once():
+    """#523 review: inspecting the weight must not read ``base.weight``, which
+    reruns the parametrization (a second spectral_norm power-iteration step)."""
+    from torch.nn.utils import parametrizations
+
+    net = _mlp()
+    parametrizations.spectral_norm(net[0])
+    norm = net[0].parametrizations.weight[0]
+    apply_dora_to(net, "0", r=2)
+    calls = []
+    stock = type(norm).forward
+    norm.forward = lambda w: (calls.append(1), stock(norm, w))[1]  # type: ignore[method-assign]
+    for _ in range(3):
+        net(_X).sum().backward()
+    assert len(calls) == 3

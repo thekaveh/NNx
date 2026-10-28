@@ -40,6 +40,28 @@ from ._targets import wrap_selected_linears
 from .lora import LoRALinear
 
 
+def _stored_weights(base: nn.Linear) -> list[torch.Tensor]:
+    """The tensors that store ``base``'s weight, read without running a
+    parametrization: its ``original`` tensors when ``weight`` is parametrized,
+    else the registered ``weight``."""
+    from torch.nn.utils import parametrize
+
+    if parametrize.is_parametrized(base, "weight"):
+        plist: nn.Module = base.parametrizations["weight"]  # type: ignore[index,assignment]
+        stored = {**plist._parameters, **plist._buffers}
+        return [t for name, t in stored.items() if name.startswith("original") and t is not None]
+    weight = base._parameters.get("weight")
+    return [weight] if weight is not None else []
+
+
+def _is_torchao_tensor(t: torch.Tensor) -> bool:
+    """Whether ``t`` is a torchao (quantized) tensor subclass, checked by module
+    so torchao need not be installed."""
+    if type(t) in (torch.Tensor, nn.Parameter):  # the common case, and all dynamo tracing needs to see
+        return False
+    return any(cls.__module__.split(".")[0] == "torchao" for cls in type(t).__mro__)
+
+
 def _bypassed_feature(base: nn.Linear) -> tuple[str, str] | None:
     """The first part of ``base``'s own forward path that DoRA would skip,
     with why and how to resolve it; ``None`` when there is none (FIX-056).
@@ -52,6 +74,12 @@ def _bypassed_feature(base: nn.Linear) -> tuple[str, str] | None:
     ``torch.nn.utils.parametrizations`` norms recompute ``base.weight`` on
     every access, so DoRA reads them correctly. Hooks are recognized by
     type, never by parameter names (as in ``surgery._utils.refuse_parametrized``).
+
+    The weight is inspected through its stored tensors, never ``base.weight``:
+    on a parametrized base that read would run the parametrization again (and
+    step ``parametrizations.spectral_norm``'s power iteration in training).
+    A quantized weight is recognized positively as a ``torchao`` tensor, so
+    the FakeTensors of ``torch.export`` and fake-mode tracing still pass.
     """
     from torch.nn.utils.prune import BasePruningMethod
     from torch.nn.utils.spectral_norm import SpectralNorm
@@ -60,7 +88,7 @@ def _bypassed_feature(base: nn.Linear) -> tuple[str, str] | None:
     bypassed = "DoRA reads the layer's weight and never calls the layer, so it would be bypassed."
     hooked = f"{bypassed} Remove the hook, or use LoRA, which calls the base layer and its hooks."
     stale = "It applies only when the layer is called, so DoRA would read a stale weight."
-    if "forward" in vars(base):
+    if "forward" in base.__dict__:  # not vars(): torch 2.4 dynamo cannot trace it
         return "an instance forward override", f"{bypassed} Use LoRA, which calls the base layer."
     pre_hooks = list(base._forward_pre_hooks.values())
     masks = sorted(getattr(h, "_tensor_name", "?") for h in pre_hooks if isinstance(h, BasePruningMethod))
@@ -83,12 +111,13 @@ def _bypassed_feature(base: nn.Linear) -> tuple[str, str] | None:
         return "a forward hook", hooked
     if base._backward_hooks or base._backward_pre_hooks:
         return "a backward hook", hooked
-    if type(base.weight) not in (torch.Tensor, nn.Parameter):
-        return (
-            f"a weight of type {type(base.weight).__name__} (an int8 quantized weight, say)",
-            "DoRA norms and adds to the weight itself, which a quantized weight does not support. Use LoRA, "
-            "which composes with an int8 base.",
-        )
+    for w in _stored_weights(base):  # a loop, not next(..., None): torch 2.4 dynamo cannot trace that
+        if _is_torchao_tensor(w):
+            return (
+                f"a weight of type {type(w).__name__} (an int8 quantized weight, say)",
+                "DoRA norms and adds to the weight itself, which a quantized weight does not support. Use LoRA, "
+                "which composes with an int8 base.",
+            )
     return None
 
 
