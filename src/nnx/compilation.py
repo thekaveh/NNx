@@ -276,14 +276,16 @@ def _most_cached_entries() -> int:
         return 0
 
 
-def _strict_recompiles(allowance: int, *, extend_without_strict: bool = False) -> Any:
+def _strict_recompiles(allowance: int, *, extend_without_strict: bool = False, extend_accumulated: bool = False) -> Any:
     """Make dynamo's recompile limit an error, not a silent eager fallback
     (where torch supports it), so the failure policy decides. The limit is
     per code object and process-wide, so each fit gets it afresh: the
-    configured limit plus the entries other fits of the class already hold,
-    and the same for the accumulated limit (every entry of a code object,
-    whatever it guards on). ``extend_without_strict`` still extends the
-    limits on a torch that cannot make them an error."""
+    configured limit plus the entries other fits of the class already hold.
+    ``extend_accumulated`` extends the accumulated limit (every entry of a
+    code object, whatever it guards on) the same way, for benchmarks, which
+    each compile entries of their own; a fit keeps it as configured.
+    ``extend_without_strict`` still extends the limits on a torch that
+    cannot make them an error."""
     import torch._dynamo.config as config
 
     changes: dict[str, Any] = {}
@@ -291,7 +293,7 @@ def _strict_recompiles(allowance: int, *, extend_without_strict: bool = False) -
         changes["fail_on_recompile_limit_hit"] = True
     elif not extend_without_strict:
         return contextlib.nullcontext()
-    for names in (_LIMIT_NAMES, _ACCUMULATED_LIMIT_NAMES):
+    for names in (_LIMIT_NAMES, _ACCUMULATED_LIMIT_NAMES) if extend_accumulated else (_LIMIT_NAMES,):
         name = next((name for name in names if hasattr(config, name)), None)
         if name is not None and allowance:
             changes[name] = int(getattr(config, name)) + allowance
@@ -518,9 +520,10 @@ class _InferenceSession(_CompileSession):
         return _most_cached_entries()
 
     def strict(self) -> Any:
-        """The recompile allowance (extended even where torch cannot make
-        the limit an error), around every call of :meth:`forward`."""
-        return _strict_recompiles(self._allowance, extend_without_strict=True)
+        """The recompile allowance, the accumulated limit included (extended
+        even where torch cannot make the limits an error), around every call
+        of :meth:`forward`."""
+        return _strict_recompiles(self._allowance, extend_without_strict=True, extend_accumulated=True)
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         compiled = self._compiled
