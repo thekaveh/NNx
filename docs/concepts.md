@@ -3446,9 +3446,10 @@ The helpers compile through `nnx.compilation`, as a fit does:
 - **Compiled nothing.** A run is compiled only when a graph compiled for
   its compile spec (the backend and its options) ran in its first call.
   Each spec compiles with one counting backend: the `CompileSpec` backend,
-  wrapped to count the calls of each graph it compiles. Dynamo reuses a
-  cached graph only under the backend that compiled it, so a graph cached
-  for another spec or a fit never counts. A forward under
+  wrapped to count the calls of each graph it compiles. Dynamo serves a
+  later benchmark with the spec the graphs cached for it, and only those
+  count: a graph cached for another spec or a fit never counts, even when
+  dynamo runs it at the recompile limit. A forward under
   `torch.compiler.disable`, one dynamo skips (an `nn.LSTM`, a forward with
   no torch op) or one dynamo leaves to eager at the recompile limit
   compiled nothing, and fails as a compile failure does. Benchmarks with
