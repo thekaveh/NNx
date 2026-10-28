@@ -577,7 +577,7 @@ def test_calibration_imports_no_optional_consumer():
         "typing",
     }
     assert top_level <= stdlib | {"numpy"}, top_level
-    assert internal == {"_artifacts", "_config", "_probability", "_validation"}, internal
+    assert internal == {"_artifacts", "_config", "_json_depth", "_probability", "_validation"}, internal
     code = f"""
 import sys, types
 package = types.ModuleType("nnx")
@@ -590,7 +590,7 @@ fit = module.fit_temperature(np.array([[2.0, 0.0]] * 3 + [[0.0, 2.0]]), np.array
 report = fit.require().report(np.array([[1.0, 0.0]]), np.array([0]), labels=("n", "p"), model_id="m", split_id="t")
 module.TemperatureCalibrator.from_json(fit.require().to_json())
 nnx_modules = sorted(name for name in sys.modules if name.split(".")[0] == "nnx")
-expected = ["nnx", "nnx._artifacts", "nnx._config", "nnx._probability", "nnx._validation", "nnx.calibration"]
+expected = ["nnx", "nnx._artifacts", "nnx._config", "nnx._json_depth", "nnx._probability", "nnx._validation", "nnx.calibration"]
 assert nnx_modules == expected, nnx_modules
 heavy = sorted(name for name in sys.modules if name.split(".")[0] in {{"torch", "sklearn", "pandas"}})
 assert heavy == [], heavy
@@ -1223,3 +1223,70 @@ def test_report_ignores_the_ids_it_never_uses():
     assert report.outcome in ("improved", "worsened", "mixed", "unchanged")
     with pytest.raises(CalibrationError, match="sample_ids"):
         _calibrator().transform(duck, model_id="run-1:BEST")
+
+
+# --------------------------------------------------- #551: JSON nested too deeply to read back
+
+
+def _nested(levels: int) -> dict:
+    """A mapping nested ``levels`` deep, built without recursion."""
+    value: dict = {}
+    for _ in range(levels - 1):
+        value = {"k": value}
+    return value
+
+
+def _deep_text(levels: int) -> str:
+    return '{"k":' * (levels - 1) + "{}" + "}" * (levels - 1)
+
+
+def _with_deep_value(state: dict, levels: int) -> str:
+    """``state`` as JSON text, its ``"__DEEP__"`` placeholder replaced by a
+    mapping nested ``levels`` deep (deeper than ``json.dumps`` could write)."""
+    return json.dumps(state).replace('"__DEEP__"', _deep_text(levels))
+
+
+@pytest.mark.parametrize("levels", [600, 1500, 9000])
+def test_a_deep_value_in_a_saved_calibrator_or_report_raises_the_module_error(tmp_path, levels):
+    """FIX-083: the value parsed (every level up to the parser's own limit,
+    which varies by Python version) and then overflowed the recursive freeze
+    with a raw RecursionError. The file's own bound refuses it, before
+    ``from_state`` (or the parser, on a Python whose limit is lower)."""
+    calibrator = _calibrator()
+    state = calibrator.state()
+    state["fit"]["config"]["note"] = "__DEEP__"
+    report = calibrator.report(K_LOGITS, K_TARGETS, labels=BINARY, model_id="run-9", split_id="test", override="o")
+    report_state = report.state()
+    report_state["override"]["mismatches"]["model_id"]["expected"] = "__DEEP__"
+    for load, what, text in (
+        (TemperatureCalibrator.load, "calibrator", _with_deep_value(state, levels)),
+        (CalibrationReport.load, "calibration report", _with_deep_value(report_state, levels)),
+    ):
+        path = tmp_path / "artifact.json"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(CalibrationError, match=f"^the {what} file (nests more than 256 levels|is JSON)"):
+            load(path)
+
+
+def test_a_calibrator_too_deep_to_read_back_is_refused_and_every_other_saves_and_reloads(tmp_path):
+    """A fit config / result sits at ``state["fit"][...]``: two levels of
+    the file wrap it, so 254 levels save and reload and 255 never construct
+    (1500 overflowed the recursive freeze with a raw RecursionError)."""
+    base = {"temperature": 1.5, "labels": BINARY, "model_id": "m", "split_id": "calib"}
+    for field in ("fit_config", "fit_result"):
+        for levels in (255, 1500):
+            with pytest.raises(CalibrationError, match=f"{field} nests more than 254 levels"):
+                TemperatureCalibrator(**base, **{field: {"deep": _nested(levels - 1)}})
+        calibrator = TemperatureCalibrator(**base, **{field: {"deep": _nested(253)}})
+        calibrator.save(tmp_path / "deepest.json")
+        assert TemperatureCalibrator.load(tmp_path / "deepest.json") == calibrator
+    calibrator = _calibrator()
+    report = calibrator.report(K_LOGITS, K_TARGETS, labels=BINARY, model_id="run-9", split_id="test", override="o")
+    state = report.state()
+    state["override"]["mismatches"]["model_id"]["expected"] = _nested(252)  # the file is 256 deep
+    deepest = CalibrationReport.from_state(state)
+    deepest.save(tmp_path / "report.json")
+    assert CalibrationReport.load(tmp_path / "report.json") == deepest
+    state["override"]["mismatches"]["model_id"]["expected"] = _nested(253)
+    with pytest.raises(CalibrationError, match="override nests more than 255 levels"):
+        CalibrationReport.from_state(state)

@@ -73,6 +73,7 @@ import numpy as np
 
 from ._artifacts import JsonArtifact, check_keys, override_record, parse_json, read_text
 from ._config import _thaw_config
+from ._json_depth import MAX_JSON_DEPTH
 from ._probability import (
     categorical_probabilities,
     categorical_probabilities_eps,
@@ -1314,7 +1315,9 @@ class ThresholdSelection(JsonArtifact):
 
     @staticmethod
     def from_json(text: str) -> ThresholdSelection:
-        return ThresholdSelection.from_state(parse_json(text, "threshold selection", AbstentionError))
+        return ThresholdSelection.from_state(
+            parse_json(text, "threshold selection", AbstentionError, max_depth=MAX_JSON_DEPTH)
+        )
 
     @staticmethod
     def load(path: Any) -> ThresholdSelection:

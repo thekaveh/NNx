@@ -977,8 +977,9 @@ def test_round_twelve_margins_are_float64_differences():
 def test_round_thirteen_malformed_files_and_states_raise_module_errors(monkeypatch):
     with pytest.raises(AbstentionError, match="JSON"):
         AbstentionPolicy.from_json('{"a": 1' + "0" * 5000 + "}")  # an integer past the digit limit
-    # Deep nesting overflows the parser's recursion on some Pythons and parses
-    # on others (3.14); either way the loader raises the module's error.
+    # Deep nesting overflows the parser's recursion, whose limit varies by
+    # Python version and stack size; either way the loader raises the
+    # module's error (a deep value the parser reads: #551's tests below).
     with pytest.raises(AbstentionError):
         AbstentionPolicy.from_json("[" * 100000 + "]" * 100000)
     import nnx._artifacts as artifacts
@@ -1299,3 +1300,57 @@ def test_float64_logits_score_as_before_and_saved_policies_keep_their_ids():
         }  # fmt: skip
         loaded = abstention.ThresholdSelection.from_json(json.dumps(selection))
         assert loaded.require().id == policy_id and loaded.state() == selection
+
+
+# --------------------------------------------------- #551: JSON nested too deeply to read back
+
+
+def _nested(levels: int) -> dict:
+    """A mapping nested ``levels`` deep, built without recursion."""
+    value: dict = {}
+    for _ in range(levels - 1):
+        value = {"k": value}
+    return value
+
+
+def _overridden_selection() -> abstention.ThresholdSelection:
+    """A selection tuned on calibrated probabilities produced under an override."""
+    from nnx.calibration import TemperatureCalibrator
+
+    calibrator = TemperatureCalibrator(temperature=1.0, labels=("a", "b"), model_id="m", split_id="calib")
+    two = P[:, :2] / P[:, :2].sum(1, keepdims=True)
+    overridden = calibrator.transform(np.log(two), labels=("a", "b"), model_id="n", override="audit")
+    return select_threshold(
+        overridden, [0, 1, 1, 1], kind="max_probability", risk_ceiling=0.5, split_id="val",
+        input_field="calibrated_probabilities",
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize("levels", [600, 1500, 9000])
+def test_a_deep_value_in_a_saved_threshold_selection_raises_the_module_error(tmp_path, levels):
+    """FIX-083: the value parsed (every level up to the parser's own limit,
+    which varies by Python version) and then overflowed the recursive freeze
+    with a raw RecursionError, or, shallower, loaded. The file's own bound
+    refuses it, before ``from_state`` (or the parser, on a lower limit)."""
+    state = _overridden_selection().state()
+    state["calibration_override"]["mismatches"]["model_id"]["expected"] = "__DEEP__"
+    deep = '{"k":' * (levels - 1) + "{}" + "}" * (levels - 1)
+    path = tmp_path / "selection.json"
+    path.write_text(json.dumps(state).replace('"__DEEP__"', deep), encoding="utf-8")
+    with pytest.raises(AbstentionError, match="^the threshold selection file (nests more than 256 levels|is JSON)"):
+        abstention.ThresholdSelection.load(path)
+
+
+def test_a_selection_too_deep_to_read_back_is_refused_and_the_deepest_other_reloads(tmp_path):
+    """The override sits at ``state["calibration_override"]``: 252 levels
+    under its ``expected`` make a 256-level file that reloads; one more is
+    refused at construction (1500 overflowed the recursive freeze)."""
+    state = _overridden_selection().state()
+    state["calibration_override"]["mismatches"]["model_id"]["expected"] = _nested(252)
+    deepest = abstention.ThresholdSelection.from_state(state)
+    deepest.save(tmp_path / "selection.json")
+    assert abstention.ThresholdSelection.load(tmp_path / "selection.json") == deepest
+    for levels in (253, 1500):
+        state["calibration_override"]["mismatches"]["model_id"]["expected"] = _nested(levels)
+        with pytest.raises(AbstentionError, match="nests more than 255 levels"):
+            abstention.ThresholdSelection.from_state(state)

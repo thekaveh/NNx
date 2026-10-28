@@ -17,15 +17,21 @@ from functools import cached_property
 from typing import Any, Optional, Union, cast
 
 from ._config import _canonical_json, _freeze_config, _FrozenConfig
+from ._json_depth import MAX_JSON_DEPTH, too_deep
 from ._validation import required_id
 
 
-def frozen_json(value: Any, what: str, error: type[Exception]) -> _FrozenConfig:
+def frozen_json(value: Any, what: str, error: type[Exception], *, enclosing: int) -> _FrozenConfig:
     """An immutable, picklable JSON-like copy of a mapping (nested mappings
     frozen, lists as tuples), so an artifact's state cannot drift from its
-    digest; anything else raises ``error``."""
+    digest; anything else raises ``error``. ``enclosing`` counts the levels
+    of the artifact's file around the value: it nests at most
+    ``MAX_JSON_DEPTH - enclosing`` levels, so the saved file reads back."""
     if not isinstance(value, Mapping):
         raise error(f"{what} must be a mapping, got {value!r}")
+    limit = MAX_JSON_DEPTH - enclosing
+    if too_deep(value, limit):  # before the recursive copy, which would overflow
+        raise error(f"{what} nests more than {limit} levels; an artifact file holds at most {MAX_JSON_DEPTH}")
     try:
         return _freeze_config(value, "", owner=what)
     except (TypeError, ValueError) as exc:
@@ -52,7 +58,7 @@ def override_record(value: Any, *, error: type[Exception], what: str = "an overr
     for name, pair in mismatches.items():
         if not isinstance(pair, Mapping) or set(pair) != {"expected", "actual"}:
             raise error(f"override mismatch {name!r} must hold 'expected' and 'actual', got {pair!r}")
-    return frozen_json(value, "override", error)
+    return frozen_json(value, "override", error, enclosing=1)  # a top-level key of every file that holds one
 
 
 def atomic_write(path: Union[str, os.PathLike[str]], text: str) -> None:
@@ -71,10 +77,11 @@ def read_text(path: Union[str, os.PathLike[str]], what: str, error: type[Excepti
         raise error(f"the {what} file is UTF-8 JSON; {os.fspath(path)!r} is not text: {exc}") from exc
 
 
-def parse_json(text: str, what: str, error: type[Exception]) -> Any:
+def parse_json(text: str, what: str, error: type[Exception], *, max_depth: Optional[int] = None) -> Any:
     """Strict JSON: ``NaN`` / ``Infinity`` (which ``json`` would accept), a
     number too large for a float (``1e999``) and malformed text raise
-    ``error``."""
+    ``error``; so does nesting past ``max_depth`` levels, when given, and
+    past the parser's own limit, whatever it is on this Python."""
 
     def constant(name: str) -> Any:
         raise error(f"the {what} file is strict JSON; {name} is not a JSON number")
@@ -86,11 +93,16 @@ def parse_json(text: str, what: str, error: type[Exception]) -> Any:
         return value
 
     try:
-        return json.loads(text, parse_constant=constant, parse_float=number)
+        value = json.loads(text, parse_constant=constant, parse_float=number)
     except error:
         raise  # the constant hook's own message
     except (ValueError, RecursionError) as exc:  # malformed, an over-long integer, or nesting too deep
         raise error(f"the {what} file is JSON: {exc}") from exc
+    # FIX-083: below the parser's limit, a deep value parsed and then overflowed
+    # the loader's recursive freeze; refused here, the same on every version.
+    if max_depth is not None and too_deep(value, max_depth):
+        raise error(f"the {what} file nests more than {max_depth} levels")
+    return value
 
 
 def check_keys(

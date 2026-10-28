@@ -5356,7 +5356,10 @@ The declared intent of an experiment. Everything is JSON-like and immutable; `fi
 Values are validated and copied into immutable form at construction, so
 later changes to the dicts you passed never change the manifest;
 equality and hashing follow the canonical bytes (``1`` and ``1.0``
-differ, as they do in the fingerprint).
+differ, as they do in the fingerprint). ``task``, ``model``,
+``objective`` and ``config`` nest at most 254 levels each (a ``ValueError``
+naming the field's JSON path past that), so ``provenance.json`` — which
+wraps them in two more — always reads back.
 
 Args:
     task: the task declaration (e.g. ``TaskSpec.state()``).

@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 import numpy as np
 
 from ._config import _canonical_json
+from ._json_depth import MAX_JSON_DEPTH, too_deep
 from ._validation import require_count
 
 if TYPE_CHECKING:
@@ -242,6 +243,20 @@ def _refs(values: Optional[Mapping[str, Any]], *, owner: str) -> dict[str, Ident
 # --- the manifest --------------------------------------------------------------------------
 
 
+# FIX-083: a manifest field sits at provenance.json's ["manifest"][name], two
+# levels down, so a field nested deeper than this was written but refused on
+# read (and, far deeper, overflowed the recursive copies with RecursionError).
+_MAX_FIELD_DEPTH = MAX_JSON_DEPTH - 2
+
+
+def _check_depth(value: Any, path: str) -> None:
+    if too_deep(value, _MAX_FIELD_DEPTH):
+        raise ValueError(
+            f"{path}: nested more than {_MAX_FIELD_DEPTH} levels; provenance.json, which wraps the field in two "
+            f"more, reads at most {MAX_JSON_DEPTH}"
+        )
+
+
 def _freeze(value: Any) -> Any:
     """Immutable copy of a canonical JSON-like value."""
     from ._config import _FrozenConfig
@@ -271,7 +286,10 @@ class ExperimentManifest:
     Values are validated and copied into immutable form at construction, so
     later changes to the dicts you passed never change the manifest;
     equality and hashing follow the canonical bytes (``1`` and ``1.0``
-    differ, as they do in the fingerprint).
+    differ, as they do in the fingerprint). ``task``, ``model``,
+    ``objective`` and ``config`` nest at most 254 levels each (a ``ValueError``
+    naming the field's JSON path past that), so ``provenance.json`` — which
+    wraps them in two more — always reads back.
 
     Args:
         task: the task declaration (e.g. ``TaskSpec.state()``).
@@ -311,7 +329,11 @@ class ExperimentManifest:
         if self.config is None:  # from_state reads a missing config as {}: one fingerprint for both
             object.__setattr__(self, "config", {})
         for name in ("task", "model", "objective", "config"):
-            object.__setattr__(self, name, _freeze(_canonical(getattr(self, name), f"$.{name}")))
+            value, path = getattr(self, name), f"$.{name}"
+            _check_depth(value, path)  # before the recursive copies, which would overflow
+            canonical = _canonical(value, path)
+            _check_depth(canonical, path)  # exact: each IdentityRef became an object
+            object.__setattr__(self, name, _freeze(canonical))
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ExperimentManifest):
@@ -530,21 +552,13 @@ def load_provenance(run_id: str, root: Optional[str] = None) -> Optional[Provena
         raise ValueError(f"run {run_id}: provenance JSON nested too deeply to read") from error
 
 
-_MAX_JSON_DEPTH = 512  # far deeper than any real config; the parser's own limit varies by Python version
-
-
 def _load_json(handle: Any) -> Any:
-    """Parse a provenance file, refusing nesting past ``_MAX_JSON_DEPTH``
-    on every Python version (3.14 parses 100,000 levels; older versions hit
-    the recursion limit). Measured without recursion."""
+    """Parse a provenance file, refusing nesting past ``MAX_JSON_DEPTH``
+    on every Python version (the parser's own limit varies by version and
+    stack size), the bound :class:`ExperimentManifest` applies when built."""
     value = json.load(handle)
-    stack = [(value, 1)]
-    while stack:
-        item, depth = stack.pop()
-        if isinstance(item, (dict, list)):
-            if depth > _MAX_JSON_DEPTH:
-                raise RecursionError("provenance JSON is nested too deeply")
-            stack.extend((child, depth + 1) for child in (item.values() if isinstance(item, dict) else item))
+    if too_deep(value, MAX_JSON_DEPTH):
+        raise RecursionError("provenance JSON is nested too deeply")
     return value
 
 
