@@ -14,6 +14,8 @@ from __future__ import annotations
 import math
 import socket
 
+import numpy as np
+import pandas as pd
 import pytest
 import torch
 from torch import nn
@@ -132,6 +134,60 @@ def _file(tmp_path):
     path = tmp_path / "rows.csv"
     path.write_bytes(b"row-1\nrow-2\n")
     return path
+
+
+@pytest.mark.parametrize(
+    "chunk_size", [0, False, True, np.int64(0), -1, -5, None, 2.0, 2.5, "8"], ids=lambda value: repr(value)
+)
+def test_hash_file_refuses_a_chunk_size_that_is_not_an_integer_of_at_least_one(tmp_path, chunk_size):
+    # FIX-053: read(0) returned b"" at once, so 0 / False hashed no bytes and every file got the
+    # verified empty-input digest; the check runs before the file opens.
+    with pytest.raises(ValueError, match=r"hash_file requires chunk_size"):
+        hash_file(_file(tmp_path), chunk_size=chunk_size)
+    with pytest.raises(ValueError, match=r"hash_file requires chunk_size"):
+        hash_file(tmp_path / "missing.csv", chunk_size=chunk_size)
+
+
+@pytest.mark.parametrize("chunk_size", [1, 7, np.int64(4), None], ids=["1", "7", "np.int64(4)", "default"])
+@pytest.mark.parametrize("payload", [b"", bytes(range(256)) * 3], ids=["empty", "larger-than-chunk"])
+def test_hash_file_digests_every_byte_at_any_valid_chunk_size(tmp_path, chunk_size, payload):
+    path = tmp_path / "rows.bin"
+    path.write_bytes(payload)
+    ref = hash_file(path) if chunk_size is None else hash_file(path, chunk_size=chunk_size)
+    assert ref == hash_bytes(payload) and ref.verified
+
+
+def test_a_hash_file_source_still_catches_a_changed_source_in_split_replays(tmp_path):
+    from nnx import NNTabularDataset
+    from nnx.data_splits import SplitError, plan_split
+
+    path = tmp_path / "rows.csv"
+    path.write_bytes(b"id,x\n0,1\n1,2\n")
+    groups = ["g0", "g1", "g2", "g3", "g4", "g5"]
+    ids = [f"s{i}" for i in range(6)]
+    positional = plan_split(
+        None, strategy="group", groups=groups, proportions=(0.5, 0.25, 0.25), seed=7, source=hash_file(path)
+    )
+    by_id = plan_split(
+        ids,
+        strategy="group",
+        groups=groups,
+        proportions=(0.5, 0.25, 0.25),
+        seed=7,
+        source=hash_file(path, chunk_size=3),
+    )
+    path.write_bytes(b"id,x\n1,2\n0,1\n")  # the source changes after planning
+    with pytest.raises(SplitError, match="source identity changed"):
+        positional.resolve(range(len(groups)), source=hash_file(path))
+    with pytest.raises(SplitError, match="source identity changed"):
+        NNTabularDataset(
+            df=pd.DataFrame({"id": ids, "x": [float(i) for i in range(6)], "y": [0, 1, 0, 1, 0, 1]}),
+            feature_cols=["x"],
+            target_col="y",
+            split=by_id,
+            id_col="id",
+            source_identity=hash_file(path, chunk_size=3),
+        )
 
 
 # --- no loader, no model, no socket ---------------------------------------------------------------
