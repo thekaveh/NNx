@@ -891,6 +891,44 @@ def test_max_abs_diff_compares_float64_and_complex_outputs_at_full_width():
     assert _diff(_Complex(), plus_1j) == pytest.approx(1.0)
 
 
+def test_max_abs_diff_reads_every_chunk_and_never_writes_the_outputs(monkeypatch):
+    monkeypatch.setattr(benchmarking, "_DIFF_CHUNK", 3)
+    a = torch.arange(20, dtype=torch.float64).reshape(4, 5)
+    a[0, 1] = a[2, 2] = float("-inf")
+    for index, value, expected in [
+        ((0, 0), 0.0, 0.0),
+        ((3, 4), 26.0, 7.0),  # last chunk only
+        ((2, 1), float("nan"), float("inf")),
+    ]:
+        b = a.clone()
+        b[index] = value
+        before = (a.clone(), b.clone())
+        assert benchmarking._abs_diff(a, b) == expected
+        assert benchmarking._abs_diff(a.t(), b.t()) == expected  # non-contiguous
+        for output, copied in zip((a, b), before, strict=True):  # float64 chunks alias the outputs
+            torch.testing.assert_close(output, copied, rtol=0, atol=0, equal_nan=True)
+
+
+def test_max_abs_diff_widens_large_outputs_without_full_size_copies():
+    """Peak host memory stays near the chunk size, not several float64
+    copies of the outputs (about 450 MB extra here before the fix)."""
+    import subprocess
+    import sys
+
+    pytest.importorskip("resource")  # POSIX only
+    script = (
+        "import resource, sys, torch\n"
+        "from nnx.benchmarking import _abs_diff\n"
+        "a = torch.randn(12_500_000); b = a.clone(); b[-1] += 3\n"
+        "base = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+        "assert _abs_diff(a, b) > 2.9\n"
+        "extra = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - base\n"
+        "print(extra * (1 if sys.platform == 'darwin' else 1024) / 2**20)\n"
+    )
+    extra_mb = float(subprocess.run([sys.executable, "-c", script], check=True, capture_output=True, text=True).stdout)
+    assert extra_mb < 200
+
+
 # ---------------- nothing on disk before validation ----------------
 
 
