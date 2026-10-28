@@ -72,7 +72,10 @@ request to erase history.
 Each text file is replaced on its own through an owned temporary file. A
 failed write leaves that destination's previous bytes and removes its
 temporary. The history files are not one multi-file transaction, however, and
-a hard kill can still leave a stale temporary behind.
+a hard kill can still leave a stale temporary behind. An interrupt between a
+first save's `run.yaml` and its `idps.csv` leaves a run with nothing
+committed, which loads with an empty history
+([Concepts §4](concepts.md#4-what-lands-on-disk), §4.2).
 
 With an opt-in history journal (`history=HistoryJournal(...)`,
 [Concepts §4.5](concepts.md#45-bounded-history-the-history-journal)) the
