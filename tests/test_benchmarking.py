@@ -300,25 +300,10 @@ def test_compare_compile_after_nine_compiled_fits_of_the_class_compiles(tmp_path
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
-    generator = torch.Generator().manual_seed(0)
-    batches = [(torch.randn(8, 4, generator=generator), torch.randint(0, 2, (8,), generator=generator))]
     for depth in range(1, 10):
-        torch.manual_seed(0)
-        model = NNModel(
-            net_params=NNParams(
-                input_dim=4, output_dim=2, hidden_dims=[8] * depth, dropout_prob=0.0, activation=Activations.RELU
-            ),
-            params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
-        )
-        params = NNTrainParams(
-            n_epochs=1,
-            train_loader=batches,
-            optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
-            overwrite_existing=True,
-        )
-        assert model.train(params=params, compile=FAST).compile.effective == "compiled", depth
+        assert _fit(depth, FAST).compile.effective == "compiled", depth
     graphs = counters["stats"]["unique_graphs"]
-    comparison = compare_compile(model.net, _x(), compile=FAST, warmup=1, repeats=2)
+    comparison = compare_compile(_feed_fwd_net(9), _x(), compile=FAST, warmup=1, repeats=2)
     assert counters["stats"]["unique_graphs"] > graphs  # a no-grad graph compiled for it
     assert (comparison.compiled.label, comparison.compiled.compile.effective) == ("compiled", "compiled")
 
@@ -441,26 +426,47 @@ def test_a_forward_dynamo_skips_is_never_reported_compiled(helper, policy, make,
             assert (report.label, report.backend) == ("eager", None)
 
 
+def _entries() -> int:
+    """Dynamo's cache entries on every code object it traced (the forward's,
+    or the module call wrapper's on the 2.4 floor)."""
+    from torch._dynamo.convert_frame import input_codes
+    from torch._dynamo.eval_frame import _debug_get_cache_entry_list
+
+    codes = [code for code in (ref() for ref in list(input_codes.seen)) if code is not None]
+    return sum(len(_debug_get_cache_entry_list(code)) for code in codes)
+
+
 @pytest.mark.parametrize("helper", HELPERS)
-def test_a_second_benchmark_compiles_and_runs_graphs_of_its_own(helper, tmp_path):
-    """A second copy of a module is never served the graph dynamo cached for
-    the first benchmark: each benchmark compiles with a backend of its own,
-    and dynamo guards each cached graph on the backend that compiled it."""
+def test_a_model_benchmarked_again_reuses_its_cached_graphs(helper, tmp_path):
+    """Benchmarks with one spec share its counting backend, so a model
+    benchmarked again runs the graphs cached for it and adds no cache
+    entry, yet each run counts as compiled. (The 2.4 floor keys its graphs
+    on the deep copy: it recompiles each time and frees the entry with the
+    copy.)"""
+    spec, net = _counting(), _feed_fwd_net(1)
+    held = []
+    for attempt in range(5):
+        before = _CALLS["n"]
+        report = _run(helper, net, spec, tmp_path / str(attempt))
+        assert report.compile.effective == "compiled" and _CALLS["n"] > before, attempt
+        if not isinstance(report, ProfileReport):
+            assert (report.label, report.backend) == ("compiled", spec.backend)
+        held.append(_entries())
+    assert held == [held[0]] * 5 and (held[0] >= 1 or torch.__version__ < "2.5")
+
+
+def test_another_spec_never_reuses_the_cached_graphs():
+    """Another backend, or the same backend with other options, has a
+    counting backend of its own: it compiles and runs graphs of its own."""
     from torch._dynamo.utils import counters
 
-    spec = _counting()
-    assert benchmark_forward(_net(), _inputs(), compile=spec, warmup=0, repeats=1).label == "compiled"
-    graphs, before = counters["stats"]["unique_graphs"], _CALLS["n"]
-    if helper == "benchmark_forward":
-        report = benchmark_forward(_net(), _inputs(), compile=spec, warmup=0, repeats=1)
-    elif helper == "compare_compile":
-        report = compare_compile(_net(), _inputs(), compile=spec, warmup=0, repeats=1).compiled
-    else:
-        report = profile_forward(_net(), _inputs(), compile=spec, output_dir=tmp_path, wait=0, warmup=0, active=1)
-    assert counters["stats"]["unique_graphs"] > graphs and _CALLS["n"] > before
-    assert report.compile.effective == "compiled"
-    if not isinstance(report, ProfileReport):
-        assert (report.label, report.backend) == ("compiled", spec.backend)
+    net = _feed_fwd_net(1)
+    assert benchmark_forward(net, _x(), compile=FAST, warmup=0, repeats=1).compile.effective == "compiled"
+    for spec in (_counting(), dataclasses.replace(FAST, dynamic=False)):
+        graphs, before = counters["stats"]["unique_graphs"], _CALLS["n"]
+        report = benchmark_forward(net, _x(), compile=spec, warmup=0, repeats=1)
+        assert report.compile.effective == "compiled" and counters["stats"]["unique_graphs"] > graphs, spec
+        assert (_CALLS["n"] > before) == (spec.backend == "nnx_test_counting")
 
 
 class _BreaksFirst(torch.nn.Module):
@@ -561,8 +567,8 @@ def test_a_graph_breaking_forward_benchmarked_again_is_reported_compiled(helper,
     """Benchmarked again in one process (the same model, or a new one of the
     class), wherever its graph break sits: in the forward, a child's, a
     helper function or another method, and through the wrapper torch's own
-    modules (an ``nn.Sequential``) share. Each benchmark compiles and runs
-    graphs of its own."""
+    modules (an ``nn.Sequential``) share. Each benchmark runs graphs
+    compiled for its spec: its own, or those cached for an earlier one."""
     spec = dataclasses.replace(_counting(), on_failure=policy)
     same = make()
     for attempt, net in enumerate([same, same, make(), make()]):
@@ -574,92 +580,117 @@ def test_a_graph_breaking_forward_benchmarked_again_is_reported_compiled(helper,
             assert (report.label, report.backend) == ("compiled", spec.backend)
 
 
-class _AlsoBreaksInHelper(_BreaksInHelper):
+class _WideBreaksInHelper(torch.nn.Module):
+    def __init__(self, width: int) -> None:
+        super().__init__()
+        self.lin = torch.nn.Linear(4, width)
+
     def forward(self, x):
-        return _apply(self.lin, x) * 2
+        return _apply(self.lin, x)
 
 
 @pytest.mark.parametrize("helper", HELPERS)
 def test_a_graph_breaking_forward_keeps_compiling_past_the_recompile_limit(helper, tmp_path):
-    """Each benchmark adds cache entries to the helper function and the
-    resume functions its graph break leaves, not only to the forward: ten
-    benchmarks in one process of two classes sharing the helper all
-    compile, though each forward holds only five entries (torch 2.13 does
-    not count the helper's entries for other layers against the limit; the
-    2.4 floor does)."""
-    spec = _counting()
-    for attempt in range(10):
+    """A benchmark adds cache entries to the helper function and the resume
+    functions its graph break leaves, not only to the forward: ten widths
+    with static shapes give the helper ten entries, past the recompile
+    limit's 8, and all compile."""
+    spec = dataclasses.replace(_counting(), dynamic=False)
+    for width in range(1, 11):
         before = _CALLS["n"]
-        net = _BreaksInHelper() if attempt % 2 else _AlsoBreaksInHelper()
-        report = _run(helper, net, spec, tmp_path / str(attempt))
-        assert report.compile.effective == "compiled" and _CALLS["n"] > before, attempt
+        report = _run(helper, _WideBreaksInHelper(width), spec, tmp_path / str(width))
+        assert report.compile.effective == "compiled" and _CALLS["n"] > before, width
+
+
+_ACCUMULATED = next(
+    n for n in ("accumulated_recompile_limit", "accumulated_cache_size_limit") if hasattr(torch._dynamo.config, n)
+)
 
 
 @pytest.mark.parametrize("helper", HELPERS)
 def test_one_model_benchmarked_past_the_accumulated_limit_keeps_compiling(helper, tmp_path):
-    """Each benchmark compiles graphs of its own, which stay cached, so a
-    process benchmarking one model again and again passes dynamo's
-    accumulated limit (256 entries of a code object, here lowered to 3):
-    each call gets that limit afresh too."""
-    config = torch._dynamo.config
-    name = next(n for n in ("accumulated_recompile_limit", "accumulated_cache_size_limit") if hasattr(config, n))
+    """A model benchmarked again and again adds no cache entry, so it never
+    nears dynamo's accumulated limit (256 entries of a code object, here
+    lowered to 3)."""
     spec, net = _counting(), _feed_fwd_net(1)
-    with config.patch(**{name: 3}):
+    with torch._dynamo.config.patch(**{_ACCUMULATED: 3}):
         for attempt in range(6):
             before = _CALLS["n"]
             report = _run(helper, net, spec, tmp_path / str(attempt))
             assert report.compile.effective == "compiled" and _CALLS["n"] > before, attempt
 
 
-def test_only_benchmarks_extend_the_accumulated_limit(tmp_path, monkeypatch):
-    """A fit extends dynamo's recompile limit only: its accumulated limit
-    (here lowered to 3) stays as configured, while a benchmark of the same
-    class, which compiles entries of its own, gets it extended."""
-    config = torch._dynamo.config
-    name = next(n for n in ("accumulated_recompile_limit", "accumulated_cache_size_limit") if hasattr(config, n))
-    seen: list[int] = []
-
-    def build(gm):
-        seen.append(int(getattr(config, name)))
-        return gm.forward
-
-    spec = _backend("nnx_test_reads_accumulated_limit", build)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+def _fit(depth: int, spec: CompileSpec):
     generator = torch.Generator().manual_seed(0)
     batches = [(torch.randn(8, 4, generator=generator), torch.randint(0, 2, (8,), generator=generator))]
-    with config.patch(**{name: 3}):
+    params = NNTrainParams(
+        n_epochs=1,
+        train_loader=batches,
+        optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+        overwrite_existing=True,
+    )
+    torch.manual_seed(0)
+    model = NNModel(
+        net_params=NNParams(
+            input_dim=4, output_dim=2, hidden_dims=[8] * depth, dropout_prob=0.0, activation=Activations.RELU
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    return model.train(params=params, compile=spec)
+
+
+def test_a_compiled_fit_still_compiles_after_many_benchmarks_of_the_class(tmp_path, monkeypatch):
+    """Benchmarks of one model leave no new cache entries behind, so a
+    compiled fit of the class afterwards stays under dynamo's accumulated
+    limit (here lowered to 4, against 30 benchmarks) and compiles."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    net = _feed_fwd_net(1)
+    with torch._dynamo.config.patch(**{_ACCUMULATED: 4}):
+        for attempt in range(30):
+            report = benchmark_forward(net, _x(), compile=FAST, warmup=0, repeats=1)
+            assert report.compile.effective == "compiled", attempt
+        assert _fit(1, FAST).compile.effective == "compiled"
+
+
+def test_neither_fits_nor_benchmarks_extend_the_accumulated_limit(tmp_path, monkeypatch):
+    """The accumulated limit (here lowered to 3) stays as configured for a
+    fit and a benchmark alike. Where torch cannot make the recompile limit
+    an error (the 2.4 floor), neither changes the recompile limit either."""
+    config = torch._dynamo.config
+    limit = "recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit"
+    seen: list[tuple[int, int]] = []
+
+    def build(gm):
+        seen.append((int(getattr(config, _ACCUMULATED)), int(getattr(config, limit))))
+        return gm.forward
+
+    spec = _backend("nnx_test_reads_the_limits", build)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    configured = int(getattr(config, limit))
+    with config.patch(**{_ACCUMULATED: 3}):
         for depth in (1, 2):  # the second fit's allowance is the first fit's entries
-            params = NNTrainParams(
-                n_epochs=1,
-                train_loader=batches,
-                optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
-                overwrite_existing=True,
-            )
-            torch.manual_seed(0)
-            model = NNModel(
-                net_params=NNParams(
-                    input_dim=4, output_dim=2, hidden_dims=[8] * depth, dropout_prob=0.0, activation=Activations.RELU
-                ),
-                params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
-            )
-            assert model.train(params=params, compile=spec).compile.effective == "compiled", depth
-        fits = list(seen)
+            assert _fit(depth, spec).compile.effective == "compiled", depth
+        fits = len(seen)
         report = benchmark_forward(_feed_fwd_net(3), _x(), compile=spec, warmup=0, repeats=1)
         assert report.compile.effective == "compiled"
-    assert fits and set(fits) == {3}
-    assert seen[len(fits) :] and min(seen[len(fits) :]) > 3
+    assert fits and len(seen) > fits
+    assert {accumulated for accumulated, _ in seen} == {3}
+    if not hasattr(config, "fail_on_recompile_limit_hit"):
+        assert {recompile for _, recompile in seen} == {configured}
 
 
 @pytest.mark.parametrize("policy", ["error", "eager"])
 @pytest.mark.parametrize("make", [_BreaksMidway, _BreaksInHelper], ids=["midway", "helper"])
-def test_a_graph_cached_for_an_earlier_benchmark_never_counts_as_compiled(policy, make, monkeypatch):
-    """Without the allowance and with a recompile limit of 1, a second
-    benchmark cannot compile its graphs (the 2.4 floor still compiles the
-    one before the break, keyed on the new copy). Dynamo may then run the
-    graphs cached for the first one (torch 2.13 does, past the limit,
-    without failing): they were not compiled for this benchmark, so unless
-    a graph of its own compiled and ran, it compiled nothing."""
+def test_a_graph_cached_for_another_spec_never_counts_as_compiled(policy, make, monkeypatch):
+    """Without the allowance and with a recompile limit of 1, a benchmark
+    with another spec (here other options) cannot compile its graphs (the
+    2.4 floor still compiles the one before the break, keyed on the new
+    copy). Dynamo may then run the graphs cached for the first spec (torch
+    2.13 does, past the limit, without failing): they were not compiled for
+    this spec, so unless a graph of its own compiled and ran, it compiled
+    nothing. The first spec again runs its cached graphs: compiled."""
     from torch._dynamo.utils import counters
 
     import nnx.compilation as compilation
@@ -670,9 +701,10 @@ def test_a_graph_cached_for_an_earlier_benchmark_never_counts_as_compiled(policy
     first = make()
     with config.patch(**{"recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit": 1}):
         assert benchmark_forward(first, _x(), compile=spec, warmup=0, repeats=1).compile.effective == "compiled"
-        graphs = counters["stats"]["unique_graphs"]
+        assert benchmark_forward(first, _x(), compile=spec, warmup=0, repeats=1).compile.effective == "compiled"
+        graphs, other = counters["stats"]["unique_graphs"], dataclasses.replace(spec, dynamic=False)
         try:
-            report = benchmark_forward(first, _x(), compile=spec, warmup=0, repeats=1)
+            report = benchmark_forward(first, _x(), compile=other, warmup=0, repeats=1)
         except CompileFailed as caught:
             assert policy == "error" and "compiled nothing" in str(caught)
             return

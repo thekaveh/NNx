@@ -248,7 +248,6 @@ def _message(error: BaseException) -> str:
 
 
 _LIMIT_NAMES = ("recompile_limit", "cache_size_limit")  # torch >= 2.6 / older
-_ACCUMULATED_LIMIT_NAMES = ("accumulated_recompile_limit", "accumulated_cache_size_limit")
 
 
 def _cached_entries(net: torch.nn.Module) -> int:
@@ -276,28 +275,20 @@ def _most_cached_entries() -> int:
         return 0
 
 
-def _strict_recompiles(allowance: int, *, extend_without_strict: bool = False, extend_accumulated: bool = False) -> Any:
+def _strict_recompiles(allowance: int) -> Any:
     """Make dynamo's recompile limit an error, not a silent eager fallback
     (where torch supports it), so the failure policy decides. The limit is
     per code object and process-wide, so each fit gets it afresh: the
-    configured limit plus the entries other fits of the class already hold.
-    ``extend_accumulated`` extends the accumulated limit (every entry of a
-    code object, whatever it guards on) the same way, for benchmarks, which
-    each compile entries of their own; a fit keeps it as configured.
-    ``extend_without_strict`` still extends the limits on a torch that
-    cannot make them an error."""
+    configured limit plus the entries other fits of the class already hold."""
     import torch._dynamo.config as config
 
-    changes: dict[str, Any] = {}
-    if hasattr(config, "fail_on_recompile_limit_hit"):
-        changes["fail_on_recompile_limit_hit"] = True
-    elif not extend_without_strict:
+    if not hasattr(config, "fail_on_recompile_limit_hit"):
         return contextlib.nullcontext()
-    for names in (_LIMIT_NAMES, _ACCUMULATED_LIMIT_NAMES) if extend_accumulated else (_LIMIT_NAMES,):
-        name = next((name for name in names if hasattr(config, name)), None)
-        if name is not None and allowance:
-            changes[name] = int(getattr(config, name)) + allowance
-    return config.patch(**changes) if changes else contextlib.nullcontext()
+    changes: dict[str, Any] = {"fail_on_recompile_limit_hit": True}
+    name = next((name for name in _LIMIT_NAMES if hasattr(config, name)), None)
+    if name is not None and allowance:
+        changes[name] = int(getattr(config, name)) + allowance
+    return config.patch(**changes)
 
 
 class _Snapshot:
@@ -466,11 +457,13 @@ class _CompileSession:
 
 
 class _CountedBackend:
-    """One benchmark's own backend: the spec's, resolved as ``torch.compile``
-    resolves it (``mode`` included), with every graph it compiles counting
-    its calls. Dynamo guards each cache entry on the backend that compiled
-    it, so a graph cached for another benchmark or a fit never runs, or
-    counts, under this one."""
+    """The counting backend of one compile spec: the spec's backend,
+    resolved as ``torch.compile`` resolves it (``mode`` included), with
+    every graph it compiles counting its calls on :attr:`calls`. Dynamo
+    guards each cache entry on the backend that compiled it, so only graphs
+    compiled for this spec run under it (served from cache to any later
+    benchmark with the spec), and a graph cached for another spec or a fit
+    never runs, or counts, under it."""
 
     def __init__(self, spec: CompileSpec) -> None:
         if spec.backend == "inductor":
@@ -494,13 +487,27 @@ class _CountedBackend:
             self._real.reset()
 
 
+_COUNTED_BACKENDS: dict[tuple[Any, ...], _CountedBackend] = {}
+
+
+def _counted_backend(spec: CompileSpec) -> _CountedBackend:
+    """The one counting backend of ``spec``'s backend and options (not its
+    failure policy, which changes nothing compiled): reused, so a model
+    benchmarked again with the spec runs its cached graphs and adds no
+    cache entry."""
+    key = (spec.backend, tuple(sorted(spec.options().items())))
+    backend = _COUNTED_BACKENDS.get(key)
+    if backend is None:
+        backend = _COUNTED_BACKENDS[key] = _CountedBackend(spec)
+    return backend
+
+
 class _InferenceSession(_CompileSession):
     """A compiled no-grad forward for measurement (:mod:`nnx.benchmarking`),
     under a fit's recompile allowance, failure policy and compiled-nothing
-    check. It compiles with a :class:`_CountedBackend` of its own: the run
-    is compiled only when a graph compiled for it ran in the first call.
-    Its graphs are never reused by a later benchmark, so they stay in
-    dynamo's cache, unused, until ``torch._dynamo.reset()``.
+    check. It compiles with the spec's :class:`_CountedBackend`: the run is
+    compiled only when a graph compiled for the spec (now, or for an
+    earlier benchmark) ran in the first call.
     The caller holds :meth:`strict` around all of its calls, once: patching
     dynamo's config costs more than a small forward. After the first call
     a timed call runs the compiled module with only the backend's one
@@ -511,19 +518,17 @@ class _InferenceSession(_CompileSession):
     _backend: _CountedBackend
 
     def _compile(self, net: torch.nn.Module, spec: CompileSpec) -> Callable[..., Any]:
-        self._backend = _CountedBackend(spec)
+        self._backend = _counted_backend(spec)
         return torch.compile(net, backend=self._backend, fullgraph=spec.fullgraph, dynamic=spec.dynamic)
 
     def _held_entries(self, net: torch.nn.Module) -> int:
-        # Each benchmark adds entries to every code object it traces, so it
-        # gets the configured limits on top of the most any of them holds.
+        # A benchmark may add entries to every code object it traces, so it
+        # gets the configured limit on top of the most any of them holds.
         return _most_cached_entries()
 
     def strict(self) -> Any:
-        """The recompile allowance, the accumulated limit included (extended
-        even where torch cannot make the limits an error), around every call
-        of :meth:`forward`."""
-        return _strict_recompiles(self._allowance, extend_without_strict=True, extend_accumulated=True)
+        """The recompile allowance, around every call of :meth:`forward`."""
+        return _strict_recompiles(self._allowance)
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         compiled = self._compiled
@@ -538,16 +543,18 @@ class _InferenceSession(_CompileSession):
                 return self._restart(error, None, args, kwargs)
         snapshot = _Snapshot(self._net)
         graphs_before, breaks_before = _unique_graphs(), _counter("graph_break")
+        calls_before = self._backend.calls
         try:
             output = compiled(*args, **kwargs)
         except Exception as error:
             if not _is_compile_failure(error):
                 raise
             return self._restart(error, snapshot, args, kwargs)
-        if not self._backend.calls:
-            # No graph compiled for this benchmark ran: dynamo skipped the
-            # frame (a ``torch.compiler.disable`` forward, one it cannot
-            # trace, or one at the recompile limit) and ran it eagerly.
+        if self._backend.calls == calls_before:
+            # No graph compiled for this spec ran: dynamo skipped the frame
+            # (a ``torch.compiler.disable`` forward, one it cannot trace, or
+            # one at the recompile limit) and ran it eagerly, or ran graphs
+            # another spec or a fit compiled.
             self._skipped(snapshot)
             return output
         self._compiled_first(graphs_before, breaks_before, _unique_graphs() > graphs_before)

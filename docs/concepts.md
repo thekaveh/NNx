@@ -3415,7 +3415,7 @@ deliberately narrow and **guarantees no speedup**:
   reuses such a graph even under `fullgraph=True`.
 
 `nnx.benchmarking` measures instead of assuming. `benchmark_forward` times
-the first call (compilation included) separately from `repeats` warmed calls
+the first call (any compilation included) separately from `repeats` warmed calls
 after `warmup` untimed ones. It synchronizes the device around each timed
 call and resets CUDA peak-memory counters before the warmed region. It
 reports shapes, dtypes, backend, device and the latencies' mean / median /
@@ -3435,26 +3435,27 @@ timed region.
 The helpers compile through `nnx.compilation`, as a fit does:
 
 - **Recompile allowance.** Each helper call gets dynamo's recompile limit
-  and its accumulated limit (256 entries of one code object) afresh, on top
-  of the most entries any code dynamo traced holds (fits included). A sweep
-  over many models, or many benchmarks of one model, in one process keeps
-  compiling. A fit extends only the recompile limit; the accumulated limit
-  still applies to very long sweeps of fits.
+  afresh, on top of the most entries any code dynamo traced holds (fits
+  included), so a sweep over many models in one process keeps compiling.
+  Dynamo's accumulated limit (256 entries of one code object) is not
+  extended, for benchmarks or fits; it applies to very long sweeps.
 - **Failure policy.** `CompileSpec.on_failure` applies. Under `"error"`, a
   forward that fails to compile raises `CompileFailed`, with torch's error
   as its `__cause__`. Under `"eager"`, the run restarts that forward eagerly
   and runs the rest eagerly.
 - **Compiled nothing.** A run is compiled only when a graph compiled for
-  that benchmark ran in its first call. Each benchmark compiles with a
-  backend of its own: the `CompileSpec` backend, wrapped to count the calls
-  of each graph it compiles. Dynamo reuses a cached graph only under the
-  backend that compiled it, so a graph cached for another benchmark or a
-  fit never counts. A forward under `torch.compiler.disable`, one dynamo
-  skips (an `nn.LSTM`, a forward with no torch op) or one dynamo leaves to
-  eager at the recompile limit compiled nothing, and fails as a compile
-  failure does. So every compiled benchmark compiles afresh: its first call
-  includes compilation even for a model benchmarked before, and its graphs
-  stay in dynamo's cache, unused, until `torch._dynamo.reset()`.
+  its compile spec (the backend and its options) ran in its first call.
+  Each spec compiles with one counting backend: the `CompileSpec` backend,
+  wrapped to count the calls of each graph it compiles. Dynamo reuses a
+  cached graph only under the backend that compiled it, so a graph cached
+  for another spec or a fit never counts. A forward under
+  `torch.compiler.disable`, one dynamo skips (an `nn.LSTM`, a forward with
+  no torch op) or one dynamo leaves to eager at the recompile limit
+  compiled nothing, and fails as a compile failure does. Benchmarks with
+  one spec share its graphs: a model benchmarked again runs the graphs
+  cached for it, so its first call need not include compilation, and it
+  adds no cache entry. (Torch 2.4 keys the graphs on the benchmark's deep
+  copy and recompiles each time.)
 - **Recorded.** `BenchmarkReport.compile` and `ProfileReport.compile` hold the
   `CompileRecord`: `effective` is `compiled`, or `eager` with the `restart`.
   `BenchmarkReport.state()` includes it. A report's default `label` and its
