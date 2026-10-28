@@ -431,3 +431,55 @@ def test_a_provenance_file_deeper_than_the_manifest_bound_is_unreadable(tmp_path
     (run / MANIFEST_FILE).write_text(json.dumps(document).replace('"__DEEP__"', deep), encoding="utf-8")
     with pytest.raises(ValueError, match="nested too deeply"):
         load_provenance("a" * 32, root=str(tmp_path))
+
+
+# --- FIX-054: identity references inside artifact files -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("state", "message"),
+    [
+        ({"value": "animals-v2"}, r"source lacks \['identity'\]"),
+        ({"identity": "declared"}, r"source lacks \['value'\]"),
+        ({"identity": "declared", "value": "v2", "note": 1}, r"source has unknown keys \['note'\]"),
+        ({"identity": "guessed", "value": "v2"}, "source is malformed"),
+        ({"identity": "unknown", "value": "v2"}, "source is malformed"),
+        ("animals-v2", "source is a mapping"),
+    ],
+    ids=["no-identity", "no-value", "unknown-key", "bad-kind", "unknown-with-value", "not-a-mapping"],
+)
+def test_an_artifact_reader_refuses_a_malformed_identity_with_its_own_error(state, message):
+    from nnx.data_splits import SplitError
+    from nnx.preprocessing import PreprocessingError
+
+    for error in (SplitError, PreprocessingError):
+        with pytest.raises(error, match=message):
+            IdentityRef.from_state(state, error=error, what="source")
+
+
+def test_identity_references_read_back_exactly_with_an_artifact_error():
+    for ref in (IdentityRef.declared("animals-v2"), hash_bytes(b"x"), IdentityRef.unknown()):
+        assert IdentityRef.from_state(ref.state(), error=TypeError) == ref
+        assert IdentityRef.from_state(ref.state()) == ref
+
+
+def test_provenance_files_still_load_and_keep_their_documented_errors(tmp_path):
+    """The provenance readers are unchanged: an identity without ``identity``
+    is still a ``KeyError``, and a saved manifest still loads."""
+    from nnx.provenance import MANIFEST_FILE, load_provenance
+
+    assert ExperimentManifest.from_state(BASE.state()) == BASE
+    with pytest.raises(KeyError):
+        IdentityRef.from_state({"value": "animals-v2"})
+    run = tmp_path / "runs" / ("a" * 32)
+    run.mkdir(parents=True)
+    document = {"format": FORMAT, "manifest": BASE.state(), "fingerprint": BASE.fingerprint()}
+    (run / MANIFEST_FILE).write_text(json.dumps(document), encoding="utf-8")
+    record = load_provenance("a" * 32, root=str(tmp_path))
+    assert record is not None and record.manifest == BASE and record.fingerprint == BASE.fingerprint()
+    state = BASE.state()
+    del state["data"]["train"]["identity"]
+    document["manifest"] = state
+    (run / MANIFEST_FILE).write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(KeyError):
+        load_provenance("a" * 32, root=str(tmp_path))

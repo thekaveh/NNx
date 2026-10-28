@@ -5476,10 +5476,20 @@ No public description is currently available.
 ##### `nnx.provenance.IdentityRef.from_state`
 
 ```python
-nnx.provenance.IdentityRef.from_state(state: 'Mapping[str, Any]') -> 'IdentityRef'
+nnx.provenance.IdentityRef.from_state(state: 'Mapping[str, Any]', *, error: 'Optional[type[Exception]]' = None, what: 'str' = 'identity reference') -> 'IdentityRef'
 ```
 
-No public description is currently available.
+Rebuild from `state`.
+
+**Details**
+
+```text
+By default (the provenance readers) a missing ``identity`` raises
+``KeyError``, a missing ``value`` reads as ``None`` and a bad kind or
+value raises ``ValueError``. With ``error`` (an artifact reader's own
+type) the state must be a mapping of exactly ``identity`` and
+``value``, and every refusal raises ``error`` naming ``what``.
+```
 
 
 #### `nnx.provenance.hash_file`
@@ -5700,7 +5710,22 @@ No public description is currently available.
 nnx.data_splits.SplitManifest.from_state(state: 'Mapping[str, Any]') -> 'SplitManifest'
 ```
 
-No public description is currently available.
+Rebuild a manifest from `state`, exactly or not at all.
+
+**Details**
+
+```text
+The state holds exactly the keys :meth:`state` writes: nothing is
+defaulted, so an edited file cannot load as a different plan.
+
+Raises:
+    SplitError: for a non-mapping state, another ``format``, unknown
+        or missing keys (named), a member that is not a list of ids,
+        ``parameters`` that are not a mapping, a ``source`` that is not
+        exactly ``identity`` and ``value``, and any value the
+        constructor refuses (a mix of id types, a repeated id, an
+        unknown ``strategy``, a ``seed`` that is not a count).
+```
 
 ##### `nnx.data_splits.SplitManifest.canonical_bytes`
 
@@ -5740,7 +5765,17 @@ No public description is currently available.
 nnx.data_splits.SplitManifest.from_json(text: 'str') -> 'SplitManifest'
 ```
 
-No public description is currently available.
+Rebuild a manifest from `to_json` text.
+
+**Details**
+
+```text
+Raises:
+    SplitError: for text that is not strict JSON (truncated, ``NaN``,
+        an integer too long to parse), that nests more than 256
+        levels (the bound of NNx's JSON files), or that holds a state
+        :meth:`from_state` refuses.
+```
 
 ##### `nnx.data_splits.SplitManifest.save`
 
@@ -5756,7 +5791,15 @@ Write the manifest as JSON, atomically.
 nnx.data_splits.SplitManifest.load(path: 'Union[str, os.PathLike[str]]') -> 'SplitManifest'
 ```
 
-No public description is currently available.
+Read a manifest written by `save`.
+
+**Details**
+
+```text
+Raises:
+    SplitError: for a file that is not UTF-8, or whose text
+        :meth:`from_json` refuses. A missing file raises ``OSError``.
+```
 
 ##### `nnx.data_splits.SplitManifest.resolve`
 
@@ -5888,6 +5931,16 @@ nnx.preprocessing.Standardizer.from_state(state: 'Mapping[str, Any]') -> 'Standa
 
 Rebuild from `state`, rejecting anything malformed with `PreprocessingError` (bad lengths, non-finite values, non-positive scales, missing or mistyped entries).
 
+**Details**
+
+```text
+The state holds exactly the keys :meth:`state` writes, and ``fit``
+exactly ``rows`` and ``membership``: unknown and missing keys are
+refused by name, never defaulted, so an edited file cannot load
+without its column schema. ``"columns": null`` (an unnamed fit) is
+exact, and reads DataFrames by position.
+```
+
 ##### `nnx.preprocessing.Standardizer.canonical_bytes`
 
 ```python
@@ -5918,7 +5971,7 @@ No public description is currently available.
 nnx.preprocessing.Standardizer.from_json(text: 'str') -> 'Standardizer'
 ```
 
-No public description is currently available.
+Rebuild from `to_json` text; text that is not strict JSON (truncated, ``NaN``, an integer too long to parse) or nests more than 256 levels raises `PreprocessingError`, and so does any state `from_state` refuses.
 
 ##### `nnx.preprocessing.Standardizer.save`
 
@@ -5934,7 +5987,7 @@ Write the statistics and schema as JSON, atomically.
 nnx.preprocessing.Standardizer.load(path: 'Union[str, os.PathLike[str]]') -> 'Standardizer'
 ```
 
-No public description is currently available.
+Read a standardizer written by `save`; a file that is not UTF-8, or whose text `from_json` refuses, raises `PreprocessingError`.
 
 
 #### `nnx.preprocessing.SplitView`
@@ -9788,7 +9841,23 @@ No public description is currently available.
 nnx.link_tasks.LinkSplit.from_state(state: 'Mapping[str, Any]') -> 'LinkSplit'
 ```
 
-No public description is currently available.
+Rebuild a split from `state`, exactly or not at all.
+
+**Details**
+
+```text
+The state holds the keys :meth:`state` writes. ``categories``,
+``edge_labels`` and ``label_existence`` are present together (an
+edge-label split, with ``categories`` set) or not at all (a binary
+split); ``topology`` is derived, so it may be left out, but a value
+that disagrees with the split is refused.
+
+Raises:
+    LinkTaskError: for a non-mapping state, another ``format``,
+        unknown or missing keys (named), a partial edge-label group,
+        ``"categories": null``, a stale ``topology`` and any value
+        the constructor refuses.
+```
 
 ##### `nnx.link_tasks.LinkSplit.digest`
 

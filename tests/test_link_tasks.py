@@ -1055,3 +1055,62 @@ def test_a_link_predictor_that_reads_link_batches_itself_still_validates_without
         objective=task.objective(),
     )
     assert run.idps[-1].val_edp.count == len(task.split.candidate_ids("val"))
+
+
+# --- FIX-054: a link split state reads back exactly or is refused ------------------------------------
+
+
+def _labelled_split(label_existence: str = "visible") -> LinkSplit:
+    return split_links(
+        [(i, i + 1) for i in range(9)],
+        10,
+        val=2,
+        test=2,
+        seed=0,
+        edge_labels=[i % 2 for i in range(9)],
+        categories=["a", "b"],
+        label_existence=label_existence,
+    )
+
+
+def _without(state: dict, *keys: str) -> dict:
+    return {key: value for key, value in state.items() if key not in keys}
+
+
+def test_a_link_split_state_with_unknown_keys_or_a_partial_edge_label_group_is_refused():
+    labelled, binary = _labelled_split().state(), split_links(PATH, 4, val=1, test=1, seed=0).state()
+    renamed = {**_without(labelled, "label_existence"), "labelexistence": "visible"}
+    with pytest.raises(LinkTaskError, match=r"unknown keys \['labelexistence'\].* and lacks \['label_existence'\]"):
+        LinkSplit.from_state(renamed)
+    for state in (labelled, binary):
+        with pytest.raises(LinkTaskError, match=r"unknown keys \['notes'\]"):
+            LinkSplit.from_state({**state, "notes": "x"})
+    for key in ("categories", "edge_labels", "label_existence"):  # the edge-label keys come all or none
+        with pytest.raises(LinkTaskError, match=rf"lacks \['{key}'\]"):
+            LinkSplit.from_state(_without(labelled, key))
+        group = {name: labelled[name] for name in ("categories", "edge_labels", "label_existence") if name != key}
+        with pytest.raises(LinkTaskError, match=rf"lacks \['{key}'\]"):
+            LinkSplit.from_state({**binary, **group})
+    with pytest.raises(LinkTaskError, match="categories"):
+        LinkSplit.from_state({**binary, "categories": None, "edge_labels": [], "label_existence": "hidden"})
+    with pytest.raises(LinkTaskError, match=r"lacks \['val'\]"):
+        LinkSplit.from_state(_without(binary, "val"))
+    with pytest.raises(LinkTaskError, match="topology"):  # a stale topology no longer matches its split
+        LinkSplit.from_state({**labelled, "label_existence": "hidden"})
+    with pytest.raises(LinkTaskError, match="not a nnx.link-split/1"):
+        LinkSplit.from_state([])  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("label_existence", ["hidden", "visible"])
+def test_link_splits_with_and_without_categories_round_trip(label_existence):
+    splits = [
+        _labelled_split(label_existence),
+        split_links(PATH, 4, val=1, test=1, seed=0),
+        split_links(PATH, 4, val=1, test=1, seed=0, directed=True),
+        LinkSplit(num_nodes=4, train=((0, 1),), val=((1, 2),)),  # given explicitly: no seed
+    ]
+    for split in splits:
+        state = split.state()
+        reloaded = LinkSplit.from_state(state)
+        assert reloaded == split and reloaded.digest() == split.digest() and reloaded.state() == state
+        assert LinkSplit.from_state(_without(state, "topology")) == split  # topology is derived, so optional

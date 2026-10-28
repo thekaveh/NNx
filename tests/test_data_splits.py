@@ -525,3 +525,121 @@ def test_repr_summarizes_instead_of_listing_every_id():
     )
     text = repr(big)
     assert len(text) < 250 and "train=" in text and "r4999" not in text
+
+
+# --- FIX-054: a split manifest file reads back exactly or is refused ---------------------------------
+
+
+def _edited(change) -> dict:
+    """A full saved state with one hand edit applied."""
+    state = json.loads(plan_g(source="animals-v2").to_json())
+    change(state)
+    return state
+
+
+def _renamed(old, new):
+    return lambda state: state.__setitem__(new, state.pop(old))
+
+
+def _readers(state, tmp_path):
+    """The three ways a state comes back: the mapping, its JSON text and its file."""
+    path = tmp_path / "split.json"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    return (
+        lambda: SplitManifest.from_state(state),
+        lambda: SplitManifest.from_json(json.dumps(state)),
+        lambda: SplitManifest.load(path),
+    )
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (_renamed("validation", "val"), r"unknown keys \['val'\].* and lacks \['validation'\]"),
+        (lambda state: state.pop("seed"), r"lacks \['seed'\]"),
+        (lambda state: state.pop("strategy"), r"lacks \['strategy'\]"),
+        (lambda state: state.pop("source"), r"lacks \['source'\]"),
+        (lambda state: state.__setitem__("notes", "x"), r"unknown keys \['notes'\]"),
+    ],
+    ids=["validation-renamed", "seed-deleted", "strategy-deleted", "source-deleted", "extra-notes"],
+)
+def test_a_split_manifest_with_unknown_or_missing_keys_is_refused_naming_them(change, message, tmp_path):
+    for read in _readers(_edited(change), tmp_path):
+        with pytest.raises(SplitError, match=message):
+            read()
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda state: state.__setitem__("validation", "r9"), "'validation' must be a list"),
+        (lambda state: state.__setitem__("validation", 5), "'validation' must be a list"),
+        (lambda state: state.__setitem__("validation", None), "'validation' must be a list"),
+        (lambda state: state.__setitem__("excluded", False), "'excluded' must be a list"),
+        (lambda state: state.__setitem__("parameters", []), "'parameters' must be a mapping"),
+        (lambda state: state["source"].pop("identity"), r"source lacks \['identity'\]"),
+        (lambda state: state["source"].__setitem__("note", 1), r"source has unknown keys \['note'\]"),
+        (lambda state: state.__setitem__("source", "animals-v2"), "source is a mapping"),
+        (lambda state: state["source"].__setitem__("identity", "guessed"), "source is malformed"),
+        (lambda state: state.__setitem__("format", "nnx.split/9"), "unsupported split manifest format"),
+        (lambda state: state.__setitem__("train", [1, 2]), "malformed split manifest"),
+        (lambda state: state.__setitem__("seed", 1.5), "malformed split manifest"),
+        (lambda state: state.__setitem__("strategy", "random"), "malformed split manifest"),
+    ],
+    ids=[
+        "member-string",
+        "member-int",
+        "member-null",
+        "member-false",
+        "parameters-list",
+        "source-without-identity",
+        "source-unknown-key",
+        "source-not-a-mapping",
+        "source-bad-kind",
+        "wrong-format",
+        "mixed-id-types",
+        "seed-float",
+        "unknown-strategy",
+    ],
+)
+def test_a_split_manifest_with_mistyped_entries_is_refused(change, message, tmp_path):
+    for read in _readers(_edited(change), tmp_path):
+        with pytest.raises(SplitError, match=message):
+            read()
+
+
+def test_a_split_manifest_reader_refuses_non_mapping_and_malformed_json(tmp_path):
+    assert issubclass(SplitError, ValueError)  # existing `except ValueError` callers still catch it
+    for text in ("[]", "null", '"split"', "{truncated", "[" * 100_000 + "]" * 100_000, "1" * 5000):
+        with pytest.raises(SplitError):
+            SplitManifest.from_json(text)
+    with pytest.raises(SplitError, match="mapping"):
+        SplitManifest.from_state([])  # type: ignore[arg-type]
+    path = tmp_path / "split.json"
+    path.write_bytes(b"\xff\xfe{}")
+    with pytest.raises(SplitError, match="UTF-8"):
+        SplitManifest.load(path)
+
+
+def test_every_saved_split_manifest_reloads_equal_with_its_digest(tmp_path):
+    from nnx._json_depth import MAX_JSON_DEPTH
+
+    deepest: dict = {}
+    for _ in range(MAX_JSON_DEPTH - 3):  # with "deep" and the file's top level: MAX_JSON_DEPTH levels
+        deepest = {"k": deepest}
+    manifests = [
+        plan_g(),
+        plan_g(source="animals-v2"),
+        plan_t(gap=1, source=hash_bytes(b"rows")),
+        plan_s(),
+        SplitManifest(strategy="explicit", train=("b", "a"), validation=("c",), test=()),
+        SplitManifest(strategy="explicit", train=(0, 1), validation=(2,), test=(), ids="position", source="v1"),
+        SplitManifest(strategy="explicit", train=("a",), validation=(), test=(), parameters={"deep": deepest}),
+    ]
+    for manifest in manifests:
+        manifest.save(tmp_path / "split.json")
+        reloaded = SplitManifest.load(tmp_path / "split.json")
+        assert reloaded == manifest and reloaded.digest() == manifest.digest()
+        assert SplitManifest.from_state(manifest.state()) == manifest
+    with pytest.raises(ValueError, match="nest more than"):  # it could be written, never read back
+        SplitManifest(strategy="explicit", train=("a",), validation=(), test=(), parameters={"deep": {"k": deepest}})
