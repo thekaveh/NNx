@@ -162,3 +162,59 @@ def test_schedulers_reject_total_steps_below_n_epochs():
         opt = _make_optimizer()
         with pytest.raises(ValueError, match="once per epoch"):
             kind(opt, _base_params(**extra), n_epochs=10)
+
+
+def _one_cycle_single_group(optimizer_max_lr: float, scheduler_max_lr: float):
+    from nnx import NNOptimParams, Optims
+    from nnx.optimizers import build_optimizer
+
+    opt = build_optimizer(
+        torch.nn.Linear(2, 2), NNOptimParams(name=Optims.SGD, max_lr=optimizer_max_lr, momentum=0.9, weight_decay=0.0)
+    )
+    params = NNSchedulerParams(
+        min_lr=0.0,
+        factor=0.5,
+        patience=0,
+        cooldown=0,
+        threshold=0.0,
+        kind=Schedulers.ONE_CYCLE,
+        max_lr=scheduler_max_lr,
+        total_steps=10,
+    )
+    return opt, Schedulers.ONE_CYCLE(opt, params, n_epochs=10)
+
+
+def test_one_cycle_single_group_matches_native_one_cycle_exactly():
+    """With the optimizer and scheduler both at max_lr=0.1 the default group
+    peaks at exactly 0.1, and the LR trace is bit-identical to torch's own
+    OneCycleLR(max_lr=0.1) at every step (#547)."""
+    opt, sched = _one_cycle_single_group(0.1, 0.1)
+    assert opt.param_groups[0]["max_lr"] == 0.1
+    native_opt = SGD(torch.nn.Linear(2, 2).parameters(), lr=0.1, momentum=0.9)
+    native = lr_scheduler.OneCycleLR(native_opt, max_lr=0.1, total_steps=10)
+    ours, theirs = [], []
+    for _ in range(10):
+        ours.append(opt.param_groups[0]["lr"])
+        theirs.append(native_opt.param_groups[0]["lr"])
+        opt.step()
+        sched.step()
+        native_opt.step()
+        native.step()
+    assert ours == theirs
+
+
+def test_one_cycle_single_group_peaks_at_exactly_the_configured_max_lr():
+    """Over a fixed-seed sweep of (optimizer max_lr, scheduler max_lr) pairs
+    the default group peaks at exactly the scheduler's max_lr, never 1 ulp
+    off it (#547)."""
+    import random
+
+    rng = random.Random(0)
+    pairs = [(0.1, 0.1), (0.01, 0.03), (1e-4, 1e-4), (2e-4, 2e-4), (0.05, 0.05), (0.2, 0.2)]
+    pairs += [(round(rng.uniform(1e-4, 1.0), 4) or 1e-4, round(rng.uniform(1e-4, 1.0), 4) or 1e-4) for _ in range(200)]
+    off = []
+    for optimizer_max_lr, scheduler_max_lr in pairs:
+        opt, _ = _one_cycle_single_group(optimizer_max_lr, scheduler_max_lr)
+        if opt.param_groups[0]["max_lr"] != scheduler_max_lr:
+            off.append((optimizer_max_lr, scheduler_max_lr, opt.param_groups[0]["max_lr"]))
+    assert off == []

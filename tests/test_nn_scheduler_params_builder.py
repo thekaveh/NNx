@@ -227,7 +227,46 @@ def test_one_cycle_keeps_each_param_groups_own_peak():
     scaled = groups()
     Schedulers.ONE_CYCLE(scaled, NNSchedulerParams(kind=Schedulers.ONE_CYCLE, max_lr=1e-2, **base), n_epochs=10)
     # The default group peaks at exactly max_lr; the backbone keeps its 1/100.
-    assert [group["max_lr"] for group in scaled.param_groups] == pytest.approx([1e-4, 1e-2])
+    assert scaled.param_groups[1]["max_lr"] == 1e-2
+    assert scaled.param_groups[0]["max_lr"] == pytest.approx(1e-4)
+
+
+def test_one_cycle_default_group_peaks_at_exactly_max_lr_beside_a_multiplier_group():
+    """The ratio to the base LR is taken before scaling max_lr, so the
+    default group (ratio exactly 1.0) peaks at exactly max_lr even when
+    max_lr * lr / base_lr would round 1 ulp off it (#547)."""
+    import torch
+
+    from nnx import NNOptimParams, NNParamGroupSpec, NNSchedulerParams, Optims, Schedulers
+    from nnx.optimizers import build_optimizer
+
+    net = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Linear(2, 2))
+    optimizer = build_optimizer(
+        net,
+        NNOptimParams(
+            name=Optims.SGD,
+            max_lr=0.1,
+            momentum=0.9,
+            weight_decay=0.0,
+            param_groups=[NNParamGroupSpec(name_pattern="0.*", lr_multiplier=0.01)],
+        ),
+    )
+    params = NNSchedulerParams(
+        kind=Schedulers.ONE_CYCLE,
+        max_lr=0.1,
+        min_lr=0.0,
+        factor=0.5,
+        patience=0,
+        cooldown=0,
+        threshold=0.0,
+        total_steps=10,
+    )
+    Schedulers.ONE_CYCLE(optimizer, params, n_epochs=10)
+    scoped = {id(p) for p in net[0].parameters()}
+    (multiplier_group,) = [g for g in optimizer.param_groups if {id(p) for p in g["params"]} == scoped]
+    (default_group,) = [g for g in optimizer.param_groups if g is not multiplier_group]
+    assert default_group["max_lr"] == 0.1
+    assert multiplier_group["max_lr"] == pytest.approx(0.001)
 
 
 def test_one_cycle_peaks_against_a_factory_optimizers_configured_base_lr():
