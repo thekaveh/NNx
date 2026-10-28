@@ -158,8 +158,11 @@ def test_the_run_files_and_directory_are_flushed_before_the_first_last(entry, jo
         assert _flushed_between(events, latest(("rename", os.path.join(run.id, name))), first, run_dir), name
     assert _flushed_between(events, latest(("mkdir", os.path.join(run.id, "checkpoints"))), first, run_dir)
     if journal:
-        assert _flushed_between(events, latest(("mkdir", os.path.join(run.id, "history"))), first, run_dir)
+        history_made = latest(("mkdir", os.path.join(run.id, "history")))
         journal_renamed = latest(("rename", os.path.join(run.id, "history", "journal.json")))
+        # history/ is flushed into runs/<id>/ by the history step itself, before
+        # its manifest: NNCheckpoint.save skips its flush if checkpoints/ exists
+        assert _flushed_between(events, history_made, journal_renamed, run_dir)
         assert _flushed_between(events, journal_renamed, first, os.path.join(run_dir, "history"))
 
 
