@@ -1608,6 +1608,42 @@ def test_an_io_error_flushing_one_journal_file_fails_the_epoch(entry, name, monk
     assert {record.epoch_idx for record in iter_history(run_id)} == {0}
 
 
+class _FailReopensFrom(Callback):
+    """From ``epoch``'s end on, fail reopening a journal file for its flush
+    with ``EACCES`` — a file that cannot be reopened was never flushed."""
+
+    def __init__(self, patch, epoch: int) -> None:
+        self.epoch, self.failing = epoch, False
+        real_open = os.open
+
+        def fail_or_open(path, flags, *args, **kwargs):
+            in_journal = os.path.basename(os.path.dirname(os.fspath(path))) == "history"
+            if self.failing and flags == os.O_RDWR and in_journal and not os.path.isdir(path):
+                raise OSError(errno.EACCES, os.strerror(errno.EACCES), path)
+            return real_open(path, flags, *args, **kwargs)
+
+        patch.setattr(os, "open", fail_or_open)
+
+    def on_epoch_end(self, ctx) -> None:
+        self.failing = self.failing or ctx.epoch == self.epoch
+
+
+@pytest.mark.parametrize("entry", ["model", "trainer"])
+def test_a_journal_file_that_cannot_be_reopened_fails_the_epoch(entry, monkeypatch):
+    """Only an unopenable directory (Windows) is skipped; a journal file the
+    flush cannot reopen fails the epoch before its manifest and LAST."""
+    with monkeypatch.context() as patch:
+        failing = _FailReopensFrom(patch, 1)
+        with pytest.raises(OSError) as caught:
+            _fit(entry, HistoryJournal(retention=3, chunk_size=2), callbacks=[failing])
+    assert caught.value.errno == errno.EACCES
+    run_id = _the_run_id()
+    with open(os.path.join("runs", run_id, "history", "journal.json"), encoding="utf-8") as handle:
+        assert json.load(handle)["epochs"] == 1  # epoch 1's manifest was never published
+    assert NNCheckpoint.load(run_id, Checkpoints.LAST).idp.epoch_idx == 0
+    assert {record.epoch_idx for record in iter_history(run_id)} == {0}
+
+
 @pytest.mark.parametrize("entry", ["model", "trainer"])
 def test_an_unsupported_journal_flush_does_not_fail_training(entry, monkeypatch):
     with monkeypatch.context() as patch:
