@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader
 from torchvision.datasets import VisionDataset
 
 from nnx import Losses, NNModel, NNModelParams, NNOptimParams, NNTabularDataset, NNTrainParams
-from nnx.data_splits import SplitManifest
+from nnx.data_splits import SplitManifest, plan_split
 from nnx.nn.dataset.nn_dataset import NNDataset
 from nnx.preprocessing import FORMAT, PreprocessingError, SplitView, Standardizer
 from nnx.provenance import ExperimentManifest, IdentityRef
@@ -353,23 +353,129 @@ def test_integer_labels_float16_and_single_samples():
         small.transform([[100.0]])
 
 
+def _full_state(change=None) -> dict:
+    """A complete saved state (unnamed columns), with one hand edit applied."""
+    state = json.loads(Standardizer.fit(S, rows=[0, 1], columns=None).to_json())
+    if change is not None:
+        change(state)
+    return state
+
+
+def _renamed(old, new, where=None):
+    def change(state):
+        target = state if where is None else state[where]
+        target[new] = target.pop(old)
+
+    return change
+
+
 @pytest.mark.parametrize(
-    "state",
+    ("state", "message"),
     [
-        [1, 2],
-        {"format": FORMAT, "kind": "standardize", "scale": [1.0]},
-        {"format": FORMAT, "kind": "standardize", "mean": [0.0], "scale": [1.0], "fit": [1]},
-        {"format": FORMAT, "kind": "standardize", "mean": [0.0], "scale": [1.0], "dtype": ["float32"]},
-        {"format": FORMAT, "kind": "standardize", "mean": [0.0, 1.0], "scale": [1.0, 1.0], "columns": "ab"},
-        {"format": FORMAT, "kind": "standardize", "mean": [0.0], "scale": [1.0], "fit": {"membership": 3}},
+        ([1, 2], "mapping"),
+        (_full_state(lambda s: s.pop("mean")), r"lacks \['mean'\]"),
+        (_full_state(lambda s: s.__setitem__("fit", [1])), "'fit' must be a mapping"),
+        (_full_state(lambda s: s.__setitem__("dtype", ["float32"])), "dtype must be one of"),
+        (_full_state(lambda s: s.__setitem__("columns", "ab")), "ordered list"),
+        (_full_state(lambda s: s["fit"].__setitem__("membership", 3)), "fit membership is a mapping"),
     ],
     ids=["not-a-mapping", "missing-mean", "fit-list", "dtype-list", "columns-string", "membership"],
 )
-def test_malformed_states_raise_preprocessing_errors(state):
-    with pytest.raises(PreprocessingError):
+def test_malformed_states_raise_preprocessing_errors(state, message):
+    # FIX-054: each case edits a full state, so it reaches its own branch, not a missing-key refusal.
+    with pytest.raises(PreprocessingError, match=message):
         Standardizer.from_state(state)
     with pytest.raises(PreprocessingError):
         Standardizer.from_json("{not json")
+
+
+# --- FIX-054: a standardizer file reads back exactly or is refused -----------------------------------
+
+
+def _std_readers(state, tmp_path):
+    """The three ways a state comes back: the mapping, its JSON text and its file."""
+    path = tmp_path / "standardizer.json"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    return (
+        lambda: Standardizer.from_state(state),
+        lambda: Standardizer.from_json(json.dumps(state)),
+        lambda: Standardizer.load(path),
+    )
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (_renamed("columns", "colums"), r"unknown keys \['colums'\].* and lacks \['columns'\]"),
+        (lambda s: s.pop("dtype"), r"lacks \['dtype'\]"),
+        (lambda s: s.pop("fit"), r"lacks \['fit'\]"),
+        (_renamed("rows", "row", where="fit"), r"'fit' has unknown keys \['row'\].* and lacks \['rows'\]"),
+        (lambda s: s["fit"].pop("membership"), r"'fit' lacks \['membership'\]"),
+        (lambda s: s.__setitem__("clip", 3.0), r"unknown keys \['clip'\]"),
+        (lambda s: s["fit"].__setitem__("clip", 3.0), r"'fit' has unknown keys \['clip'\]"),
+        (lambda s: s["fit"]["membership"].pop("identity"), r"membership lacks \['identity'\]"),
+        (lambda s: s["fit"]["membership"].__setitem__("note", 1), r"membership has unknown keys \['note'\]"),
+        (lambda s: s["fit"].__setitem__("membership", None), "fit membership is a mapping"),
+        (lambda s: s["fit"]["membership"].__setitem__("identity", "guessed"), "fit membership is malformed"),
+        (lambda s: s.pop("kind"), r"lacks \['kind'\]"),
+    ],
+    ids=[
+        "columns-renamed",
+        "dtype-deleted",
+        "fit-deleted",
+        "fit-rows-renamed",
+        "fit-membership-deleted",
+        "extra-clip",
+        "extra-clip-in-fit",
+        "membership-without-identity",
+        "membership-unknown-key",
+        "membership-null",
+        "membership-bad-kind",
+        "kind-deleted",
+    ],
+)
+def test_a_standardizer_with_unknown_or_missing_keys_is_refused_naming_them(change, message, tmp_path):
+    fitted = Standardizer.fit(s_frame(), rows=[0, 1], columns=["a", "b"], dtype="float64")
+    state = json.loads(fitted.to_json())
+    change(state)
+    for read in _std_readers(state, tmp_path):
+        with pytest.raises(PreprocessingError, match=message):
+            read()
+
+
+def test_a_standardizer_with_null_columns_still_reads_frames_by_position():
+    state = _full_state()
+    assert state["columns"] is None
+    reloaded = Standardizer.from_state(state)
+    assert reloaded.columns is None
+    frame = pd.DataFrame({"q": [0.0, 2.0], "r": [5.0, 5.0]})  # any labels: positional
+    assert reloaded.transform(frame).tolist() == reloaded.transform(frame.to_numpy()).tolist()
+
+
+def test_a_standardizer_reader_refuses_malformed_json(tmp_path):
+    for text in ("[" * 100_000 + "]" * 100_000, "[" * 300 + "]" * 300, "1" * 5000, '{"mean": [' + "1" * 5000 + "]}"):
+        with pytest.raises(PreprocessingError, match="standardizer"):
+            Standardizer.from_json(text)
+    path = tmp_path / "standardizer.json"
+    path.write_bytes(b"\xff\xfe{}")
+    with pytest.raises(PreprocessingError, match="UTF-8"):
+        Standardizer.load(path)
+
+
+def test_every_saved_standardizer_reloads_equal_with_its_digest(tmp_path):
+    plan = plan_split(["r0", "r1", "r2"], strategy="group", groups=[0, 1, 2], proportions=(0.4, 0.3, 0.3), seed=0)
+    fitted = [
+        Standardizer.fit(S, rows=[0, 1]),
+        Standardizer.fit(s_frame(), rows=[0, 1], columns=["a", "b"], dtype=torch.float16),
+        Standardizer.fit(pd.DataFrame({0: [1.0, 2.0], 1: [3.0, 5.0]}), rows=[0, 1], membership="train-v1"),
+        Standardizer.fit(S, rows=[0, 2], membership=plan, dtype="bfloat16"),
+        Standardizer.fit(S, rows=[1], membership=IdentityRef.unknown(), dtype="float64"),
+    ]
+    for standardizer in fitted:
+        standardizer.save(tmp_path / "standardizer.json")
+        reloaded = Standardizer.load(tmp_path / "standardizer.json")
+        assert reloaded == standardizer and reloaded.digest() == standardizer.digest()
+        assert Standardizer.from_state(standardizer.state()) == standardizer
 
 
 def test_split_views_keep_sample_types_and_the_subset_alias():

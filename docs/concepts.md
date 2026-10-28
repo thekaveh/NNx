@@ -1805,7 +1805,9 @@ dataset = NNTabularDataset(df=df, feature_cols=["age", "income"], target_col="la
   (`strategy="explicit"`) or edited manifest is replayed.
 - **Identity and serialization.** A manifest is JSON (`to_json` / `save` /
   `load`, format `nnx.split/1`) and reloads equal. `digest()` covers the
-  memberships, strategy, parameters, seed and source.
+  memberships, strategy, parameters, seed and source. Reading refuses an
+  edited file that is not exactly what `save` writes (an unknown or missing
+  key, a mistyped member, malformed JSON) with `SplitError`, never a default.
   `ExperimentManifest(splits={"main": plan})` (§4.4) records that digest as a
   verified identity, which stays the same after reload and replay.
 - **Default behaviour.** Without `split=`, datasets call `random_split`
@@ -1859,7 +1861,10 @@ the raw data untouched.
 - **Schema identity.** Statistics, schema and the fit-membership identity
   are primitive JSON (`nnx.preprocessing/1`) that reloads float64-exact.
   `digest()` identifies them, and loading rejects bad lengths, non-finite
-  values and non-positive scales.
+  values and non-positive scales. It also refuses unknown or missing keys
+  (at the top level and in `fit`) and malformed JSON with
+  `PreprocessingError`, so a reload never loses its column schema;
+  `"columns": null` (an unnamed fit) stays valid.
   `ExperimentManifest.for_model(..., preprocessing=standardizer)` (§4.4)
   records the fitted state, never recomputed statistics.
 - **Split transforms and target preservation.**
@@ -3228,6 +3233,9 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
   and barred self-loops. It records directedness, the self-loop policy, the
   seed and the topology policy. `replay(edge_index)` re-derives it with a
   local generator (never the global RNG) and refuses a mismatch.
+  `LinkSplit.from_state` refuses unknown or missing keys, a partial
+  edge-label group (`categories`, `edge_labels`, `label_existence`) and a
+  `topology` that disagrees with the split with `LinkTaskError`.
 - **Topology.** `message_edge_index()` is the only message graph, for every
   split. It holds the training edges, plus their reverses when undirected.
   An edge-label split with `label_existence="visible"` also holds every

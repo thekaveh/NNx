@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 
 import numpy as np
 
+from ._artifacts import check_keys
 from ._config import _canonical_json
 from ._json_depth import MAX_JSON_DEPTH, too_deep
 from ._validation import require_count
@@ -172,8 +173,26 @@ class IdentityRef:
         return {"identity": self.kind, "value": self.value}
 
     @staticmethod
-    def from_state(state: Mapping[str, Any]) -> IdentityRef:
-        return IdentityRef(state["identity"], state.get("value"))
+    def from_state(
+        state: Mapping[str, Any], *, error: Optional[type[Exception]] = None, what: str = "identity reference"
+    ) -> IdentityRef:
+        """Rebuild from :meth:`state`.
+
+        By default (the provenance readers) a missing ``identity`` raises
+        ``KeyError``, a missing ``value`` reads as ``None`` and a bad kind or
+        value raises ``ValueError``. With ``error`` (an artifact reader's own
+        type) the state must be a mapping of exactly ``identity`` and
+        ``value``, and every refusal raises ``error`` naming ``what``.
+        """
+        if error is None:
+            return IdentityRef(state["identity"], state.get("value"))
+        if not isinstance(state, Mapping):
+            raise error(f"the {what} is a mapping of 'identity' and 'value', got {state!r}")
+        check_keys(state, required=("identity", "value"), what=what, error=error)
+        try:
+            return IdentityRef(state["identity"], state["value"])
+        except ValueError as exc:
+            raise error(f"the {what} is malformed: {exc}") from exc
 
 
 def hash_bytes(data: bytes) -> IdentityRef:

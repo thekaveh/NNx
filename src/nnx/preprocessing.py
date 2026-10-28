@@ -38,6 +38,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from ._artifacts import check_keys, parse_json, read_text
+from ._json_depth import MAX_JSON_DEPTH
 from .provenance import IdentityRef, _ref, canonical_bytes
 
 __all__ = ["FORMAT", "PreprocessingError", "SplitView", "Standardizer", "describe_transform"]
@@ -51,6 +53,9 @@ _DTYPES = {
     "float32": torch.float32,
     "float64": torch.float64,
 }
+
+_STATE_KEYS = ("format", "kind", "columns", "mean", "scale", "dtype", "fit")  # all always written
+_FIT_KEYS = ("rows", "membership")
 
 ColumnLabel = Union[str, int]
 
@@ -398,31 +403,34 @@ class Standardizer:
     def from_state(state: Mapping[str, Any]) -> Standardizer:
         """Rebuild from :meth:`state`, rejecting anything malformed with
         :class:`PreprocessingError` (bad lengths, non-finite values,
-        non-positive scales, missing or mistyped entries)."""
+        non-positive scales, missing or mistyped entries).
+
+        The state holds exactly the keys :meth:`state` writes, and ``fit``
+        exactly ``rows`` and ``membership``: unknown and missing keys are
+        refused by name, never defaulted, so an edited file cannot load
+        without its column schema. ``"columns": null`` (an unnamed fit) is
+        exact, and reads DataFrames by position."""
         if not isinstance(state, Mapping):
             raise PreprocessingError(f"a standardizer state is a mapping, got {type(state).__name__}")
         if state.get("format") != FORMAT:
             raise PreprocessingError(f"unsupported preprocessing format {state.get('format')!r}; expected {FORMAT!r}")
-        if state.get("kind") != "standardize":
-            raise PreprocessingError(f"unsupported preprocessing kind {state.get('kind')!r}")
-        missing = [key for key in ("mean", "scale") if key not in state]
-        if missing:
-            raise PreprocessingError(f"the standardizer state lacks {missing}")
-        fit = state.get("fit", {})
+        if "kind" in state and state["kind"] != "standardize":
+            raise PreprocessingError(f"unsupported preprocessing kind {state['kind']!r}")
+        check_keys(state, required=_STATE_KEYS, what="standardizer state", error=PreprocessingError)
+        fit = state["fit"]
         if not isinstance(fit, Mapping):
             raise PreprocessingError(f"the standardizer state's 'fit' must be a mapping, got {fit!r}")
-        membership = fit.get("membership")
-        try:
-            identity = IdentityRef.unknown() if membership is None else IdentityRef.from_state(membership)
-        except (TypeError, ValueError, KeyError, AttributeError) as exc:
-            raise PreprocessingError(f"the standardizer's fit membership is malformed: {membership!r}") from exc
+        check_keys(fit, required=_FIT_KEYS, what="standardizer state's 'fit'", error=PreprocessingError)
+        identity = IdentityRef.from_state(
+            fit["membership"], error=PreprocessingError, what="standardizer's fit membership"
+        )
         try:
             return Standardizer(
                 mean=state["mean"],
                 scale=state["scale"],
-                columns=state.get("columns"),
-                dtype=state.get("dtype", "float32"),
-                fit_rows=fit.get("rows", 0),
+                columns=state["columns"],
+                dtype=state["dtype"],
+                fit_rows=fit["rows"],
                 fit_membership=identity,
             )
         except TypeError as exc:
@@ -450,11 +458,11 @@ class Standardizer:
 
     @staticmethod
     def from_json(text: str) -> Standardizer:
-        try:
-            state = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise PreprocessingError(f"a standardizer file is JSON: {exc}") from exc
-        return Standardizer.from_state(state)
+        """Rebuild from :meth:`to_json` text; text that is not strict JSON
+        (truncated, ``NaN``, an integer too long to parse) or nests more
+        than 256 levels raises :class:`PreprocessingError`, and so does any
+        state :meth:`from_state` refuses."""
+        return Standardizer.from_state(parse_json(text, "standardizer", PreprocessingError, max_depth=MAX_JSON_DEPTH))
 
     def save(self, path: Union[str, os.PathLike[str]]) -> None:
         """Write the statistics and schema as JSON, atomically."""
@@ -464,8 +472,10 @@ class Standardizer:
 
     @staticmethod
     def load(path: Union[str, os.PathLike[str]]) -> Standardizer:
-        with open(path, encoding="utf-8") as handle:
-            return Standardizer.from_json(handle.read())
+        """Read a standardizer written by :meth:`save`; a file that is not
+        UTF-8, or whose text :meth:`from_json` refuses, raises
+        :class:`PreprocessingError`."""
+        return Standardizer.from_json(read_text(path, "standardizer", PreprocessingError))
 
 
 # --- split views -------------------------------------------------------------------------------
