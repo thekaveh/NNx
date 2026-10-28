@@ -97,7 +97,8 @@ def export_ollama_modelfile(
         transformer_nn: An NNx ``TransformerNN`` instance — the model
             to export.
         tokenizer: Corresponding ``NNTokenizerParams``.
-        out_dir: Output directory. Created if it doesn't exist.
+        out_dir: Output directory. Created if it doesn't exist, once
+            every argument is valid.
         system: Optional system prompt; emitted as a ``SYSTEM ...``
             block (triple-quoted) when non-empty. Must not contain a
             triple-quote or end with a double-quote (Modelfile block
@@ -124,8 +125,9 @@ def export_ollama_modelfile(
     from .gguf import write_gguf
 
     out_dir = Path(out_dir).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
+    # No mkdir here: write_gguf creates ``out_dir`` (its parent directory)
+    # only once the quantization label, the network and the tokenizer are
+    # valid, so a refused export leaves nothing behind.
     gguf_path = out_dir / "model.gguf"
     write_gguf(
         transformer_nn,

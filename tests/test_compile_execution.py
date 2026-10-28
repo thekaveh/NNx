@@ -522,7 +522,7 @@ def test_a_backward_compile_failure_is_recorded_failed_and_never_retried(policy,
 
 
 @pytest.mark.parametrize("policy", ["error", "eager"])
-def test_the_recompile_limit_is_a_failure_not_a_silent_eager_fallback(policy, monkeypatch):
+def test_the_recompile_limit_is_a_failure_not_a_silent_eager_fallback(policy):
     if not hasattr(torch._dynamo.config, "fail_on_recompile_limit_hit"):
         # Older torch (the 2.4 floor) cannot report the limit: the documented
         # limitation is that NNx then adds no strictness of its own.
@@ -533,19 +533,21 @@ def test_the_recompile_limit_is_a_failure_not_a_silent_eager_fallback(policy, mo
         assert isinstance(_strict_recompiles(3), contextlib.nullcontext)
         return
     limit = "recompile_limit" if hasattr(torch._dynamo.config, "recompile_limit") else "cache_size_limit"
-    monkeypatch.setattr(torch._dynamo.config, limit, 2)
     generator = torch.Generator().manual_seed(0)
     batches = [
         (torch.randn(n, 4, generator=generator), torch.randint(0, 3, (n,), generator=generator))
         for n in (2, 3, 4, 5, 6)
     ]
     spec = CompileSpec(backend="aot_eager", dynamic=False, on_failure=policy)
-    if policy == "error":
-        with pytest.raises(CompileFailed):
-            _feed_fwd().train(params=_params(batches), compile=spec)
-    else:
-        run = _feed_fwd().train(params=_params(batches), compile=spec)
-        assert run.compile.effective == "eager" and run.compile.restart["stage"] == "forward"
+    # dynamo's own patch, not monkeypatch: pytest >= 9.2 undoes a setattr on
+    # its config module with a delattr, which hides the option for the worker.
+    with torch._dynamo.config.patch(**{limit: 2}):
+        if policy == "error":
+            with pytest.raises(CompileFailed):
+                _feed_fwd().train(params=_params(batches), compile=spec)
+        else:
+            run = _feed_fwd().train(params=_params(batches), compile=spec)
+            assert run.compile.effective == "eager" and run.compile.restart["stage"] == "forward"
 
 
 def test_a_nested_fit_restores_the_outer_session():
