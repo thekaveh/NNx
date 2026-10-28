@@ -289,6 +289,7 @@ def test_the_compile_benchmark_example_runs_with_its_documented_arguments(tmp_pa
     assert report["compile"]["first_call_seconds"]["compiled"] > 0
     warmed = report["warmed"]
     assert (warmed["warmup"], warmed["repeats"], warmed["device"], warmed["backend"]) == (3, 10, "cpu", "inductor")
+    assert warmed["effective"] == "compiled"  # after the compiled fit of the same class
     assert warmed["weights_digest_match"] and warmed["max_abs_diff"] <= 1e-5
     assert warmed["eager"]["mean_seconds"] > 0 and warmed["compiled"]["mean_seconds"] > 0
     assert report["profile"]["steps"] == 5 and report["profile"]["trace_files"]

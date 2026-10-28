@@ -3415,17 +3415,56 @@ deliberately narrow and **guarantees no speedup**:
   reuses such a graph even under `fullgraph=True`.
 
 `nnx.benchmarking` measures instead of assuming. `benchmark_forward` times
-the first call (compilation included) separately from `repeats` warmed calls
+the first call (any compilation included) separately from `repeats` warmed calls
 after `warmup` untimed ones. It synchronizes the device around each timed
 call and resets CUDA peak-memory counters before the warmed region. It
 reports shapes, dtypes, backend, device and the latencies' mean / median /
 stdev.
 
 `compare_compile` benchmarks eager and compiled copies of identical weights.
-`profile_forward` runs `torch.profiler` with a finite `wait / warmup /
-active / repeat` schedule into an explicit `output_dir`. The profiler is
-closed on success, error and cancellation, and never runs inside a timed
-region. See [`examples/benchmark_compile.py`](https://github.com/thekaveh/NNx/blob/main/examples/benchmark_compile.py).
+Its `max_abs_diff` covers every tensor in the outputs, including those in
+tuples, mappings and dataclasses. It compares them in float64 (complex128
+for complex outputs), a chunk at a time on the outputs' device (on the CPU
+for MPS), so large outputs need no full-size float64 copies. Matching
+infinities and NaN on both sides differ by `0.0`; a NaN or an infinity on
+one side only counts as `inf`.
+`profile_forward` runs `torch.profiler` with a finite
+`wait / warmup / active / repeat` schedule into an explicit `output_dir`.
+It creates that directory only once every argument is valid. The profiler
+is closed on success, error and cancellation, and never runs inside a
+timed region.
+
+The helpers compile through `nnx.compilation`, as a fit does:
+
+- **Recompile allowance.** Each helper call gets dynamo's recompile limit
+  afresh, on top of the most entries any code dynamo traced holds (fits
+  included), so a sweep over many models in one process keeps compiling.
+  Dynamo's accumulated limit (256 entries of one code object) is not
+  extended, for benchmarks or fits; it applies to very long sweeps.
+- **Failure policy.** `CompileSpec.on_failure` applies. Under `"error"`, a
+  forward that fails to compile raises `CompileFailed`, with torch's error
+  as its `__cause__`. Under `"eager"`, the run restarts that forward eagerly
+  and runs the rest eagerly.
+- **Compiled nothing.** A run is compiled only when a graph compiled for
+  its compile spec (the backend and its options) ran in its first call.
+  Each spec compiles with one counting backend: the `CompileSpec` backend,
+  wrapped to count the calls of each graph it compiles. Dynamo serves a
+  later benchmark with the spec the graphs cached for it, and only those
+  count: a graph cached for another spec or a fit never counts, even when
+  dynamo runs it at the recompile limit. A forward under
+  `torch.compiler.disable`, one dynamo skips (an `nn.LSTM`, a forward with
+  no torch op) or one dynamo leaves to eager at the recompile limit
+  compiled nothing, and fails as a compile failure does. Benchmarks with
+  one spec share its graphs: a model benchmarked again runs the graphs
+  cached for it, so its first call need not include compilation, and it
+  adds no cache entry. (Torch 2.4 keys the graphs on the benchmark's deep
+  copy and recompiles each time.)
+- **Recorded.** `BenchmarkReport.compile` and `ProfileReport.compile` hold the
+  `CompileRecord`: `effective` is `compiled`, or `eager` with the `restart`.
+  `BenchmarkReport.state()` includes it. A report's default `label` and its
+  `backend` follow what took effect.
+
+See [`examples/benchmark_compile.py`](https://github.com/thekaveh/NNx/blob/main/examples/benchmark_compile.py).
 
 ## 29. Budgeted experiment search (`nnx.search`)
 

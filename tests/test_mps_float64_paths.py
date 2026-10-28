@@ -74,3 +74,25 @@ def test_a_summary_by_input_size_leaves_an_mps_model_on_its_device():
     )
     summary(model, input_size=(2, 4))
     assert all(p.device.type == "mps" for p in model.net.parameters())
+
+
+def test_compare_compile_diffs_an_mps_model_in_float64_on_the_cpu():
+    from nnx import CompileSpec
+    from nnx.benchmarking import compare_compile
+
+    torch.manual_seed(0)
+    net = torch.nn.Linear(4, 2).to("mps")
+    comparison = compare_compile(
+        net, torch.randn(3, 4, device="mps"), compile=CompileSpec(backend="aot_eager"), warmup=0, repeats=1
+    )
+    assert comparison.compiled.compile.effective == "compiled" and comparison.max_abs_diff == 0.0
+
+
+def test_max_abs_diff_widens_every_mps_chunk_on_the_cpu(monkeypatch):
+    import nnx.benchmarking as benchmarking
+
+    monkeypatch.setattr(benchmarking, "_DIFF_CHUNK", 4)
+    a = torch.arange(10, dtype=torch.float32, device="mps")
+    b = a.clone()
+    b[-1] += 2
+    assert benchmarking._abs_diff(a, b) == 2.0

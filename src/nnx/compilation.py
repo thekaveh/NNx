@@ -52,6 +52,10 @@ built-in step runs (and validation inside the fit), and nothing else:
 ``fullgraph=False`` allows graph breaks (partial capture, counted in
 ``CompileRecord.graph_breaks``); ``fullgraph=True`` rejects them, which the
 failure policy then handles.
+
+The forward benchmarks of :mod:`nnx.benchmarking` compile through the same
+recompile allowance, failure policy and compiled-nothing check, without
+gradients, and carry a :class:`CompileRecord` on their reports.
 """
 
 from __future__ import annotations
@@ -95,7 +99,8 @@ class CompileSpec:
     """What to compile with: a ``torch.compile`` ``backend`` (default
     ``"inductor"``), its ``mode`` (one of :data:`COMPILE_MODES`, or ``None``),
     ``fullgraph`` (reject graph breaks), ``dynamic`` (``None`` lets torch
-    decide) and ``on_failure`` (``"error"`` or ``"eager"``)."""
+    decide) and ``on_failure`` (``"error"`` or ``"eager"``), which applies
+    to a fit's forward and to :mod:`nnx.benchmarking`'s compiled forwards."""
 
     backend: str = "inductor"
     mode: Optional[str] = None
@@ -256,6 +261,20 @@ def _cached_entries(net: torch.nn.Module) -> int:
         return 0
 
 
+def _most_cached_entries() -> int:
+    """The most dynamo cache entries any code object traced in this process
+    holds: a benchmark's own graphs may be cached on any of them (a helper
+    function, another method, a resume function after a graph break)."""
+    try:
+        from torch._dynamo.convert_frame import input_codes
+        from torch._dynamo.eval_frame import _debug_get_cache_entry_list
+
+        codes = [code for code in (ref() for ref in list(input_codes.seen)) if code is not None]
+        return max((len(_debug_get_cache_entry_list(code)) for code in codes), default=0)
+    except Exception:  # private helpers: absent or changed in this torch
+        return 0
+
+
 def _strict_recompiles(allowance: int) -> Any:
     """Make dynamo's recompile limit an error, not a silent eager fallback
     (where torch supports it), so the failure policy decides. The limit is
@@ -316,10 +335,17 @@ class _CompileSession:
             torch_version=str(torch.__version__),
         )
         self._net = net
-        self._compiled: Optional[Callable[..., Any]] = torch.compile(net, backend=spec.backend, **spec.options())
+        self._compiled: Optional[Callable[..., Any]] = self._compile(net, spec)
         self._backward_proven = False
-        self._allowance = _cached_entries(net)
+        self._allowance = self._held_entries(net)
         self.where: Mapping[str, Any] = {}
+
+    def _compile(self, net: torch.nn.Module, spec: CompileSpec) -> Callable[..., Any]:
+        return torch.compile(net, backend=spec.backend, **spec.options())
+
+    def _held_entries(self, net: torch.nn.Module) -> int:
+        """The cache entries the recompile allowance adds to the limit."""
+        return _cached_entries(net)
 
     def _fail(self, error: BaseException, **stage: Any) -> dict[str, Any]:
         restart = {**self.where, **stage, "error": type(error).__name__, "message": _message(error)}
@@ -339,62 +365,75 @@ class _CompileSession:
         except Exception as error:
             if not _is_compile_failure(error):
                 raise
-            # A real error in the user's forward also surfaces through
-            # dynamo: an eager re-run (from the same RNG and buffers) tells
-            # the two apart, and its own error is the one that propagates.
-            snapshot.restore()
-            try:
-                eager_output = self._net(*args, **kwargs)
-            except BaseException:
-                snapshot.restore()  # the user's own error: leave the model as the call found it
-                raise
-            restart = self._fail(error, stage="forward")
-            if self.spec.on_failure == "error":
-                snapshot.restore()  # leave the model as the failed call found it
-                self.record = replace(self.record, effective="failed", restart=restart)
-                raise CompileFailed(
-                    f"torch.compile (backend {self.spec.backend!r}) failed: {restart['message']}; "
-                    "pass CompileSpec(on_failure='eager') to restart this forward eagerly instead",
-                    self.record,
-                ) from error
-            # Only the forward is re-run (nothing the optimizer owns has
-            # changed), from the RNG and buffers it started with.
-            self.record = replace(self.record, effective="eager", restart=restart)
-            return eager_output
+            return self._restart(error, snapshot, args, kwargs)
         compiled_now = _unique_graphs() > graphs_before
         if first and not compiled_now and _cached_entries(self._net) == 0:
-            # Dynamo skipped the whole forward (it compiled nothing and holds
-            # no graph for it): never recorded as compiled.
-            skipped = RuntimeError(
-                "torch.compile compiled nothing: dynamo skipped the forward frame (see TORCH_LOGS=+dynamo)"
-            )
-            restart = self._fail(skipped, stage="forward")
-            if self.spec.on_failure == "error":
-                snapshot.restore()  # as the other failure path: the model as the failed call found it
-                self.record = replace(self.record, effective="failed", restart=restart)
-                raise CompileFailed(
-                    f"torch.compile (backend {self.spec.backend!r}) failed: {restart['message']}", self.record
-                )
-            self.record = replace(self.record, effective="eager", restart=restart)
+            self._skipped(snapshot)
             return output
         if compiled_now and torch.is_grad_enabled():
             # A new training graph compiles its backward lazily, on its first backward.
             self._backward_proven = False
         if first:
-            # Breaks are counted only when this call compiled: a frame served
-            # from dynamo's cache compiles nothing, so its capture is unknown.
-            # A break shows as a counted break or as a further graph for the
-            # frame. Once the net class has compiled earlier in this process
-            # the counters are no longer reliable (torch may count a repeated
-            # break reason once), so the capture is then unknown.
-            graphs = _unique_graphs() - graphs_before
-            breaks = (
-                max(_counter("graph_break") - breaks_before, graphs - 1)
-                if compiled_now and self._allowance == 0
-                else None
-            )
-            self.record = replace(self.record, effective="compiled", graph_breaks=breaks)
+            self._compiled_first(graphs_before, breaks_before, compiled_now)
         return output
+
+    def _restart(self, error: BaseException, snapshot: Optional[_Snapshot], args: Any, kwargs: Any) -> Any:
+        """A forward failed to compile: raise :class:`CompileFailed` under
+        the ``error`` policy, else record the eager restart and return the
+        eager re-run's output."""
+        # A real error in the user's forward also surfaces through
+        # dynamo: an eager re-run (from the same RNG and buffers) tells
+        # the two apart, and its own error is the one that propagates.
+        if snapshot is not None:
+            snapshot.restore()
+        try:
+            eager_output = self._net(*args, **kwargs)
+        except BaseException:
+            if snapshot is not None:
+                snapshot.restore()  # the user's own error: leave the model as the call found it
+            raise
+        restart = self._fail(error, stage="forward")
+        if self.spec.on_failure == "error":
+            if snapshot is not None:
+                snapshot.restore()  # leave the model as the failed call found it
+            self.record = replace(self.record, effective="failed", restart=restart)
+            raise CompileFailed(
+                f"torch.compile (backend {self.spec.backend!r}) failed: {restart['message']}; "
+                "pass CompileSpec(on_failure='eager') to restart this forward eagerly instead",
+                self.record,
+            ) from error
+        # Only the forward is re-run (nothing the optimizer owns has
+        # changed), from the RNG and buffers it started with.
+        self.record = replace(self.record, effective="eager", restart=restart)
+        return eager_output
+
+    def _skipped(self, snapshot: _Snapshot) -> None:
+        """Dynamo skipped the whole first forward (it compiled nothing and
+        ran no graph for it): never recorded as compiled."""
+        skipped = RuntimeError(
+            "torch.compile compiled nothing: dynamo skipped the forward frame (see TORCH_LOGS=+dynamo)"
+        )
+        restart = self._fail(skipped, stage="forward")
+        if self.spec.on_failure == "error":
+            snapshot.restore()  # as the other failure path: the model as the failed call found it
+            self.record = replace(self.record, effective="failed", restart=restart)
+            raise CompileFailed(
+                f"torch.compile (backend {self.spec.backend!r}) failed: {restart['message']}", self.record
+            )
+        self.record = replace(self.record, effective="eager", restart=restart)
+
+    def _compiled_first(self, graphs_before: int, breaks_before: int, compiled_now: bool) -> None:
+        # Breaks are counted only when this call compiled: a frame served
+        # from dynamo's cache compiles nothing, so its capture is unknown.
+        # A break shows as a counted break or as a further graph for the
+        # frame. Once the net class has compiled earlier in this process
+        # the counters are no longer reliable (torch may count a repeated
+        # break reason once), so the capture is then unknown.
+        graphs = _unique_graphs() - graphs_before
+        breaks = (
+            max(_counter("graph_break") - breaks_before, graphs - 1) if compiled_now and self._allowance == 0 else None
+        )
+        self.record = replace(self.record, effective="compiled", graph_breaks=breaks)
 
     @contextlib.contextmanager
     def backward(self) -> Iterator[None]:
@@ -415,6 +454,111 @@ class _CompileSession:
                 self.record = replace(self.record, effective="failed", restart=self._fail(error, stage="backward"))
             raise
         self._backward_proven = True
+
+
+class _CountedBackend:
+    """The counting backend of one compile spec: the spec's backend,
+    resolved as ``torch.compile`` resolves it (``mode`` included), with
+    every graph it compiles counting its calls on :attr:`calls`. Dynamo
+    guards each cache entry on the backend that compiled it, so a later
+    benchmark with the spec is served the graphs cached for it. Only those
+    graphs count: a graph cached for another spec or a fit never counts
+    under this spec, even when dynamo runs it at the recompile limit."""
+
+    def __init__(self, spec: CompileSpec) -> None:
+        if spec.backend == "inductor":
+            self._real: Any = torch._TorchCompileInductorWrapper(spec.mode, None, spec.dynamic)
+        else:
+            self._real = torch._TorchCompileWrapper(spec.backend, spec.mode, None, spec.dynamic)
+        self.__name__ = spec.backend  # torch's name for the backend in its messages
+        self.calls = 0
+
+    def __call__(self, gm: torch.fx.GraphModule, example_inputs: Any) -> Callable[..., Any]:
+        graph = self._real(gm, example_inputs)
+
+        def run(*args: Any, **kwargs: Any) -> Any:
+            self.calls += 1
+            return graph(*args, **kwargs)
+
+        return run
+
+    def reset(self) -> None:
+        if hasattr(self._real, "reset"):
+            self._real.reset()
+
+
+_COUNTED_BACKENDS: dict[tuple[Any, ...], _CountedBackend] = {}
+
+
+def _counted_backend(spec: CompileSpec) -> _CountedBackend:
+    """The one counting backend of ``spec``'s backend and options (not its
+    failure policy, which changes nothing compiled): reused, so a model
+    benchmarked again with the spec runs its cached graphs and adds no
+    cache entry."""
+    key = (spec.backend, tuple(sorted(spec.options().items())))
+    backend = _COUNTED_BACKENDS.get(key)
+    if backend is None:
+        backend = _COUNTED_BACKENDS[key] = _CountedBackend(spec)
+    return backend
+
+
+class _InferenceSession(_CompileSession):
+    """A compiled no-grad forward for measurement (:mod:`nnx.benchmarking`),
+    under a fit's recompile allowance, failure policy and compiled-nothing
+    check. It compiles with the spec's :class:`_CountedBackend`: the run is
+    compiled only when a graph compiled for the spec (now, or for an
+    earlier benchmark) ran in the first call.
+    The caller holds :meth:`strict` around all of its calls, once: patching
+    dynamo's config costs more than a small forward. After the first call
+    a timed call runs the compiled module with only the backend's one
+    counter increment per graph call around it (no snapshot or dynamo
+    counters); a compile failure there is still handled by the policy,
+    retried eagerly without a snapshot."""
+
+    _backend: _CountedBackend
+
+    def _compile(self, net: torch.nn.Module, spec: CompileSpec) -> Callable[..., Any]:
+        self._backend = _counted_backend(spec)
+        return torch.compile(net, backend=self._backend, fullgraph=spec.fullgraph, dynamic=spec.dynamic)
+
+    def _held_entries(self, net: torch.nn.Module) -> int:
+        # A benchmark may add entries to every code object it traces, so it
+        # gets the configured limit on top of the most any of them holds.
+        return _most_cached_entries()
+
+    def strict(self) -> Any:
+        """The recompile allowance, around every call of :meth:`forward`."""
+        return _strict_recompiles(self._allowance)
+
+    def forward(self, *args: Any, **kwargs: Any) -> Any:
+        compiled = self._compiled
+        if compiled is None:  # restarted eager
+            return self._net(*args, **kwargs)
+        if self.record.effective != "pending":
+            try:
+                return compiled(*args, **kwargs)
+            except Exception as error:
+                if not _is_compile_failure(error):
+                    raise
+                return self._restart(error, None, args, kwargs)
+        snapshot = _Snapshot(self._net)
+        graphs_before, breaks_before = _unique_graphs(), _counter("graph_break")
+        calls_before = self._backend.calls
+        try:
+            output = compiled(*args, **kwargs)
+        except Exception as error:
+            if not _is_compile_failure(error):
+                raise
+            return self._restart(error, snapshot, args, kwargs)
+        if self._backend.calls == calls_before:
+            # No graph compiled for this spec ran: dynamo skipped the frame
+            # (a ``torch.compiler.disable`` forward, one it cannot trace, or
+            # one at the recompile limit) and ran it eagerly, or ran graphs
+            # another spec or a fit compiled.
+            self._skipped(snapshot)
+            return output
+        self._compiled_first(graphs_before, breaks_before, _unique_graphs() > graphs_before)
+        return output
 
 
 @dataclass
