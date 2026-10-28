@@ -61,6 +61,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from ._artifacts import check_keys
 from ._optional import require
 from .components import ComponentSpec
 from .objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult
@@ -89,6 +90,19 @@ MODES = ("binary", "edge_label")
 SPLITS = ("train", "val", "test")
 DENSE_LIMIT = 2_000_000  # candidate pairs enumerated exactly; larger graphs sample by rejection
 Edge = tuple[int, int]
+_STATE_KEYS = (
+    "format",
+    "num_nodes",
+    "directed",
+    "self_loops",
+    "seed",
+    "train",
+    "val",
+    "test",
+    "val_negatives",
+    "test_negatives",
+)
+_LABEL_KEYS = ("categories", "edge_labels", "label_existence")  # an edge-label split's group: all or none
 
 
 class LinkTaskError(ValueError):
@@ -335,7 +349,7 @@ class LinkSplit:
             "directed": self.directed,
             "self_loops": self.self_loops,
             "seed": self.seed,
-            "topology": "train_edges" + ("+labelled_existence" if self.label_existence == "visible" else ""),
+            "topology": self._topology(),
         }
         for name in ("train", "val", "test", "val_negatives", "test_negatives"):
             state[name] = [list(edge) for edge in getattr(self, name)]
@@ -345,12 +359,39 @@ class LinkSplit:
             state["label_existence"] = self.label_existence
         return state
 
+    def _topology(self) -> str:
+        return "train_edges" + ("+labelled_existence" if self.label_existence == "visible" else "")
+
     @staticmethod
     def from_state(state: Mapping[str, Any]) -> LinkSplit:
+        """Rebuild a split from :meth:`state`, exactly or not at all.
+
+        The state holds the keys :meth:`state` writes. ``categories``,
+        ``edge_labels`` and ``label_existence`` are present together (an
+        edge-label split, with ``categories`` set) or not at all (a binary
+        split); ``topology`` is derived, so it may be left out, but a value
+        that disagrees with the split is refused.
+
+        Raises:
+            LinkTaskError: for a non-mapping state, another ``format``,
+                unknown or missing keys (named), a partial edge-label group,
+                ``"categories": null``, a stale ``topology`` and any value
+                the constructor refuses.
+        """
         if not isinstance(state, Mapping) or state.get("format") != FORMAT:
             raise LinkTaskError(f"not a {FORMAT} manifest")
+        labelled = any(key in state for key in _LABEL_KEYS)
+        check_keys(
+            state,
+            required=(*_STATE_KEYS, *(_LABEL_KEYS if labelled else ())),
+            optional=("topology",),
+            what=f"{FORMAT} manifest",
+            error=LinkTaskError,
+        )
+        if labelled and state["categories"] is None:
+            raise LinkTaskError(f"a {FORMAT} manifest with edge labels needs categories, got null")
         try:
-            return LinkSplit(
+            split = LinkSplit(
                 num_nodes=state["num_nodes"],
                 train=tuple(tuple(e) for e in state["train"]),
                 val=tuple(tuple(e) for e in state["val"]),
@@ -360,14 +401,20 @@ class LinkSplit:
                 directed=state["directed"],
                 self_loops=state["self_loops"],
                 seed=state["seed"],
-                categories=None if state.get("categories") is None else tuple(state["categories"]),
-                edge_labels=tuple((tuple(e), c) for e, c in state.get("edge_labels", ())),
-                label_existence=state.get("label_existence", "hidden"),
+                categories=tuple(state["categories"]) if labelled else None,
+                edge_labels=tuple((tuple(e), c) for e, c in state["edge_labels"]) if labelled else (),
+                label_existence=state["label_existence"] if labelled else "hidden",
             )
         except (KeyError, TypeError, ValueError) as error:
             if isinstance(error, LinkTaskError):
                 raise
             raise LinkTaskError(f"malformed {FORMAT} manifest: {error}") from error
+        if "topology" in state and state["topology"] != split._topology():
+            raise LinkTaskError(
+                f"the {FORMAT} manifest's topology {state['topology']!r} does not match its split "
+                f"({split._topology()!r})"
+            )
+        return split
 
     def _negatives_per_positive(self) -> int:
         """The ``negatives`` ratio ``split_links`` was called with, read from
