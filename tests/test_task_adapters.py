@@ -388,6 +388,75 @@ def test_multilabel_threshold_is_the_decoding_rule(tmp_path, monkeypatch):
     np.testing.assert_array_equal(model.predict(x.numpy()).classes, rich.decoded)
 
 
+def _zero_row_multilabel_case():
+    """A runtime module that takes zero rows, and a multilabel loader whose
+    middle batch has none (a ``collate_fn`` that drops unlabeled rows, a
+    shard of pre-batched data)."""
+    set_seed(0)
+    x = torch.randn(8, 3)
+    y = (torch.randn(8, 3) > 0).float()
+    model = NNModel(
+        module=torch.nn.Linear(3, 3),
+        params=NNModelParams(device=Devices.CPU, loss=Losses.BINARY_CROSS_ENTROPY, task=TaskSpec.multilabel(3)),
+    )
+    return model, [(x[:4], y[:4]), (x[:0], y[:0]), (x[4:], y[4:])], [(x[:4], y[:4]), (x[4:], y[4:])]
+
+
+@pytest.mark.parametrize(
+    ("spec", "target"),
+    [
+        (TaskSpec.categorical(3), torch.zeros(0, dtype=torch.long)),
+        (TaskSpec.multilabel(3), torch.zeros(0, 3)),
+        (TaskSpec.regression(3), torch.zeros(0, 3)),
+    ],
+    ids=["categorical", "multilabel", "regression"],
+)
+def test_a_zero_row_batch_records_empty_for_every_task_kind(spec, target):
+    """#549: the multilabel accumulator raised NumPy's "cannot reshape array
+    of size 0" where the other kinds recorded nothing."""
+    record = task_adapter(spec).record(torch.zeros(0, 3), target, loss=None)
+    assert (record.status, record.count) == ("empty", 0)
+
+
+def test_a_zero_row_multilabel_batch_leaves_evaluate_as_without_it():
+    model, loader, without = _zero_row_multilabel_case()
+    for metrics in ((), (MetricSpec("accuracy"),)):
+        record = model.evaluate(loader, metrics=metrics)
+        assert (record.status, record.count) == ("ok", 24)  # 8 rows x 3 labels
+        assert record.state() == model.evaluate(without, metrics=metrics).state()
+
+
+@pytest.mark.parametrize("step", ["default", "streaming_eval_step", "supervised_objective"])
+def test_a_zero_row_multilabel_batch_trains_and_validates_as_without_it(tmp_path, monkeypatch, step):
+    """#549: the default train step, the bounded validation step and
+    ``SupervisedObjective`` feed the multilabel accumulator too."""
+    from nnx.objectives import supervised_objective
+    from nnx.streaming import streaming_eval_step
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    kwargs = {
+        "default": {},
+        "streaming_eval_step": {"eval_step_fn": streaming_eval_step},
+        "supervised_objective": {"objective": supervised_objective()},
+    }[step]
+    runs = []
+    for tag in ("with", "without"):
+        model, with_empty, without = _zero_row_multilabel_case()
+        loader = with_empty if tag == "with" else without
+        params = NNTrainParams(
+            n_epochs=1, optim=_sgd(), train_loader=loader, val_loader=loader, data_id=f"{step}-{tag}"
+        )
+        runs.append((model, model.train(params=params, **kwargs).idps[-1]))
+    (model, idp), (reference, reference_idp) = runs
+    assert (idp.train_edp.status, idp.train_edp.count) == ("ok", 12)  # the last batch's 4 rows x 3 labels
+    assert idp.val_edp is not None and (idp.val_edp.status, idp.val_edp.count) == ("ok", 24)
+    assert idp.train_edp.state() == reference_idp.train_edp.state()
+    assert idp.val_edp.state() == reference_idp.val_edp.state()
+    for got, want in zip(model.net.parameters(), reference.net.parameters(), strict=True):
+        torch.testing.assert_close(got, want, rtol=0.0, atol=0.0)
+
+
 # ---------------------------------------------- categorical legacy parity
 
 
