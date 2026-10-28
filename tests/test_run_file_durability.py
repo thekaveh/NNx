@@ -271,6 +271,7 @@ def test_a_failed_flush_of_the_history_rename_republishes_the_previous_file(entr
             _fit(entry, HistoryJournal(retention=3, chunk_size=2) if journal else None, callbacks=[failing])
     assert caught.value.errno == errno.EIO
     assert "injected #1" in str(caught.value)  # the flush's own error, not the restore's
+    assert failing.raised == 2  # the restore flushed the directory too (its error is swallowed)
     run_id = failing.run_id
     path = os.path.join("runs", run_id, name)
     if epoch == 0:
