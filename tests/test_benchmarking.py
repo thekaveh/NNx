@@ -611,6 +611,46 @@ def test_one_model_benchmarked_past_the_accumulated_limit_keeps_compiling(helper
             assert report.compile.effective == "compiled" and _CALLS["n"] > before, attempt
 
 
+def test_only_benchmarks_extend_the_accumulated_limit(tmp_path, monkeypatch):
+    """A fit extends dynamo's recompile limit only: its accumulated limit
+    (here lowered to 3) stays as configured, while a benchmark of the same
+    class, which compiles entries of its own, gets it extended."""
+    config = torch._dynamo.config
+    name = next(n for n in ("accumulated_recompile_limit", "accumulated_cache_size_limit") if hasattr(config, n))
+    seen: list[int] = []
+
+    def build(gm):
+        seen.append(int(getattr(config, name)))
+        return gm.forward
+
+    spec = _backend("nnx_test_reads_accumulated_limit", build)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    generator = torch.Generator().manual_seed(0)
+    batches = [(torch.randn(8, 4, generator=generator), torch.randint(0, 2, (8,), generator=generator))]
+    with config.patch(**{name: 3}):
+        for depth in (1, 2):  # the second fit's allowance is the first fit's entries
+            params = NNTrainParams(
+                n_epochs=1,
+                train_loader=batches,
+                optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+                overwrite_existing=True,
+            )
+            torch.manual_seed(0)
+            model = NNModel(
+                net_params=NNParams(
+                    input_dim=4, output_dim=2, hidden_dims=[8] * depth, dropout_prob=0.0, activation=Activations.RELU
+                ),
+                params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+            )
+            assert model.train(params=params, compile=spec).compile.effective == "compiled", depth
+        fits = list(seen)
+        report = benchmark_forward(_feed_fwd_net(3), _x(), compile=spec, warmup=0, repeats=1)
+        assert report.compile.effective == "compiled"
+    assert fits and set(fits) == {3}
+    assert seen[len(fits) :] and min(seen[len(fits) :]) > 3
+
+
 @pytest.mark.parametrize("policy", ["error", "eager"])
 @pytest.mark.parametrize("make", [_BreaksMidway, _BreaksInHelper], ids=["midway", "helper"])
 def test_a_graph_cached_for_an_earlier_benchmark_never_counts_as_compiled(policy, make, monkeypatch):
@@ -743,6 +783,13 @@ def test_max_abs_diff_never_hides_a_one_sided_nan():
     nan_head_0 = _perturbing("nnx_test_nan_head_0", lambda i, t: torch.full_like(t, float("nan")) if i == 0 else t)
     assert _diff(_TwoHeads(), nan_head_1) == float("inf")
     assert _diff(_TwoHeads(), nan_head_0) == float("inf")
+
+
+@pytest.mark.parametrize("infinity", [float("inf"), float("-inf")], ids=["pos", "neg"])
+def test_max_abs_diff_counts_a_one_sided_infinity_as_inf(infinity):
+    """|finite - inf| is inf, not the largest finite float."""
+    to_inf = _perturbing(f"nnx_test_to_{infinity}", lambda i, t: torch.full_like(t, infinity))
+    assert _diff(torch.nn.Linear(4, 2), to_inf) == float("inf")
 
 
 def test_max_abs_diff_reads_every_head_and_dataclass_fields():

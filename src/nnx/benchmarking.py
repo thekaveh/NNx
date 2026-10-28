@@ -339,10 +339,10 @@ class CompileComparison:
     ``max_abs_diff`` covers every tensor in the outputs (tuples, lists,
     mappings, named tuples and dataclasses are opened), compared in float64
     (complex128 for complex outputs). Equal values differ by ``0.0``,
-    matching infinities and NaN on both sides included; a NaN on one side
-    only counts as ``inf``. It is NaN when the outputs held no tensor, so
-    nothing was compared. ``compiled.compile`` says whether the compiled
-    side compiled."""
+    matching infinities and NaN on both sides included; a NaN or an
+    infinity on one side only counts as ``inf``. It is NaN when the outputs
+    held no tensor, so nothing was compared. ``compiled.compile`` says
+    whether the compiled side compiled."""
 
     eager: BenchmarkReport
     compiled: BenchmarkReport
@@ -426,7 +426,7 @@ def _flatten(output: Any) -> tuple[list[Any], list[Any]]:
 def _abs_diff(a: torch.Tensor, b: torch.Tensor) -> float:
     """The largest ``|a - b|`` in float64 (complex128 for complex tensors):
     equal values, matching infinities and two-sided NaN differ by ``0.0``;
-    a one-sided NaN counts as ``inf``."""
+    a one-sided NaN or infinity counts as ``inf``."""
     if a.shape != b.shape:
         raise RuntimeError(f"eager and compiled forwards returned differently shaped outputs: {a.shape} vs {b.shape}")
     if not a.numel():
@@ -436,7 +436,8 @@ def _abs_diff(a: torch.Tensor, b: torch.Tensor) -> float:
     wide = torch.complex128 if a.is_complex() or b.is_complex() else torch.float64
     x, y = a.detach().cpu().to(wide), b.detach().cpu().to(wide)
     same = (x == y) | (x.isnan() & y.isnan())
-    gap = (x - y).abs().nan_to_num(nan=float("inf")).masked_fill(same, 0.0)
+    # ``posinf`` too: ``nan_to_num`` maps ``inf`` to the largest finite value.
+    gap = (x - y).abs().nan_to_num(nan=float("inf"), posinf=float("inf")).masked_fill(same, 0.0)
     return float(gap.max())
 
 

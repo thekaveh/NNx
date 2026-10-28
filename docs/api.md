@@ -4908,10 +4908,10 @@ An eager and a compiled benchmark of identical weights, and the largest absolute
 ``max_abs_diff`` covers every tensor in the outputs (tuples, lists,
 mappings, named tuples and dataclasses are opened), compared in float64
 (complex128 for complex outputs). Equal values differ by ``0.0``,
-matching infinities and NaN on both sides included; a NaN on one side
-only counts as ``inf``. It is NaN when the outputs held no tensor, so
-nothing was compared. ``compiled.compile`` says whether the compiled
-side compiled.
+matching infinities and NaN on both sides included; a NaN or an
+infinity on one side only counts as ``inf``. It is NaN when the outputs
+held no tensor, so nothing was compared. ``compiled.compile`` says
+whether the compiled side compiled.
 ```
 
 ##### `nnx.benchmarking.CompileComparison.speedup`

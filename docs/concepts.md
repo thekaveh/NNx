@@ -3425,11 +3425,12 @@ stdev.
 Its `max_abs_diff` covers every tensor in the outputs, including those in
 tuples, mappings and dataclasses. It compares them in float64 (complex128
 for complex outputs). Matching infinities and NaN on both sides differ by
-`0.0`; a NaN on one side only counts as `inf`. `profile_forward` runs
-`torch.profiler` with a finite `wait / warmup / active / repeat` schedule
-into an explicit `output_dir`. It creates that directory only once every
-argument is valid. The profiler is closed on success, error and
-cancellation, and never runs inside a timed region.
+`0.0`; a NaN or an infinity on one side only counts as `inf`.
+`profile_forward` runs `torch.profiler` with a finite
+`wait / warmup / active / repeat` schedule into an explicit `output_dir`.
+It creates that directory only once every argument is valid. The profiler
+is closed on success, error and cancellation, and never runs inside a
+timed region.
 
 The helpers compile through `nnx.compilation`, as a fit does:
 
@@ -3437,7 +3438,8 @@ The helpers compile through `nnx.compilation`, as a fit does:
   and its accumulated limit (256 entries of one code object) afresh, on top
   of the most entries any code dynamo traced holds (fits included). A sweep
   over many models, or many benchmarks of one model, in one process keeps
-  compiling.
+  compiling. A fit extends only the recompile limit; the accumulated limit
+  still applies to very long sweeps of fits.
 - **Failure policy.** `CompileSpec.on_failure` applies. Under `"error"`, a
   forward that fails to compile raises `CompileFailed`, with torch's error
   as its `__cause__`. Under `"eager"`, the run restarts that forward eagerly
