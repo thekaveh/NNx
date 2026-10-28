@@ -104,10 +104,18 @@ class NNSchedulerParams:
                         domain_message=f"NNSchedulerParams requires {name} > 0 when set, got {value}",
                     ),
                 )
-        # A warm-up longer than the schedule never reaches the optimizer's LR
-        # and never decays (total_steps - warmup_steps is negative). A
-        # default total_steps is checked when the scheduler is built.
-        if self.warmup_steps is not None and self.total_steps is not None and self.warmup_steps > self.total_steps:
+        # A LINEAR_WARMUP_DECAY warm-up longer than the schedule never
+        # reaches the optimizer's LR and never decays (total_steps -
+        # warmup_steps is negative). A default total_steps is checked when
+        # the scheduler is built. The other kinds never read warmup_steps, so
+        # an unused one (left over from a kind switch) stays valid and their
+        # saved runs keep loading (#546).
+        if (
+            self.kind == Schedulers.LINEAR_WARMUP_DECAY
+            and self.warmup_steps is not None
+            and self.total_steps is not None
+            and self.warmup_steps > self.total_steps
+        ):
             raise ValueError(
                 f"NNSchedulerParams requires warmup_steps <= total_steps, got {self.warmup_steps} > {self.total_steps}"
             )

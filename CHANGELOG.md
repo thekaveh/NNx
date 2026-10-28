@@ -115,7 +115,8 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - The imperative JEPA step refuses a predictor outside `model.net` (it was never updated).
     - Re-applying an adapter in a mixed LoRA / IA3 stack wraps nothing again.
     - `FixedHeadProvider` reports non-finite logits as a `ProviderFailure` (new `nnx.prediction.NonFiniteLogitsError`) and a too-wide Bernoulli head as an `InvalidDecisionRequest`.
-    - `NNSchedulerParams` refuses `warmup_steps > total_steps`; `train_bpe` always keeps an `<unk>` token, so unseen characters encode.
+    - A `LINEAR_WARMUP_DECAY` `NNSchedulerParams` refuses `warmup_steps > total_steps` (the other kinds never read `warmup_steps` and keep an unused one). As with the 0.3.0 stricter configuration, a saved `LINEAR_WARMUP_DECAY` run with such a warm-up no longer loads and is not a `runs/best` candidate.
+    - `train_bpe` always keeps an `<unk>` token, so unseen characters encode.
     - An optimizer built with a momentum of the wrong shape names the problem instead of a bare `AssertionError`.
     - A window dropped as non-finite (`nonfinite="skip"`) no longer turns the whole-epoch training loss into NaN.
     - A warm-up longer than the run's default schedule length is refused when the scheduler is built.
