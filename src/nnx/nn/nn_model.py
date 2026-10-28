@@ -1078,6 +1078,35 @@ def _parametrized_prefix(key: str) -> str:
     return f"{head}.parametrizations.{name}.original" if head else f"parametrizations.{name}.original"
 
 
+def _reparameterizing_hooks(net: torch.nn.Module, base_keys: set[str]) -> tuple[set[str], set[str]]:
+    """The tensors (``X.base.weight``) an unbaked prune mask and a legacy
+    ``weight_norm`` / ``spectral_norm`` recompute in a forward pre-hook,
+    found by hook type wherever they sit (below a PEFT wrapper too), unless
+    the descriptor's own net carries that reparameterization."""
+    from torch.nn.utils.prune import BasePruningMethod
+    from torch.nn.utils.spectral_norm import SpectralNorm
+    from torch.nn.utils.weight_norm import WeightNorm
+
+    masked: set[str] = set()
+    normed: set[str] = set()
+    for path, module in net.named_modules():
+        for hook in module._forward_pre_hooks.values():
+            if isinstance(hook, BasePruningMethod):
+                name = getattr(hook, "_tensor_name", None)
+                found, own = masked, ("_mask",)
+            elif isinstance(hook, (WeightNorm, SpectralNorm)):
+                name = getattr(hook, "name", None)
+                found, own = normed, ("_g", "_orig")
+            else:
+                continue
+            if name is None:
+                continue
+            key = f"{path}.{name}" if path else name
+            if not any(f"{key}{suffix}" in base_keys for suffix in own):
+                found.add(key)
+    return masked, normed
+
+
 def _replaced_layers(state_keys: Iterable[str], base_keys: Iterable[str]) -> tuple[list[str], list[str]]:
     """The base layers ``X`` a state holds as LoRA wrappers (``X.base.weight``
     or ``X.lora_A``) and as low-rank factors (``X.0.weight`` and
@@ -3472,12 +3501,18 @@ class NNModel(_HubMixinBase):
             return
         expected_keys = set(base_state)
         actual_keys = _tensor_keys(self.net.state_dict())
+        # Masks and legacy norms below a PEFT wrapper (X.base.weight_orig) are
+        # not under a descriptor key, so they are found by their hooks (FIX-056).
+        masked, normed = _reparameterizing_hooks(self.net, expected_keys)
         reparameterized = sorted(
-            key[: -len("_orig")]
-            for key in actual_keys - expected_keys
-            if key.endswith("_orig")
-            and key[: -len("_orig")] in expected_keys
-            and f"{key[: -len('_orig')]}_mask" in actual_keys  # a legacy spectral_norm has _u / _v instead
+            {
+                key[: -len("_orig")]
+                for key in actual_keys - expected_keys
+                if key.endswith("_orig")
+                and key[: -len("_orig")] in expected_keys
+                and f"{key[: -len('_orig')]}_mask" in actual_keys  # a legacy spectral_norm has _u / _v instead
+            }
+            | masked
         )
         if reparameterized:
             raise ValueError(
@@ -3494,11 +3529,14 @@ class NNModel(_HubMixinBase):
         # A parametrization (weight_norm, spectral_norm, register_parametrization)
         # replaces X.name by X.parametrizations.name.original* or X.name_g / X.name_v.
         parametrized = sorted(
-            key
-            for key in expected_keys - actual_keys
-            if any(other.startswith(_parametrized_prefix(key)) for other in actual_keys)
-            or {f"{key}_g", f"{key}_v"} <= actual_keys  # legacy weight_norm
-            or {f"{key}_orig", f"{key}_u"} <= actual_keys  # legacy spectral_norm
+            {
+                key
+                for key in expected_keys - actual_keys
+                if any(other.startswith(_parametrized_prefix(key)) for other in actual_keys)
+                or {f"{key}_g", f"{key}_v"} <= actual_keys  # legacy weight_norm
+                or {f"{key}_orig", f"{key}_u"} <= actual_keys  # legacy spectral_norm
+            }
+            | normed
         )
         if parametrized:
             raise ValueError(

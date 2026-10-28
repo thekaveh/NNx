@@ -40,6 +40,58 @@ from ._targets import wrap_selected_linears
 from .lora import LoRALinear
 
 
+def _bypassed_feature(base: nn.Linear) -> tuple[str, str] | None:
+    """The first part of ``base``'s own forward path that DoRA would skip,
+    with why and how to resolve it; ``None`` when there is none (FIX-056).
+
+    DoRA reads ``base.weight`` / ``base.bias`` and runs ``F.linear`` itself,
+    so ``base(x)`` never runs: an instance ``forward``, hooks, an unbaked
+    prune mask or a legacy ``weight_norm`` / ``spectral_norm`` (the last two
+    recompute ``base.weight`` in a forward pre-hook, so DoRA would read a
+    stale tensor) never apply, and a quantized weight cannot be normed. The
+    ``torch.nn.utils.parametrizations`` norms recompute ``base.weight`` on
+    every access, so DoRA reads them correctly. Hooks are recognized by
+    type, never by parameter names (as in ``surgery._utils.refuse_parametrized``).
+    """
+    from torch.nn.utils.prune import BasePruningMethod
+    from torch.nn.utils.spectral_norm import SpectralNorm
+    from torch.nn.utils.weight_norm import WeightNorm
+
+    bypassed = "DoRA reads the layer's weight and never calls the layer, so it would be bypassed."
+    hooked = f"{bypassed} Remove the hook, or use LoRA, which calls the base layer and its hooks."
+    stale = "It applies only when the layer is called, so DoRA would read a stale weight."
+    if "forward" in vars(base):
+        return "an instance forward override", f"{bypassed} Use LoRA, which calls the base layer."
+    pre_hooks = list(base._forward_pre_hooks.values())
+    masks = sorted(getattr(h, "_tensor_name", "?") for h in pre_hooks if isinstance(h, BasePruningMethod))
+    if masks:
+        return (
+            f"an unbaked prune mask on {masks}",
+            f"{stale} Bake the mask first (torch.nn.utils.prune.remove, or magnitude_prune(bake=True)), or use "
+            "LoRA, which calls the base layer.",
+        )
+    norms = sorted(getattr(h, "name", "?") for h in pre_hooks if isinstance(h, (WeightNorm, SpectralNorm)))
+    if norms:
+        return (
+            f"a legacy weight_norm / spectral_norm on {norms}",
+            f"{stale} Remove the norm (torch.nn.utils.remove_weight_norm / remove_spectral_norm) or use its "
+            "torch.nn.utils.parametrizations form, which DoRA reads on every forward, or use LoRA.",
+        )
+    if pre_hooks:
+        return "a forward pre-hook", hooked
+    if base._forward_hooks:
+        return "a forward hook", hooked
+    if base._backward_hooks or base._backward_pre_hooks:
+        return "a backward hook", hooked
+    if type(base.weight) not in (torch.Tensor, nn.Parameter):
+        return (
+            f"a weight of type {type(base.weight).__name__} (an int8 quantized weight, say)",
+            "DoRA norms and adds to the weight itself, which a quantized weight does not support. Use LoRA, "
+            "which composes with an int8 base.",
+        )
+    return None
+
+
 class DoRALinear(LoRALinear):
     """Linear layer wrapped with a DoRA weight decomposition.
 
@@ -71,12 +123,28 @@ class DoRALinear(LoRALinear):
     the wrapper and its update dropout inherit the base layer's
     train/eval mode at construction.
 
+    DoRA reads the base's ``weight`` and ``bias`` and never calls the base
+    layer, so it refuses a base whose own forward path would be skipped:
+    a subclass or instance ``forward``, forward / pre / backward hooks, an
+    unbaked prune mask or a legacy ``torch.nn.utils.weight_norm`` /
+    ``spectral_norm`` (they update ``weight`` only when the layer is called)
+    and a quantized weight (torchao int8), which DoRA cannot norm. The
+    refusal comes before the base is frozen, at construction, and at
+    forward for a base changed after wrapping. Use :class:`LoRALinear` for
+    such a layer. A ``torch.nn.utils.parametrizations`` norm recomputes
+    ``weight`` on every access and is supported.
+
     Args:
         base: the :class:`nn.Linear` to wrap. Its parameters are frozen
             on construction (inherited from LoRALinear).
         r: low-rank dim for the LoRA residual. Must be positive.
         alpha: scaling numerator. Effective LoRA scale is ``alpha / r``.
         dropout: dropout on the LoRA update path. Range ``[0, 1)``.
+
+    Raises:
+        TypeError: if ``base`` is not an :class:`nn.Linear`, or carries one
+            of the features above (at forward too, when added after
+            wrapping). Nothing is frozen by a refused construction.
     """
 
     def __init__(
@@ -92,6 +160,11 @@ class DoRALinear(LoRALinear):
                 f"DoRA cannot wrap a {type(base).__name__}: it has its own forward (fake quantization, say), "
                 "which DoRA's recomposed matmul would bypass. Use LoRA, which calls the base layer."
             )
+        # Checked before LoRALinear freezes the base, so a refusal changes nothing.
+        bypassed = _bypassed_feature(base) if isinstance(base, nn.Linear) else None
+        if bypassed is not None:
+            feature, remedy = bypassed
+            raise TypeError(f"DoRA cannot wrap a {type(base).__name__} with {feature}: {remedy} Nothing was modified.")
         super().__init__(base, r=r, alpha=alpha, dropout=dropout)
         # Magnitude initialized from the per-output-row L2 norm of the
         # base weight. With ``B = 0`` (LoRA zero-init), the combined
@@ -108,6 +181,10 @@ class DoRALinear(LoRALinear):
                 f"DoRA's base is now a {type(self.base).__name__} with its own forward (QAT prepare, say), "
                 "which DoRA's recomposed matmul would bypass silently; use LoRA for a layer that QAT prepares"
             )
+        bypassed = _bypassed_feature(self.base)  # added after wrapping
+        if bypassed is not None:
+            feature, remedy = bypassed
+            raise TypeError(f"DoRA's base now has {feature}, added after wrapping: {remedy}")
         # Compose V = W_0 + (α/r) · BA. Note: LoRALinear stores
         # ``self.scaling = alpha / r``, used for the inherited LoRA
         # forward; we reuse it here for the DoRA recomposition.
@@ -184,9 +261,12 @@ def apply_dora_to(
             wrapped once; tied tensors between distinct modules are outside
             this check (see :func:`nnx.peft.apply_lora_to`).
         TypeError: if a selected Linear is a subclass with its own
-            ``forward`` (a QAT fake-quantized layer), which DoRA's recomposed
-            matmul would bypass. Every wrapper is built before any slot is
-            replaced, so a refused call modifies nothing.
+            ``forward`` (a QAT fake-quantized layer), or carries an instance
+            ``forward``, a hook, an unbaked prune mask, a legacy
+            ``weight_norm`` / ``spectral_norm`` or a quantized weight, which
+            DoRA's recomposed matmul would bypass (see :class:`DoRALinear`).
+            Every wrapper is built before any slot is replaced, so a refused
+            call modifies nothing.
     """
     # Same two-phase select/validate-then-mutate as apply_lora_to (FIX-014);
     # the LoRALinear skip covers DoRALinear by inheritance.
