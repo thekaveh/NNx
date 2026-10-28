@@ -662,9 +662,10 @@ def test_update_logits_takes_a_flat_regression_target_for_one_output_as_evaluate
     for valid in (torch.tensor([True, True, False]), np.array([True, True, False])):  # a 1-D mask beside the pair
         assert masked.update_logits(target, logits, valid=valid) == 2
     assert masked.finalize().values == {"mae": pytest.approx(1.5), "mse": pytest.approx(2.5)}
-    with pytest.raises(ValueError, match="valid must be shaped like the targets"):
-        masked.update_logits(target, logits, valid=torch.tensor([True, False]))
+    with pytest.raises(ValueError, match=r"^valid must be shaped like the targets \(3,\), got \(2,\)$"):
+        masked.update_logits(target, logits, valid=torch.tensor([True, False]))  # named as the caller's (N,) target
     assert masked.count == 4
+    assert masked.update_logits(target, logits, valid=torch.tensor([[True], [True], [False]])) == 2  # or the logits'
     # Only that pair: never a broadcast, and the bernoulli rule stays strict.
     for flat, wide in ((torch.tensor([1.0]), torch.zeros(1, 3)), (torch.zeros(2, 1), torch.zeros(2))):
         with pytest.raises(ValueError, match="logits must be shaped like the targets"):
