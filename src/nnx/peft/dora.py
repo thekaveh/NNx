@@ -36,6 +36,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from .._reparameterization import legacy_reparameterizations
 from ._targets import wrap_selected_linears
 from .lora import LoRALinear
 
@@ -73,7 +74,7 @@ def _bypassed_feature(base: nn.Linear) -> tuple[str, str] | None:
     stale tensor) never apply, and a quantized weight cannot be normed. The
     ``torch.nn.utils.parametrizations`` norms recompute ``base.weight`` on
     every access, so DoRA reads them correctly. Hooks are recognized by
-    type, never by parameter names (as in ``surgery._utils.refuse_parametrized``).
+    type, never by parameter names (``nnx._reparameterization``).
 
     The weight is inspected through its stored tensors, never ``base.weight``:
     on a parametrized base that read would run the parametrization again (and
@@ -81,31 +82,25 @@ def _bypassed_feature(base: nn.Linear) -> tuple[str, str] | None:
     A quantized weight is recognized positively as a ``torchao`` tensor, so
     the FakeTensors of ``torch.export`` and fake-mode tracing still pass.
     """
-    from torch.nn.utils.prune import BasePruningMethod
-    from torch.nn.utils.spectral_norm import SpectralNorm
-    from torch.nn.utils.weight_norm import WeightNorm
-
     bypassed = "DoRA reads the layer's weight and never calls the layer, so it would be bypassed."
     hooked = f"{bypassed} Remove the hook, or use LoRA, which calls the base layer and its hooks."
     stale = "It applies only when the layer is called, so DoRA would read a stale weight."
     if "forward" in base.__dict__:  # not vars(): torch 2.4 dynamo cannot trace it
         return "an instance forward override", f"{bypassed} Use LoRA, which calls the base layer."
-    pre_hooks = list(base._forward_pre_hooks.values())
-    masks = sorted(getattr(h, "_tensor_name", "?") for h in pre_hooks if isinstance(h, BasePruningMethod))
+    masks, norms = legacy_reparameterizations(base)
     if masks:
         return (
             f"an unbaked prune mask on {masks}",
             f"{stale} Bake the mask first (torch.nn.utils.prune.remove, or magnitude_prune(bake=True)), or use "
             "LoRA, which calls the base layer.",
         )
-    norms = sorted(getattr(h, "name", "?") for h in pre_hooks if isinstance(h, (WeightNorm, SpectralNorm)))
     if norms:
         return (
             f"a legacy weight_norm / spectral_norm on {norms}",
             f"{stale} Remove the norm (torch.nn.utils.remove_weight_norm / remove_spectral_norm) or use its "
             "torch.nn.utils.parametrizations form, which DoRA reads on every forward, or use LoRA.",
         )
-    if pre_hooks:
+    if base._forward_pre_hooks:
         return "a forward pre-hook", hooked
     if base._forward_hooks:
         return "a forward hook", hooked
