@@ -635,3 +635,50 @@ def test_update_logits_scores_unsigned_bernoulli_and_continuous_targets_like_upd
     by_values = StreamingMetrics([MetricSpec("mae"), MetricSpec("mse")], "continuous")
     assert by_logits.update_logits(target, logits) == by_values.update(target, values=logits) == 4
     assert dict(by_logits.finalize().values) == pytest.approx(dict(by_values.finalize().values))
+
+
+def test_update_logits_takes_a_flat_regression_target_for_one_output_as_evaluate_does():
+    """#549: ``evaluate()`` scores an ``(N,)`` regression target against an
+    ``(N, 1)`` output, but ``update_logits`` refused the pair it documents
+    deriving "as ``evaluate()`` does"."""
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx import Losses, NNModel, NNModelParams
+
+    torch.manual_seed(0)
+    task = TaskSpec.regression(1)
+    model = NNModel(module=torch.nn.Linear(3, 1), params=NNModelParams(loss=Losses.MEAN_SQUARED_ERROR, task=task))
+    loader = DataLoader(TensorDataset(torch.randn(4, 3), torch.randn(4)), batch_size=2)  # (N,) targets
+    expected = model.evaluate(loader, metrics=[MetricSpec("mse")]).metrics["mse"]
+    metrics = StreamingMetrics.for_task([MetricSpec("mse")], task)
+    with model.iter_predict(loader) as stream:
+        for (_, y), batch in zip(loader, stream, strict=True):
+            assert tuple(y.shape) == (2,) and tuple(batch.logits.shape) == (2, 1)
+            assert metrics.update_logits(y, batch.logits) == 2
+    assert metrics.finalize().values["mse"] == pytest.approx(expected)
+
+    masked = StreamingMetrics([MetricSpec("mae"), MetricSpec("mse")], "continuous")
+    target, logits = torch.tensor([1.0, 3.0, 5.0]), torch.tensor([[2.0], [1.0], [0.0]])
+    for valid in (torch.tensor([True, True, False]), np.array([True, True, False])):  # a 1-D mask beside the pair
+        assert masked.update_logits(target, logits, valid=valid) == 2
+    assert masked.finalize().values == {"mae": pytest.approx(1.5), "mse": pytest.approx(2.5)}
+    with pytest.raises(ValueError, match=r"^valid must be shaped like the targets \(3,\), got \(2,\)$"):
+        masked.update_logits(target, logits, valid=torch.tensor([True, False]))  # named as the caller's (N,) target
+    assert masked.count == 4
+    assert masked.update_logits(target, logits, valid=torch.tensor([[True], [True], [False]])) == 2  # or the logits'
+    # Only that pair: never a broadcast, and the bernoulli rule stays strict.
+    for flat, wide in ((torch.tensor([1.0]), torch.zeros(1, 3)), (torch.zeros(2, 1), torch.zeros(2))):
+        with pytest.raises(ValueError, match="logits must be shaped like the targets"):
+            StreamingMetrics([MetricSpec("mae")], "continuous").update_logits(flat, wide)
+    with pytest.raises(ValueError, match="logits must be shaped like the targets"):
+        StreamingMetrics([MetricSpec("brier")], "bernoulli").update_logits(torch.ones(2), torch.zeros(2, 1))
+
+
+def test_a_values_shape_error_names_the_values_keyword():
+    """#549: ``update(values=...)`` stays strict, but its refusal named the
+    internal ``continuous`` key instead of the keyword the caller passed."""
+    metrics = StreamingMetrics([MetricSpec("mse")], "continuous")
+    with pytest.raises(ValueError, match=r"^values must be shaped like the targets \(2,\), got \(2, 1\)$"):
+        metrics.update(torch.zeros(2), values=torch.zeros(2, 1))
+    with pytest.raises(ValueError, match=r"^labels must be shaped like the targets"):
+        StreamingMetrics([MetricSpec("accuracy")], "bernoulli").update(np.zeros(2), labels=np.zeros((2, 1)))

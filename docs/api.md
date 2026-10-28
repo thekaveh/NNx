@@ -7849,7 +7849,7 @@ excluded too. Arrays and tensors are accepted.
 nnx.streaming.StreamingMetrics.update_logits(self, target: 'Any', logits: 'Any', *, valid: 'Any' = None) -> 'int'
 ```
 
-Add one batch of raw model outputs (class axis 1): softmax (categorical), sigmoid decided at ``threshold`` (bernoulli) or the values (continuous) — the inputs ``evaluate()`` derives. Returns the number of valid samples scored.
+Add one batch of raw model outputs (class axis 1): softmax (categorical), sigmoid decided at ``threshold`` (bernoulli) or the values (continuous) — the inputs ``evaluate()`` derives. Continuous targets are shaped like the logits, or ``(N,)`` for ``(N, 1)`` logits as a regression task accepts them (with ``valid`` shaped like either). Returns the number of valid samples scored.
 
 ##### `nnx.streaming.StreamingMetrics.merge`
 
