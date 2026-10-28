@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 import numpy as np
 
 from ._config import _canonical_json
+from ._validation import require_count
 
 if TYPE_CHECKING:
     from .nn.params.nn_run import NNRun
@@ -183,7 +184,21 @@ def hash_bytes(data: bytes) -> IdentityRef:
 
 def hash_file(path: Union[str, os.PathLike[str]], *, chunk_size: int = 1 << 20) -> IdentityRef:
     """A verified ``sha256:<hex>`` identity of a file's bytes — the one call
-    here that reads data, and only when you make it."""
+    here that reads data, and only when you make it.
+
+    Args:
+        path: the file to hash.
+        chunk_size: bytes read per step, an integer ``>= 1`` (NumPy integers
+            included); it changes the memory used, never the digest.
+
+    Raises:
+        ValueError: if ``chunk_size`` is not an integer ``>= 1`` (``0``, a
+            negative, ``None``, a ``bool``, a float or a string), before the
+            file is opened.
+    """
+    # FIX-053: read(0) returns b"" at once, so a zero chunk hashed no bytes and
+    # every file got the verified digest of empty input.
+    chunk_size = require_count(chunk_size, "chunk_size", owner="hash_file", minimum=1)
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(chunk_size), b""):
