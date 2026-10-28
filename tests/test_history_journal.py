@@ -9,11 +9,13 @@
 from __future__ import annotations
 
 import dataclasses
+import errno
 import filecmp
 import gc
 import hashlib
 import json
 import os
+import types
 
 import pandas as pd
 import pytest
@@ -21,6 +23,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 import nnx.history as history_module
+import nnx.nn.params.nn_checkpoint as nn_checkpoint_module
 import nnx.nn.params.nn_run as nn_run_module
 from nnx import Callback, EarlyStopping, LRMonitor
 from nnx.history import (
@@ -1521,3 +1524,99 @@ def test_a_deeply_nested_committed_line_is_corruption_even_behind_its_hash():
         history_module._JournalReader(directory, index=False).epoch_rows(None)
     with pytest.warns(RuntimeWarning, match="journal is unreadable"):
         assert "<table" in run._repr_html_()
+
+
+# --- #552: a real flush I/O error fails the epoch -------------------------------------------------
+
+
+def _key(stat) -> tuple[int, int]:
+    return stat.st_dev, stat.st_ino
+
+
+def _in_a_journal(fd: int) -> bool:
+    """Whether ``fd`` is a ``runs/<id>/history/`` directory or one of its files."""
+    key = _key(os.fstat(fd))
+    for run_id in os.listdir("runs") if os.path.isdir("runs") else ():
+        directory = os.path.join("runs", run_id, "history")
+        if os.path.isdir(directory) and (
+            key == _key(os.stat(directory)) or any(key == _key(entry.stat()) for entry in os.scandir(directory))
+        ):
+            return True
+    return False
+
+
+class _FailFlushesFrom(Callback):
+    """From ``epoch``'s end on — before its history is saved — fail the flush
+    primitives (``F_FULLFSYNC``, stood in for where the platform lacks it,
+    and ``os.fsync``) on the journal's files with ``code``."""
+
+    def __init__(self, patch, epoch: int, code: int) -> None:
+        self.epoch, self.failing = epoch, False
+        real_fsync = os.fsync
+
+        def fail_or_flush(fd, *args):
+            if self.failing and _in_a_journal(fd):
+                raise OSError(code, os.strerror(code))
+            return real_fsync(fd)
+
+        patch.setattr(nn_checkpoint_module, "fcntl", types.SimpleNamespace(F_FULLFSYNC=51, fcntl=fail_or_flush))
+        patch.setattr(os, "fsync", fail_or_flush)
+
+    def on_epoch_end(self, ctx) -> None:
+        self.failing = self.failing or ctx.epoch == self.epoch
+
+
+def _the_run_id() -> str:
+    (run_id,) = [entry for entry in os.listdir("runs") if entry != "best" and not entry.startswith(".")]
+    return run_id
+
+
+@pytest.mark.parametrize("entry", ["model", "trainer"])
+def test_a_journal_flush_io_error_fails_the_epoch_before_its_manifest_and_last(entry, monkeypatch):
+    with monkeypatch.context() as patch:
+        failing = _FailFlushesFrom(patch, 1, errno.EIO)
+        with pytest.raises(OSError) as caught:
+            _fit(entry, HistoryJournal(retention=3, chunk_size=2), callbacks=[failing])
+    assert caught.value.errno == errno.EIO
+    run_id = _the_run_id()
+    with open(os.path.join("runs", run_id, "history", "journal.json"), encoding="utf-8") as handle:
+        assert json.load(handle)["epochs"] == 1  # epoch 1's manifest was never published
+    assert NNCheckpoint.load(run_id, Checkpoints.LAST).idp.epoch_idx == 0
+    assert {record.epoch_idx for record in NNRun.load(run_id).idps} == {0}
+    assert {record.epoch_idx for record in iter_history(run_id)} == {0}
+
+
+@pytest.mark.parametrize("entry", ["model", "trainer"])
+def test_an_unsupported_journal_flush_does_not_fail_training(entry, monkeypatch):
+    with monkeypatch.context() as patch:
+        failing = _FailFlushesFrom(patch, 0, errno.ENOTSUP)
+        run = _fit(entry, HistoryJournal(retention=3, chunk_size=2), callbacks=[failing])
+    assert NNCheckpoint.load(run.id, Checkpoints.LAST).idp.epoch_idx == 2
+    assert len(list(iter_history(run.id))) == 15
+
+
+def test_every_journal_file_reaches_the_flush_primitive_before_last(monkeypatch):
+    """The chunks, the index, the epoch rows and ``history/`` itself are
+    flushed through the resume points' primitive before the first LAST."""
+    flushed: list[tuple[int, int]] = []
+    at_last: list[tuple[int, int]] = []
+    real_flush, real_save = nn_checkpoint_module._full_fsync, NNCheckpoint.save
+
+    def flush(fd):
+        flushed.append(_key(os.fstat(fd)))
+        return real_flush(fd)
+
+    def save(self, *args, **kwargs):
+        if not at_last:
+            at_last.extend(flushed)
+        return real_save(self, *args, **kwargs)
+
+    monkeypatch.setattr(nn_checkpoint_module, "_full_fsync", flush)
+    monkeypatch.setattr(NNCheckpoint, "save", save)
+    run = _fit("model", HistoryJournal(retention=3, chunk_size=2), n_epochs=1)
+    names = sorted(os.listdir(run.history))
+    expected = [name for name in names if name.startswith("chunk-")] + ["epochs.jsonl", "index.jsonl"]
+    assert len(expected) == 5  # three chunks of five records
+    for name in expected:
+        assert _key(os.stat(os.path.join(run.history, name))) in at_last, name
+    assert _key(os.stat(run.history)) in at_last

@@ -8,6 +8,8 @@ These tests exercise the opt-in `format="safetensors"` path on
 
 from __future__ import annotations
 
+import errno
+import os
 from collections import OrderedDict
 from dataclasses import replace
 
@@ -20,6 +22,7 @@ import torch
 # shipped sdist's suite must not hard-fail without them).
 pytest.importorskip("safetensors")
 
+import nnx.nn.params.nn_checkpoint as nn_checkpoint  # noqa: E402
 from nnx import (  # noqa: E402
     Activations,
     Devices,
@@ -753,3 +756,26 @@ def test_safetensors_export_refuses_unserializable_record_values(tmp_path, value
     with pytest.raises(TypeError, match=type(value).__name__):
         checkpoint.to_file(str(path), format="safetensors")
     assert list(tmp_path.iterdir()) == []
+
+
+# --- #552: the safetensors write is flushed, and a real I/O error fails it ---------------------
+
+
+def test_a_safetensors_checkpoint_is_flushed_before_it_is_renamed(tmp_path, monkeypatch):
+    events, real_flush, real_replace = [], nn_checkpoint._full_fsync, os.replace
+    monkeypatch.setattr(nn_checkpoint, "_full_fsync", lambda fd: (events.append("flush"), real_flush(fd))[1])
+    monkeypatch.setattr(
+        nn_checkpoint.os, "replace", lambda src, dst: (events.append("rename"), real_replace(src, dst))[1]
+    )
+    _build_checkpoint(_tiny_model()).to_file(str(tmp_path / "model.safetensors"), format="safetensors")
+    assert events == ["flush", "rename"]
+
+
+def test_a_real_io_error_fails_a_safetensors_save_and_leaves_no_file(tmp_path, monkeypatch):
+    def eio(fd):
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(nn_checkpoint, "_full_fsync", eio)
+    with pytest.raises(OSError):
+        _build_checkpoint(_tiny_model()).to_file(str(tmp_path / "model.safetensors"), format="safetensors")
+    assert os.listdir(tmp_path) == []

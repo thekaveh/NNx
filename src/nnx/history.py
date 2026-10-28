@@ -31,8 +31,10 @@ and summary rows, flushed to disk) and the manifest is published *before*
 the LAST checkpoint, which stays the epoch's commit marker. Readers show
 only records up to LAST's epoch: a crash while a chunk is written or before
 the manifest is replaced leaves the previous manifest, and a crash before
-LAST is replaced leaves an uncommitted tail that is ignored. A committed
-chunk whose bytes no longer match its SHA-256 raises
+LAST is replaced leaves an uncommitted tail that is ignored. A flush that
+fails with a real I/O error (``EIO``, ...) fails the epoch before its
+manifest and LAST are published; one the filesystem does not support is
+tolerated. A committed chunk whose bytes no longer match its SHA-256 raises
 :class:`HistoryCorruptionError`.
 
 **Callbacks.** Built-in callbacks read ``ctx.idp`` (the epoch's last record),
@@ -279,19 +281,32 @@ class _EpochStats:
 
 
 def _fsync_path(path: str) -> None:
-    """Flush a written file (or a directory entry) to disk; like the run's
-    other writers, a filesystem that cannot fsync is tolerated."""
+    """Flush a written file (or a directory entry) to stable storage as a
+    resume point's are (#552): a filesystem that cannot flush is tolerated,
+    a real I/O error (``EIO``, ...) raises before the epoch is published."""
+    from .nn.params.nn_checkpoint import _full_fsync
+
     try:
         # A file is opened for writing: Windows' fsync needs a writable handle.
         fd = os.open(path, os.O_RDONLY if os.path.isdir(path) else os.O_RDWR)
     except OSError:
-        return
+        return  # not openable (a directory, on Windows): nothing to flush
     try:
-        os.fsync(fd)
-    except OSError:
-        pass
+        _full_fsync(fd)
     finally:
         os.close(fd)
+
+
+def _fsync_run_directory(run: NNRun) -> None:
+    """Persist an eager epoch's renames in ``runs/<id>/`` — ``idps.csv``
+    with ``run.yaml`` and ``metadata.yaml`` — before its LAST, the commit
+    marker, is published (#552). A journal run's history is its manifest,
+    flushed into ``history/``; the run's first LAST also flushes
+    ``runs/<id>/`` when it creates ``checkpoints/`` there."""
+    from .nn.params.nn_checkpoint import _fsync_directory
+    from .nn.params.nn_run import _runs_root
+
+    _fsync_directory(os.path.join(_runs_root(None), run.id))
 
 
 def _append_bytes(path: str, data: bytes) -> None:
@@ -716,6 +731,7 @@ class _EagerHistory:
 
     def save_epoch(self, run: NNRun) -> None:
         run.with_idps(self.records).save(update_best=False)
+        _fsync_run_directory(run)  # idps.csv's rename is durable before LAST
 
     def rollback_epoch(self, run: NNRun) -> None:
         run.with_idps(self.records[: self._epoch_start]).save(update_best=False)
