@@ -89,6 +89,8 @@ __all__ = [
 ]
 
 SEMANTICS = ("categorical", "bernoulli", "continuous")
+# The update() keyword of each metric input that is not named like it.
+_KEYWORDS = {"continuous": "values"}
 
 
 class StreamClosedError(RuntimeError):
@@ -547,7 +549,7 @@ class StreamingMetrics:
             for name in ("probabilities", "labels", "continuous"):
                 array = given[name]
                 if array is not None:
-                    inputs[name] = _same_rows(array, target_np, name)[mask].reshape(-1)
+                    inputs[name] = _same_rows(array, target_np, _KEYWORDS.get(name, name))[mask].reshape(-1)
             if "labels" in inputs and self._semantics == "bernoulli" and not np.isin(inputs["labels"], (0, 1)).all():
                 raise ValueError("bernoulli labels must be 0/1 decisions (pass probabilities= for probabilities)")
             if "labels" in needed and "labels" not in inputs and "probabilities" in inputs:
@@ -557,18 +559,33 @@ class StreamingMetrics:
                 truth = (truth >= 0.5).astype(np.int64)
         for spec in self._specs:
             if spec.input not in inputs:
-                keyword = "values" if spec.input == "continuous" else spec.input
+                keyword = _KEYWORDS.get(spec.input, spec.input)
                 raise ValueError(f"metric {spec.label!r} needs {spec.input} inputs: pass update(..., {keyword}=...)")
         return self._feed(truth, inputs, width)
 
     def update_logits(self, target: Any, logits: Any, *, valid: Any = None) -> int:
         """Add one batch of raw model outputs (class axis 1): softmax
         (categorical), sigmoid decided at ``threshold`` (bernoulli) or the
-        values (continuous) — the inputs ``evaluate()`` derives. Returns the
-        number of valid samples scored."""
+        values (continuous) — the inputs ``evaluate()`` derives. Continuous
+        targets are shaped like the logits, or ``(N,)`` for ``(N, 1)`` logits
+        as a regression task accepts them (with ``valid`` shaped like either).
+        Returns the number of valid samples scored."""
         self._require_intact()  # before any check of the batch
         target_t = _tensor(target)
         logits_t = _tensor(logits)
+        if self._semantics == "continuous":
+            from .tasks import _flat_regression_target
+
+            column = _flat_regression_target(logits_t, target_t)
+            if valid is not None and column.ndim != target_t.ndim:  # a mask beside the (N,) target follows it
+                valid = _tensor(valid)
+                if tuple(valid.shape) not in (tuple(target_t.shape), tuple(column.shape)):
+                    # Named against the target the caller passed, not its (N, 1) column.
+                    raise ValueError(
+                        f"valid must be shaped like the targets {tuple(target_t.shape)}, got {tuple(valid.shape)}"
+                    )
+                valid = _flat_regression_target(logits_t, valid)
+            target_t = column
         if self._semantics == "categorical" and logits_t.ndim < 2:
             raise ValueError(f"categorical logits need a class axis 1, (N, C, ...), got {tuple(logits_t.shape)}")
         width = self._check_width(int(logits_t.shape[1]) if logits_t.ndim >= 2 else 1, "logits")
