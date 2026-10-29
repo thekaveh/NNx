@@ -13514,7 +13514,9 @@ Args:
         OR any target key has no source. Default False (fine-tuning
         commonly partial-loads). Either way a key both sides hold
         with different shapes raises ``RuntimeError`` before anything
-        is copied.
+        is copied. An uninitialized lazy tensor (``nn.LazyLinear``
+        before its first forward) on either side matches any shape;
+        loading materializes a lazy target from the source's shape.
     prefix: optional prefix to strip from source keys before
         matching. E.g., ``prefix="model."`` turns ``model.layer.0``
         into ``layer.0``. Applied BEFORE ``key_map``.

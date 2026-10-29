@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+from torch import nn
 
 from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNParams
 from nnx.finetune import LoadPretrainedResult, load_pretrained
@@ -197,3 +198,110 @@ def test_a_shape_mismatch_refuses_the_load_before_copying_anything():
     assert all(torch.equal(before[k], v) for k, v in target.state_dict().items())
     head = {k: v for k, v in source.state_dict().items() if not k.startswith("2.")}
     assert load_pretrained(target, head).loaded_keys == ["0.bias", "0.weight"]
+
+
+# --- uninitialized lazy layers (#528) ------------------------------------------
+
+_LAZY_LAYERS = {
+    "linear": (lambda: nn.LazyLinear(3), lambda: nn.Linear(4, 3)),
+    "conv1d": (lambda: nn.LazyConv1d(3, 2), lambda: nn.Conv1d(4, 3, 2)),
+    "conv2d": (lambda: nn.LazyConv2d(3, 2), lambda: nn.Conv2d(4, 3, 2)),
+    "conv3d": (lambda: nn.LazyConv3d(3, 2), lambda: nn.Conv3d(4, 3, 2)),
+    "batchnorm1d": (lambda: nn.LazyBatchNorm1d(), lambda: nn.BatchNorm1d(4)),
+}
+
+
+def _lazy_pair(kind: str) -> tuple[nn.Module, nn.Module]:
+    """A target whose first layer is unforwarded-lazy, and a materialized
+    source of the same topology with non-default buffers."""
+    lazy, eager = _LAZY_LAYERS[kind]
+    torch.manual_seed(0)
+    source = nn.Sequential(eager(), nn.ReLU(), nn.Linear(3, 2))
+    for buf in source[0].buffers():  # running stats, so a copy is visible
+        if buf.is_floating_point():
+            buf.uniform_(0.5, 1.5)
+    return nn.Sequential(lazy(), nn.ReLU(), nn.Linear(3, 2)), source
+
+
+def _assert_loaded_from(target: nn.Module, source: nn.Module) -> None:
+    got, want = target.state_dict(), source.state_dict()
+    assert list(got) == list(want)
+    for key, value in want.items():
+        assert not nn.parameter.is_lazy(got[key]), key
+        assert torch.equal(got[key], value), key
+
+
+@pytest.mark.filterwarnings("ignore:Lazy modules are a new feature")
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("source_kind", ["dict", "module", "path"])
+@pytest.mark.parametrize("kind", list(_LAZY_LAYERS))
+def test_load_pretrained_materializes_an_unforwarded_lazy_target(kind, source_kind, strict, tmp_path):
+    target, source = _lazy_pair(kind)
+    assert any(nn.parameter.is_lazy(v) for v in target.state_dict().values())
+    if source_kind == "dict":
+        src = source.state_dict()
+    elif source_kind == "module":
+        src = source
+    else:
+        src = tmp_path / "pretrained.pt"
+        torch.save(source.state_dict(), src)
+
+    result = load_pretrained(target, src, strict=strict)
+
+    assert result.loaded_keys == sorted(source.state_dict())
+    assert result.missing_keys == [] and result.unexpected_keys == []
+    _assert_loaded_from(target, source)
+
+
+@pytest.mark.filterwarnings("ignore:Lazy modules are a new feature")
+def test_load_pretrained_materializes_a_lazy_runtime_module_net(tmp_path):
+    """The documented NNModel(module=...) recipe: a lazy module wrapped and
+    warm-started before any forward."""
+    target, source = _lazy_pair("linear")
+    path = tmp_path / "pretrained.pt"
+    torch.save(source.state_dict(), path)
+    model = NNModel(module=target, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+
+    result = load_pretrained(model.net, path)
+
+    assert result.loaded_keys == ["0.bias", "0.weight", "2.bias", "2.weight"]
+    assert tuple(model.net[0].weight.shape) == (3, 4)
+    _assert_loaded_from(model.net, source)
+
+
+@pytest.mark.filterwarnings("ignore:Lazy modules are a new feature")
+@pytest.mark.parametrize("lazy_side", ["target", "source"])
+def test_a_lazy_tensor_matches_any_shape_but_a_known_mismatch_still_refuses(lazy_side):
+    """An uninitialized lazy tensor on either side has no shape to compare;
+    a head of another width on a known-shape key still refuses before any
+    copy, and a lazy target stays lazy."""
+    torch.manual_seed(0)
+    first = {side: nn.LazyLinear(3) if side == lazy_side else nn.Linear(4, 3) for side in ("target", "source")}
+    target = nn.Sequential(first["target"], nn.ReLU(), nn.Linear(3, 2))
+    source = nn.Sequential(first["source"], nn.ReLU(), nn.Linear(3, 10))  # a 10-class head into 2
+    before = {k: v.clone() for k, v in target.state_dict().items() if not nn.parameter.is_lazy(v)}
+
+    with pytest.raises(RuntimeError, match=r"different shapes") as excinfo:
+        load_pretrained(target, source)
+
+    assert "2.weight" in str(excinfo.value) and "0.weight" not in str(excinfo.value)
+    after = target.state_dict()
+    assert all(torch.equal(before[k], after[k]) for k in before)
+    if lazy_side == "target":
+        assert nn.parameter.is_lazy(target[0].weight) and nn.parameter.is_lazy(target[0].bias)
+
+
+@pytest.mark.filterwarnings("ignore:Lazy modules are a new feature")
+def test_load_pretrained_from_a_lazy_source_into_a_lazy_target():
+    """Neither side has materialized the lazy layer: the other keys load and
+    the lazy layer stays lazy until its first forward."""
+    torch.manual_seed(0)
+    source = nn.Sequential(nn.LazyLinear(3), nn.ReLU(), nn.Linear(3, 2))
+    target = nn.Sequential(nn.LazyLinear(3), nn.ReLU(), nn.Linear(3, 2))
+
+    result = load_pretrained(target, source, strict=True)
+
+    assert result.loaded_keys == ["0.bias", "0.weight", "2.bias", "2.weight"]
+    assert nn.parameter.is_lazy(target[0].weight) and nn.parameter.is_lazy(target[0].bias)
+    assert torch.equal(target[2].weight, source[2].weight) and torch.equal(target[2].bias, source[2].bias)
+    assert target(torch.randn(5, 4)).shape == (5, 2)
