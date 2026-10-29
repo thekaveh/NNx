@@ -20,6 +20,8 @@ from typing import Optional, Union
 import torch
 from torch import nn
 
+from ..models import _shape
+
 
 @dataclass(frozen=True, slots=True)
 class LoadPretrainedResult:
@@ -68,7 +70,9 @@ def load_pretrained(
             OR any target key has no source. Default False (fine-tuning
             commonly partial-loads). Either way a key both sides hold
             with different shapes raises ``RuntimeError`` before anything
-            is copied.
+            is copied. An uninitialized lazy tensor (``nn.LazyLinear``
+            before its first forward) on either side matches any shape;
+            loading materializes a lazy target from the source's shape.
         prefix: optional prefix to strip from source keys before
             matching. E.g., ``prefix="model."`` turns ``model.layer.0``
             into ``layer.0``. Applied BEFORE ``key_map``.
@@ -131,12 +135,15 @@ def load_pretrained(
 
     # A key both sides hold with different shapes would make load_state_dict
     # raise after it had already copied every other tensor: refuse first,
-    # so a refused load leaves the module untouched.
+    # so a refused load leaves the module untouched. An uninitialized lazy
+    # tensor has no shape yet and matches any: load_state_dict materializes it.
     target_state = module.state_dict()
     mismatched = [
-        f"{key} {tuple(remapped[key].shape)} -> {tuple(target_state[key].shape)}"
+        f"{key} {source_shape} -> {target_shape}"
         for key in loaded_keys
-        if isinstance(remapped[key], torch.Tensor) and remapped[key].shape != target_state[key].shape
+        if isinstance(remapped[key], torch.Tensor)
+        for source_shape, target_shape in ((_shape(remapped[key]), _shape(target_state[key])),)
+        if source_shape is not None and target_shape is not None and source_shape != target_shape
     ]
     if mismatched:
         raise RuntimeError(
