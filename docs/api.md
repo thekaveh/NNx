@@ -13518,7 +13518,9 @@ Args:
         before its first forward) on either side matches any shape;
         loading materializes a lazy target from the source's shape.
         An uninitialized source tensor into a materialized target
-        key also raises ``RuntimeError`` before anything is copied.
+        key also raises ``RuntimeError`` before anything is copied,
+        as does a source that materializes only some of a lazy
+        layer's tensors (``0.weight`` but not ``0.bias``).
     prefix: optional prefix to strip from source keys before
         matching. E.g., ``prefix="model."`` turns ``model.layer.0``
         into ``layer.0``. Applied BEFORE ``key_map``.

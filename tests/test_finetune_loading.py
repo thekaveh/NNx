@@ -325,3 +325,36 @@ def test_a_lazy_source_into_a_materialized_target_refuses_before_copying_anythin
     assert all(torch.equal(before[k], v) for k, v in target.state_dict().items())
     head = {k: v for k, v in source.state_dict().items() if not k.startswith("2.")}
     assert load_pretrained(target, head).loaded_keys == ["0.bias", "0.weight"]
+
+
+@pytest.mark.filterwarnings("ignore:Lazy modules are a new feature")
+@pytest.mark.parametrize(
+    ("kind", "left_lazy", "lazy_source"),
+    [
+        ("linear", "0.bias", False),  # dropped from the source
+        ("batchnorm1d", "0.running_var", False),
+        ("linear", "0.bias", True),  # held, but uninitialized in the source too
+    ],
+)
+def test_a_partly_loaded_lazy_layer_refuses_before_copying_anything(kind, left_lazy, lazy_source):
+    """A source holding only some of a lazy layer's tensors used to load,
+    leaving the layer half materialized so its first forward failed."""
+    target, source = _lazy_pair(kind)
+    src = dict(source.state_dict())
+    if lazy_source:
+        src[left_lazy] = _LAZY_LAYERS[kind][0]().state_dict()[left_lazy.split(".", 1)[1]]
+    else:
+        del src[left_lazy]
+    before = {k: v.clone() for k, v in target.state_dict().items() if not nn.parameter.is_lazy(v)}
+
+    with pytest.raises(RuntimeError, match=r"part of a lazy layer") as excinfo:
+        load_pretrained(target, src)
+
+    assert f"[{left_lazy!r}]" in str(excinfo.value)
+    after = target.state_dict()
+    assert all(torch.equal(before[k], after[k]) for k in before)
+    assert all(nn.parameter.is_lazy(v) for k, v in after.items() if k.startswith("0.") and k not in before)
+    rest = {k: v for k, v in src.items() if not k.startswith("0.")}
+    assert load_pretrained(target, rest).loaded_keys == ["2.bias", "2.weight"]
+    if kind == "linear":  # the lazy layer is intact: its first forward materializes it
+        assert target(torch.randn(5, 4)).shape == (5, 2)
