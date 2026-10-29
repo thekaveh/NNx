@@ -866,6 +866,36 @@ def test_a_lazy_norm_layer_without_tensors_materializes_at_the_first_forward():
     assert model.params.net == RuntimeModule.of(module) == RuntimeModule.of(_dry_run(build(), 2, 6))
 
 
+def test_a_run_loaded_and_forwarded_before_the_wrap_reloads_into_a_module_prepared_the_same_way():
+    def build() -> nn.Module:
+        return nn.Sequential(nn.LazyConv1d(4, 3), nn.LazyBatchNorm1d(), nn.Flatten(), nn.LazyLinear(2))
+
+    source = _dry_run(build(), 2, 6)
+
+    def prepared() -> nn.Module:
+        module = build()
+        module.load_state_dict(source.state_dict())
+        module.eval()
+        module(torch.zeros(1, 2, 6))  # torch's forward on loaded weights leaves in_channels / num_features at 0
+        return module.train()
+
+    model = NNModel(module=prepared(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    run = model.train(params=_params(_ImageLoader.of((2, 6)), epochs=1))
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    fresh = build()
+    with pytest.raises(ValueError, match="once its lazy layers materialize from the saved weights") as refused:
+        NNModel.from_checkpoint(checkpoint, module=fresh)
+    message = str(refused.value)
+    assert "loaded and then ran a forward before it was wrapped" in message
+    assert "prepare this module the same way" in message
+    assert _is_uninitialized(fresh)
+    # the remedy named
+    reloaded = NNModel.from_checkpoint(checkpoint, module=prepared())
+    X = torch.randn(3, 2, 6)
+    np.testing.assert_allclose(reloaded.predict(X).logits, model.predict(X).logits, rtol=1e-6, atol=1e-6)
+
+
 def test_a_lazy_module_with_loaded_weights_is_wrapped_as_a_dry_run_one():
     source = _dry_run(_lazy())
     loaded = _lazy()

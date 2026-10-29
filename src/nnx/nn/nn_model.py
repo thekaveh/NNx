@@ -3362,8 +3362,11 @@ def _descriptor_mismatch(
         )
     if after_load is not None:
         return (
-            f"{message}, even once its lazy layers materialize from {after_load}: the layer "
-            "hyperparameters or shapes differ"
+            f"{message}, even once its lazy layers materialize from {after_load}: the layer hyperparameters or "
+            "shapes differ, or the descriptor's module had weights loaded and then ran a forward before it was "
+            "wrapped (torch's forward on loaded weights leaves the in_channels / num_features of lazy conv and "
+            "norm layers at 0, and on older torch nn.LazyLinear's in_features). For the latter, prepare this "
+            "module the same way: load weights into it (load_state_dict), then run one forward before passing it"
         )
     return (
         f"{message}. If the net has lazy layers: {_LAZY_RULE}. Reload a checkpoint whose descriptor was taken "
