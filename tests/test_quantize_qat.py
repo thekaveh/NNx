@@ -545,8 +545,9 @@ def test_qat_refuses_a_linear_its_parent_reads_directly(loop, tmp_path, monkeypa
 
 
 def test_qat_refuses_a_transformer_layers_linears_naming_each():
-    """The torch Transformer layers' eval fast path reads linear1 / linear2
-    directly as well (``WEIGHT_READING_PARENTS``)."""
+    """A batch_first TransformerEncoderLayer's eval fast path reads linear1 /
+    linear2 directly, so the converted eval forward would fail; its
+    attention's out_proj is never called. Each gets its own reason."""
     net = torch.nn.Sequential(torch.nn.TransformerEncoderLayer(64, 4, dim_feedforward=64, batch_first=True))
 
     class _Ctx:
@@ -560,6 +561,70 @@ def test_qat_refuses_a_transformer_layers_linears_naming_each():
     assert "0.linear1 (read by its parent TransformerEncoderLayer)" in message
     assert "0.linear2 (read by its parent TransformerEncoderLayer)" in message
     assert "0.self_attn.out_proj (read by its parent MultiheadAttention)" in message
+    assert "MultiheadAttention reads out_proj's weight and never calls it" in message
+    assert "its eval fast path reads their weights directly" in message
+    assert _types(net) == before and not callback.is_prepared
+
+
+class _TransformerLayerNet(torch.nn.Module):
+    """One torch Transformer layer and a head where only the layer's linear2
+    (in_features 64) is eligible at groupsize 32: d_model 48 keeps the
+    attention's out_proj, linear1 and the head out of QAT."""
+
+    def __init__(self, kind: str) -> None:
+        super().__init__()
+        if kind == "decoder":
+            self.layer = torch.nn.TransformerDecoderLayer(48, 4, dim_feedforward=64, dropout=0.0, batch_first=True)
+        else:
+            batch_first = kind == "encoder_batch_first"
+            self.layer = torch.nn.TransformerEncoderLayer(
+                48, 4, dim_feedforward=64, dropout=0.0, batch_first=batch_first
+            )
+        self.decoder = kind == "decoder"
+        self.head = torch.nn.Linear(48, 2)
+
+    def forward(self, x):
+        h = self.layer(x, x) if self.decoder else self.layer(x)
+        return self.head(h.mean(1))
+
+
+@pytest.mark.parametrize("kind", ["decoder", "encoder"])
+def test_qat_converts_a_transformer_layers_linears_it_calls(kind, tmp_path, monkeypatch):
+    """Review of #526: a TransformerDecoderLayer has no fast path and a
+    non-batch_first encoder layer never takes it, so both call linear1 /
+    linear2: QAT fake-quantizes and converts them, and the converted eval
+    forward runs."""
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+    model = NNModel(module=_TransformerLayerNet(kind), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    x, y = torch.randn(4, 5, 48), torch.tensor([0, 1, 0, 1])
+    callback = QATLifecycleCallback(groupsize=32)
+
+    _fit(model, "nnmodel", [callback], [(x, y)])
+
+    assert callback.is_prepared and callback.is_converted
+    assert _types(model.net)["layer.linear2"] == "Int8DynActInt4WeightLinear"
+    model.net.eval()
+    with torch.no_grad():
+        assert torch.isfinite(model.net(x)).all()
+
+
+def test_qat_refuses_a_batch_first_encoder_layers_linear_before_prepare():
+    """The same layer with batch_first=True: its eval fast path would read
+    the converted linear2's int8 weight (Float and Char), so it is refused
+    before prepare and the net is unchanged."""
+    net = _TransformerLayerNet("encoder_batch_first")
+
+    class _Ctx:
+        model = type("M", (), {"net": net})()
+
+    before = _types(net)
+    callback = QATLifecycleCallback(groupsize=32)
+    with pytest.raises(
+        ValueError, match=r"QAT cannot prepare layer\.linear2 \(read by its parent TransformerEncoderLayer\): a "
+    ):
+        callback.on_train_begin(_Ctx())
     assert _types(net) == before and not callback.is_prepared
 
 
