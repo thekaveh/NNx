@@ -24,11 +24,12 @@ short last batch is weighted exactly like a full one, never averaged as a
 batch mean. Categorical models feed one row per sample (labels are the
 argmax, probabilities the softmax over the class axis); multilabel
 (Bernoulli) and continuous models feed one entry per valid output, each a
-binary decision (decoded with the task's threshold) or a value. Ignored /
-masked targets are excluded. F1 on multilabel inputs is the F1 of the
-positive decisions pooled over every output (``config={"average":
-"binary"}`` — sklearn's multilabel "micro" F1); per-label averaging is not
-available there. Custom metrics register with :func:`register_metric`; a spec
+binary decision (decoded with the task's threshold), a probability (the
+sigmoid in float64, so ``nll`` matches ``BCEWithLogitsLoss`` up to its
+1e-12 floor) or a value. Ignored / masked targets are excluded. F1 on
+multilabel inputs is the F1 of the positive decisions pooled over every
+output (``config={"average": "binary"}`` — sklearn's multilabel "micro"
+F1); per-label averaging is not available there. Custom metrics register with :func:`register_metric`; a spec
 naming an unknown ``(id, version)`` is rejected before training starts,
 without any metric code running.
 
@@ -777,7 +778,9 @@ def _batch_inputs(
             # The task's decision threshold (logit space), like decode().
             inputs["labels"] = (output >= logit_threshold).long().cpu().numpy()
         if "probabilities" in needed:
-            inputs["probabilities"] = torch.sigmoid(output.float()).cpu().numpy()
+            # float64, on the host (MPS has none): a float32 sigmoid is exactly 1 from a logit of
+            # about 16.6, so a target-0 term -log(1 - p) read the 1e-12 floor, not its logit.
+            inputs["probabilities"] = torch.sigmoid(output.cpu().double()).numpy()
         return (target >= 0.5).long().cpu().numpy(), inputs
     return target.float().cpu().numpy(), {"continuous": output.float().cpu().numpy()}
 

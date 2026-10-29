@@ -1070,3 +1070,69 @@ def test_trainer_runs_with_numpy_string_configs_save_reload_and_keep_the_plain_r
         salt="exp-a",
     )
     assert run.id == expected.id
+
+
+def _confident_false_positive() -> tuple[NNModel, list[tuple[torch.Tensor, torch.Tensor]]]:
+    """A one-output BCE task model scoring its input as its logit, and one
+    element at logit 17 with target 0."""
+    model = NNModel(
+        net_params=NNParams(input_dim=1, output_dim=1, hidden_dims=[], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.BINARY_CROSS_ENTROPY, task=TaskSpec.multilabel(1)
+        ),
+    )
+    with torch.no_grad():
+        model.net.layers[0].weight.fill_(1.0)
+        model.net.layers[0].bias.zero_()
+    return model, [(torch.tensor([[17.0]]), torch.tensor([[0.0]]))]
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["default-eval", "streaming-eval"])
+def test_a_bernoulli_nll_monitor_reads_each_records_own_loss(tmp_path, monkeypatch, streaming):
+    """#518: a float32 sigmoid scored this element 27.631 (the 1e-12 floor)
+    in the train summary, the validation record and the monitor value."""
+    from nnx.streaming import streaming_eval_step
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    model, element = _confident_false_positive()
+    spec = MonitorSpec(metric="nll")
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=element,
+            val_loader=element,
+            optim=NNOptimParams.builder().sgd(max_lr=1e-3).build(),
+            metrics=[MetricSpec("nll")],
+            monitor=spec,
+        ),
+        eval_step_fn=streaming_eval_step if streaming else None,
+    )
+    idp = next(idp for idp in run.idps if idp.selection is not None)
+    assert idp.train_summary is not None and idp.train_summary.loss is not None
+    assert idp.train_summary.metrics["nll"] == pytest.approx(idp.train_summary.loss, abs=1e-3)
+    assert idp.val_edp.metrics["nll"] == pytest.approx(idp.val_edp.loss, abs=1e-3)
+    assert idp.selection.monitor.key == "val.nll"
+    assert idp.selection.value == pytest.approx(idp.val_edp.loss, abs=1e-3)
+
+
+def test_a_trainer_bernoulli_nll_validation_reads_its_own_loss(tmp_path, monkeypatch):
+    from nnx.objectives import supervised_objective
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    model, element = _confident_false_positive()
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(1)
+        .train_loader(element)
+        .val_loader(element)
+        .optimizer("main", NNOptimParams.builder().sgd(max_lr=1e-3).build())
+        .metrics(MetricSpec("nll"))
+        .monitor(MonitorSpec(metric="nll"))
+        .build()
+    )
+    run = Trainer(model).train(params=params, objective=supervised_objective())
+    idp = next(idp for idp in run.idps if idp.selection is not None)
+    assert idp.val_edp.metrics["nll"] == pytest.approx(idp.val_edp.loss, abs=1e-3)
+    assert idp.selection.value == pytest.approx(idp.val_edp.loss, abs=1e-3)
