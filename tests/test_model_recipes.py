@@ -1336,6 +1336,57 @@ def test_training_refuses_a_mask_or_legacy_norm_below_a_peft_wrapper_before_rese
     assert not os.path.exists("runs") or not os.listdir("runs")
 
 
+def _legacy_norm(norm):
+    def apply(layer):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # its deprecation notice
+            norm(layer)
+
+    return apply
+
+
+def _l1_prune(layer):
+    from torch.nn.utils import prune
+
+    prune.l1_unstructured(layer, "weight", amount=0.5)
+
+
+@pytest.mark.parametrize(
+    "reparameterize",
+    [
+        _legacy_norm(torch.nn.utils.weight_norm),
+        _legacy_norm(torch.nn.utils.spectral_norm),
+        _l1_prune,
+    ],
+    ids=["weight_norm", "spectral_norm", "l1_unstructured"],
+)
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_a_registered_factory_that_builds_its_own_mask_or_legacy_norm_still_trains(reparameterize, loop):
+    """The hook walk skips a reparameterization the descriptor's own net carries
+    (its ``_mask`` / ``_g`` / ``_orig`` keys are in the reference state): such a
+    factory trained before #523 and still does."""
+    from nnx import NNTrainerParams, Trainer
+    from nnx.models import ModelSpec, register_model_factory
+    from nnx.objectives import supervised_objective
+
+    def factory(config):
+        net = nn.Sequential(nn.Linear(6, 8), nn.ReLU(), nn.Linear(8, 3))
+        reparameterize(net[0])
+        return net
+
+    name = f"tests.own_reparameterization_{loop}"
+    register_model_factory(name, 1, factory)
+    torch.manual_seed(0)
+    model = NNModel(params=NNModelParams(net=ModelSpec(name, 1), device=Devices.CPU, loss=Losses.CROSS_ENTROPY))
+    if loop == "nnmodel":
+        assert _train(model, n_epochs=1).id
+    else:
+        params = NNTrainerParams.builder().n_epochs(1).train_loader(_loader()).optimizer("default", _OPTIM).build()
+        Trainer(model).train(params=params, objective=supervised_objective())
+
+
 def test_a_lora_net_without_masks_or_legacy_norms_still_trains():
     model = _model()
     apply_lora_to(model.net, "layers.0", r=2)
