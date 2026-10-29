@@ -44,11 +44,35 @@ from typing import Any, Union
 import torch
 from torch import nn
 
-from .._validation import require_count, require_finite_real
+from .._validation import require_count, require_finite_real, shown
 from ._mode import inherit_training_mode
 from ._ownership import owned_adapter_keys, select_owned
 from ._source import _refuse_shape_mismatch, _resolve_source_to_state_dict
 from ._targets import wrap_selected_linears
+
+
+def _require_lora_options(r: object, alpha: object, dropout: object) -> int:
+    """Refuse an invalid LoRA / DoRA option with a ``ValueError`` naming the
+    field; return ``r`` as a plain ``int``.
+
+    The one check :class:`LoRALinear` (and so :class:`~nnx.peft.DoRALinear`),
+    :func:`apply_lora_to` and :func:`~nnx.peft.apply_dora_to` share, so a
+    helper refuses the same values before matching whether or not a layer
+    matches. ``r`` is an integer >= 1, ``alpha`` a finite real > 0 and
+    ``dropout`` a finite real in ``[0, 1)``; a ``bool`` is none of them.
+    """
+    r = require_count(r, "r", owner="LoRA", minimum=1, domain_message=f"LoRA rank r must be positive, got {shown(r)}")
+    require_finite_real(alpha, "alpha", owner="LoRA", minimum=0.0, exclusive_min=True)
+    require_finite_real(
+        dropout,
+        "dropout",
+        owner="LoRA",
+        minimum=0.0,
+        maximum=1.0,
+        exclusive_max=True,
+        domain_message=f"LoRA dropout must be in [0, 1), got {shown(dropout, real=True)}",
+    )
+    return r
 
 
 class LoRALinear(nn.Module):
@@ -88,11 +112,8 @@ class LoRALinear(nn.Module):
         super().__init__()
         if not isinstance(base, nn.Linear):
             raise TypeError(f"LoRALinear requires an nn.Linear base, got {type(base).__name__}")
-        # An integer >= 1 (not a bool), checked before the base is frozen.
-        r = require_count(r, "r", owner="LoRA", minimum=1, domain_message=f"LoRA rank r must be positive, got {r}")
-        require_finite_real(alpha, "alpha", owner="LoRA", minimum=0.0, exclusive_min=True)
-        if not (0.0 <= dropout < 1.0):
-            raise ValueError(f"LoRA dropout must be in [0, 1), got {dropout}")
+        # Checked before the base is frozen.
+        r = _require_lora_options(r, alpha, dropout)
 
         self.base = base
         # Freeze every parameter of the wrapped layer — the LoRA residual
@@ -186,13 +207,27 @@ def apply_lora_to(
     construction; the LoRA parameters (``lora_A`` / ``lora_B``) are
     trainable by default.
 
+    **Options are refused before matching:** ``r``, ``alpha`` and
+    ``dropout`` are checked before any layer is selected, so an invalid
+    value raises the same ``ValueError`` whether a layer matches, none
+    does or every match is already wrapped.
+
+    **Random streams on failure:** every wrapper is built before any slot
+    is replaced, and each ``lora_A`` initialization draws from the global
+    torch RNG. A call that fails while building (an interrupt, an
+    out-of-memory error) leaves every slot, ``requires_grad`` flag,
+    train/eval mode *and* the global random streams as they were, so a
+    seeded retry initializes exactly as a first call would.
+
     Args:
         module: root module to walk. The function mutates ``module``
             in place.
         name_patterns: at least one fnmatch glob. Empty raises.
-        r: LoRA rank — passed through to :class:`LoRALinear`.
-        alpha: LoRA scaling numerator — passed through.
-        dropout: dropout on the LoRA path — passed through.
+        r: LoRA rank, an integer >= 1 — passed through to
+            :class:`LoRALinear`.
+        alpha: LoRA scaling numerator, a finite real > 0 — passed through.
+        dropout: dropout on the LoRA path, a finite real in ``[0, 1)`` —
+            passed through.
 
     Returns:
         The count of layers wrapped — unique registration slots, so a
@@ -200,17 +235,21 @@ def apply_lora_to(
         match).
 
     Raises:
-        ValueError: if ``name_patterns`` is empty, if a selected Linear
-            is registered under more than one name, or if its parent reads
-            its weight directly (``nn.MultiheadAttention.out_proj``, a torch
-            Transformer layer's ``linear1`` / ``linear2``); nothing is
-            modified.
+        ValueError: if ``r``, ``alpha`` or ``dropout`` is invalid (a
+            ``bool``, a string, ``None``, a non-integral ``r``, NaN or out of
+            range; the message names the field), if ``name_patterns`` is
+            empty, if a selected Linear is registered under more than one
+            name, or if its parent reads its weight directly
+            (``nn.MultiheadAttention.out_proj``, a torch Transformer layer's
+            ``linear1`` / ``linear2``); nothing is modified.
 
     **Idempotency note:** if a layer is already a :class:`LoRALinear`,
     its inner ``.base`` is skipped — re-applying ``apply_lora_to``
     against the same patterns is a no-op for layers that already
     carry a LoRA wrapper. The function returns the count of NEW wraps.
     """
+    # Options first, so a call that matches nothing refuses them too.
+    r = _require_lora_options(r, alpha, dropout)
     # Two-phase: the whole matched set (aliases included — FIX-014) is
     # validated before the first wrapper is built, then each slot is wrapped.
     return wrap_selected_linears(

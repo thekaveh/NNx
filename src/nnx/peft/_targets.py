@@ -29,6 +29,8 @@ from collections.abc import Callable, Iterator
 
 from torch import nn
 
+from ..seeding import _global_rng_state, _restore_rng_state
+
 _Slot = tuple[int, str]
 _MAX_LISTED_PATHS = 10
 
@@ -188,8 +190,12 @@ def wrap_selected_linears(
     Building a wrapper already freezes its base, so nothing is constructed
     until the whole matched set has passed :func:`select_linear_slots`.
     Every wrapper is built before any slot is replaced; a wrapper that
-    fails to build (a base DoRA refuses, say) restores the
-    bases' trainability and leaves every slot as it was.
+    fails to build (a base DoRA refuses, say) restores the bases'
+    trainability and train/eval modes, leaves every slot as it was and
+    restores the global random streams (Python, NumPy, torch CPU and the
+    accelerators'), which the wrappers built before it drew their
+    initializations from. A seeded retry or fallback then initializes as
+    if the failed call had never run (as ``TransformRecipe.materialize``).
     """
     targets = select_linear_slots(
         module, name_patterns, skip_inside=skip_inside, refuse_inside=refuse_inside, helper=helper
@@ -197,13 +203,17 @@ def wrap_selected_linears(
     bases = [getattr(parent, attr) for parent, attr in targets]
     flags = [(p, p.requires_grad) for base in bases for p in base.parameters()]
     modes = [(m, m.training) for base in bases for m in base.modules()]
+    streams = _global_rng_state()  # each LoRA-family wrapper draws its lora_A init
     try:
         wrappers = [wrap(base) for base in bases]
     except BaseException:
-        for parameter, flag in flags:
-            parameter.requires_grad_(flag)
-        for submodule, training in modes:
-            submodule.training = training
+        try:
+            for parameter, flag in flags:
+                parameter.requires_grad_(flag)
+            for submodule, training in modes:
+                submodule.training = training
+        finally:
+            _restore_rng_state(streams, None)
         raise
     for (parent, attr), wrapper in zip(targets, wrappers, strict=True):
         setattr(parent, attr, wrapper)
