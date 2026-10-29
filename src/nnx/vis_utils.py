@@ -271,8 +271,9 @@ class VisUtils:
         batches are split by its batch adapter (``batch_adapter=`` overrides
         it). A runtime-only checkpoint needs ``module=`` — the weights are
         loaded into it (its identity, state keys and training modes are
-        kept) — and fails with ``MissingModelFactoryError`` before any data
-        is read otherwise.
+        kept; an uninitialized lazy module is checked and materialized as
+        ``NNModel.from_checkpoint`` does) — and fails with
+        ``MissingModelFactoryError`` before any data is read otherwise.
         """
         # The figure needs the plots extra: refuse before inference and t-SNE (FEAT-031).
         require("plotly.graph_objects", "VisUtils.two_dim_tsne_checkpoint_logits")

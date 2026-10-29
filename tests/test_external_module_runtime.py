@@ -29,6 +29,7 @@ from nnx import (
     NNModel,
     NNModelParams,
     NNOptimParams,
+    NNRun,
     NNTrainParams,
     PositionalInputs,
     RuntimeModule,
@@ -415,6 +416,200 @@ def test_a_materialized_lazy_module_resumes_statefully_from_last():
     model = NNModel(module=resumed, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
     warm = model.train(params=_params(_loader(), epochs=3, resume_from_run_id=run.id, resume_mode="stateful"))
     assert warm.resume_status is not None and warm.resume_status.mode == "stateful"
+
+
+# --- lazy modules: one descriptor rule across materialization (#562) -----------------------------
+
+
+def _lazy(width: int = 8, dropout: float = 0.0) -> nn.Module:
+    return nn.Sequential(nn.LazyLinear(width), nn.Dropout(dropout), nn.ReLU(), nn.Linear(width, 2))
+
+
+def _dry_run(module: nn.Module, *shape: int) -> nn.Module:
+    module(torch.zeros(1, *(shape or (4,))))  # torch's recommended dry run materializes the lazy layers
+    return module
+
+
+def _is_uninitialized(module: nn.Module) -> bool:
+    return any(nn.parameter.is_lazy(tensor) for tensor in module.state_dict().values())
+
+
+def _train_lazy(module: nn.Module, **kwargs) -> tuple[NNModel, NNCheckpoint, str]:
+    model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    run = model.train(params=_params(_loader(), epochs=1, **kwargs))
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    return model, checkpoint, run.id
+
+
+def test_lazy_runs_reload_into_the_trained_module_and_into_fresh_instances():
+    model_a, ckpt_a, _ = _train_lazy(_lazy())  # wrapped uninitialized
+    model_b, ckpt_b, _ = _train_lazy(_dry_run(_lazy()), data_id="dry")  # wrapped after a dry run
+    X = torch.randn(5, 4)
+    for model, checkpoint, module in (
+        (model_a, ckpt_a, model_a.net),
+        (model_a, ckpt_a, _lazy()),
+        (model_b, ckpt_b, _lazy()),
+        (model_b, ckpt_b, _dry_run(_lazy())),
+    ):
+        reloaded = NNModel.from_checkpoint(checkpoint, module=module)
+        assert reloaded.net is module
+        np.testing.assert_array_equal(reloaded.predict(X).logits, model.predict(X).logits)
+        # the reloaded module is materialized and matches its descriptor exactly
+        assert not _is_uninitialized(module) and RuntimeModule.of(module) == reloaded.params.net
+
+
+def test_a_trained_lazy_module_rewraps_and_renders_its_checkpoint_tsne(monkeypatch):
+    from nnx.vis_utils import VisUtils
+
+    captured = _fake_tsne(monkeypatch)
+    model, checkpoint, _ = _train_lazy(_lazy())
+    assert model.params.net == RuntimeModule.of(model.net)  # refreshed once the module materialized
+    assert checkpoint.model_params.net == model.params.net
+    rewrapped = NNModel(module=model.net, params=model.params)
+    assert rewrapped.net is model.net
+    ds = types.SimpleNamespace(output_dim=2, test_loader=_loader(3))
+    VisUtils.two_dim_tsne_checkpoint_logits(checkpoint, ds, n_samples=6, renderer=None, module=model.net)
+    assert captured["rows"] == 6
+
+
+def test_a_model_checkpoint_callback_describes_the_materialized_lazy_module():
+    from nnx import ModelCheckpoint
+
+    model = NNModel(module=_lazy(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    run = model.train(params=_params(_loader(), epochs=1), callbacks=[ModelCheckpoint(epochs=[0], tag="snap")])
+    snapshot = NNCheckpoint.from_file(f"runs/{run.id}/checkpoints/snap_e0.pt")
+    assert snapshot is not None and snapshot.model_params.net == RuntimeModule.of(model.net)
+    reloaded = NNModel.from_checkpoint(snapshot, module=model.net)
+    assert reloaded.net is model.net
+
+
+def test_lazy_run_ids_follow_the_documented_materialization_rule():
+    def run_id(module: nn.Module, data_id: str) -> str:
+        return (
+            NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+            .train(params=_params(_loader(), epochs=1, data_id=data_id, overwrite_existing=True))
+            .id
+        )
+
+    uninitialized = NNModel(module=_lazy(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    expected = NNRun(train=_params(_loader(), epochs=1, data_id="a"), model=uninitialized.params, net=None).id
+    assert run_id(_lazy(), "a") == expected  # training keeps the run id reserved at wrap time
+    dense = nn.Sequential(nn.Linear(4, 8), nn.Dropout(0.0), nn.ReLU(), nn.Linear(8, 2))
+    # after a dry run, a lazy net has the run id of the equivalent dense net
+    assert run_id(_dry_run(_lazy()), "b") == run_id(dense, "b")
+    # wrapped before vs after materialization: two run ids, and a refusal that says so
+    assert run_id(_lazy(), "c") != run_id(_dry_run(_lazy()), "c")
+    materialized = NNModel(module=_dry_run(_lazy()), params=NNModelParams(loss=Losses.CROSS_ENTROPY)).params
+    with pytest.raises(ValueError, match="before vs after materialization gives different run ids") as refused:
+        NNModel(module=_lazy(), params=materialized)
+    assert "dry-run forward" in str(refused.value)
+    # uninitialized lazy nets for different input widths share a descriptor (documented: use data_id / salt)
+    assert RuntimeModule.of(_lazy()) == RuntimeModule.of(_lazy())
+    assert RuntimeModule.of(_dry_run(_lazy(), 4)) != RuntimeModule.of(_dry_run(_lazy(), 6))
+
+
+def test_a_descriptor_taken_before_materialization_names_the_lazy_remedy():
+    before = NNModel(module=_lazy(), params=NNModelParams(loss=Losses.CROSS_ENTROPY)).params
+    with pytest.raises(ValueError, match="does not match the descriptor") as refused:
+        NNModel(module=_dry_run(_lazy()), params=before)
+    message = str(refused.value)
+    assert "lazy" in message and "materializ" in message and "fresh, unmaterialized instance" in message
+    assert NNModel(module=_lazy(), params=before).params == before  # an uninitialized instance still matches
+
+
+def test_lazy_reloads_refuse_other_shapes_classes_and_hyperparameters_before_loading():
+    class Other(nn.Sequential):
+        pass
+
+    _, checkpoint, _ = _train_lazy(_dry_run(_lazy()))
+    shapes = nn.Sequential(nn.LazyLinear(8), nn.Dropout(0.0), nn.ReLU(), nn.Linear(8, 3))
+    with pytest.raises(ValueError, match="does not match the saved weights"):
+        NNModel.from_checkpoint(checkpoint, module=shapes)
+    other = Other(nn.LazyLinear(8), nn.Dropout(0.0), nn.ReLU(), nn.Linear(8, 2))
+    with pytest.raises(ValueError, match="does not match the descriptor"):
+        NNModel.from_checkpoint(checkpoint, module=other)
+    dropout = _lazy(dropout=0.5)
+    with pytest.raises(ValueError, match="does not match the descriptor") as refused:
+        NNModel.from_checkpoint(checkpoint, module=dropout)
+    assert "once its lazy layers materialize" in str(refused.value)
+    head = nn.Sequential(nn.Linear(4, 8), nn.Dropout(0.0), nn.ReLU(), nn.LazyLinear(3))
+    _, dense_checkpoint, _ = _train_lazy(
+        nn.Sequential(nn.Linear(4, 8), nn.Dropout(0.0), nn.ReLU(), nn.Linear(8, 2)), data_id="dense"
+    )
+    with pytest.raises(ValueError, match="does not match the descriptor"):
+        NNModel.from_checkpoint(dense_checkpoint, module=head)
+    for module in (shapes, other, dropout, head):
+        assert _is_uninitialized(module)  # refused before any weight loaded
+
+
+def test_a_checkpoint_described_before_materialization_reloads_into_a_fresh_instance():
+    import dataclasses
+
+    model, checkpoint, _ = _train_lazy(_lazy())
+    # what a checkpoint written before #562 holds: the descriptor taken at wrap time
+    before = dataclasses.replace(checkpoint.model_params, net=RuntimeModule.of(_lazy()))
+    older = dataclasses.replace(checkpoint, model_params=before)
+    module = _lazy()
+    reloaded = NNModel.from_checkpoint(older, module=module)
+    X = torch.randn(5, 4)
+    np.testing.assert_array_equal(reloaded.predict(X).logits, model.predict(X).logits)
+    assert reloaded.params.net == RuntimeModule.of(module) == model.params.net  # described as materialized
+    assert NNModel(module=module, params=reloaded.params).net is module
+
+
+def test_an_uninitialized_module_cannot_match_a_materialized_descriptor_without_weights():
+    materialized = NNModel(module=_dry_run(_lazy()), params=NNModelParams(loss=Losses.CROSS_ENTROPY)).params
+    module = _lazy()
+    with pytest.raises(ValueError, match="lazy layers that are not materialized") as refused:
+        NNModel(module=module, params=materialized)
+    assert "dry-run forward" in str(refused.value) and "from_checkpoint" in str(refused.value)
+    assert _is_uninitialized(module)
+    # loaded weights (not yet a forward) are enough: the wrap completes the materialization
+    module.load_state_dict(_dry_run(_lazy()).state_dict())
+    assert NNModel(module=module, params=materialized).params == materialized
+    assert RuntimeModule.of(module) == materialized.net
+
+
+class _ImageLoader:
+    @staticmethod
+    def of(shape: tuple[int, ...]) -> DataLoader:
+        generator = torch.Generator().manual_seed(0)
+        X = torch.randn(12, *shape, generator=generator)
+        return DataLoader(TensorDataset(X, (X.flatten(1)[:, 0] > 0).long()), batch_size=4)
+
+
+@pytest.mark.parametrize(
+    ("build", "shape"),
+    [
+        (
+            lambda: nn.Sequential(nn.LazyConv1d(4, 3, groups=2), nn.LazyBatchNorm1d(), nn.Flatten(), nn.LazyLinear(2)),
+            (2, 6),
+        ),
+        (
+            lambda: nn.Sequential(
+                nn.LazyConvTranspose2d(4, 2, groups=2),
+                nn.LazyInstanceNorm2d(affine=True),
+                nn.Flatten(),
+                nn.LazyLinear(2),
+            ),
+            (2, 3, 3),
+        ),
+    ],
+    ids=["conv1d-batchnorm", "convtranspose2d-instancenorm"],
+)
+def test_lazy_conv_and_norm_layers_reload_into_fresh_instances(build, shape):
+    module = build()
+    module(torch.zeros(2, *shape))
+    model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    run = model.train(params=_params(_ImageLoader.of(shape), epochs=1))
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    fresh = build()
+    reloaded = NNModel.from_checkpoint(checkpoint, module=fresh)
+    assert RuntimeModule.of(fresh) == model.params.net
+    X = torch.randn(3, *shape)
+    np.testing.assert_allclose(reloaded.predict(X).logits, model.predict(X).logits, rtol=1e-6, atol=1e-6)
 
 
 def test_to_onnx_refuses_a_mapping_example_before_writing(tmp_path):
