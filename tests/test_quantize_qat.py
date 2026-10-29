@@ -602,7 +602,10 @@ class _TransformerLayerNet(torch.nn.Module):
                 dropout=0.0,
                 activation=torch.tanh if kind == "encoder_tanh" else "relu",
                 batch_first=kind != "encoder",
+                bias=kind != "encoder_no_bias",
             )
+            if kind == "encoder_mixed_eps":
+                self.layer.norm2.eps = 1e-6
         self.decoder = kind == "decoder"
         self.head = torch.nn.Linear(48, 2)
 
@@ -611,11 +614,14 @@ class _TransformerLayerNet(torch.nn.Module):
         return self.head(h.mean(1))
 
 
-@pytest.mark.parametrize("kind", ["decoder", "encoder", "encoder_tanh", "encoder_odd_heads"])
+@pytest.mark.parametrize(
+    "kind", ["decoder", "encoder", "encoder_tanh", "encoder_odd_heads", "encoder_no_bias", "encoder_mixed_eps"]
+)
 def test_qat_converts_a_transformer_layers_linears_it_calls(kind, tmp_path, monkeypatch):
     """Review of #526: a TransformerDecoderLayer has no fast path, and an
-    encoder layer that is not batch_first, has a tanh activation or an odd
-    head count never takes it, so each calls linear1 / linear2: QAT
+    encoder layer that is not batch_first, has a tanh activation, an odd head
+    count, no biases or norms with different eps never takes it, so each
+    calls linear1 / linear2: QAT
     fake-quantizes and converts them, and the converted eval forward runs
     (as it did before #526)."""
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
