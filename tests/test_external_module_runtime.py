@@ -585,17 +585,23 @@ def test_a_checkpoint_described_before_materialization_reloads_into_a_fresh_inst
     assert NNModel(module=module, params=reloaded.params).net is module
 
 
-def test_a_loaded_lazy_module_against_a_descriptor_taken_before_materialization_names_the_lazy_remedy():
+def _lazy_batchnorm() -> nn.Module:
+    # a lazy norm layer's batch counter is the one tensor torch's lazy layers create that is not lazy
+    return nn.Sequential(nn.LazyLinear(8), nn.LazyBatchNorm1d(), nn.ReLU(), nn.Linear(8, 2))
+
+
+@pytest.mark.parametrize("build", [_lazy, _lazy_batchnorm], ids=["linear", "batchnorm"])
+def test_a_loaded_lazy_module_against_a_descriptor_taken_before_materialization_names_the_lazy_remedy(build):
     import dataclasses
 
-    model, checkpoint, _ = _train_lazy(_lazy())
-    wrap_time = NNModel(module=_lazy(), params=NNModelParams(loss=Losses.CROSS_ENTROPY)).params
+    model, checkpoint, _ = _train_lazy(build())
+    wrap_time = NNModel(module=build(), params=NNModelParams(loss=Losses.CROSS_ENTROPY)).params
     older = dataclasses.replace(
         checkpoint, model_params=dataclasses.replace(checkpoint.model_params, net=wrap_time.net)
     )
 
     def loaded() -> nn.Module:
-        module = _lazy()
+        module = build()
         module.load_state_dict(checkpoint.net_state)  # weights in, not yet a forward
         return module
 
@@ -611,10 +617,14 @@ def test_a_loaded_lazy_module_against_a_descriptor_taken_before_materialization_
         assert "hyperparameters or shapes differ" not in message
         assert type(module[0]) is nn.LazyLinear and hasattr(module[0], "_initialize_hook")  # left as given
     # the remedy: a fresh instance still matches the wrap-time descriptor and reloads the weights
-    assert NNModel(module=_lazy(), params=wrap_time).params == wrap_time
-    reloaded = NNModel.from_checkpoint(older, module=_lazy())
+    assert NNModel(module=build(), params=wrap_time).params == wrap_time
+    reloaded = NNModel.from_checkpoint(older, module=build())
     X = torch.randn(5, 4)
     np.testing.assert_array_equal(reloaded.predict(X).logits, model.predict(X).logits)
+
+
+def test_a_loaded_lazy_module_with_other_hyperparameters_does_not_blame_saved_weights():
+    _, checkpoint, _ = _train_lazy(_lazy())
     # without saved weights, a real mismatch is not blamed on them
     materialized = NNModel(module=_dry_run(_lazy()), params=NNModelParams(loss=Losses.CROSS_ENTROPY)).params
     dropout = _lazy(dropout=0.5)
@@ -664,6 +674,13 @@ _LAZY_CONV_AND_NORM_NETS = pytest.mark.parametrize(
             (4, 3, 3),
         ),
         (
+            # running statistics only: they give num_features
+            lambda: nn.Sequential(
+                nn.LazyConv1d(4, 3), nn.LazyBatchNorm1d(affine=False), nn.Flatten(), nn.LazyLinear(2)
+            ),
+            (2, 6),
+        ),
+        (
             # no tensors at all: nothing to load, and num_features stays 0 as in a dry run
             lambda: nn.Sequential(
                 nn.LazyConv1d(4, 3),
@@ -674,7 +691,7 @@ _LAZY_CONV_AND_NORM_NETS = pytest.mark.parametrize(
             (2, 6),
         ),
     ],
-    ids=["conv1d-batchnorm", "convtranspose2d-instancenorm", "conv1d-batchnorm-bare"],
+    ids=["conv1d-batchnorm", "convtranspose2d-instancenorm", "conv1d-batchnorm-stats", "conv1d-batchnorm-bare"],
 )
 
 
@@ -845,6 +862,14 @@ def test_a_lazy_layer_the_forward_never_reaches_keeps_the_wrap_time_descriptor()
     model.predict(torch.randn(3, 4))
     # documented: the module has not fully materialized, so its descriptor is not taken afresh
     assert model.params.net == wrap_time != RuntimeModule.of(model.net)
+
+
+def test_a_lazy_module_whose_state_keys_change_before_it_materializes_keeps_the_wrap_time_descriptor():
+    model = NNModel(module=_lazy(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    wrap_time = model.params.net
+    model.net.register_buffer("probe", torch.zeros(1))  # a change to the state keys: not materialization
+    model.predict(torch.randn(3, 4))
+    assert model.params.net == wrap_time
 
 
 def test_a_lazy_norm_layer_without_tensors_materializes_at_the_first_forward():
