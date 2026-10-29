@@ -358,3 +358,37 @@ def test_a_partly_loaded_lazy_layer_refuses_before_copying_anything(kind, left_l
     assert load_pretrained(target, rest).loaded_keys == ["2.bias", "2.weight"]
     if kind == "linear":  # the lazy layer is intact: its first forward materializes it
         assert target(torch.randn(5, 4)).shape == (5, 2)
+
+
+class _WithExtraState(nn.Module):
+    """A module whose state dict carries a non-tensor `_extra_state` entry."""
+
+    def __init__(self, lazy: bool) -> None:
+        super().__init__()
+        self.lin = nn.LazyLinear(3) if lazy else nn.Linear(4, 3)
+        self.tag = "target"
+
+    def get_extra_state(self) -> dict[str, str]:
+        return {"tag": self.tag}
+
+    def set_extra_state(self, state: dict[str, str]) -> None:
+        self.tag = state["tag"]
+
+
+@pytest.mark.filterwarnings("ignore:Lazy modules are a new feature")
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("source_kind", ["dict", "module", "tensors_only"])
+def test_load_pretrained_into_a_module_with_non_tensor_extra_state(lazy, source_kind):
+    """The shape pre-checks read `.shape` on every entry and raised
+    AttributeError on a `get_extra_state()` dict, lazy layer or not."""
+    torch.manual_seed(0)
+    target, source = _WithExtraState(lazy), _WithExtraState(lazy=False)
+    source.tag = "source"
+    src = {k: v for k, v in source.state_dict().items() if source_kind != "tensors_only" or k != "_extra_state"}
+
+    result = load_pretrained(target, source if source_kind == "module" else src)
+
+    tensors = ["lin.bias", "lin.weight"]
+    assert result.loaded_keys == (tensors if source_kind == "tensors_only" else ["_extra_state", *tensors])
+    assert target.tag == ("target" if source_kind == "tensors_only" else "source")
+    assert torch.equal(target.lin.weight, source.lin.weight) and torch.equal(target.lin.bias, source.lin.bias)

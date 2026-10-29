@@ -141,11 +141,17 @@ def load_pretrained(
     # raise after it had already copied every other tensor: refuse first,
     # so a refused load leaves the module untouched. An uninitialized lazy
     # tensor has no shape yet and matches any: load_state_dict materializes it.
+    # Only tensors have shapes: a module's `get_extra_state()` entry may be
+    # any object, and load_state_dict hands it to `set_extra_state()` as is.
     target_state = module.state_dict()
+    tensor_keys = [
+        key
+        for key in loaded_keys
+        if isinstance(remapped[key], torch.Tensor) and isinstance(target_state[key], torch.Tensor)
+    ]
     mismatched = [
         f"{key} {source_shape} -> {target_shape}"
-        for key in loaded_keys
-        if isinstance(remapped[key], torch.Tensor)
+        for key in tensor_keys
         for source_shape, target_shape in ((_shape(remapped[key]), _shape(target_state[key])),)
         if source_shape is not None and target_shape is not None and source_shape != target_shape
     ]
@@ -158,11 +164,7 @@ def load_pretrained(
     # uninitialized source tensor into a materialized one, and would raise
     # only after copying the keys before it.
     unmaterialized = [
-        key
-        for key in loaded_keys
-        if isinstance(remapped[key], torch.Tensor)
-        and _shape(remapped[key]) is None
-        and _shape(target_state[key]) is not None
+        key for key in tensor_keys if _shape(remapped[key]) is None and _shape(target_state[key]) is not None
     ]
     if unmaterialized:
         raise RuntimeError(
@@ -174,15 +176,11 @@ def load_pretrained(
     # of its tensors (`0.weight` but not `0.bias`) would leave it half
     # materialized, and its first forward would fail. Refuse that as well.
     materializing = {
-        key
-        for key in loaded_keys
-        if _shape(target_state[key]) is None
-        and isinstance(remapped[key], torch.Tensor)
-        and _shape(remapped[key]) is not None
+        key for key in tensor_keys if _shape(target_state[key]) is None and _shape(remapped[key]) is not None
     }
     lazy_by_owner: dict[str, list[str]] = {}
     for key, value in target_state.items():
-        if _shape(value) is None:
+        if nn.parameter.is_lazy(value):
             lazy_by_owner.setdefault(key.rpartition(".")[0], []).append(key)
     left_lazy = sorted(
         key
