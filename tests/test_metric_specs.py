@@ -333,3 +333,82 @@ def test_numpy_string_ids_and_names_are_stored_as_plain_str():
     assert all(type(spec.state()[key]) is str for key in ("id", "name"))
     yaml.safe_dump(spec.state())
     assert spec.definition.id == "accuracy"  # the registry lookup is unchanged
+
+
+# --- #518: the Bernoulli nll in float64, never saturated by a float32 sigmoid --------------------
+
+
+def _identity_bernoulli(width: int, task: bool = True) -> NNModel:
+    """A BCE model whose input rows are its logits, with or without a TaskSpec."""
+    model = NNModel(
+        net_params=NNParams(
+            input_dim=width, output_dim=width, hidden_dims=[], dropout_prob=0.0, activation=Activations.RELU
+        ),
+        params=NNModelParams(
+            net=Nets.FEED_FWD,
+            device=Devices.CPU,
+            loss=Losses.BINARY_CROSS_ENTROPY,
+            task=TaskSpec.multilabel(width) if task else None,
+        ),
+    )
+    with torch.no_grad():
+        model.net.layers[0].weight.copy_(torch.eye(width))
+        model.net.layers[0].bias.zero_()
+    return model
+
+
+def _bernoulli_nll_terms(logits: torch.Tensor, target: float) -> np.ndarray:
+    """The named nll's per-element terms, as _MetricSet feeds them."""
+    from nnx._probability import nll_terms
+    from nnx.monitors import _batch_inputs
+
+    truth, inputs = _batch_inputs(
+        "bernoulli", torch.full_like(logits, target), logits, None, None, frozenset({"probabilities"})
+    )
+    return nll_terms(truth, inputs["probabilities"])
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_bernoulli_nll_terms_match_bce_with_logits_up_to_the_floor(dtype):
+    """A float32 sigmoid is exactly 1 from a logit of 16.6355, so a target-0
+    term read the 1e-12 floor (27.631 nats) instead of its logit (#518)."""
+    logits = (torch.arange(-27600, 27601, dtype=torch.float64) / 1000).to(dtype)
+    for target in (0.0, 1.0):
+        exact = torch.nn.functional.binary_cross_entropy_with_logits(
+            logits.double(), torch.full_like(logits, target, dtype=torch.float64), reduction="none"
+        )
+        np.testing.assert_allclose(_bernoulli_nll_terms(logits, target), exact.numpy(), rtol=0, atol=1e-3)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_bernoulli_nll_false_positives_and_negatives_score_alike(dtype):
+    from nnx._probability import NLL_EPSILON
+
+    x = (torch.arange(0, 30001, dtype=torch.float64) / 1000).to(dtype)
+    positive, negative = _bernoulli_nll_terms(x, 0.0), _bernoulli_nll_terms(-x, 1.0)
+    np.testing.assert_allclose(positive, negative, rtol=0, atol=1e-3)
+    floor = -math.log(NLL_EPSILON)
+    beyond = torch.nn.functional.softplus(x.double()).numpy() > floor
+    assert beyond.any() and (positive[beyond] == floor).all() and (negative[beyond] == floor).all()
+
+
+@pytest.mark.parametrize("task", [True, False], ids=["task", "no-task"])
+def test_evaluate_scores_a_confident_false_positive_by_its_logit(task):
+    record = _identity_bernoulli(1, task=task).evaluate(
+        [(torch.tensor([[17.0]]), torch.tensor([[0.0]]))], metrics=(MetricSpec("nll"),)
+    )
+    assert record.metrics["nll"] == pytest.approx(17.0, abs=1e-3)
+    assert record.metrics["nll"] == pytest.approx(record.loss, abs=1e-3)
+
+
+def test_a_multilabel_batch_nll_equals_its_bce_with_logits_loss():
+    X = torch.tensor([[17.5, 3.0, -2.0, 1.0], [2.0, -1.5, 0.5, 4.0]])
+    Y = torch.tensor([[0.0, 1.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]])
+    record = _identity_bernoulli(4).evaluate([(X, Y)], metrics=(MetricSpec("nll"), MetricSpec("brier")))
+    bce = torch.nn.functional.binary_cross_entropy_with_logits(X.double(), Y.double()).item()
+    assert bce == pytest.approx(2.413668, abs=1e-6)
+    assert record.metrics["nll"] == pytest.approx(bce, abs=1e-4)
+    assert record.metrics["nll"] == pytest.approx(record.loss, abs=1e-4)
+    # brier keeps the same input: within 1e-6 of the float32 sigmoid it read before.
+    float32_brier = float(np.mean((torch.sigmoid(X).numpy().astype(np.float64) - Y.numpy()) ** 2))
+    assert record.metrics["brier"] == pytest.approx(float32_brier, abs=1e-6)

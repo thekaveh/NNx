@@ -7911,6 +7911,14 @@ decoded predictions (derived from ``probabilities`` when omitted);
 ``valid`` (boolean, shaped like ``target``) excludes entries; a NaN
 target, or a categorical target equal to ``ignore_index``, is
 excluded too. Arrays and tensors are accepted.
+
+A bernoulli ``nll`` term of target 0 reads ``1 - p`` from the
+probabilities given, so probabilities the caller already rounded to
+float32 (a float32 model's ``predict_proba``, say) keep float32's
+limit: ``p`` is exactly 1 from a logit of about 16.6, and the term
+reads the 1e-12 floor (27.631 nats) instead of the logit; it drifts
+from about 12. :meth:`update_logits` avoids it, taking the sigmoid
+in float64.
 ```
 
 ##### `nnx.streaming.StreamingMetrics.update_logits`
@@ -7919,7 +7927,7 @@ excluded too. Arrays and tensors are accepted.
 nnx.streaming.StreamingMetrics.update_logits(self, target: 'Any', logits: 'Any', *, valid: 'Any' = None) -> 'int'
 ```
 
-Add one batch of raw model outputs (class axis 1): softmax (categorical), sigmoid decided at ``threshold`` (bernoulli) or the values (continuous) — the inputs ``evaluate()`` derives. Continuous targets are shaped like the logits, or ``(N,)`` for ``(N, 1)`` logits as a regression task accepts them (with ``valid`` shaped like either). Returns the number of valid samples scored.
+Add one batch of raw model outputs (class axis 1): softmax (categorical), sigmoid decided at ``threshold`` (bernoulli; the probabilities in float64, so a confident target-0 ``nll`` term keeps its logit) or the values (continuous) — the inputs ``evaluate()`` derives. Continuous targets are shaped like the logits, or ``(N,)`` for ``(N, 1)`` logits as a regression task accepts them (with ``valid`` shaped like either). Returns the number of valid samples scored.
 
 ##### `nnx.streaming.StreamingMetrics.merge`
 

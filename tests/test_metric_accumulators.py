@@ -8,6 +8,7 @@ refused in bounded mode unless storage is asked for explicitly.
 
 from __future__ import annotations
 
+import math
 import warnings
 from types import SimpleNamespace
 
@@ -682,3 +683,16 @@ def test_a_values_shape_error_names_the_values_keyword():
         metrics.update(torch.zeros(2), values=torch.zeros(2, 1))
     with pytest.raises(ValueError, match=r"^labels must be shaped like the targets"):
         StreamingMetrics([MetricSpec("accuracy")], "bernoulli").update(np.zeros(2), labels=np.zeros((2, 1)))
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_update_logits_scores_a_confident_false_positive_by_its_logit(dtype):
+    """#518: ``update_logits`` widens the sigmoid to float64, so target 0 at
+    logit 17 scores 17 nats, not the 1e-12 floor a float32 sigmoid gave."""
+    metrics = StreamingMetrics([MetricSpec("nll")], "bernoulli")
+    metrics.update_logits(torch.tensor([[0.0]]), torch.tensor([[17.0]], dtype=dtype))
+    assert metrics.finalize().values["nll"] == pytest.approx(17.0, abs=1e-3)
+    # Probabilities already rounded to float32 keep the limit (documented): sigmoid(17) is 1.
+    rounded = StreamingMetrics([MetricSpec("nll")], "bernoulli")
+    rounded.update(np.array([[0.0]]), probabilities=torch.sigmoid(torch.tensor([[17.0]])))
+    assert rounded.finalize().values["nll"] == pytest.approx(-math.log(1e-12))

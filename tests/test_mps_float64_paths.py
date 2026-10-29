@@ -96,3 +96,35 @@ def test_max_abs_diff_widens_every_mps_chunk_on_the_cpu(monkeypatch):
     b = a.clone()
     b[-1] += 2
     assert benchmarking._abs_diff(a, b) == 2.0
+
+
+def test_a_bernoulli_nll_evaluates_on_mps_in_float64():
+    """#518: the Bernoulli nll's sigmoid widens on the CPU, so an MPS model's
+    confident target-0 terms match BCEWithLogitsLoss, not the 1e-12 floor."""
+    import numpy as np
+
+    from nnx import Activations, Devices, Losses, MetricSpec, Nets, NNModel, NNModelParams, NNParams, TaskSpec
+    from nnx._probability import nll_terms
+    from nnx.monitors import _batch_inputs
+
+    logits = torch.arange(-27600, 27601, dtype=torch.float32, device="mps") / 1000
+    for target in (0.0, 1.0):
+        targets = torch.full_like(logits, target)
+        truth, inputs = _batch_inputs("bernoulli", targets, logits, None, None, frozenset({"probabilities"}))
+        exact = torch.nn.functional.binary_cross_entropy_with_logits(
+            logits.cpu().double(), targets.cpu().double(), reduction="none"
+        )
+        np.testing.assert_allclose(nll_terms(truth, inputs["probabilities"]), exact.numpy(), rtol=0, atol=1e-3)
+
+    model = NNModel(
+        net_params=NNParams(input_dim=1, output_dim=1, hidden_dims=[], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(
+            net=Nets.FEED_FWD, device=Devices.MPS, loss=Losses.BINARY_CROSS_ENTROPY, task=TaskSpec.multilabel(1)
+        ),
+    )
+    with torch.no_grad():
+        model.net.layers[0].weight.fill_(1.0)
+        model.net.layers[0].bias.zero_()
+    record = model.evaluate([(torch.tensor([[17.0]]), torch.tensor([[0.0]]))], metrics=[MetricSpec("nll")])
+    assert next(model.net.parameters()).device.type == "mps"
+    assert record.metrics["nll"] == pytest.approx(17.0, abs=1e-3)
