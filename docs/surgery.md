@@ -162,7 +162,7 @@ A change to `widen`, `deepen`, or `low_rank_factorize` (at max rank) can produce
 - Adopt `deeper.params` (or the widened net's `params`) as the `net_params` of a *fresh* `NNModel` when you rebuild for refinement. An outer model still holding the old descriptor cannot reconstruct the deeper checkpoint.
 - `drop_layer` is never function-preserving, with one degenerate exception. The exception is a dropped layer that was already the identity on its inputs (e.g. a ReLU fed strictly positive activations). The function is chain-preserving: dotted-name lookup, downstream shapes, and the forward pass still work.
 - `low_rank_factorize` at `rank < min(out, in)` is an *approximation*. The Frobenius error of the truncation is bounded by the L2 norm of the discarded singular values (Eckart-Young). That bound is asserted as a regression test in `tests/test_surgery_low_rank.py`.
-- `low_rank_factorize` and `expand_embedding` return a new plain module, and a hook stays on the module it replaces. So they refuse a source with a forward hook, forward pre-hook or backward hook of its own (an activation clamp, NEFTune-style embedding noise, a scale) with a `ValueError` naming the module, before allocating anything (§7).
+- `low_rank_factorize` and `expand_embedding` return a new plain module, and a hook stays on the module it replaces. So they refuse a source with a forward hook, forward pre-hook, backward hook or backward pre-hook of its own (an activation clamp, NEFTune-style embedding noise, a scale) with a `ValueError` naming the module, before allocating anything (§7).
 - `expand_embedding` preserves the original rows exactly, so any token ID `< old_num` is unchanged. But it introduces new rows that *must* be initialized. Pick `init="zeros"` for a safe default, or `init="copy_mean"` when you want the new rows to warm-start near the existing manifold.
 
 ## 6. See it in practice
@@ -183,7 +183,7 @@ Each replacement module also takes the train/eval mode of the module it replaces
 
 `widen`, `low_rank_factorize` and `expand_embedding` refuse a module with a `weight_norm` / `spectral_norm` or an unbaked prune mask, which a rebuilt plain module would drop silently. Remove it first: `torch.nn.utils.parametrize.remove_parametrizations` for the parametrization form, `remove_weight_norm` / `remove_spectral_norm` for the legacy hooks, `torch.nn.utils.prune.remove` for a mask.
 
-`low_rank_factorize` and `expand_embedding` also refuse a source with any other hook of its own — a forward hook, forward pre-hook or backward hook — which would stay on the discarded original. The source and its hooks are left as they were. Remove the hook (its handle's `.remove()`), run the primitive, and re-register it on the returned module if it should still apply there. `widen` refuses hooks on the path from its target to the consumer (§5).
+`low_rank_factorize` and `expand_embedding` also refuse a source with any other hook of its own — a forward hook, forward pre-hook, backward hook or backward pre-hook — which would stay on the discarded original. The source and its hooks are left as they were. Remove the hook (its handle's `.remove()`), run the primitive, and re-register it on the returned module if it should still apply there. `widen` refuses hooks on the path from its target to the consumer (§5).
 
 The same primitives refuse a subclass of `nn.Linear` / `nn.Embedding` with its own `forward`, such as a fake-quantized QAT Linear. The rebuilt plain module would drop that forward. `deepen` refuses a ReLU subclass with its own `forward` for the same reason. `widen` also refuses such a subclass as the consumer or on the path.
 
@@ -264,7 +264,7 @@ check_optimizer(model, optimizer)
 - **Validation.** Before anything changes, `validate` / `materialize` reject each of these, named by operation index and target:
     - a missing target, or a target that is not exactly an `nn.Linear`;
     - a target registered under more than one name;
-    - a `low_rank` target with a hook of its own (forward, forward pre- or backward), a legacy `weight_norm` / `spectral_norm` or an unbaked prune mask, which the factors would drop. The model keeps its module identities, hooks and weights. Loading a checkpoint does not apply this check: the replay rebuilds the saved factors, which carry no hook. A `lora` target keeps its hooks, because `LoRALinear` calls its base: a hooked LoRA target is exact at init;
+    - a `low_rank` target with a hook of its own (forward, forward pre-, backward or backward pre-), a legacy `weight_norm` / `spectral_norm` or an unbaked prune mask, which the factors would drop. The model keeps its module identities, hooks and weights. Loading a checkpoint does not apply this check: the replay rebuilds the saved factors, which carry no hook. A `lora` target keeps its hooks, because `LoRALinear` calls its base: a hooked LoRA target is exact at init;
     - two targets of one operation that are the same or nested;
     - a target inside a subtree another operation (or an earlier recipe) transforms;
     - a rank above `min(in, out)`;

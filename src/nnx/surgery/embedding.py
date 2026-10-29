@@ -66,9 +66,9 @@ def expand_embedding(
         ValueError: if ``new_num_embeddings`` is not an integer strictly greater,
             if ``init`` is unknown, or if ``emb`` carries a parametrization, a
             legacy ``weight_norm`` / ``spectral_norm`` hook or an unbaked prune
-            mask; or if ``emb`` has any other forward hook, forward pre-hook or
-            backward hook (NEFTune-style noise, a scale), which would stay on
-            the source table. Raised before the new table is allocated; ``emb``
+            mask; or if ``emb`` has any other forward hook, forward pre-hook,
+            backward hook or backward pre-hook (NEFTune-style noise, a scale),
+            which would stay on the source table. Raised before the new table is allocated; ``emb``
             and its hooks are left unchanged.
     """
     if not stock_forward(emb, nn.Embedding):  # a subclass's own forward would be dropped
