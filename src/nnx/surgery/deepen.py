@@ -190,13 +190,7 @@ def _insert_after_relu_in_sequential(
     # The rebuild is a plain nn.Sequential of the same children: anything
     # else the container carries (a subclass's forward, its own parameters
     # or buffers, hooks) would be dropped and the forward would change.
-    hooks = (
-        parent._forward_hooks,
-        parent._forward_pre_hooks,
-        parent._backward_hooks,
-        parent._backward_pre_hooks,
-    )
-    if type(parent) is not nn.Sequential or parent._parameters or parent._buffers or any(hooks):
+    if type(parent) is not nn.Sequential or parent._parameters or parent._buffers or has_hooks(parent):
         raise ValueError(
             f"deepen: Sequential {parent_path or '<root>'!r} is a {type(parent).__name__} with its own "
             "forward, parameters, buffers or hooks, which a rebuilt nn.Sequential would drop"
