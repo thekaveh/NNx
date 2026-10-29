@@ -305,3 +305,23 @@ def test_load_pretrained_from_a_lazy_source_into_a_lazy_target():
     assert nn.parameter.is_lazy(target[0].weight) and nn.parameter.is_lazy(target[0].bias)
     assert torch.equal(target[2].weight, source[2].weight) and torch.equal(target[2].bias, source[2].bias)
     assert target(torch.randn(5, 4)).shape == (5, 2)
+
+
+@pytest.mark.filterwarnings("ignore:Lazy modules are a new feature")
+@pytest.mark.parametrize("source_kind", ["dict", "module"])
+def test_a_lazy_source_into_a_materialized_target_refuses_before_copying_anything(source_kind):
+    """torch cannot load an uninitialized source tensor into a materialized
+    one and would raise only after copying the keys before it: the lazy layer
+    sits after a materialized one, so a partial copy would show."""
+    torch.manual_seed(0)
+    target = nn.Sequential(nn.Linear(4, 3), nn.ReLU(), nn.Linear(3, 2))
+    source = nn.Sequential(nn.Linear(4, 3), nn.ReLU(), nn.LazyLinear(2))
+    before = {k: v.clone() for k, v in target.state_dict().items()}
+
+    with pytest.raises(RuntimeError, match=r"uninitialized lazy tensors") as excinfo:
+        load_pretrained(target, source.state_dict() if source_kind == "dict" else source)
+
+    assert "2.weight" in str(excinfo.value) and "0.weight" not in str(excinfo.value)
+    assert all(torch.equal(before[k], v) for k, v in target.state_dict().items())
+    head = {k: v for k, v in source.state_dict().items() if not k.startswith("2.")}
+    assert load_pretrained(target, head).loaded_keys == ["0.bias", "0.weight"]
