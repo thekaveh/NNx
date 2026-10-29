@@ -849,6 +849,76 @@ def test_link_metrics_refuses_logits_it_cannot_score():
     assert link_metrics([float("inf"), -float("inf")], [1, 0], from_logits=True)["bce"].value == 0.0
 
 
+_Z = np.array([3.0, -2.0, 1.0, -1.0])  # binary logits, every one on the correct side of 0
+_Y = np.array([1, 0, 1, 0])
+_ZC = np.array([[2.0, 0.1, -1.0], [0.0, 1.5, 0.2], [-0.5, 0.3, 2.2], [1.8, -0.2, 0.4]])  # every argmax is correct
+_YC = np.array([0, 1, 2, 0])
+
+
+@pytest.mark.parametrize(
+    ("scores", "from_logits"),
+    [(_Z, True), (1 / (1 + np.exp(-_Z)), False), (_ZC, True)],
+    ids=["binary-logits", "binary-probabilities", "categorical-logits"],
+)
+def test_link_metrics_refuses_a_target_column(scores, from_logits):
+    """A (K, 1) target never broadcasts against the (K,) or (K, C) scores into a (K, K) grid."""
+    targets = (_YC if scores.ndim == 2 else _Y).reshape(-1, 1)
+    with pytest.raises(LinkTaskError, match=r"targets must be \(K,\).*got shape \(4, 1\)"):
+        link_metrics(scores, targets, from_logits=from_logits)
+
+
+@pytest.mark.parametrize(
+    ("scores", "targets", "from_logits"),
+    [
+        (1 / (1 + np.exp(-_Z)), _Y, False),  # a target of 1 (once a misleading "class indices 0..0")
+        (1 / (1 + np.exp(-_Z)), np.zeros(4, dtype=int), False),  # all-zero targets (once scored silently)
+        (_Z, np.zeros(4, dtype=int), True),  # all-zero targets (once nll 0.0 from any logits)
+        (_Z, _Y, True),
+    ],
+    ids=["probabilities-with-a-1", "probabilities-all-zero", "logits-all-zero", "logits-with-a-1"],
+)
+def test_link_metrics_refuses_a_score_column(scores, targets, from_logits):
+    """A (K, 1) score column is neither binary (K,) nor categorical (K, C >= 2)."""
+    with pytest.raises(LinkTaskError, match=r"scores must be \(K,\) .* or \(K, C\) .*got shape \(4, 1\)"):
+        link_metrics(scores.reshape(-1, 1), targets, from_logits=from_logits)
+
+
+@pytest.mark.parametrize(
+    ("scores", "targets"),
+    [
+        (_ZC, np.eye(3, dtype=int)[_YC]),  # categorical (4, 3) scores
+        (_ZC[:3], np.eye(3, dtype=int)[_YC[:3]]),  # K == C once scored silently
+        (_Z, np.eye(2, dtype=int)[_Y]),  # binary scores
+    ],
+    ids=["categorical", "categorical-K-equals-C", "binary"],
+)
+def test_link_metrics_refuses_one_hot_targets(scores, targets):
+    with pytest.raises(LinkTaskError, match=r"targets must be \(K,\)"):
+        link_metrics(scores, targets, from_logits=True)
+
+
+def test_link_metrics_refuses_scalars_and_higher_rank_scores():
+    with pytest.raises(LinkTaskError, match=r"scores must be .*got shape \(\)"):
+        link_metrics(0.7, 1)
+    with pytest.raises(LinkTaskError, match=r"targets must be \(K,\).*got shape \(\)"):
+        link_metrics([0.7], 1)
+    with pytest.raises(LinkTaskError, match=r"scores must be .*got shape \(4, 1, 1\)"):
+        link_metrics((1 / (1 + np.exp(-_Z))).reshape(-1, 1, 1), _Y)
+
+
+def test_link_metrics_keeps_one_dimensional_results_pinned_to_torch():
+    """The shape checks leave valid (K,) and (K, C) inputs scoring as torch does."""
+    bce = torch.nn.functional.binary_cross_entropy_with_logits(torch.tensor(_Z), torch.tensor(_Y, dtype=torch.float64))
+    nll = torch.nn.functional.cross_entropy(torch.tensor(_ZC), torch.tensor(_YC))
+    binary = link_metrics(_Z, _Y, from_logits=True)
+    categorical = link_metrics(_ZC, _YC, from_logits=True)
+    assert binary["bce"].value == pytest.approx(bce.item(), rel=1e-12)
+    assert categorical["nll"].value == pytest.approx(nll.item(), rel=1e-12)
+    assert (round(binary["bce"].value, 4), round(categorical["nll"].value, 4)) == (0.2005, 0.276)
+    assert binary["accuracy"].value == categorical["accuracy"].value == 1.0
+    assert link_metrics(np.zeros((0, 3)), np.zeros(0, dtype=int))["nll"].reason == "no candidates"
+
+
 def test_a_task_whose_training_negatives_cannot_fit_is_refused_at_construction():
     edges = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3), (3, 4), (4, 5)]
     split = split_links(edges, 6, val=1, test=1, seed=0)
