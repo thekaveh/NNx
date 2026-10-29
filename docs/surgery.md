@@ -264,7 +264,7 @@ check_optimizer(model, optimizer)
 - **Validation.** Before anything changes, `validate` / `materialize` reject each of these, named by operation index and target:
     - a missing target, or a target that is not exactly an `nn.Linear`;
     - a target registered under more than one name;
-    - a `low_rank` target with a hook of its own (forward, forward pre- or backward), a legacy `weight_norm` / `spectral_norm` or an unbaked prune mask, which the factors would drop. The model keeps its module identities, hooks and weights. A `lora` target keeps its hooks, because `LoRALinear` calls its base: a hooked LoRA target is exact at init;
+    - a `low_rank` target with a hook of its own (forward, forward pre- or backward), a legacy `weight_norm` / `spectral_norm` or an unbaked prune mask, which the factors would drop. The model keeps its module identities, hooks and weights. Loading a checkpoint does not apply this check: the replay rebuilds the saved factors, which carry no hook. A `lora` target keeps its hooks, because `LoRALinear` calls its base: a hooked LoRA target is exact at init;
     - two targets of one operation that are the same or nested;
     - a target inside a subtree another operation (or an earlier recipe) transforms;
     - a rank above `min(in, out)`;

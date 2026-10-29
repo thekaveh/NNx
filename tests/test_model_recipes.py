@@ -1455,3 +1455,31 @@ def test_a_reparameterized_low_rank_target_keeps_its_specific_message(reparamete
         TransformRecipe([low_rank("layers.0", rank=6)]).validate(model)
     reasons = [p[3] for p in caught.value.problems if p[:3] == (0, "low_rank", "layers.0")]
     assert len(reasons) == 1 and match in reasons[0] and "hook," not in reasons[0]
+
+
+def test_a_checkpoint_replays_a_low_rank_target_its_factory_hooks():
+    """A replay rebuilds the saved topology, whose factors carry no hook, so a
+    hook the factory registers on the target is not refused there: a
+    checkpoint saved before #524 that dropped it still loads, unchanged."""
+    from nnx.models import ModelSpec, register_model_factory
+
+    hooked = [False]
+
+    def factory(config):
+        net = nn.Sequential(nn.Linear(6, 8), nn.ReLU(), nn.Linear(8, 3))
+        if hooked[0]:
+            net[0].register_forward_hook(_clamp)
+        return net
+
+    register_model_factory("tests.factory_hooked_low_rank", 1, factory)
+    params = NNModelParams(
+        net=ModelSpec("tests.factory_hooked_low_rank", 1), device=Devices.CPU, loss=Losses.CROSS_ENTROPY
+    )
+    torch.manual_seed(0)
+    saved = TransformRecipe([low_rank("0", rank=6)]).materialize(NNModel(params=params))
+    hooked[0] = True  # the factory now hooks the target, as the pre-#524 one did when it was saved
+    with pytest.raises(RecipeError, match="has a forward hook"):
+        TransformRecipe([low_rank("0", rank=6)]).validate(NNModel(params=params))  # no new one is written
+    rebuilt = NNModel.from_checkpoint(_checkpoint(saved))
+    assert not rebuilt.net[0]._forward_hooks
+    _same_model(saved, rebuilt)
