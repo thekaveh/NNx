@@ -13,7 +13,9 @@ and their order. A recipe needs a model NNx can rebuild — built-in
 ``Nets`` or a registered ``ModelSpec``; a runtime-only ``module=`` is
 refused. :meth:`TransformRecipe.validate` checks a model against
 the whole recipe — every target present, an ``nn.Linear``, registered once,
-no target inside another operation's subtree, no version this NNx does not
+no target inside another operation's subtree, no hook of its own on a
+``low_rank`` target (the factors would drop it; a LoRA wrapper calls its
+base, so a ``lora`` target keeps its hooks), no version this NNx does not
 know, no optimizer holding a parameter the recipe replaces — and mutates
 nothing; :meth:`TransformRecipe.materialize` then either changes the given
 model in place (``materialization="in_place"``, the default) or builds a
@@ -209,7 +211,8 @@ def lora(*targets: str, r: int = 8, alpha: float = 16.0, dropout: float = 0.0) -
 
 def low_rank(*targets: str, rank: int, method: str = "svd") -> TransformOp:
     """Replace each ``nn.Linear`` at ``targets`` by its rank-``rank``
-    factorization (``nnx.surgery.low_rank_factorize``)."""
+    factorization (``nnx.surgery.low_rank_factorize``). A target with a
+    hook of its own is refused, as ``low_rank_factorize`` refuses it."""
     return TransformOp(id=LOW_RANK, targets=tuple(targets), config={"rank": rank, "method": method})
 
 
@@ -494,6 +497,7 @@ def _validate(
     optimizers: Sequence[Any],
     *,
     indexed: bool = True,
+    replay: bool = False,
     problems: Sequence[_Problem] = (),
     lazy: Collection[str] = (),
 ) -> None:
@@ -501,7 +505,9 @@ def _validate(
     ``operations`` on ``net``, after any ``problems`` already found.
     ``lazy`` — the base tensors a rebuild leaves uninitialized, for an
     in-place materialization — refuses a target a rebuild could not
-    replay on."""
+    replay on. ``replay`` — rebuilding a saved model's recorded topology —
+    skips the ``low_rank`` hook check: the saved factors carry no hook, so
+    a hook the base's factory registers is dropped as it was when saved."""
     problems = list(problems)
     paths = _registration_paths(net)
     weight_readers = _weight_reading_parents(net)
@@ -538,6 +544,14 @@ def _validate(
             aliases = paths.get(id(module), [])
             if len(aliases) > 1:
                 problems.append((index, op.id, path, f"the same nn.Linear is registered under {aliases}"))
+            if op.id == LOW_RANK and not replay:  # a LoRA wrapper calls its base, so its hooks still run
+                from .surgery._utils import refuse_hooked, refuse_parametrized
+
+                try:
+                    refuse_parametrized(module, "the nn.Linear")
+                    refuse_hooked(module, "the nn.Linear", "the materialized factors")
+                except ValueError as refused:
+                    problems.append((index, op.id, path, str(refused)))
             if op.id == LOW_RANK and isinstance(op.config.get("rank"), int):
                 limit = min(module.in_features, module.out_features)
                 if op.config["rank"] > limit:
@@ -620,7 +634,7 @@ def _replay(model: NNModel, transform: NNCheckpointTransform) -> None:
     from .surgery._utils import get_module, set_module
 
     op = TransformOp.from_checkpoint_transform(transform)
-    _validate(model.net, (op,), _recorded_operations(model), (), indexed=False)
+    _validate(model.net, (op,), _recorded_operations(model), (), indexed=False, replay=True)
     for path in op.targets:
         set_module(model.net, path, _build(op, get_module(model.net, path), allocate_only=True))
     model._topology_transforms = (*model._topology_transforms, op.checkpoint_transform())
