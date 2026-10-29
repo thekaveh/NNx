@@ -747,7 +747,7 @@ class Trainer:
         with (
             torch.set_grad_enabled(True),
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
-            _CallbackFinalizer(normalized_callbacks, ctx) as callback_lifecycle,
+            _CallbackFinalizer(normalized_callbacks, ctx, window=resume_window) as callback_lifecycle,
             # Innermost: a failure before the first committed update (a refused
             # on_train_begin, the component restore, the first epoch's start,
             # fetch or step) is rolled back before on_train_end runs (#507).

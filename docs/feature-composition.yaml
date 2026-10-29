@@ -328,6 +328,26 @@ scenarios:
       - tests/test_compile_execution.py::test_out_of_scope_requests_are_refused_up_front
     rationale: Executed negative test; each refusal's type and message are asserted.
     status: unsupported
+  - id: MT-06
+    group: model-transformations
+    features: [DoRA, QAT (topology-changing callback)]
+    entry_point: NNModel.train(callbacks=[QATLifecycleCallback()]) | Trainer.train(...) on an apply_dora_to net
+    profile: {device: cpu, dtype: fp32, dependencies: [torchao]}
+    expected: Refused before prepare and the first batch, naming the DoRA layer and pointing to LoRA; the net, its weights and the callback's flags are unchanged.
+    tests:
+      - tests/test_peft_dora.py::test_qat_refuses_a_dora_base_before_prepare_and_changes_nothing
+    rationale: Executed negative test through both loops; module types, weights, flags and the prediction are asserted.
+    status: unsupported
+  - id: MT-07
+    group: model-transformations
+    features: [QAT (topology-changing callback), nn.MultiheadAttention]
+    entry_point: NNModel.train(callbacks=[QATLifecycleCallback()]) | Trainer.train(...) on NNModel(module=...)
+    profile: {device: cpu, dtype: fp32, dependencies: [torchao]}
+    expected: Refused before prepare, naming attn.out_proj (read by its parent); the net is unchanged and its forward runs.
+    tests:
+      - tests/test_quantize_qat.py::test_qat_refuses_a_linear_its_parent_reads_directly
+    rationale: Executed negative test through both loops; module types, state and the forward are asserted.
+    status: unsupported
   - id: IE-01
     group: inference-export
     features: [KV-cache generation, full forward]
