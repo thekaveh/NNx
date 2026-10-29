@@ -196,23 +196,27 @@ class RuntimeModule:
     wrap time keeps its id). An uninitialized lazy layer records no shape:
     uninitialized lazy nets that will see different input widths share a
     descriptor and a run id, so give them distinct ``data_id`` / ``salt``
-    values (or dry-run them first). Once the wrapped module has
-    materialized (its first forward, in training, ``predict``,
-    ``evaluate`` or a direct call), ``NNModel`` takes its descriptor afresh,
-    so ``params``, checkpoints and its later runs use the materialized
-    descriptor. A lazy layer the forward never reaches keeps the module at
-    its wrap-time descriptor until it materializes, so keep every lazy
-    layer on the forward path. A lazy module whose weights are loaded before any forward
-    is materialized at the wrap and described as a dry-run one (a forward
-    on loaded weights is not one: torch then leaves ``in_channels`` /
-    ``num_features`` of lazy conv and norm layers at 0, so load and wrap,
-    or dry-run before loading); it does not match a descriptor taken
-    before materialization, which a fresh, unmaterialized instance does. A
-    reload compares an uninitialized lazy module with a materialized
-    descriptor after the saved weights materialize it (their names and
-    shapes are checked first, and nothing loads on a refusal).
-    A module holding a lazy layer torch does not ship keeps its wrap-time
-    descriptor: only a forward reveals what such a layer infers.
+    values (or dry-run them first). Once the wrapped module has materialized
+    (its first forward, in training, ``predict``, ``evaluate`` or a direct
+    call), ``NNModel`` takes its descriptor afresh, so ``params``,
+    checkpoints and its later runs use the materialized descriptor. A lazy
+    layer the forward never reaches keeps the module at its wrap-time
+    descriptor until it materializes, so keep every lazy layer on the
+    forward path. A lazy layer whose weights are loaded before its first
+    forward is materialized the way a dry-run forward would materialize it:
+    at the wrap, or at the load when they are loaded after the wrap
+    (``model.net.load_state_dict``, or into one of its layers). Torch's own
+    forward on loaded weights is not a dry run: it leaves ``in_channels`` /
+    ``num_features`` of lazy conv and norm layers at 0. So load before or
+    after the wrap, or dry-run before loading, but do not load and forward
+    before the wrap. A module whose lazy layers hold loaded weights counts
+    as materialized, so it does not match a descriptor taken before
+    materialization; a fresh, unmaterialized instance does. A reload
+    compares an uninitialized lazy module with a materialized descriptor
+    after the saved weights materialize it (their names and shapes are
+    checked first, and nothing loads on a refusal). A module holding a lazy
+    layer torch does not ship keeps its wrap-time descriptor: only a forward
+    reveals what such a layer infers.
     """
 
     __slots__ = ("module", "topology")
