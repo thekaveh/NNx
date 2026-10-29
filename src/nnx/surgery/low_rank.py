@@ -66,9 +66,10 @@ def low_rank_factorize(
         ValueError: if ``rank`` is out of range, ``method`` unknown, or
             ``linear`` carries a parametrization, a legacy ``weight_norm`` /
             ``spectral_norm`` hook or an unbaked prune mask; or if ``linear``
-            has any other forward hook, forward pre-hook or backward hook,
-            which would stay on the discarded Linear (remove it and, if it
-            should still apply, re-register it on the returned factors).
+            has any other forward hook, forward pre-hook, backward hook or
+            backward pre-hook, which would stay on the discarded Linear
+            (remove it and, if it should still apply, re-register it on the
+            returned factors).
             ``linear`` and its hooks are left unchanged.
     """
     if not stock_forward(linear, nn.Linear):  # a subclass's own forward would be dropped

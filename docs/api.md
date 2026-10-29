@@ -14757,9 +14757,10 @@ Raises:
     ValueError: if ``rank`` is out of range, ``method`` unknown, or
         ``linear`` carries a parametrization, a legacy ``weight_norm`` /
         ``spectral_norm`` hook or an unbaked prune mask; or if ``linear``
-        has any other forward hook, forward pre-hook or backward hook,
-        which would stay on the discarded Linear (remove it and, if it
-        should still apply, re-register it on the returned factors).
+        has any other forward hook, forward pre-hook, backward hook or
+        backward pre-hook, which would stay on the discarded Linear
+        (remove it and, if it should still apply, re-register it on the
+        returned factors).
         ``linear`` and its hooks are left unchanged.
 ```
 
@@ -14798,9 +14799,9 @@ Raises:
     ValueError: if ``new_num_embeddings`` is not an integer strictly greater,
         if ``init`` is unknown, or if ``emb`` carries a parametrization, a
         legacy ``weight_norm`` / ``spectral_norm`` hook or an unbaked prune
-        mask; or if ``emb`` has any other forward hook, forward pre-hook or
-        backward hook (NEFTune-style noise, a scale), which would stay on
-        the source table. Raised before the new table is allocated; ``emb``
+        mask; or if ``emb`` has any other forward hook, forward pre-hook,
+        backward hook or backward pre-hook (NEFTune-style noise, a scale),
+        which would stay on the source table. Raised before the new table is allocated; ``emb``
         and its hooks are left unchanged.
 ```
 
