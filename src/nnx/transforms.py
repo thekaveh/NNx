@@ -549,7 +549,7 @@ def _validate(
 
                 try:
                     refuse_parametrized(module, "the nn.Linear")
-                    refuse_hooked(module, "the nn.Linear")
+                    refuse_hooked(module, "the nn.Linear", "the materialized factors")
                 except ValueError as refused:
                     problems.append((index, op.id, path, str(refused)))
             if op.id == LOW_RANK and isinstance(op.config.get("rank"), int):

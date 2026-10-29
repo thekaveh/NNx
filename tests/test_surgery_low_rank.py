@@ -239,6 +239,16 @@ def test_low_rank_factorize_refuses_a_hooked_linear_and_leaves_it_unchanged(regi
     assert isinstance(low_rank_factorize(linear, rank=6), nn.Sequential)
 
 
+def test_low_rank_factorize_advises_removing_every_hook_when_there_are_several():
+    linear = nn.Linear(4, 4)
+    linear.register_forward_hook(_clamp)
+    linear.register_forward_pre_hook(lambda module, args: None)
+    with pytest.raises(ValueError, match="forward hook and a forward pre-hook") as caught:
+        low_rank_factorize(linear, rank=2)
+    assert "Remove the hooks first (the handles' .remove())" in str(caught.value)
+    assert "re-register them on the returned replacement" in str(caught.value)
+
+
 def test_low_rank_factorize_keeps_the_specific_reparameterization_messages():
     """A weight_norm / spectral_norm or prune mask is a hook too; its own
     message, with its own remedy, still wins over the generic hook refusal."""

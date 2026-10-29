@@ -1414,7 +1414,9 @@ def test_a_hooked_low_rank_target_is_refused_and_the_model_kept(call):
     with pytest.raises(RecipeError) as caught:
         getattr(TransformRecipe([low_rank("layers.0", rank=6)]), call)(model)
     assert [p[:3] for p in caught.value.problems] == [(0, "low_rank", "layers.0")]
-    assert "has a forward hook" in caught.value.problems[0][3] and "re-register" in caught.value.problems[0][3]
+    assert "has a forward hook" in caught.value.problems[0][3]
+    assert "Remove the hook first" in caught.value.problems[0][3]
+    assert "re-register it on the materialized factors" in caught.value.problems[0][3]
     assert "recipe operation 0 (low_rank), target 'layers.0'" in str(caught.value)
     assert _same(before, _snapshot(model))  # identities, weights, flags, recorded transforms
     assert dict(model.net.layers[0]._forward_hooks) == hooks

@@ -161,7 +161,7 @@ def has_hooks(module: nn.Module) -> bool:
     return bool(hook_kinds(module))
 
 
-def refuse_hooked(module: nn.Module, what: str) -> None:
+def refuse_hooked(module: nn.Module, what: str, replacement: str = "the returned replacement") -> None:
     """A hook stays on the discarded original when a primitive returns a
     rebuilt plain module, so its effect on the output (a clamp, a scale,
     injected noise) would vanish silently. Call after
@@ -170,8 +170,9 @@ def refuse_hooked(module: nn.Module, what: str) -> None:
     own message is the more useful one."""
     kinds = hook_kinds(module)
     if kinds:
+        hooks, handles, it = ("hooks", "handles'", "they") if len(kinds) > 1 else ("hook", "handle's", "it")
         raise ValueError(
             f"{what} has a {' and a '.join(kinds)}, which a surgery primitive would drop silently with the module "
-            "it replaces. Remove the hook first (its handle's .remove()) and, if it should still apply, "
-            "re-register it on the returned replacement"
+            f"it replaces. Remove the {hooks} first (the {handles} .remove()) and, if {it} should still apply, "
+            f"re-register {'them' if len(kinds) > 1 else 'it'} on {replacement}"
         )

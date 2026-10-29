@@ -69,8 +69,7 @@ def low_rank_factorize(
             has any other forward hook, forward pre-hook, backward hook or
             backward pre-hook, which would stay on the discarded Linear
             (remove it and, if it should still apply, re-register it on the
-            returned factors).
-            ``linear`` and its hooks are left unchanged.
+            returned factors). ``linear`` and its hooks are left unchanged.
     """
     if not stock_forward(linear, nn.Linear):  # a subclass's own forward would be dropped
         raise TypeError(f"low_rank_factorize requires an nn.Linear, got {type(linear).__name__}")

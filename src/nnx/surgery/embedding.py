@@ -68,8 +68,8 @@ def expand_embedding(
             legacy ``weight_norm`` / ``spectral_norm`` hook or an unbaked prune
             mask; or if ``emb`` has any other forward hook, forward pre-hook,
             backward hook or backward pre-hook (NEFTune-style noise, a scale),
-            which would stay on the source table. Raised before the new table is allocated; ``emb``
-            and its hooks are left unchanged.
+            which would stay on the source table. Raised before the new table
+            is allocated; ``emb`` and its hooks are left unchanged.
     """
     if not stock_forward(emb, nn.Embedding):  # a subclass's own forward would be dropped
         raise TypeError(f"expand_embedding requires an nn.Embedding, got {type(emb).__name__}")
