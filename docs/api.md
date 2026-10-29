@@ -10103,6 +10103,14 @@ exactly 0 or 1 for a confident model (beyond ``|logit|`` ≈ 16.6 in
 float32, 36.7 in float64), tying candidates the logits tell apart and
 clipping their loss; logits stay exact at any confidence. The task's
 evaluation scores the logits.
+
+The scores are ``(K,)`` (binary) or ``(K, C)`` with ``C >= 2``
+(categorical), and the targets are always ``(K,)``: one 0 / 1 label or
+class index per candidate, as :class:`LinkPrediction` holds them. Any
+other shape raises :class:`LinkTaskError`: a ``(K, 1)`` target column
+would broadcast against the scores into a ``(K, K)`` grid, so it is
+refused, never raveled (ravel it yourself); so are one-hot ``(K, C)``
+targets, a ``(K, 1)`` score column, scalars and higher-rank arrays.
 ```
 
 
