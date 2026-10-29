@@ -304,6 +304,14 @@ Construction then calls the factory with Python's `random`, NumPy and torch all 
 
 As with built-in nets, the id reflects the architecture, not the weights. Give differently-initialized instances of one architecture distinct `data_id` / `salt` values. Lazy layers (`nn.LazyLinear`) may be wrapped and trained uninitialized. Materialize them (one forward) before a warm resume, whose parameter-topology check needs shapes.
 
+**Lazy layers and the descriptor.** A lazy layer changes the topology when it materializes at its first forward: it gains its shapes and a new `repr`. So the rule is:
+
+- A module wrapped before vs after materialization gives different run ids. A run keeps the id reserved when `train()` started.
+- An uninitialized lazy layer records no shape. Uninitialized lazy nets that will see different input widths share a descriptor and a run id. Give them distinct `data_id` / `salt` values, or dry-run them (one forward on an example batch) before wrapping.
+- Once the wrapped module has materialized, `NNModel` takes its descriptor afresh. Checkpoints and `model.params.net` then describe the trained module, so `NNModel(module=model.net, params=model.params)` and a reload into `model.net` match.
+- `module=` follows one rule in `NNModel(...)`, `NNModel.from_checkpoint` and `VisUtils.two_dim_tsne_checkpoint_logits`. A module that matches the descriptor exactly is accepted. A module of the same class with lazy layers still to materialize is checked against the saved weights first: parameter names and shapes, then the topology those weights materialize, layer hyperparameters included. The weights then load and finish its materialization, as its first forward would. So a fresh lazy instance reloads a run wrapped uninitialized or after a dry run. A different class, different hyperparameters or real shape mismatches are refused before any weight loads.
+- `NNModel(...)` has no saved weights. An uninitialized lazy module there matches only a descriptor taken before materialization; for one taken after, dry-run it first. The refusal names lazy materialization and these remedies. Lazy layers that torch does not ship are compared only once a forward has materialized them.
+
 A runtime module trains, evaluates, predicts, checkpoints and resumes like any model, but no factory can rebuild it:
 
 - checkpoints mark it `reconstructible=False` (`NNCheckpoint.reconstructible`);
