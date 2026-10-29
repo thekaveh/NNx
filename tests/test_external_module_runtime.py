@@ -458,6 +458,7 @@ def test_lazy_runs_reload_into_the_trained_module_and_into_fresh_instances():
         np.testing.assert_array_equal(reloaded.predict(X).logits, model.predict(X).logits)
         # the reloaded module is materialized and matches its descriptor exactly
         assert not _is_uninitialized(module) and RuntimeModule.of(module) == reloaded.params.net
+        assert reloaded.params.net == checkpoint.model_params.net  # the materialized descriptor it was checked against
 
 
 def test_a_trained_lazy_module_rewraps_and_renders_its_checkpoint_tsne(monkeypatch):

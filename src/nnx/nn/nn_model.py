@@ -3973,7 +3973,6 @@ class NNModel(_HubMixinBase):
             # Only passed when set: subclasses keep their own constructors.
             model_kwargs["batch_adapter"] = batch_adapter
         net_state = _without_submodules(checkpoint.net_state, excluded)
-        matched_lazily = False
         if module is not None or isinstance(net, RuntimeModule):
             if not isinstance(net, RuntimeModule):
                 raise ValueError(f"module= only applies to runtime-module checkpoints; this one is built from {net}")
@@ -3996,7 +3995,6 @@ class NNModel(_HubMixinBase):
                     error, module, net_state, rebuild_call, excluded
                 ),
             )
-            matched_lazily = not transforms and RuntimeModule.of(module) != net
             checked = _CHECKED_LAZY_RELOAD.set((module, net))
             try:
                 model = cls(params=model_params, module=module, **model_kwargs)
@@ -4032,12 +4030,11 @@ class NNModel(_HubMixinBase):
             if explained is not None:
                 raise explained from error
             raise
-        # #562: the loaded weights finish a lazy module's materialization.
+        # #562: the loaded weights finish a lazy module's materialization. A
+        # module matched to a descriptor taken after materialization now has
+        # exactly that descriptor: _match_lazy_module compared it with the
+        # topology this same materialization gives.
         completed = getattr(model, "_lazy_wrap_keys", None) is not None and _complete_lazy_materialization(model.net)
-        if matched_lazily and RuntimeModule.of(model.net) != net:
-            raise ValueError(
-                _descriptor_mismatch(RuntimeModule.of(model.net), cast(RuntimeModule, net), after_load=True)
-            )
         if completed:
             # Also for a descriptor taken before materialization (an older
             # checkpoint): describe the module as it now is.
