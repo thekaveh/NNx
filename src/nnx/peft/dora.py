@@ -328,14 +328,14 @@ def apply_dora_to(
     Raises:
         ValueError: if ``r``, ``alpha`` or ``dropout`` is invalid (see
             :func:`nnx.peft.apply_lora_to`), if ``name_patterns`` is
-            empty, if a selected Linear
-            is read directly by its parent (``nn.MultiheadAttention.out_proj``,
-            a torch Transformer layer's ``linear1`` / ``linear2``), or if it
-            is registered under more than one name — the whole matched set
-            is validated before any wrapper is built, so nothing is
-            modified. A Linear inside a shared container is one slot and is
-            wrapped once; tied tensors between distinct modules are outside
-            this check (see :func:`nnx.peft.apply_lora_to`).
+            empty, if a selected Linear is read directly by its parent
+            (``nn.MultiheadAttention.out_proj``, a torch Transformer layer's
+            ``linear1`` / ``linear2``), or if it is registered under more
+            than one name — the whole matched set is validated before any
+            wrapper is built, so nothing is modified. A Linear inside a
+            shared container is one slot and is wrapped once; tied tensors
+            between distinct modules are outside this check (see
+            :func:`nnx.peft.apply_lora_to`).
         TypeError: if a selected Linear is a subclass with its own
             ``forward`` (a QAT fake-quantized layer), or carries an instance
             ``forward``, a hook, an unbaked prune mask, a legacy
