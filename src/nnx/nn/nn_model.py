@@ -59,6 +59,7 @@ from ..models import (
     _materialized_class_name,
     _materialized_topology,
     _same_class_once_materialized,
+    _unmaterialized_topology,
     _UnpackBatch,
     build_module,
     check_state_schema,
@@ -3326,21 +3327,40 @@ _LAZY_RULE = (
 
 
 def _descriptor_mismatch(
-    descriptor: RuntimeModule, net: RuntimeModule, *, after_load: bool = False, lazy: bool = True
+    descriptor: RuntimeModule,
+    net: RuntimeModule,
+    *,
+    after_load: Optional[str] = None,
+    loaded: Optional[str] = None,
+    lazy: bool = True,
 ) -> str:
     """The refusal of a module whose descriptor differs from ``net``; one of
     the same class may differ only by lazy materialization, so the message
     states that rule and its remedies (#562) — unless ``lazy`` is false: the
-    saved weights already rule that out."""
+    saved weights already rule that out. ``after_load`` names the weights a
+    lazy module was compared after materializing from; ``loaded`` (``"wrap"``
+    or ``"reload"``) refuses a module whose lazy layers hold loaded weights
+    for a descriptor taken before materialization."""
     message = (
         f"module {descriptor.module} (topology {descriptor.topology}) does not match the descriptor "
         f"{net.module} (topology {net.topology})"
     )
     if not lazy or not _same_class_once_materialized(descriptor.module, net.module):
         return message
-    if after_load:
+    if loaded is not None:
+        remedy = (
+            "Reload into a fresh, unmaterialized instance instead"
+            if loaded == "reload"
+            else "Pass a fresh, unmaterialized instance instead, or reload a checkpoint into one with "
+            "NNModel.from_checkpoint(checkpoint, module=...)"
+        )
         return (
-            f"{message}, even once its lazy layers materialize from the saved weights: the layer "
+            f"{message}: the descriptor was taken before its lazy layers materialized, but they hold loaded "
+            f"weights (load_state_dict before any forward), so they count as materialized: {_LAZY_RULE}. {remedy}"
+        )
+    if after_load is not None:
+        return (
+            f"{message}, even once its lazy layers materialize from {after_load}: the layer "
             "hyperparameters or shapes differ"
         )
     return (
@@ -3401,8 +3421,13 @@ def _match_lazy_module(
             f"with the descriptor {net.module} (topology {net.topology}): {_LAZY_RULE}. {remedy}"
         )
     if topology != net.topology:
+        if _unmaterialized_topology(module) == net.topology:
+            # A fresh instance of this module matches: the descriptor was taken
+            # before materialization, and these lazy layers hold loaded weights.
+            raise ValueError(_descriptor_mismatch(descriptor, net, loaded="reload" if reloading else "wrap"))
         materialized = RuntimeModule(_materialized_class_name(descriptor.module), topology)
-        raise ValueError(_descriptor_mismatch(materialized, net, after_load=True))
+        weights = "its loaded weights" if state is None else "the saved weights"
+        raise ValueError(_descriptor_mismatch(materialized, net, after_load=weights))
 
 
 def _fits_state(module: torch.nn.Module, state: Mapping[str, Any]) -> bool:

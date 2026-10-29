@@ -204,10 +204,11 @@ class RuntimeModule:
     is materialized at the wrap and described as a dry-run one (a forward
     on loaded weights is not one: torch then leaves ``in_channels`` /
     ``num_features`` of lazy conv and norm layers at 0, so load and wrap,
-    or dry-run before loading). A reload
-    compares an uninitialized lazy module with a materialized descriptor
-    after the saved weights materialize it (their
-    names and shapes are checked first, and nothing loads on a refusal).
+    or dry-run before loading); it does not match a descriptor taken
+    before materialization, which a fresh, unmaterialized instance does. A
+    reload compares an uninitialized lazy module with a materialized
+    descriptor after the saved weights materialize it (their names and
+    shapes are checked first, and nothing loads on a refusal).
     A module holding a lazy layer torch does not ship keeps its wrap-time
     descriptor: only a forward reveals what such a layer infers.
     """
@@ -396,6 +397,28 @@ def _materialized_topology(module: nn.Module, state: Mapping[str, Any]) -> Optio
     with _materialized_view(plan):
         text = repr(module)
     return _fingerprint(tensors, shapes, text)
+
+
+def _unmaterialized_topology(module: nn.Module) -> Optional[str]:
+    """The :func:`module_topology` of a fresh, unmaterialized instance of
+    ``module``, whose lazy layers still to materialize may hold loaded
+    weights (``load_state_dict`` before any forward): their lazy tensors
+    count by name only, as before any load. ``None`` when a lazy layer torch
+    does not ship is pending: NNx cannot tell which of its tensors are lazy."""
+    pending = _pending_lazy_modules(module)
+    if not all(_known_lazy(sub) for _, sub in pending):
+        return None
+    tensors = {name: value for name, value in module.state_dict().items() if isinstance(value, torch.Tensor)}
+    shapes = {name: _shape(value) for name, value in tensors.items()}
+    for name, sub in pending:
+        prefix = f"{name}." if name else ""
+        # Every tensor torch's lazy layers create is lazy, except the norm
+        # layers' batch counter.
+        own = [key for key, _ in (*sub.named_parameters(recurse=False), *sub.named_buffers(recurse=False))]
+        for key in own:
+            if key != "num_batches_tracked" and prefix + key in shapes:
+                shapes[prefix + key] = None
+    return _fingerprint(tensors, shapes, repr(module))
 
 
 _Plan = list[tuple[nn.Module, dict[str, int], Optional[type]]]
