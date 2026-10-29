@@ -575,6 +575,7 @@ ctx.epoch         # int
 ctx.idp           # current NNIterationDataPoint
 ctx.idps          # running list of all idps so far (with a HistoryJournal: the last `retention` — §4.5)
 ctx.should_stop   # writable — set True to break out of training
+ctx.failed_before_update  # True in on_train_end if the fit failed before its first update: undo on_train_begin changes
 ```
 
 Built-in callbacks: `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`. Custom callbacks subclass `Callback` and override whichever hooks they need. Objective runs (§6.5) also call `on_optimizer_update(ctx, event)` once per committed optimizer update. Every optimizer's event of a commit fires before any `optimizer_update`-clock scheduler steps.
@@ -2252,7 +2253,7 @@ Four Tier-2 subpackages are large enough to warrant a dedicated section but smal
 
 - The PTQ path is one call, with no calibration data and no retraining. It returns an instance of the same class it was given, with only `net` replaced by the quantized deep copy. A `GenerativeNNModel` keeps its tokenizer and `generate`; user subclasses keep their overrides and attributes.
 - The QAT path is a paradigm-style `TrainStepFn` factory that fake-quants during training and converts on commit.
-- `QATLifecycleCallback` refuses, before `prepare`, a net where it would swap a Linear that its parent reads directly and never calls: a DoRA layer's base (use LoRA there), `nn.MultiheadAttention.out_proj` or a torch Transformer layer's `linear1` / `linear2`. A fit that fails before its first update gets its unprepared net back, unconverted.
+- `QATLifecycleCallback` refuses, before `prepare`, a net where it would swap a Linear that its parent reads instead of calling. A DoRA layer's base (use LoRA there) and `nn.MultiheadAttention.out_proj` are never called, so training would skip their fake quantization. A `batch_first` torch `TransformerEncoderLayer` calls `linear1` / `linear2` in training, but its eval fast path reads their weights, so the converted net's eval forward would fail. A `TransformerDecoderLayer` and a non-`batch_first` encoder layer always call them, so QAT converts them. A fit that fails before its first update gets its unprepared net back, unconverted.
 - A converted `LAST` checkpoint records its `qat_config` and `groupsize`. The ordinary `NNModel.from_checkpoint()` path therefore reconstructs quantized inference without consumer-side prepare/convert calls. Legacy converted checkpoints without that recipe fail with a targeted migration error.
 - See [API §12](api.md#12-quantization-nnxquantize) for the full surface, and `examples/12_quantize_int8.py` and `examples/15_qat_classifier.py` for end-to-end runs.
 
