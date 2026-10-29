@@ -45,11 +45,19 @@ def quantize_int8(model: _M) -> _M:
     """Return a new instance of ``type(model)`` with int8 weight-only quantized ``net``.
 
     Deep-copies ``model.net`` and applies
-    ``torchao.quantization.quantize_(net, Int8WeightOnlyConfig())`` to
-    the copy. Every ``nn.Linear`` submodule of the copy has its weight
-    parameter replaced with an :class:`AffineQuantizedTensor` (int8
-    per-channel, symmetric). Activations stay FP32 — only the weights
-    are stored in int8.
+    ``torchao.quantization.quantize_(net, Int8WeightOnlyConfig(version=2,
+    set_inductor_config=False))`` to the copy. Every ``nn.Linear``
+    submodule of the copy has its weight parameter replaced with an
+    :class:`AffineQuantizedTensor` (int8 per-channel, symmetric).
+    Activations stay FP32 — only the weights are stored in int8.
+
+    No process-wide setting changes: the float32 matmul precision (and
+    with it TF32) and the ``torch._inductor.config`` flags stay as they
+    were. torchao's default would apply its recommended inductor settings
+    for the rest of the process; to opt in to them, for a later
+    ``torch.compile`` of the quantized model, call
+    ``torchao.quantization.utils.recommended_inductor_config_setter()``
+    directly.
 
     The original ``model`` is untouched. The returned wrapper is a shallow
     copy of ``model`` — the same class (a :class:`GenerativeNNModel` keeps
@@ -92,8 +100,12 @@ def quantize_int8(model: _M) -> _M:
     quantized_net = deepcopy(model.net)
     # version=2 silences the v1-deprecation UserWarning torchao emits. The
     # default granularity is PerRow (per-output-channel), which is the
-    # standard weight-only INT8 layout.
-    quantize_(quantized_net, Int8WeightOnlyConfig(version=2))
+    # standard weight-only INT8 layout. set_inductor_config=False keeps
+    # torchao from running recommended_inductor_config_setter(), which sets
+    # the process-wide float32 matmul precision to "high" (TF32 on capable
+    # hardware) and five inductor flags and never restores them (FIX-060,
+    # #527); the quantized weights are identical either way.
+    quantize_(quantized_net, Int8WeightOnlyConfig(version=2, set_inductor_config=False))
 
     # Build a sibling of the caller's OWN class without re-running
     # __init__ (which would build a fresh FP32 net via self.params.net(...)

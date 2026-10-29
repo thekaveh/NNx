@@ -8,6 +8,7 @@ install the extra still get a clean ``pytest -q``.
 from __future__ import annotations
 
 import pickle
+from copy import deepcopy
 
 import pytest
 import torch
@@ -65,6 +66,37 @@ def tiny_model() -> NNModel:
     return _make_model()
 
 
+# The process-wide settings torchao's recommended_inductor_config_setter()
+# changes (FIX-060, #527). The fp32_precision attributes are absent before
+# torch 2.9, so they read as None there.
+_INDUCTOR_FLAGS = (
+    "coordinate_descent_tuning",
+    "coordinate_descent_check_all_directions",
+    "force_fuse_int_mm_with_mul",
+)
+
+
+def _global_settings() -> dict[str, object]:
+    import torch._inductor.config as inductor
+
+    return {
+        "float32_matmul_precision": torch.get_float32_matmul_precision(),
+        "cuda.matmul.fp32_precision": getattr(torch.backends.cuda.matmul, "fp32_precision", None),
+        "mkldnn.matmul.fp32_precision": getattr(torch.backends.mkldnn.matmul, "fp32_precision", None),
+        **{f"inductor.{flag}": getattr(inductor, flag) for flag in _INDUCTOR_FLAGS},
+    }
+
+
+@pytest.fixture(autouse=True)
+def _no_test_changes_global_settings():
+    """Per-test probe: no test in this module leaves the matmul precision or
+    the inductor flags changed, so a later test (or a later module in the
+    same worker) never inherits them."""
+    before = _global_settings()
+    yield
+    assert _global_settings() == before, "this test changed process-wide matmul / inductor settings"
+
+
 # -------------------------------------------------------------------------
 # Core behavior
 # -------------------------------------------------------------------------
@@ -99,6 +131,70 @@ def test_quantize_int8_does_not_mutate_original(tiny_model):
     # Plain forward on the original still works (weights still FP32).
     out = tiny_model.net(torch.randn(2, 32))
     assert out.shape == (2, 3)
+
+
+def _restore_global_settings_at_teardown(monkeypatch) -> None:
+    """Have ``monkeypatch`` put back the inductor flags and the per-backend
+    fp32 precisions. ``torch.set_float32_matmul_precision`` rewrites the
+    per-backend values (``"highest"`` gives ``"ieee"``, not ``"none"``), so
+    restoring the global one alone does not round-trip them."""
+    import torch._inductor.config as inductor
+
+    for backend in (torch.backends.cuda.matmul, torch.backends.mkldnn.matmul):
+        if hasattr(backend, "fp32_precision"):
+            monkeypatch.setattr(backend, "fp32_precision", backend.fp32_precision)
+    for flag in ("fx_graph_cache", "triton.unique_kernel_names", *_INDUCTOR_FLAGS):
+        monkeypatch.setattr(inductor, flag, getattr(inductor, flag))
+
+
+def test_quantize_int8_leaves_matmul_precision_and_inductor_flags_unchanged(monkeypatch, tiny_model):
+    """FIX-060 (#527): torchao's default ``set_inductor_config=True`` set the
+    float32 matmul precision to ``"high"`` (TF32 on capable hardware, so later
+    runs recorded TF32 as enabled) and five inductor flags, for the rest of
+    the process. The baseline is pinned here, so the test fails even when an
+    earlier test in the worker already leaked the changed values."""
+    import torch._inductor.config as inductor
+
+    _restore_global_settings_at_teardown(monkeypatch)
+    prior = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+        for flag in _INDUCTOR_FLAGS:
+            monkeypatch.setattr(inductor, flag, False)
+        before = _global_settings()
+        quantize_int8(tiny_model)
+        assert _global_settings() == before
+    finally:
+        torch.set_float32_matmul_precision(prior)
+
+
+def test_quantize_int8_is_bitwise_equal_to_torchaos_default_config(monkeypatch, tiny_model):
+    """Not touching the global settings changes nothing in the result: the
+    weights' int8 data, scales and the outputs equal those of torchao's
+    default ``Int8WeightOnlyConfig(version=2)``, run here with its global
+    side effects undone afterwards."""
+    from torchao.quantization import Int8WeightOnlyConfig, quantize_
+
+    reference = deepcopy(tiny_model.net)
+    _restore_global_settings_at_teardown(monkeypatch)
+    prior = torch.get_float32_matmul_precision()
+    try:
+        quantize_(reference, Int8WeightOnlyConfig(version=2))
+    finally:
+        torch.set_float32_matmul_precision(prior)
+    m_q = quantize_int8(tiny_model)
+
+    ours, theirs = m_q.net.state_dict(), reference.state_dict()
+    assert ours.keys() == theirs.keys()
+    for key, value in ours.items():
+        names = value.__tensor_flatten__()[0] if hasattr(value, "__tensor_flatten__") else []
+        for name in names:
+            assert torch.equal(getattr(value, name), getattr(theirs[key], name)), (key, name)
+        if not names:
+            assert torch.equal(value, theirs[key]), key
+    x = torch.randn(16, 32, generator=torch.Generator().manual_seed(0))
+    with torch.no_grad():
+        assert torch.equal(m_q.net(x), reference(x))
 
 
 def test_quantize_int8_replaces_linear_weights_with_quantized_tensor(tiny_model):
@@ -452,7 +548,7 @@ def _int8_linear() -> torch.nn.Linear:
 
     torch.manual_seed(0)
     lin = torch.nn.Linear(64, 64)
-    quantize_(torch.nn.Sequential(lin), Int8WeightOnlyConfig(version=2))
+    quantize_(torch.nn.Sequential(lin), Int8WeightOnlyConfig(version=2, set_inductor_config=False))
     return lin
 
 
@@ -491,6 +587,6 @@ def test_a_quantized_dora_model_fails_at_forward_with_an_actionable_error():
     with pytest.raises(TypeError, match="DoRA's base now has a weight of type .*Use LoRA"):
         quantize_int8(_adapted(apply_dora_to)).predict(X)
     net = _adapted(apply_dora_to).net
-    quantize_(net, Int8WeightOnlyConfig(version=2))
+    quantize_(net, Int8WeightOnlyConfig(version=2, set_inductor_config=False))
     with pytest.raises(TypeError, match="DoRA's base now has a weight of type .*Use LoRA"):
         net(X)
