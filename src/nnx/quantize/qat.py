@@ -40,9 +40,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
+from torch import nn
+
 from .._validation import require_count, shown
 from ..nn.callbacks import Callback
 from ..nn.nn_model import TrainStepFn, default_train_step
+from ..peft._targets import WEIGHT_READING_PARENTS, _listed, _registrations
+from ..peft.dora import DoRALinear
 
 if TYPE_CHECKING:  # pragma: no cover — type-checking-only imports.
     from ..nn.nn_model import _CallbackContext
@@ -103,6 +107,45 @@ def _build_quantizer(qat_config: str, *, groupsize: int = 32):
         return Int8DynActInt4WeightQATQuantizer(groupsize=groupsize)
 
     raise ValueError(f"unknown qat_config {qat_config!r}; supported: {_SUPPORTED_CONFIGS}")
+
+
+def _refuse_bypassed_linears(net: nn.Module, groupsize: int) -> None:
+    """Refuse, before ``prepare`` changes anything, a Linear that QAT would
+    swap but whose parent reads its weight and never calls it (FIX-059):
+    the base of a :class:`~nnx.peft.DoRALinear`, or a child of a
+    ``WEIGHT_READING_PARENTS`` module (``nn.MultiheadAttention.out_proj``, a
+    torch Transformer layer's ``linear1`` / ``linear2``). Training would skip
+    its fake quantization, and the converted forward would fail.
+
+    A Linear QAT swaps is one the 8da4w quantizer selects: an ``nn.Linear``
+    whose ``in_features`` ``groupsize`` divides. A Linear it leaves alone is
+    not refused. Every registration path is checked, so an aliased layer is
+    named wherever it is read."""
+    dora_layers: list[str] = []
+    read_directly: list[str] = []
+    for path, parent, attr, child in _registrations(net):
+        if not isinstance(child, nn.Linear) or child.in_features % groupsize:
+            continue
+        if isinstance(parent, DoRALinear) and attr == "base":
+            owner = path[: -len(".base")] if path.endswith(".base") else "(the net itself)"
+            if owner not in dora_layers:
+                dora_layers.append(owner)
+        elif isinstance(parent, WEIGHT_READING_PARENTS):
+            read_directly.append(f"{path} (read by its parent {type(parent).__name__})")
+    if dora_layers:
+        layers = f"layer {dora_layers[0]}" if len(dora_layers) == 1 else f"layers {_listed(dora_layers)}"
+        raise TypeError(
+            f"QAT cannot prepare the base of the DoRA {layers}: DoRA reads its base's weight and never calls the "
+            "base, so it would bypass the fake-quantized layer QAT swaps in and fail on the converted one. Use "
+            "LoRA (nnx.peft.apply_lora_to), which calls its base layer, for a layer QAT prepares. Nothing was "
+            "modified."
+        )
+    if read_directly:
+        raise ValueError(
+            f"QAT cannot prepare {', '.join(read_directly)}: a parent that reads its Linear's weight directly "
+            "never calls that layer, so training would skip its fake quantization and the converted forward "
+            "would fail. Nothing was modified."
+        )
 
 
 def qat_train_step_factory(
@@ -179,6 +222,12 @@ class QATLifecycleCallback(Callback):
     tracks the prepare/convert phase via ``self.is_prepared`` and
     ``self.is_converted`` for downstream inspection.
 
+    QAT refuses, before ``prepare`` changes anything, a net where it would
+    swap a Linear whose parent reads its weight and never calls it: the base
+    of a :class:`~nnx.peft.DoRALinear` (use LoRA there) or a child of
+    ``nn.MultiheadAttention`` or a torch Transformer layer. A fit that fails
+    before its first update gets its unprepared net back, unconverted.
+
     A completed conversion also contributes a versioned checkpoint transform
     containing ``qat_config`` and ``groupsize``. The final ``LAST`` checkpoint
     persists that recipe, so :meth:`NNModel.from_checkpoint` can rebuild the
@@ -205,23 +254,42 @@ class QATLifecycleCallback(Callback):
         self.groupsize = int(groupsize)
         self.is_prepared: bool = False
         self.is_converted: bool = False
+        self._swapped: list[tuple[nn.Module, str, nn.Module]] = []
 
     def on_train_begin(self, ctx: _CallbackContext) -> None:
-        """Insert fake-quant ops into ``ctx.model.net`` in place."""
+        """Insert fake-quant ops into ``ctx.model.net`` in place.
+
+        Raises:
+            TypeError: if QAT would swap the base of a
+                :class:`~nnx.peft.DoRALinear`, which reads its base's weight
+                and never calls it. Use LoRA for a layer QAT prepares.
+            ValueError: if QAT would swap a Linear its parent reads directly
+                (``nn.MultiheadAttention.out_proj``, a torch Transformer
+                layer's ``linear1`` / ``linear2``), or if it would swap
+                nothing. The net is unchanged after each refusal.
+        """
         # Idempotency guard: re-running prepare on an already-prepared
         # net would corrupt the linear-wrapping. Real-world training
         # loops don't hit this, but a callback shared across two
         # back-to-back ``model.train()`` calls would.
         if self.is_prepared:
             return
-        before = [type(module) for module in ctx.model.net.modules()]
-        self.quantizer.prepare(ctx.model.net)
-        if [type(module) for module in ctx.model.net.modules()] == before:
+        net = ctx.model.net
+        _refuse_bypassed_linears(net, self.groupsize)
+        slots = {(id(parent), attr): (parent, attr, child) for _, parent, attr, child in _registrations(net)}
+        before = [type(module) for module in net.modules()]
+        self.quantizer.prepare(net)
+        if [type(module) for module in net.modules()] == before:
             # No Linear was swapped: a "QAT" run would silently train plain FP32.
             raise ValueError(
                 f"QAT prepared nothing: no child nn.Linear of this net was eligible (groupsize={self.groupsize} "
                 "must divide its in_features, and a net that is itself one nn.Linear has no child to swap)"
             )
+        # The layers prepare replaced, kept until convert so that a fit that
+        # fails before its first update gets them back (on_train_end).
+        self._swapped = [
+            (parent, attr, child) for parent, attr, child in slots.values() if getattr(parent, attr) is not child
+        ]
         self.is_prepared = True
 
     def on_train_end(self, ctx: _CallbackContext) -> None:
@@ -232,6 +300,11 @@ class QATLifecycleCallback(Callback):
         is no longer trainable through the usual FP32 optimizer path —
         a fresh training session on the same NNModel would need a new
         QATLifecycleCallback.
+
+        A fit that fails before its first update (``ctx.failed_before_update``:
+        a later callback's ``on_train_begin`` raising, say) trained nothing, so
+        it is not converted: the layers ``prepare`` replaced are put back, and
+        ``is_prepared`` and ``is_converted`` are both ``False`` again.
         """
         # Symmetric idempotency guard, paired with ``on_train_begin``.
         if self.is_converted:
@@ -239,6 +312,14 @@ class QATLifecycleCallback(Callback):
         if not self.is_prepared:
             # No prepare ever ran — converting an FP32 model is a no-op
             # that would still mutate state-flags misleadingly. Bail.
+            return
+        swapped, self._swapped = self._swapped, []
+        if getattr(ctx, "failed_before_update", False):
+            # The original layers share their weight and bias with the
+            # fake-quantized ones, which no update has changed.
+            for parent, attr, child in swapped:
+                setattr(parent, attr, child)
+            self.is_prepared = False
             return
         self.quantizer.convert(ctx.model.net)
         self.is_converted = True

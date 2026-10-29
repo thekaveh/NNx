@@ -57,6 +57,8 @@ cell reads *unverified*.
 | MT-03 | model surgery (deepen) + FeedFwdNN | cpu / fp32 / core | Deepening preserves the network's function. | **unverified** — no evidence report | `tests/test_surgery_deepen.py::test_deepen_preserves_function_on_feed_fwd_nn` |
 | MT-04 | DDP + batch normalization | cpu / fp32 / torch.distributed gloo | Refused on every rank before any run (running statistics would differ per rank). | **unverified** — no evidence report | `tests/test_ddp_adapter.py::test_preflight_refusals_fail_on_every_rank_before_any_run` |
 | MT-05 | torch.compile + custom train step or non-FP32 precision | cpu / fp32 / core | Refused up front; compile covers the built-in train step in FP32 on built-in non-graph nets. | **unverified** — no evidence report | `tests/test_compile_execution.py::test_out_of_scope_requests_are_refused_up_front` |
+| MT-06 | DoRA + QAT (topology-changing callback) | cpu / fp32 / torchao | Refused before prepare and the first batch, naming the DoRA layer and pointing to LoRA; the net, its weights and the callback's flags are unchanged. | **unverified** — no evidence report | `tests/test_peft_dora.py::test_qat_refuses_a_dora_base_before_prepare_and_changes_nothing` |
+| MT-07 | QAT (topology-changing callback) + nn.MultiheadAttention | cpu / fp32 / torchao | Refused before prepare, naming attn.out_proj (read by its parent); the net is unchanged and its forward runs. | **unverified** — no evidence report | `tests/test_quantize_qat.py::test_qat_refuses_a_linear_its_parent_reads_directly` |
 
 ## Inference and export
 
