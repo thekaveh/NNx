@@ -19,6 +19,7 @@ from nnx.nn.params.nn_iteration_data_point import NNIterationDataPoint
 from nnx.nn.params.nn_optim_params import NNOptimParams
 from nnx.nn.params.nn_train_params import NNTrainParams
 from nnx.optimizers import build_optimizer
+from nnx.peft import apply_ia3_to, apply_lora_to
 from nnx.surgery import low_rank_factorize
 from nnx.transforms import RecipeError, TransformOp, TransformRecipe, check_optimizer, lora, low_rank
 
@@ -1280,3 +1281,113 @@ def test_training_refuses_a_top_level_parametrization_of_a_registered_module(tmp
         model.train(
             params=NNTrainParams(n_epochs=1, train_loader=loader, optim=NNOptimParams.builder().sgd(max_lr=0.1).build())
         )
+
+
+# --- FIX-056 (#523): masks and legacy norms below a PEFT wrapper ------------------------------------------
+
+
+def _prune(net, pattern):
+    from nnx.prune import magnitude_prune
+
+    magnitude_prune(net, 0.5, layer_pattern=pattern, bake=False)
+
+
+def _legacy_weight_norm(net):
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # its deprecation notice
+        torch.nn.utils.weight_norm(net.layers[0])
+
+
+@pytest.mark.parametrize(
+    "prepare, match",
+    [
+        (
+            lambda net: (_prune(net, "layers.0"), apply_lora_to(net, "layers.0", r=2)),
+            "carry a pruning reparameterization",
+        ),
+        (
+            lambda net: (apply_lora_to(net, "layers.0", r=2), _prune(net, "layers.0.base")),
+            "carry a pruning reparameterization",
+        ),
+        (lambda net: (_legacy_weight_norm(net), apply_lora_to(net, "layers.0", r=2)), "are reparameterized"),
+        (lambda net: (_prune(net, "layers.0"), apply_ia3_to(net, "layers.0")), "carry a pruning reparameterization"),
+    ],
+    ids=["prune_then_lora", "lora_then_prune", "weight_norm_then_lora", "prune_then_ia3"],
+)
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_training_refuses_a_mask_or_legacy_norm_below_a_peft_wrapper_before_reserving_a_run(prepare, match, loop):
+    """All four trained at e69fd74 in both loops: the key checks matched ``layers.0.weight_orig``,
+    never ``layers.0.base.weight_orig``. ``Trainer.train(objective=...)`` shares the preflight."""
+    import os
+
+    from nnx import NNTrainerParams, Trainer
+    from nnx.objectives import supervised_objective
+
+    model = _model()
+    prepare(model.net)
+    with pytest.raises(ValueError, match=rf"layers\.0\.base\.weight {match}"):
+        if loop == "nnmodel":
+            _train(model, n_epochs=1)
+        else:
+            params = NNTrainerParams.builder().n_epochs(1).train_loader(_loader()).optimizer("default", _OPTIM).build()
+            Trainer(model).train(params=params, objective=supervised_objective())
+    assert not os.path.exists("runs") or not os.listdir("runs")
+
+
+def _legacy_norm(norm):
+    def apply(layer):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # its deprecation notice
+            norm(layer)
+
+    return apply
+
+
+def _l1_prune(layer):
+    from torch.nn.utils import prune
+
+    prune.l1_unstructured(layer, "weight", amount=0.5)
+
+
+@pytest.mark.parametrize(
+    "reparameterize",
+    [
+        _legacy_norm(torch.nn.utils.weight_norm),
+        _legacy_norm(torch.nn.utils.spectral_norm),
+        _l1_prune,
+    ],
+    ids=["weight_norm", "spectral_norm", "l1_unstructured"],
+)
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_a_registered_factory_that_builds_its_own_mask_or_legacy_norm_still_trains(reparameterize, loop):
+    """The hook walk skips a reparameterization the descriptor's own net carries
+    (its ``_mask`` / ``_g`` / ``_orig`` keys are in the reference state): such a
+    factory trained before #523 and still does."""
+    from nnx import NNTrainerParams, Trainer
+    from nnx.models import ModelSpec, register_model_factory
+    from nnx.objectives import supervised_objective
+
+    def factory(config):
+        net = nn.Sequential(nn.Linear(6, 8), nn.ReLU(), nn.Linear(8, 3))
+        reparameterize(net[0])
+        return net
+
+    name = f"tests.own_reparameterization_{loop}"
+    register_model_factory(name, 1, factory)
+    torch.manual_seed(0)
+    model = NNModel(params=NNModelParams(net=ModelSpec(name, 1), device=Devices.CPU, loss=Losses.CROSS_ENTROPY))
+    if loop == "nnmodel":
+        assert _train(model, n_epochs=1).id
+    else:
+        params = NNTrainerParams.builder().n_epochs(1).train_loader(_loader()).optimizer("default", _OPTIM).build()
+        Trainer(model).train(params=params, objective=supervised_objective())
+
+
+def test_a_lora_net_without_masks_or_legacy_norms_still_trains():
+    model = _model()
+    apply_lora_to(model.net, "layers.0", r=2)
+    assert _train(model, n_epochs=1).id

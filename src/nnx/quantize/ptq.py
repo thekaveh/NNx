@@ -70,7 +70,10 @@ def quantize_int8(model: _M) -> _M:
         deep-copy of ``model.net``. The new model can be used for
         ``predict`` / ``evaluate`` / ``generate`` / ``to_onnx`` exactly
         like the original; ``train`` on the quantized model is not
-        supported (QAT lands in a separate module).
+        supported (QAT lands in a separate module). A
+        :class:`~nnx.peft.DoRALinear` cannot norm an int8 base, so the
+        quantized copy of a DoRA-adapted net raises ``TypeError`` at its
+        first forward; LoRA and IA3 adapters compose with int8 bases.
 
     Raises:
         ImportError: if ``torchao`` is not installed. Install with
