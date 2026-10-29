@@ -497,6 +497,7 @@ def _validate(
     optimizers: Sequence[Any],
     *,
     indexed: bool = True,
+    replay: bool = False,
     problems: Sequence[_Problem] = (),
     lazy: Collection[str] = (),
 ) -> None:
@@ -504,7 +505,9 @@ def _validate(
     ``operations`` on ``net``, after any ``problems`` already found.
     ``lazy`` — the base tensors a rebuild leaves uninitialized, for an
     in-place materialization — refuses a target a rebuild could not
-    replay on."""
+    replay on. ``replay`` — rebuilding a saved model's recorded topology —
+    skips the ``low_rank`` hook check: the saved factors carry no hook, so
+    a hook the base's factory registers is dropped as it was when saved."""
     problems = list(problems)
     paths = _registration_paths(net)
     weight_readers = _weight_reading_parents(net)
@@ -541,7 +544,7 @@ def _validate(
             aliases = paths.get(id(module), [])
             if len(aliases) > 1:
                 problems.append((index, op.id, path, f"the same nn.Linear is registered under {aliases}"))
-            if op.id == LOW_RANK:  # a LoRA wrapper calls its base, so the base's hooks still run
+            if op.id == LOW_RANK and not replay:  # a LoRA wrapper calls its base, so its hooks still run
                 from .surgery._utils import refuse_hooked, refuse_parametrized
 
                 try:
@@ -631,7 +634,7 @@ def _replay(model: NNModel, transform: NNCheckpointTransform) -> None:
     from .surgery._utils import get_module, set_module
 
     op = TransformOp.from_checkpoint_transform(transform)
-    _validate(model.net, (op,), _recorded_operations(model), (), indexed=False)
+    _validate(model.net, (op,), _recorded_operations(model), (), indexed=False, replay=True)
     for path in op.targets:
         set_module(model.net, path, _build(op, get_module(model.net, path), allocate_only=True))
     model._topology_transforms = (*model._topology_transforms, op.checkpoint_transform())
