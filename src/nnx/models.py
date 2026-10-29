@@ -198,10 +198,12 @@ class RuntimeModule:
     descriptor and a run id, so give them distinct ``data_id`` / ``salt``
     values (or dry-run them first). Once the wrapped module has
     materialized, ``NNModel`` takes its descriptor afresh, so checkpoints
-    describe the trained module. A reload compares an uninitialized lazy
-    module with a materialized descriptor after the saved weights
-    materialize it (their names and shapes are checked first, and nothing
-    loads on a refusal).
+    describe the trained module and its later runs use the materialized
+    descriptor's id. A reload compares an uninitialized lazy module with a
+    materialized descriptor after the saved weights materialize it (their
+    names and shapes are checked first, and nothing loads on a refusal).
+    A module holding a lazy layer torch does not ship keeps its wrap-time
+    descriptor: only a forward reveals what such a layer infers.
     """
 
     __slots__ = ("module", "topology")
@@ -223,8 +225,7 @@ class RuntimeModule:
         """The descriptor of ``module`` (its class and topology)."""
         if not isinstance(module, nn.Module):
             raise TypeError(f"expected a torch.nn.Module, got {type(module).__name__}")
-        kind = type(module)
-        return cls(f"{kind.__module__}.{kind.__qualname__}", module_topology(module))
+        return cls(_qualified(type(module)), module_topology(module))
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(f"RuntimeModule is immutable; cannot set {name!r}")
@@ -305,20 +306,60 @@ def _has_pending_lazy(module: nn.Module) -> bool:
     return bool(_pending_lazy_modules(module))
 
 
+def _qualified(kind: type) -> str:
+    return f"{kind.__module__}.{kind.__qualname__}"
+
+
+def _materialized_class_name(name: str) -> str:
+    """The qualified class a lazy class named ``name`` switches to at its
+    first forward (its ``cls_to_become``); ``name`` for any other class."""
+    pending = list(LazyModuleMixin.__subclasses__())
+    while pending:
+        kind = pending.pop()
+        if _qualified(kind) == name:
+            final = getattr(kind, "cls_to_become", None)
+            return name if final is None else _qualified(final)
+        pending.extend(kind.__subclasses__())
+    return name
+
+
+def _same_class_once_materialized(name: str, other: str) -> bool:
+    """Whether the classes named ``name`` and ``other`` are the same once
+    lazy layers materialize: a top-level ``nn.LazyLinear`` becomes an
+    ``nn.Linear`` at its first forward."""
+    return name == other or _materialized_class_name(name) == _materialized_class_name(other)
+
+
+def _lazy_layers_emulable(module: nn.Module) -> bool:
+    """Whether every lazy layer of ``module`` still to materialize is one
+    whose dry-run inference NNx can tell from its parameter shapes (the lazy
+    layers torch ships); a custom lazy layer reveals it only at a forward."""
+    return all(_known_lazy(sub) for _, sub in _pending_lazy_modules(module))
+
+
+# The lazy layer families torch ships, whose dry-run inference NNx emulates.
+_LAZY_CONV: Optional[type] = getattr(nn.modules.conv, "_LazyConvXdMixin", None)
+_LAZY_NORM: Optional[type] = getattr(nn.modules.batchnorm, "_LazyNormBase", None)
+
+
+def _known_lazy(sub: nn.Module) -> bool:
+    return isinstance(sub, nn.LazyLinear) or any(
+        kind is not None and isinstance(sub, kind) for kind in (_LAZY_CONV, _LAZY_NORM)
+    )
+
+
 def _inferred_attributes(sub: nn.Module, shapes: Mapping[str, Optional[tuple[int, ...]]]) -> Optional[dict[str, int]]:
     """What a dry-run forward sets on the pending lazy layer ``sub``, read
     from its parameter shapes (``shapes``: its own tensor names): ``None``
     for a lazy layer torch does not ship, whose inference NNx cannot tell."""
-    conv = getattr(nn.modules.conv, "_LazyConvXdMixin", None)
-    norm = getattr(nn.modules.batchnorm, "_LazyNormBase", None)
     weight = shapes.get("weight")
     if isinstance(sub, nn.LazyLinear):
         return None if weight is None else {"in_features": weight[-1]}
-    if conv is not None and isinstance(sub, conv):
+    if _LAZY_CONV is not None and isinstance(sub, _LAZY_CONV):
         if weight is None:
             return None
         return {"in_channels": weight[0] if sub.transposed else weight[1] * cast(int, sub.groups)}
-    if norm is not None and isinstance(sub, norm):
+    if _LAZY_NORM is not None and isinstance(sub, _LAZY_NORM):
         held = weight if weight is not None else shapes.get("running_mean")
         # Without affine weights or running statistics nothing materializes:
         # the dry run leaves num_features at 0 as well.
