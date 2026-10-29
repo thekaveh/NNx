@@ -284,7 +284,13 @@ through its factory — an unregistered one raises
 that differs from the saved weights raises ``ValueError``, both
 before any weight is loaded. A runtime-only module
 (``reconstructible=False``) needs ``module=`` — a module of the same
-topology, into which the weights are loaded.
+topology, into which the weights are loaded. A module with lazy
+layers still to materialize (``nn.LazyLinear`` before its first
+forward) also matches a descriptor taken after materialization: its
+parameter names and shapes are checked against the saved weights,
+and the topology they materialize against the descriptor, before
+any weight loads; the weights then materialize it, as its first
+forward would.
 
 The precision policy is re-resolved on the destination
 device (the constructor resolves it) — never read from the
@@ -2714,6 +2720,19 @@ architecture, not the weights: two differently-initialized instances of
 one architecture share a run id, so give them distinct ``data_id`` /
 ``salt`` values. ``reconstructible`` is always ``False``: the weights
 can only be loaded back into a module the caller supplies again.
+
+Lazy layers (``nn.LazyLinear`` and the like) change the topology when
+they materialize at their first forward, so a lazy module wrapped before
+vs after materialization gives different run ids (the run reserved at
+wrap time keeps its id). An uninitialized lazy layer records no shape:
+uninitialized lazy nets that will see different input widths share a
+descriptor and a run id, so give them distinct ``data_id`` / ``salt``
+values (or dry-run them first). Once the wrapped module has
+materialized, ``NNModel`` takes its descriptor afresh, so checkpoints
+describe the trained module. A reload compares an uninitialized lazy
+module with a materialized descriptor after the saved weights
+materialize it (their names and shapes are checked first, and nothing
+loads on a refusal).
 ```
 
 ##### `nnx.models.RuntimeModule.of`
@@ -2889,7 +2908,7 @@ No public description is currently available.
 nnx.models.module_topology(module: 'nn.Module') -> 'str'
 ```
 
-Fingerprint of ``module``'s state-dict names, shapes and dtypes plus its ``repr`` (layer hyperparameters). Uninitialized lazy parameters (``nn.LazyLinear`` before its first forward) count by name only.
+Fingerprint of ``module``'s state-dict names, shapes and dtypes plus its ``repr`` (layer hyperparameters). Uninitialized lazy parameters (``nn.LazyLinear`` before its first forward) count by name only, and a lazy layer's ``repr`` changes when it materializes: the fingerprint of a lazy module differs before and after its first forward, and the one taken before does not see the input width the layers will infer.
 
 
 ### 2.11. Typed decisions (`nnx.decisions`)
@@ -17851,8 +17870,9 @@ A registered module is rebuilt through its factory and
 batches are split by its batch adapter (``batch_adapter=`` overrides
 it). A runtime-only checkpoint needs ``module=`` — the weights are
 loaded into it (its identity, state keys and training modes are
-kept) — and fails with ``MissingModelFactoryError`` before any data
-is read otherwise.
+kept; an uninitialized lazy module is checked and materialized as
+``NNModel.from_checkpoint`` does) — and fails with
+``MissingModelFactoryError`` before any data is read otherwise.
 ```
 
 ##### `nnx.vis_utils.generate_colors`
