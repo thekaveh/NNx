@@ -200,7 +200,9 @@ class RuntimeModule:
     materialized (its first forward, in training, ``predict``,
     ``evaluate`` or a direct call), ``NNModel`` takes its descriptor afresh,
     so ``params``, checkpoints and its later runs use the materialized
-    descriptor. A lazy module whose weights are loaded before any forward
+    descriptor. A lazy layer the forward never reaches keeps the module at
+    its wrap-time descriptor until it materializes, so keep every lazy
+    layer on the forward path. A lazy module whose weights are loaded before any forward
     is materialized at the wrap and described as a dry-run one (a forward
     on loaded weights is not one: torch then leaves ``in_channels`` /
     ``num_features`` of lazy conv and norm layers at 0, so load and wrap,

@@ -784,6 +784,23 @@ def test_a_lazy_module_materialized_outside_training_is_described_as_materialize
     assert model.train(params=params).id == NNRun(train=params, model=dry.params, net=None).id
 
 
+def test_a_lazy_layer_the_forward_never_reaches_keeps_the_wrap_time_descriptor():
+    class Net(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.body = nn.LazyLinear(2)
+            self.unused = nn.LazyLinear(3)  # never called by forward
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return self.body(x)
+
+    model = NNModel(module=Net(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    wrap_time = model.params.net
+    model.predict(torch.randn(3, 4))
+    # documented: the module has not fully materialized, so its descriptor is not taken afresh
+    assert model.params.net == wrap_time != RuntimeModule.of(model.net)
+
+
 def test_a_lazy_module_with_loaded_weights_is_wrapped_as_a_dry_run_one():
     source = _dry_run(_lazy())
     loaded = _lazy()
