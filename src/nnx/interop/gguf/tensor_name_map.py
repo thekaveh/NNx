@@ -83,16 +83,15 @@ def _refuse_adapters(net: torch.nn.Module) -> None:
             f"GGUF export needs plain nn.Linear projections, but {', '.join(factorized[:5])} "
             "are factorized or wrapped. Export a model with plain projections."
         )
-    # Nor does a weight that a forward pre-hook recomputes.
-    _refuse_reparameterized(net)
 
 
 def _listed(names: list[str], what: str) -> str:
     """``names`` (the first five, and how many in all) and the verb ``carry``."""
     if len(names) == 1:
         return f"{names[0]} carries {what}"
-    more = f" … ({len(names)} in all)" if len(names) > 5 else ""
-    return f"{', '.join(names[:5])}{more} carry {what}"
+    if len(names) > 5:
+        return f"{', '.join(names[:5])} … ({len(names)} in all) carry {what}"
+    return f"{', '.join(names[:-1])} and {names[-1]} carry {what}"
 
 
 def _refuse_reparameterized(net: torch.nn.Module) -> None:
@@ -163,6 +162,8 @@ def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:
             hook (see :func:`nnx.interop.gguf.write_gguf`).
     """
     _refuse_adapters(net)
+    # Nor does a weight that a forward pre-hook recomputes.
+    _refuse_reparameterized(net)
     out: dict[str, np.ndarray] = {}
 
     # Token embedding — always present, always named ``token_embd.weight``.

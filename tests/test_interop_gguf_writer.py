@@ -22,6 +22,7 @@ test file is harmless on a minimal install.
 from __future__ import annotations
 
 import importlib.util
+import re
 from typing import Any
 
 import pytest
@@ -702,6 +703,28 @@ def test_the_refusal_detects_the_hooks_by_type_not_by_parameter_names():
     torch.nn.utils.prune.random_unstructured(net.norm_out, "weight", amount=0.5)
     with pytest.raises(TypeError, match=r"norm_out\.weight"):
         map_tensors(net)
+
+
+@pytest.mark.parametrize(
+    ("n", "listed"),
+    [
+        (2, "a.weight and b.weight carry"),
+        (3, "a.weight, b.weight and c.weight carry"),
+        (7, "a.weight, b.weight, c.weight, d.weight, e.weight … (7 in all) carry"),
+    ],
+)
+def test_the_refusal_lists_the_affected_tensors_as_a_sentence(n, listed):
+    """Two to five names join with "and"; more show the first five and a count."""
+    import torch
+
+    from nnx.interop.gguf.tensor_name_map import _refuse_reparameterized
+
+    net = torch.nn.Module()
+    for name in "abcdefg"[:n]:
+        net.add_module(name, torch.nn.Linear(2, 2))
+        torch.nn.utils.prune.random_unstructured(getattr(net, name), "weight", amount=0.5)
+    with pytest.raises(TypeError, match=re.escape(f"{listed} an unbaked prune mask.")):
+        _refuse_reparameterized(net)
 
 
 def test_a_from_checkpoint_reload_into_an_unbaked_pruned_module_is_refused(tmp_path, monkeypatch):
