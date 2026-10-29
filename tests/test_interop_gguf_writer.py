@@ -651,13 +651,24 @@ def _refused_net(case: str) -> tuple[TransformerNN, str, tuple[str, ...]]:
         "weight_norm": ("weight_norm", "blocks.0.ffn.w1"),
         "spectral_norm": ("spectral_norm", "blocks.1.attn.w_o"),
         "embedding-weight_norm": ("weight_norm", "tok_embed"),  # not a projection
+        "tied-head-weight_norm": ("weight_norm", "lm_head"),  # a parametrization would untie it
     }[case]
     net = _legacy_normed(1, norm, path)
     net.load_state_dict(_legacy_normed(0, norm, path).state_dict())
+    if case == "tied-head-weight_norm":
+        return net, "tied lm_head must have its norm removed, not parametrized", _NORM_FIX
     return net, f"{path}.weight", _NORM_FIX
 
 
-_REFUSED_CASES = ["reload", "finetuned", "tied-head", "weight_norm", "spectral_norm", "embedding-weight_norm"]
+_REFUSED_CASES = [
+    "reload",
+    "finetuned",
+    "tied-head",
+    "weight_norm",
+    "spectral_norm",
+    "embedding-weight_norm",
+    "tied-head-weight_norm",
+]
 
 
 @pytest.mark.parametrize("exporter", ["map_tensors", "write_gguf", "export_ollama_modelfile"])
