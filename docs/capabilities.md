@@ -150,7 +150,11 @@ clipping.
   behavior because its second factor is zero-initialized.
 - **Quantization** (`quantize` extra). `nnx.quantize.quantize_int8(model)`
   applies torchao INT8 weight-only post-training quantization without
-  calibration data and returns the same model class. QAT 8da4w uses
+  calibration data and returns the same model class. It leaves the float32
+  matmul precision (TF32) and the inductor flags as they were; to opt in to
+  torchao's recommended inductor settings, call
+  `torchao.quantization.utils.recommended_inductor_config_setter()`
+  directly. QAT 8da4w uses
   `qat_train_step_factory` with `QATLifecycleCallback`.
 - **Pruning.** `nnx.prune.magnitude_prune` applies unstructured masks,
   baked into checkpoint-safe weights by default; `semi_structured_24` applies 2:4 sparsity through
