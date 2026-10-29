@@ -44,7 +44,7 @@ from torch.utils.hooks import RemovableHandle
 
 from .._reparameterization import legacy_reparameterizations
 from ._targets import wrap_selected_linears
-from .lora import LoRALinear
+from .lora import LoRALinear, _require_lora_options
 
 
 def _stored_weights(base: nn.Linear) -> list[torch.Tensor]:
@@ -303,34 +303,49 @@ def apply_dora_to(
     contract (existing DoRA/LoRA wrappers are not re-wrapped — the
     parent-is-LoRALinear check covers DoRALinear by inheritance).
 
+    Options are refused before matching, as by :func:`nnx.peft.apply_lora_to`:
+    an invalid ``r``, ``alpha`` or ``dropout`` raises the same ``ValueError``
+    whether a layer matches, none does or every match is already wrapped.
+    Every wrapper is built before any slot is replaced, and each draws its
+    ``lora_A`` initialization from the global torch RNG; a refused or
+    failed build leaves the slots, ``requires_grad`` flags, train/eval
+    modes and the global random streams as they were, so a seeded
+    :func:`~nnx.peft.apply_lora_to` fallback initializes as if DoRA had
+    never been tried.
+
     Args:
         module: root module to walk. Mutated in place.
         name_patterns: at least one fnmatch glob.
-        r: LoRA rank — passed through.
-        alpha: LoRA scaling numerator — passed through.
-        dropout: dropout on the LoRA update path — passed through.
+        r: LoRA rank, an integer >= 1 — passed through.
+        alpha: LoRA scaling numerator, a finite real > 0 — passed through.
+        dropout: dropout on the LoRA update path, a finite real in
+            ``[0, 1)`` — passed through.
 
     Returns:
         The count of layers wrapped (may be 0 if no patterns match
         or every match is already wrapped).
 
     Raises:
-        ValueError: if ``name_patterns`` is empty, if a selected Linear
-            is read directly by its parent (``nn.MultiheadAttention.out_proj``,
-            a torch Transformer layer's ``linear1`` / ``linear2``), or if it
-            is registered under more than one name — the whole matched set
-            is validated before any wrapper is built, so nothing is
-            modified. A Linear inside a shared container is one slot and is
-            wrapped once; tied tensors between distinct modules are outside
-            this check (see :func:`nnx.peft.apply_lora_to`).
+        ValueError: if ``r``, ``alpha`` or ``dropout`` is invalid (see
+            :func:`nnx.peft.apply_lora_to`), if ``name_patterns`` is
+            empty, if a selected Linear is read directly by its parent
+            (``nn.MultiheadAttention.out_proj``, a torch Transformer layer's
+            ``linear1`` / ``linear2``), or if it is registered under more
+            than one name — the whole matched set is validated before any
+            wrapper is built, so nothing is modified. A Linear inside a
+            shared container is one slot and is wrapped once; tied tensors
+            between distinct modules are outside this check (see
+            :func:`nnx.peft.apply_lora_to`).
         TypeError: if a selected Linear is a subclass with its own
             ``forward`` (a QAT fake-quantized layer), or carries an instance
             ``forward``, a hook, an unbaked prune mask, a legacy
             ``weight_norm`` / ``spectral_norm`` or a quantized weight, which
             DoRA's recomposed matmul would bypass (see :class:`DoRALinear`).
             Every wrapper is built before any slot is replaced, so a refused
-            call modifies nothing.
+            call modifies nothing, the global random streams included.
     """
+    # Options first, so a call that matches nothing refuses them too.
+    r = _require_lora_options(r, alpha, dropout)
     # Same two-phase select/validate-then-mutate as apply_lora_to (FIX-014);
     # the LoRALinear skip covers DoRALinear by inheritance.
     return wrap_selected_linears(

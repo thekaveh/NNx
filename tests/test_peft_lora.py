@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import torch
 from torch import nn
@@ -843,3 +845,117 @@ def test_reapplying_ia3_over_a_dora_stack_is_a_no_op():
     before = repr(model)
     apply_ia3_to(model, "*")
     assert repr(model) == before
+
+
+# -------------------------------------------------------------------------
+# #555: random streams on a failed apply, options refused before matching
+# -------------------------------------------------------------------------
+
+
+def _streams():
+    import random
+
+    import numpy as np
+
+    numpy_state = np.random.get_state()
+    return random.getstate(), (numpy_state[0], numpy_state[1].tolist(), *numpy_state[2:]), torch.get_rng_state()
+
+
+def _same_streams(a, b) -> bool:
+    return a[0] == b[0] and a[1] == b[1] and torch.equal(a[2], b[2])
+
+
+def test_a_lora_wrap_failing_after_the_first_wrapper_leaves_the_random_streams_alone(monkeypatch):
+    """#555: the first LoRALinear drew its lora_A init before the second
+    wrap failed; the rollback restores the streams as well as the slots,
+    flags and modes."""
+    import random
+
+    import numpy as np
+
+    from nnx.peft import lora as lora_module
+
+    real = lora_module.wrap_selected_linears
+
+    def failing(module, name_patterns, *, wrap, **kwargs):
+        built = []
+
+        def wrap_then_fail(base):
+            if built:
+                random.random()  # Python and NumPy are restored too, not only torch
+                np.random.rand()
+                raise RuntimeError("interrupted after a LoRA initialization")
+            built.append(wrap(base))
+            return built[-1]
+
+        return real(module, name_patterns, wrap=wrap_then_fail, **kwargs)
+
+    monkeypatch.setattr(lora_module, "wrap_selected_linears", failing)
+    model = nn.Sequential(nn.Linear(3, 4), nn.ReLU(), nn.Linear(4, 2))
+    model[2].eval()
+    torch.manual_seed(7)
+    before = _streams()
+    with pytest.raises(RuntimeError, match="interrupted"):
+        apply_lora_to(model, "*", r=2)
+    assert _same_streams(_streams(), before)
+    assert [type(m) for m in model] == [nn.Linear, nn.ReLU, nn.Linear]
+    assert all(p.requires_grad for p in model.parameters())
+    assert [m.training for m in model] == [True, True, False]
+
+
+_BAD_OPTIONS = [
+    ("r", {"r": -1}),
+    ("r", {"r": 0}),
+    ("r", {"r": 2.5}),
+    ("r", {"r": "8"}),
+    ("r", {"r": True}),
+    ("alpha", {"alpha": float("nan")}),
+    ("dropout", {"dropout": 5.0}),
+    ("dropout", {"dropout": "0.1"}),
+    ("dropout", {"dropout": None}),
+    ("dropout", {"dropout": True}),
+]
+
+
+def _option_error(call, *args, **kwargs) -> str:
+    with pytest.raises(ValueError) as info:
+        call(*args, **kwargs)
+    return str(info.value)
+
+
+@pytest.mark.parametrize(("field", "bad"), _BAD_OPTIONS, ids=[f"{f}={v[f]!r}" for f, v in _BAD_OPTIONS])
+def test_lora_and_dora_refuse_bad_options_before_matching(field, bad):
+    """#555: the same field-naming ValueError with no match, on a fully
+    wrapped net and with a match, from both helpers and both constructors."""
+    from nnx import DoRALinear, apply_dora_to
+
+    def net():
+        return nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2))
+
+    messages = []
+    for apply in (apply_lora_to, apply_dora_to):
+        unmatched = net()
+        messages.append(_option_error(apply, unmatched, "encoder.*", **bad))
+        wrapped = net()
+        assert apply(wrapped, "*", r=2) == 2
+        messages.append(_option_error(apply, wrapped, "*", **bad))
+        matched = net()
+        messages.append(_option_error(apply, matched, "*", **bad))
+        # Refused before any wrapper is built: nothing replaced or frozen.
+        assert [type(m) for m in matched] == [nn.Linear, nn.ReLU, nn.Linear]
+        assert all(p.requires_grad for p in matched.parameters())
+    for cls in (LoRALinear, DoRALinear):
+        base = nn.Linear(4, 4)
+        messages.append(_option_error(cls, base, **bad))
+        assert all(p.requires_grad for p in base.parameters())
+    assert len(set(messages)) == 1, messages
+    assert re.search(rf"\b{field}\b", messages[0]), messages[0]  # names the field
+
+
+def test_a_valid_lora_call_that_matches_nothing_returns_zero():
+    from nnx import apply_dora_to
+
+    net = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2))
+    assert apply_lora_to(net, "encoder.*", r=2, alpha=4.0, dropout=0.1) == 0
+    assert apply_dora_to(net, "encoder.*", r=2, alpha=4.0, dropout=0.1) == 0
+    assert [type(m) for m in net] == [nn.Linear, nn.ReLU, nn.Linear]
