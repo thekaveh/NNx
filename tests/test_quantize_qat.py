@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
     Activations,
+    Callback,
     Devices,
     Losses,
     Nets,
@@ -467,3 +468,177 @@ def test_a_split_qat_run_with_dropout_equals_the_uninterrupted_run(tmp_path, mon
     assert run.resume_status is not None and run.resume_status.mode == "stateful"
     for name, weight in whole.net.state_dict().items():
         assert torch.equal(weight, resumed.net.state_dict()[name]), name
+
+
+# -------------------------------------------------------------------------
+# Layers QAT cannot fake-quantize, and fits that fail before training (#526)
+# -------------------------------------------------------------------------
+
+
+def _fit(model: NNModel, loop: str, callbacks: list, loader, *, n_epochs: int = 1) -> None:
+    """A QAT fit through ``NNModel.train`` or ``Trainer.train``."""
+    from nnx import NNEvaluationDataPoint, NNTrainerParams, Trainer
+
+    optim = NNOptimParams.builder().sgd(max_lr=0.1).build()
+    if loop == "nnmodel":
+        params = NNTrainParams(n_epochs=n_epochs, train_loader=loader, optim=optim)
+        model.train(params=params, callbacks=callbacks, train_step_fn=qat_train_step_factory())
+        return
+
+    def trainer_step(ctx):
+        ctx.model.net.train()
+        optimizer = ctx.optimizers["main"]
+        optimizer.zero_grad()
+        x, target = ctx.batch
+        loss = ctx.model.loss_fn(ctx.model.net(x), target)
+        loss.backward()
+        optimizer.step()
+        return NNEvaluationDataPoint(loss=float(loss.detach()), error=float(loss.detach()))
+
+    params = NNTrainerParams(n_epochs=n_epochs, train_loader=loader, optims={"main": optim})
+    Trainer(model).train(params=params, trainer_step_fn=trainer_step, callbacks=callbacks)
+
+
+def _types(net: torch.nn.Module) -> dict[str, str]:
+    return {name: type(module).__name__ for name, module in net.named_modules() if name}
+
+
+class _AttentionNet(torch.nn.Module):
+    """The ticket's net: MultiheadAttention reads ``out_proj.weight`` and
+    never calls ``out_proj``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.attn = torch.nn.MultiheadAttention(64, 4, batch_first=True)
+        self.head = torch.nn.Linear(64, 2)
+
+    def forward(self, x):
+        h, _ = self.attn(x, x, x, need_weights=False)
+        return self.head(h.mean(1))
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_qat_refuses_a_linear_its_parent_reads_directly(loop, tmp_path, monkeypatch):
+    """#526: QAT swapped MultiheadAttention's out_proj, which the parent
+    never calls: training skipped its fake quantization and the converted
+    forward failed (Float and Char). It is refused before prepare."""
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+    model = NNModel(module=_AttentionNet(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    x, y = torch.randn(4, 5, 64), torch.tensor([0, 1, 0, 1])
+    before = _types(model.net)
+    state = {key: value.clone() for key, value in model.net.state_dict().items()}
+    callback = QATLifecycleCallback(groupsize=32)
+
+    with pytest.raises(
+        ValueError, match=r"QAT cannot prepare attn\.out_proj \(read by its parent MultiheadAttention\)"
+    ):
+        _fit(model, loop, [callback], [(x, y)])
+
+    assert _types(model.net) == before
+    assert all(torch.equal(value, state[key]) for key, value in model.net.state_dict().items())
+    assert not callback.is_prepared and not callback.is_converted
+    model.net.eval()
+    with torch.no_grad():
+        assert model.net(x).shape == (4, 2)
+
+
+def test_qat_refuses_a_transformer_layers_linears_naming_each():
+    """The torch Transformer layers' eval fast path reads linear1 / linear2
+    directly as well (``WEIGHT_READING_PARENTS``)."""
+    net = torch.nn.Sequential(torch.nn.TransformerEncoderLayer(64, 4, dim_feedforward=64, batch_first=True))
+
+    class _Ctx:
+        model = type("M", (), {"net": net})()
+
+    before = _types(net)
+    callback = QATLifecycleCallback(groupsize=32)
+    with pytest.raises(ValueError) as refusal:
+        callback.on_train_begin(_Ctx())
+    message = str(refusal.value)
+    assert "0.linear1 (read by its parent TransformerEncoderLayer)" in message
+    assert "0.linear2 (read by its parent TransformerEncoderLayer)" in message
+    assert "0.self_attn.out_proj (read by its parent MultiheadAttention)" in message
+    assert _types(net) == before and not callback.is_prepared
+
+
+@pytest.mark.parametrize("adapter", ["lora", "ia3"])
+def test_qat_still_trains_and_converts_lora_and_ia3_adapted_nets(adapter, tmp_path, monkeypatch):
+    """LoRA and IA3 call their base layer, so QAT fake-quantizes it as before."""
+    from nnx.peft import apply_ia3_to, apply_lora_to
+
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+    model = _make_model()
+    (apply_lora_to if adapter == "lora" else apply_ia3_to)(model.net, "layers.0")
+    callback = QATLifecycleCallback()
+
+    _fit(model, "nnmodel", [callback], _make_loader())
+
+    assert callback.is_prepared and callback.is_converted
+    assert _types(model.net)["layers.0.base"] == "Int8DynActInt4WeightLinear"
+    with torch.no_grad():
+        assert torch.isfinite(model.net(torch.randn(4, 32))).all()
+
+
+class _RaisesOnTrainBegin(Callback):
+    def on_train_begin(self, ctx) -> None:
+        raise RuntimeError("a later callback failed")
+
+
+class _RaisesAfterAnEpoch(Callback):
+    def on_epoch_end(self, ctx) -> None:
+        raise RuntimeError("failed after an update")
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_a_fit_failing_before_its_first_update_hands_back_the_unprepared_net(loop, tmp_path, monkeypatch):
+    """#526: QAT prepared the net, a later callback's on_train_begin raised,
+    and on_train_end still converted it: an int8 net from a fit that ran no
+    step. The fit now gets back the very layers it had, unconverted, and
+    the callback's flags read as if it never ran."""
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+    model = _make_model()
+    before, layers = _types(model.net), list(model.net.modules())
+    state = {key: value.clone() for key, value in model.net.state_dict().items()}
+    x = torch.randn(4, 32)
+    with torch.no_grad():
+        expected = model.net(x)
+    callback = QATLifecycleCallback()
+
+    with pytest.raises(RuntimeError, match="a later callback failed"):
+        _fit(model, loop, [callback, _RaisesOnTrainBegin()], _make_loader())
+
+    assert _types(model.net) == before
+    assert all(a is b for a, b in zip(model.net.modules(), layers, strict=True))
+    assert all(torch.equal(value, state[key]) for key, value in model.net.state_dict().items())
+    assert not callback.is_prepared and not callback.is_converted
+    assert callback.checkpoint_transforms() == ()
+    with torch.no_grad():
+        assert torch.equal(model.net(x), expected)
+
+    # The same callback prepares and converts on the retry.
+    _fit(model, loop, [callback], _make_loader())
+    assert callback.is_prepared and callback.is_converted
+    assert _types(model.net)["layers.0"] == "Int8DynActInt4WeightLinear"
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_a_fit_failing_after_an_update_still_converts(loop, tmp_path, monkeypatch):
+    """Pins the other side of #526: once an update has trained the
+    fake-quantized net, a failure keeps that training, converted as before."""
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+    model = _make_model()
+    callback = QATLifecycleCallback()
+
+    with pytest.raises(RuntimeError, match="failed after an update"):
+        _fit(model, loop, [callback, _RaisesAfterAnEpoch()], _make_loader())
+
+    assert callback.is_prepared and callback.is_converted
+    assert _types(model.net)["layers.0"] == "Int8DynActInt4WeightLinear"

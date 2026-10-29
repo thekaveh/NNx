@@ -715,3 +715,115 @@ def test_a_tool_block_does_not_reach_another_thread():
         hooked.wait(5)
         worker.join(5)
     assert len(errors) == 1 and "forward hook" in str(errors[0])
+
+
+# -------------------------------------------------------------------------
+# DoRA + QAT (FIX-059, #526)
+# -------------------------------------------------------------------------
+
+
+class _CountingLoader(list):
+    """A list loader that counts the epochs that started reading it."""
+
+    reads = 0
+
+    def __iter__(self):
+        self.reads += 1
+        return super().__iter__()
+
+
+def _qat_fit(model, loop: str, callback, loader) -> None:
+    """One QAT epoch through ``NNModel.train`` or ``Trainer.train``."""
+    from nnx import NNEvaluationDataPoint, NNOptimParams, NNTrainerParams, NNTrainParams, Trainer
+    from nnx.quantize import qat_train_step_factory
+
+    optim = NNOptimParams.builder().sgd(max_lr=0.1).build()
+    if loop == "nnmodel":
+        params = NNTrainParams(n_epochs=1, train_loader=loader, optim=optim)
+        model.train(params=params, callbacks=[callback], train_step_fn=qat_train_step_factory())
+        return
+
+    def trainer_step(ctx):
+        ctx.model.net.train()
+        optimizer = ctx.optimizers["main"]
+        optimizer.zero_grad()
+        x, target = ctx.batch
+        loss = ctx.model.loss_fn(ctx.model.net(x), target)
+        loss.backward()
+        optimizer.step()
+        return NNEvaluationDataPoint(loss=float(loss.detach()), error=float(loss.detach()))
+
+    params = NNTrainerParams(n_epochs=1, train_loader=loader, optims={"main": optim})
+    Trainer(model).train(params=params, trainer_step_fn=trainer_step, callbacks=[callback])
+
+
+def _qat_dora_model(input_dim: int = 64):
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNParams
+
+    torch.manual_seed(0)
+    model = NNModel(
+        net_params=NNParams(
+            input_dim=input_dim, output_dim=2, hidden_dims=[64], dropout_prob=0.0, activation=Activations.RELU
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    apply_dora_to(model.net, "layers.0")
+    return model
+
+
+def _types(net: nn.Module) -> dict[str, str]:
+    return {name: type(module).__name__ for name, module in net.named_modules() if name}
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_qat_refuses_a_dora_base_before_prepare_and_changes_nothing(loop, tmp_path, monkeypatch):
+    """#526: QAT used to prepare (and, as the DoRA forward's refusal
+    propagated, convert) the whole net before DoRA refused at the first
+    batch, leaving an int8 net no forward could run."""
+    pytest.importorskip("torchao")
+    from nnx.quantize import QATLifecycleCallback
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    model = _qat_dora_model()
+    x, y = torch.randn(4, 64), torch.tensor([0, 1, 0, 1])
+    before, weight = _types(model.net), model.net.layers[1].weight
+    original = weight.detach().clone()
+    expected = model.predict(x).logits
+    loader = _CountingLoader([(x, y)])
+    callback = QATLifecycleCallback(groupsize=32)
+
+    with pytest.raises(TypeError, match=r"base of the DoRA layer layers\.0: .*Use LoRA") as refusal:
+        _qat_fit(model, loop, callback, loader)
+
+    assert "Nothing was modified" in str(refusal.value)
+    assert loader.reads == 0  # refused before the first batch
+    assert _types(model.net) == before
+    assert model.net.layers[1].weight is weight and weight.dtype == torch.float32
+    assert torch.equal(weight, original)
+    assert not callback.is_prepared and not callback.is_converted
+    assert callback.checkpoint_transforms() == ()
+    assert (model.predict(x).logits == expected).all()
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_qat_trains_a_net_whose_dora_base_it_does_not_swap(loop, tmp_path, monkeypatch):
+    """#526: only a DoRA base QAT would swap is refused; one whose
+    in_features the groupsize does not divide stays a plain Linear."""
+    pytest.importorskip("torchao")
+    from nnx.quantize import QATLifecycleCallback
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    model = _qat_dora_model(input_dim=48)  # 32 does not divide 48
+    x, y = torch.randn(4, 48), torch.tensor([0, 1, 0, 1])
+    callback = QATLifecycleCallback(groupsize=32)
+
+    _qat_fit(model, loop, callback, [(x, y)])
+
+    assert callback.is_prepared and callback.is_converted
+    types = _types(model.net)
+    assert types["layers.0"] == "DoRALinear" and types["layers.0.base"] == "Linear"
+    assert types["layers.1"] == "Int8DynActInt4WeightLinear"
+    with torch.no_grad():
+        assert torch.isfinite(model.net(x)).all()
