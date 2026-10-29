@@ -201,6 +201,14 @@ those three methods raise a clear ImportError pointing at the extra;
 no other NNModel functionality is affected.
 ```
 
+##### `nnx.nn.nn_model.NNModel.params`
+
+```python
+property nnx.nn.nn_model.NNModel.params
+```
+
+The model's `NNModelParams`. A wrapped lazy module is described as materialized from the first read after its first forward, wherever that ran: ``train``, ``predict``, ``evaluate`` or a direct call of ``net`` (#562).
+
 ##### `nnx.nn.nn_model.NNModel.task_adapter`
 
 ```python
@@ -2728,10 +2736,13 @@ wrap time keeps its id). An uninitialized lazy layer records no shape:
 uninitialized lazy nets that will see different input widths share a
 descriptor and a run id, so give them distinct ``data_id`` / ``salt``
 values (or dry-run them first). Once the wrapped module has
-materialized, ``NNModel`` takes its descriptor afresh, so checkpoints
-describe the trained module and its later runs use the materialized
-descriptor's id. A reload compares an uninitialized lazy module with a
-materialized descriptor after the saved weights materialize it (their
+materialized (its first forward, in training, ``predict``,
+``evaluate`` or a direct call), ``NNModel`` takes its descriptor afresh,
+so ``params``, checkpoints and its later runs use the materialized
+descriptor. A lazy module whose weights are loaded before any forward
+is materialized at the wrap and described as a dry-run one. A reload
+compares an uninitialized lazy module with a materialized descriptor
+after the saved weights materialize it (their
 names and shapes are checked first, and nothing loads on a refusal).
 A module holding a lazy layer torch does not ship keeps its wrap-time
 descriptor: only a forward reveals what such a layer infers.

@@ -3365,14 +3365,22 @@ def _match_lazy_module(
         check_state_schema(module, state, what=f"checkpoint of {net}")
     topology = _materialized_topology(module, state or {})
     if topology is None:
-        remedy = (
-            "Lazy layers torch does not ship infer their attributes only at a forward, so materialize it with a "
-            "dry-run forward (module(example_input)) before passing it as module="
-            if reloading
-            else "Materialize it with a dry-run forward (module(example_input)) before wrapping it, or reload a "
-            "checkpoint into it with NNModel.from_checkpoint(checkpoint, module=...), which materializes it from "
-            "the saved weights"
-        )
+        dry_run = "materialize it with a dry-run forward (module(example_input)) before passing it as module="
+        if not _lazy_layers_emulable(module):
+            remedy = f"Lazy layers torch does not ship infer their attributes only at a forward, so {dry_run}"
+        elif reloading:
+            # from_checkpoint gives no weights to check once the checkpoint
+            # recorded transforms: they fit only the transformed topology.
+            remedy = (
+                "The saved weights do not give the shapes of its lazy layers (a checkpoint with recorded "
+                f"transforms holds the transformed module's weights), so {dry_run}"
+            )
+        else:
+            remedy = (
+                "Materialize it with a dry-run forward (module(example_input)) before wrapping it, or reload a "
+                "checkpoint into it with NNModel.from_checkpoint(checkpoint, module=...), which materializes it "
+                "from the saved weights"
+            )
         raise ValueError(
             f"module {descriptor.module} has lazy layers that are not materialized yet, so it cannot be compared "
             f"with the descriptor {net.module} (topology {net.topology}): {_LAZY_RULE}. {remedy}"
@@ -3475,17 +3483,16 @@ class NNModel(_HubMixinBase):
                 if _has_pending_lazy(module) and _lazy_layers_emulable(module)
                 else None
             )
-            if (
-                self._lazy_wrap_keys is not None
-                and not _checked_lazy_reload(module, cast(RuntimeModule, net))
-                and RuntimeModule.of(module) != net
-            ):
-                # Matched as the module its loaded lazy layers become
-                # (_match_lazy_module): finish that materialization, as
-                # their first forward would, now that every check passed.
+            if self._lazy_wrap_keys is not None and not _checked_lazy_reload(module, cast(RuntimeModule, net)):
+                # Lazy layers whose weights are loaded (load_state_dict, or
+                # matched as the module they become by _match_lazy_module):
+                # finish that materialization, as their first forward would,
+                # now that every check passed, so the module is described as
+                # a dry-run one. Uninitialized layers stay as they are.
                 _complete_lazy_materialization(module)
             # Module.to moves in place and returns the same object.
             self.net = module.to(self.device)
+            self._refresh_lazy_descriptor()
         elif isinstance(net, ModelSpec):
             self.net = build_module(net).to(self.device)
         else:
@@ -3505,21 +3512,37 @@ class NNModel(_HubMixinBase):
             else (None if isinstance(net, Nets) else default_batch_adapter(self.net))
         )
 
+    @property
+    def params(self) -> NNModelParams:
+        """The model's :class:`NNModelParams`. A wrapped lazy module is
+        described as materialized from the first read after its first
+        forward, wherever that ran: ``train``, ``predict``, ``evaluate`` or a
+        direct call of ``net`` (#562)."""
+        if getattr(self, "_lazy_wrap_keys", None) is not None:
+            self._refresh_lazy_descriptor()
+        return self._params
+
+    @params.setter
+    def params(self, value: NNModelParams) -> None:
+        self._params = value
+
     def _refresh_lazy_descriptor(self) -> None:
         """Take a wrapped lazy module's :class:`RuntimeModule` descriptor
-        afresh once it has materialized (its first forward), so checkpoints
-        and ``params`` describe the module as it now is (#562). A run already
-        reserved keeps its id; nothing changes for any other module, or when
-        anything but materialization changed the module's state keys."""
+        afresh once it has materialized (its first forward), so ``params``,
+        checkpoints and later runs describe the module as it now is (#562). A
+        run already reserved keeps its id; nothing changes for any other
+        module, or when anything but materialization changed the module's
+        state keys."""
         keys = getattr(self, "_lazy_wrap_keys", None)
-        if keys is None or _has_pending_lazy(self.net):
+        module = getattr(self, "net", None)
+        if keys is None or module is None or _has_pending_lazy(module):
             return
         self._lazy_wrap_keys = None
-        net = self.params.net
-        if isinstance(net, RuntimeModule) and _tensor_keys(self.net.state_dict()) == keys:
-            descriptor = RuntimeModule.of(self.net)
+        net = self._params.net
+        if isinstance(net, RuntimeModule) and _tensor_keys(module.state_dict()) == keys:
+            descriptor = RuntimeModule.of(module)
             if _same_class_once_materialized(descriptor.module, net.module):
-                self.params = replace(self.params, net=descriptor)
+                self._params = replace(self._params, net=descriptor)
 
     @property
     def task_adapter(self) -> Optional[TaskAdapter]:
@@ -5325,7 +5348,6 @@ class NNModel(_HubMixinBase):
         final_transforms, keeps_pre_transform = _final_transforms(self, normalized_callbacks, run.transforms)
         self._topology_transforms = final_transforms
         assert pre_transform_rng_state is not None  # captured whenever an epoch committed
-        self._refresh_lazy_descriptor()  # #562: on every rank, writer or not
         if not writes:
             return
         NNCheckpoint(
@@ -5955,7 +5977,6 @@ class NNModel(_HubMixinBase):
         is written, a topology no checkpoint of the run could rebuild."""
         if trained_recipe is not None:
             _check_trained_recipe(self, trained_recipe)
-        self._refresh_lazy_descriptor()  # #562: the checkpoint describes the materialized module
         checkpoint = NNCheckpoint(
             idp=idp,
             model_params=self.params,
