@@ -29,9 +29,9 @@ sigmoid in float64, so ``nll`` matches ``BCEWithLogitsLoss`` up to its
 1e-12 floor) or a value. Ignored / masked targets are excluded. F1 on
 multilabel inputs is the F1 of the positive decisions pooled over every
 output (``config={"average": "binary"}`` — sklearn's multilabel "micro"
-F1); per-label averaging is not available there. Custom metrics register with :func:`register_metric`; a spec
-naming an unknown ``(id, version)`` is rejected before training starts,
-without any metric code running.
+F1); per-label averaging is not available there. Custom metrics register
+with :func:`register_metric`; a spec naming an unknown ``(id, version)``
+is rejected before training starts, without any metric code running.
 
 **Monitors.** A :class:`MonitorSpec` names what drives selection: the split
 (``"val"`` or ``"train"``), the metric (``"loss"``, ``"error"`` or a declared
