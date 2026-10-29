@@ -73,6 +73,8 @@ def load_pretrained(
             is copied. An uninitialized lazy tensor (``nn.LazyLinear``
             before its first forward) on either side matches any shape;
             loading materializes a lazy target from the source's shape.
+            An uninitialized source tensor into a materialized target
+            key also raises ``RuntimeError`` before anything is copied.
         prefix: optional prefix to strip from source keys before
             matching. E.g., ``prefix="model."`` turns ``model.layer.0``
             into ``layer.0``. Applied BEFORE ``key_map``.
@@ -149,6 +151,22 @@ def load_pretrained(
         raise RuntimeError(
             "load_pretrained: these keys have different shapes in the source and the module (nothing was "
             f"loaded): {mismatched}. Drop them from the source, or rename them with key_map, to load the rest."
+        )
+    # The reverse cannot load at all: torch has no shape to copy from an
+    # uninitialized source tensor into a materialized one, and would raise
+    # only after copying the keys before it.
+    unmaterialized = [
+        key
+        for key in loaded_keys
+        if isinstance(remapped[key], torch.Tensor)
+        and _shape(remapped[key]) is None
+        and _shape(target_state[key]) is not None
+    ]
+    if unmaterialized:
+        raise RuntimeError(
+            "load_pretrained: these source keys are uninitialized lazy tensors but the module's are "
+            f"materialized (nothing was loaded): {unmaterialized}. Run a forward through the source first, "
+            "or drop them from the source, to load the rest."
         )
 
     # 4. Apply only the overlapping keys. PyTorch's load_state_dict
