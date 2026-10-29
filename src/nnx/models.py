@@ -467,22 +467,35 @@ def _complete_lazy_materialization(module: nn.Module) -> bool:
     ``in_channels`` / ``num_features`` of lazy conv and norm layers at 0),
     drop torch's lazy hooks and switch to the final class. Uninitialized
     layers, and lazy layers torch does not ship, are left to their first
-    forward. Returns whether no lazy layer is left pending."""
+    forward, and so is a layer without tensors (a norm layer without affine
+    weights or running statistics) while any other is: it has nothing to
+    load, and switching its class first would change the module's
+    descriptor before the rest materializes. Returns whether no lazy layer
+    is left pending."""
+    tensorless: list[nn.Module] = []
     for _, layer in _pending_lazy_modules(module):
         tensors = {name: value for name, value in layer.state_dict().items() if isinstance(value, torch.Tensor)}
-        if any(nn.parameter.is_lazy(value) for value in tensors.values()):
-            continue
-        plan = _materialization_plan(layer, {name: _shape(value) for name, value in tensors.items()})
-        for sub, inferred, final in plan or ():
-            for key, value in inferred.items():
-                setattr(sub, key, value)
-            # What torch's _infer_parameters does once a layer is initialized.
-            for hook in ("_initialize_hook", "_load_hook"):
-                getattr(sub, hook).remove()
-                delattr(sub, hook)
-            if final is not None:
-                sub.__class__ = final
+        if not tensors:
+            tensorless.append(layer)
+        elif not any(nn.parameter.is_lazy(value) for value in tensors.values()):
+            _finish_lazy_layer(layer, tensors)
+    if tensorless and len(_pending_lazy_modules(module)) == len(tensorless):
+        for layer in tensorless:
+            _finish_lazy_layer(layer, {})
     return not _has_pending_lazy(module)
+
+
+def _finish_lazy_layer(layer: nn.Module, tensors: Mapping[str, torch.Tensor]) -> None:
+    plan = _materialization_plan(layer, {name: _shape(value) for name, value in tensors.items()})
+    for sub, inferred, final in plan or ():
+        for key, value in inferred.items():
+            setattr(sub, key, value)
+        # What torch's _infer_parameters does once a layer is initialized.
+        for hook in ("_initialize_hook", "_load_hook"):
+            getattr(sub, hook).remove()
+            delattr(sub, hook)
+        if final is not None:
+            sub.__class__ = final
 
 
 def _complete_loaded_lazy_layer(layer: nn.Module, _incompatible_keys: Any) -> None:

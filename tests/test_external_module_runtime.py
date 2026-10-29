@@ -663,8 +663,18 @@ _LAZY_CONV_AND_NORM_NETS = pytest.mark.parametrize(
             ),
             (4, 3, 3),
         ),
+        (
+            # no tensors at all: nothing to load, and num_features stays 0 as in a dry run
+            lambda: nn.Sequential(
+                nn.LazyConv1d(4, 3),
+                nn.LazyBatchNorm1d(affine=False, track_running_stats=False),
+                nn.Flatten(),
+                nn.LazyLinear(2),
+            ),
+            (2, 6),
+        ),
     ],
-    ids=["conv1d-batchnorm", "convtranspose2d-instancenorm"],
+    ids=["conv1d-batchnorm", "convtranspose2d-instancenorm", "conv1d-batchnorm-bare"],
 )
 
 
@@ -694,10 +704,12 @@ def test_lazy_weights_loaded_after_the_wrap_materialize_as_a_dry_run_and_reload_
     if load == "layers":  # one layer before the wrap, the others after it, layer by layer
         module[0].load_state_dict(source[0].state_dict())
     model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    # described as wrapped: the loaded layer materialized at the wrap, the others still lazy
+    assert model.params.net == RuntimeModule.of(model.net)
     if load == "module":
         model.net.load_state_dict(source.state_dict())
     else:
-        assert repr(model.net[0]) == repr(source[0]) and _is_uninitialized(model.net[1])  # wrapped part-loaded
+        assert repr(model.net[0]) == repr(source[0]) and isinstance(model.net[1], LazyModuleMixin)  # part-loaded
         for layer, weights in list(zip(model.net, source, strict=True))[1:]:
             layer.load_state_dict(weights.state_dict())
     # materialized at the load as by the dry run: torch's own forward on loaded weights would leave the
@@ -833,6 +845,25 @@ def test_a_lazy_layer_the_forward_never_reaches_keeps_the_wrap_time_descriptor()
     model.predict(torch.randn(3, 4))
     # documented: the module has not fully materialized, so its descriptor is not taken afresh
     assert model.params.net == wrap_time != RuntimeModule.of(model.net)
+
+
+def test_a_lazy_norm_layer_without_tensors_materializes_at_the_first_forward():
+    def build() -> nn.Module:
+        return nn.Sequential(
+            nn.LazyConv1d(4, 3),
+            nn.LazyBatchNorm1d(affine=False, track_running_stats=False),
+            nn.Flatten(),
+            nn.LazyLinear(2),
+        )
+
+    module = build()
+    model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    # the norm layer has nothing to load, so the wrap leaves it lazy while the others are
+    assert type(module[1]) is nn.LazyBatchNorm1d and model.params.net == RuntimeModule.of(module)
+    assert NNModel(module=module, params=model.params).net is module
+    model.predict(torch.randn(3, 2, 6))
+    assert type(module[1]) is nn.BatchNorm1d
+    assert model.params.net == RuntimeModule.of(module) == RuntimeModule.of(_dry_run(build(), 2, 6))
 
 
 def test_a_lazy_module_with_loaded_weights_is_wrapped_as_a_dry_run_one():
