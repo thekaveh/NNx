@@ -45,7 +45,7 @@ from torch import nn
 from .._validation import require_count, shown
 from ..nn.callbacks import Callback
 from ..nn.nn_model import TrainStepFn, default_train_step
-from ..peft._targets import _listed, _registrations
+from ..peft._targets import _MAX_LISTED_PATHS, _listed, _registrations
 from ..peft.dora import DoRALinear
 
 if TYPE_CHECKING:  # pragma: no cover — type-checking-only imports.
@@ -109,6 +109,23 @@ def _build_quantizer(qat_config: str, *, groupsize: int = 32):
     raise ValueError(f"unknown qat_config {qat_config!r}; supported: {_SUPPORTED_CONFIGS}")
 
 
+def _takes_eval_fast_path(layer: nn.TransformerEncoderLayer) -> bool:
+    """Whether torch's eval fast path can ever run ``layer``: the
+    preconditions of ``TransformerEncoderLayer.forward`` (torch 2.4 to 2.13)
+    that its configuration fixes, not its input. A layer that fails one, such
+    as a ``tanh`` activation or an odd head count, always calls ``linear1`` /
+    ``linear2``."""
+    attn = layer.self_attn
+    return bool(
+        attn.batch_first
+        and attn.in_proj_bias is not None
+        and attn._qkv_same_embed_dim
+        and getattr(layer, "activation_relu_or_gelu", 0)
+        and layer.norm1.eps == layer.norm2.eps
+        and attn.num_heads % 2 == 0
+    )
+
+
 def _refuse_bypassed_linears(net: nn.Module, groupsize: int) -> None:
     """Refuse, before ``prepare`` changes anything, a Linear that QAT would
     swap but whose parent reads its weight instead of calling it (FIX-059):
@@ -116,22 +133,23 @@ def _refuse_bypassed_linears(net: nn.Module, groupsize: int) -> None:
     - the base of a :class:`~nnx.peft.DoRALinear`, and
       ``nn.MultiheadAttention.out_proj``: never called, so training would
       skip its fake quantization and the converted forward would fail;
-    - ``linear1`` / ``linear2`` of a ``batch_first`` torch
-      ``TransformerEncoderLayer``: called in training, but its eval fast path
-      reads their weights directly, so the converted net's eval forward
-      would fail.
+    - ``linear1`` / ``linear2`` of a torch ``TransformerEncoderLayer`` that
+      can take the eval fast path (``batch_first``, a relu or gelu activation,
+      an even head count; see :func:`_takes_eval_fast_path`): called in
+      training, but the fast path reads their weights directly, so the
+      converted net's eval forward would fail.
 
-    A ``TransformerDecoderLayer`` (no fast path) and a non-``batch_first``
-    encoder layer (never on the fast path) call ``linear1`` / ``linear2``, so
-    QAT fake-quantizes and converts them as any other Linear.
+    A ``TransformerDecoderLayer`` (no fast path) and an encoder layer that
+    can never take it call ``linear1`` / ``linear2``, so QAT fake-quantizes
+    and converts them as any other Linear.
 
     A Linear QAT swaps is one the 8da4w quantizer selects: an ``nn.Linear``
     whose ``in_features`` ``groupsize`` divides. A Linear it leaves alone is
     not refused. Every registration path is checked, so an aliased layer is
-    named wherever it is read."""
+    named wherever it is read, the first ``_MAX_LISTED_PATHS`` of them listed."""
     dora_layers: list[str] = []
-    never_called: list[str] = []
-    fast_path: list[str] = []
+    read: list[str] = []
+    never_called = fast_path = False
     for path, parent, attr, child in _registrations(net):
         if not isinstance(child, nn.Linear) or child.in_features % groupsize:
             continue
@@ -140,9 +158,11 @@ def _refuse_bypassed_linears(net: nn.Module, groupsize: int) -> None:
             if owner not in dora_layers:
                 dora_layers.append(owner)
         elif isinstance(parent, nn.MultiheadAttention):
-            never_called.append(f"{path} (read by its parent MultiheadAttention)")
-        elif isinstance(parent, nn.TransformerEncoderLayer) and parent.self_attn.batch_first:
-            fast_path.append(f"{path} (read by its parent TransformerEncoderLayer)")
+            read.append(f"{path} (read by its parent MultiheadAttention)")
+            never_called = True
+        elif isinstance(parent, nn.TransformerEncoderLayer) and _takes_eval_fast_path(parent):
+            read.append(f"{path} (read by its parent TransformerEncoderLayer)")
+            fast_path = True
     if dora_layers:
         layers = f"layer {dora_layers[0]}" if len(dora_layers) == 1 else f"layers {_listed(dora_layers)}"
         raise TypeError(
@@ -159,13 +179,14 @@ def _refuse_bypassed_linears(net: nn.Module, groupsize: int) -> None:
         )
     if fast_path:
         reasons.append(
-            "a batch_first TransformerEncoderLayer calls linear1 / linear2 in training, but its eval fast path "
-            "reads their weights directly, so the converted net's eval forward would fail"
+            "a TransformerEncoderLayer that can take torch's eval fast path (batch_first, a relu or gelu "
+            "activation, an even head count) calls linear1 / linear2 in training, but that fast path reads their "
+            "weights directly, so the converted net's eval forward would fail"
         )
     if reasons:
-        raise ValueError(
-            f"QAT cannot prepare {', '.join(never_called + fast_path)}: {'; '.join(reasons)}. Nothing was modified."
-        )
+        extra = len(read) - _MAX_LISTED_PATHS
+        listed = ", ".join(read[:_MAX_LISTED_PATHS]) + (f", … and {extra} more" if extra > 0 else "")
+        raise ValueError(f"QAT cannot prepare {listed}: {'; '.join(reasons)}. Nothing was modified.")
 
 
 def qat_train_step_factory(
@@ -247,7 +268,8 @@ class QATLifecycleCallback(Callback):
     base of a :class:`~nnx.peft.DoRALinear` (use LoRA there) and
     ``nn.MultiheadAttention.out_proj``, which are never called, so training
     would skip their fake quantization; and ``linear1`` / ``linear2`` of a
-    ``batch_first`` torch ``TransformerEncoderLayer``, whose eval fast path
+    torch ``TransformerEncoderLayer`` that can take the eval fast path
+    (``batch_first``, a relu or gelu activation, an even head count), which
     reads their weights, so the converted net's eval forward would fail. A
     fit that fails before its first update gets its unprepared net back,
     unconverted.
@@ -289,8 +311,8 @@ class QATLifecycleCallback(Callback):
                 and never calls it. Use LoRA for a layer QAT prepares.
             ValueError: if QAT would swap ``nn.MultiheadAttention.out_proj``
                 (never called) or ``linear1`` / ``linear2`` of a
-                ``batch_first`` ``TransformerEncoderLayer`` (read by its eval
-                fast path), or if it would swap nothing. The net is
+                ``TransformerEncoderLayer`` that can take the eval fast path
+                (which reads them), or if it would swap nothing. The net is
                 unchanged after each refusal.
         """
         # Idempotency guard: re-running prepare on an already-prepared
