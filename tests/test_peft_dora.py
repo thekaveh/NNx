@@ -493,6 +493,10 @@ _BYPASSED = {
         "forward pre-hook.*LoRA",
     ),
     "backward_hook": (lambda layer: layer.register_full_backward_hook(lambda m, gi, go: None), "backward hook.*LoRA"),
+    "backward_pre_hook": (
+        lambda layer: layer.register_full_backward_pre_hook(lambda m, go: None),
+        "backward hook.*LoRA",
+    ),
     "instance_forward": (_instance_forward, "instance forward override.*LoRA"),
     "prune_mask": (_prune_mask, "unbaked prune mask.*Bake the mask"),
     "legacy_weight_norm": (_legacy("weight_norm"), "legacy weight_norm.*Remove the norm"),
@@ -544,9 +548,10 @@ def _l1_prune_base(wrapper: DoRALinear) -> None:
         (lambda w: w.base.register_forward_hook(lambda m, i, o: None), "forward hook"),
         (lambda w: w.base.register_forward_pre_hook(lambda m, args: None), "forward pre-hook"),
         (lambda w: w.base.register_full_backward_hook(lambda m, gi, go: None), "backward hook"),
+        (lambda w: w.base.register_full_backward_pre_hook(lambda m, go: None), "backward hook"),
         (_l1_prune_base, "unbaked prune mask"),
     ],
-    ids=["forward_hook", "forward_pre_hook", "backward_hook", "l1_unstructured"],
+    ids=["forward_hook", "forward_pre_hook", "backward_hook", "backward_pre_hook", "l1_unstructured"],
 )
 def test_a_base_changed_after_wrapping_is_refused_at_forward(change, match):
     """#523 Context: hooks on ``.base`` fired 0 times under DoRA (LoRA: 1),
