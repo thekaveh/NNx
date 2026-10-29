@@ -39,6 +39,7 @@ from contextvars import ContextVar
 
 import torch
 from torch import nn
+from torch.nn.utils import parametrize
 from torch.utils.hooks import RemovableHandle
 
 from .._reparameterization import legacy_reparameterizations
@@ -50,8 +51,6 @@ def _stored_weights(base: nn.Linear) -> list[torch.Tensor]:
     """The tensors that store ``base``'s weight, read without running a
     parametrization: its ``original`` tensors when ``weight`` is parametrized,
     else the registered ``weight``."""
-    from torch.nn.utils import parametrize
-
     if parametrize.is_parametrized(base, "weight"):
         plist: nn.Module = base.parametrizations["weight"]  # type: ignore[index,assignment]
         stored = {**plist._parameters, **plist._buffers}

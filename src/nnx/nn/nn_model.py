@@ -3494,6 +3494,8 @@ class NNModel(_HubMixinBase):
         actual_keys = _tensor_keys(self.net.state_dict())
         # Masks and legacy norms below a PEFT wrapper (X.base.weight_orig) are
         # not under a descriptor key, so they are found by their hooks (FIX-056).
+        # The state-key clauses below are kept on purpose as a backstop: they
+        # read the state layout, so they also catch a hook with no recorded name.
         masked, normed = _reparameterizing_hooks(self.net, expected_keys)
         reparameterized = sorted(
             {
