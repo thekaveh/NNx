@@ -14487,11 +14487,17 @@ Returns:
     ``0`` if ``layer_pattern`` matched nothing.
 
 Raises:
-    ValueError: if ``sparsity`` is outside ``[0, 1)``, or if
-        ``bake=False`` selects a Linear whose parent reads its weight
-        directly (``nn.MultiheadAttention``'s ``out_proj``, or the
-        ``base`` of a :class:`~nnx.peft.DoRALinear`). Nothing is
-        modified.
+    ValueError: if ``sparsity`` is outside ``[0, 1)``; if a matched
+        Linear has a parametrized weight (a
+        ``torch.nn.utils.parametrize`` parametrization such as
+        ``parametrizations.weight_norm`` / ``spectral_norm`` /
+        ``orthogonal``, or a legacy ``torch.nn.utils.weight_norm`` /
+        ``spectral_norm`` hook), which torch's pruning cannot mask
+        (the message lists every such Linear); or if ``bake=False``
+        selects a Linear whose parent reads its weight directly
+        (``nn.MultiheadAttention``'s ``out_proj``, or the ``base`` of
+        a :class:`~nnx.peft.DoRALinear`). Every check runs before any
+        layer is pruned, so a refused call modifies nothing.
 
 **Idempotency note:** with ``bake=True``, calling ``magnitude_prune``
 twice at the same ``sparsity`` is a no-op for the second call —

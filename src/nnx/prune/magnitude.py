@@ -31,6 +31,8 @@ import fnmatch
 import torch.nn.utils.prune as torch_prune
 from torch import nn
 
+from .._reparameterization import weight_reparameterization
+
 
 def magnitude_prune(
     net: nn.Module,
@@ -75,11 +77,17 @@ def magnitude_prune(
         ``0`` if ``layer_pattern`` matched nothing.
 
     Raises:
-        ValueError: if ``sparsity`` is outside ``[0, 1)``, or if
-            ``bake=False`` selects a Linear whose parent reads its weight
-            directly (``nn.MultiheadAttention``'s ``out_proj``, or the
-            ``base`` of a :class:`~nnx.peft.DoRALinear`). Nothing is
-            modified.
+        ValueError: if ``sparsity`` is outside ``[0, 1)``; if a matched
+            Linear has a parametrized weight (a
+            ``torch.nn.utils.parametrize`` parametrization such as
+            ``parametrizations.weight_norm`` / ``spectral_norm`` /
+            ``orthogonal``, or a legacy ``torch.nn.utils.weight_norm`` /
+            ``spectral_norm`` hook), which torch's pruning cannot mask
+            (the message lists every such Linear); or if ``bake=False``
+            selects a Linear whose parent reads its weight directly
+            (``nn.MultiheadAttention``'s ``out_proj``, or the ``base`` of
+            a :class:`~nnx.peft.DoRALinear`). Every check runs before any
+            layer is pruned, so a refused call modifies nothing.
 
     **Idempotency note:** with ``bake=True``, calling ``magnitude_prune``
     twice at the same ``sparsity`` is a no-op for the second call —
@@ -100,6 +108,22 @@ def magnitude_prune(
     for name, mod in net.named_modules():
         if isinstance(mod, nn.Linear) and fnmatch.fnmatchcase(name, layer_pattern):
             targets.append((name, mod))
+    # A parametrized weight is computed, not a registered Parameter, so torch's
+    # pruning fails on it mid-loop, after earlier matches were already pruned
+    # (FIX-086). Refuse every such target before touching any of them.
+    reparameterized = [
+        f"{name or 'the root module'} ({kind})"
+        for name, mod in targets
+        if (kind := weight_reparameterization(mod)) is not None
+    ]
+    if reparameterized:
+        linears, have, them = ("Linears", "have", "them") if len(reparameterized) > 1 else ("Linear", "has", "it")
+        raise ValueError(
+            f"magnitude_prune: {linears} {', '.join(reparameterized)} {have} a parametrized weight, which torch's "
+            "pruning cannot mask. Remove the parametrization first (torch.nn.utils.parametrize."
+            "remove_parametrizations, or torch.nn.utils.remove_weight_norm / remove_spectral_norm for the legacy "
+            f"hooks) or exclude {them} with layer_pattern. Nothing was modified."
+        )
     if not bake:
         # The mask is applied by a forward pre-hook, which never runs when a
         # parent reads the Linear's weight directly (MultiheadAttention's

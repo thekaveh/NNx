@@ -4,9 +4,9 @@ An unbaked ``torch.nn.utils.prune`` mask and the legacy ``weight_norm`` /
 ``spectral_norm`` recompute a tensor (``weight`` from ``weight_orig`` and
 ``weight_mask``, or from ``weight_g`` / ``weight_v`` / ``weight_orig``) in a
 forward pre-hook, so code that reads the tensor without calling the module, or
-rebuilds the module, sees a stale value and drops the hook. Surgery, DoRA and
-the training preflight recognize them here, by hook type, never by parameter
-names.
+rebuilds the module, sees a stale value and drops the hook. Surgery, DoRA,
+``magnitude_prune`` and the training preflight recognize them here, by hook
+type, never by parameter names.
 """
 
 from __future__ import annotations
@@ -33,3 +33,20 @@ def legacy_reparameterizations(module: nn.Module) -> tuple[list[str], list[str]]
         elif isinstance(hook, (WeightNorm, SpectralNorm)):
             normed.append(getattr(hook, "name", UNNAMED))
     return sorted(masked), sorted(normed)
+
+
+def weight_reparameterization(module: nn.Module) -> str | None:
+    """What recomputes ``module``'s ``weight`` from other tensors, so that
+    ``weight`` is not a registered parameter: a ``torch.nn.utils.parametrize``
+    parametrization (named by its modules' types) or a legacy ``weight_norm`` /
+    ``spectral_norm`` hook. ``None`` when nothing does; an unbaked prune mask
+    is not counted, since pruning composes with it."""
+    from torch.nn.utils import parametrize
+
+    if parametrize.is_parametrized(module, "weight"):
+        kinds = [type(p).__name__ for p in module.parametrizations["weight"]]  # type: ignore[union-attr,index]
+        return f"parametrized by {', '.join(kinds)}"
+    for hook in module._forward_pre_hooks.values():
+        if isinstance(hook, (WeightNorm, SpectralNorm)) and getattr(hook, "name", None) == "weight":
+            return f"legacy {'weight_norm' if isinstance(hook, WeightNorm) else 'spectral_norm'}"
+    return None
