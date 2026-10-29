@@ -407,12 +407,11 @@ def _unmaterialized_topology(module: nn.Module) -> Optional[str]:
     weights (``load_state_dict`` before any forward): their lazy tensors
     count by name only, as before any load. ``None`` when a lazy layer torch
     does not ship is pending: NNx cannot tell which of its tensors are lazy."""
-    pending = _pending_lazy_modules(module)
-    if not all(_known_lazy(sub) for _, sub in pending):
+    if not _lazy_layers_emulable(module):
         return None
     tensors = {name: value for name, value in module.state_dict().items() if isinstance(value, torch.Tensor)}
     shapes = {name: _shape(value) for name, value in tensors.items()}
-    for name, sub in pending:
+    for name, sub in _pending_lazy_modules(module):
         prefix = f"{name}." if name else ""
         # Every tensor torch's lazy layers create is lazy, except the norm
         # layers' batch counter.
