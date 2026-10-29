@@ -3558,6 +3558,10 @@ class NNModel(_HubMixinBase):
                     layer.register_load_state_dict_post_hook(_complete_loaded_lazy_layer)
                     for _, layer in _pending_lazy_modules(module)
                 ]
+            # The lazy layers _refresh_lazy_descriptor re-checks on each read.
+            self._lazy_pending: list[torch.nn.Module] = (
+                [layer for _, layer in _pending_lazy_modules(module)] if self._lazy_wrap_keys is not None else []
+            )
             # Module.to moves in place and returns the same object.
             self.net = module.to(self.device)
             self._refresh_lazy_descriptor()
@@ -3605,7 +3609,16 @@ class NNModel(_HubMixinBase):
         keys."""
         keys = getattr(self, "_lazy_wrap_keys", None)
         module = getattr(self, "net", None)
-        if keys is None or module is None or _has_pending_lazy(module):
+        if keys is None or module is None:
+            return
+        # params is read about twice per batch, so a read re-checks only the
+        # lazy layers pending at the last check and walks the module again
+        # once they have materialized. A pending layer that surgery took out
+        # of the module stays pending: the wrap-time descriptor is kept.
+        self._lazy_pending = [layer for layer in self._lazy_pending if hasattr(layer, "_initialize_hook")]
+        if not self._lazy_pending:
+            self._lazy_pending = [layer for _, layer in _pending_lazy_modules(module)]
+        if self._lazy_pending:
             return
         self._lazy_wrap_keys = None
         for handle in self._lazy_load_hooks:
