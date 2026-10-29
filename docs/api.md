@@ -2729,10 +2729,12 @@ uninitialized lazy nets that will see different input widths share a
 descriptor and a run id, so give them distinct ``data_id`` / ``salt``
 values (or dry-run them first). Once the wrapped module has
 materialized, ``NNModel`` takes its descriptor afresh, so checkpoints
-describe the trained module. A reload compares an uninitialized lazy
-module with a materialized descriptor after the saved weights
-materialize it (their names and shapes are checked first, and nothing
-loads on a refusal).
+describe the trained module and its later runs use the materialized
+descriptor's id. A reload compares an uninitialized lazy module with a
+materialized descriptor after the saved weights materialize it (their
+names and shapes are checked first, and nothing loads on a refusal).
+A module holding a lazy layer torch does not ship keeps its wrap-time
+descriptor: only a forward reveals what such a layer infers.
 ```
 
 ##### `nnx.models.RuntimeModule.of`
