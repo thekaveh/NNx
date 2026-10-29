@@ -20,6 +20,8 @@ from typing import Optional, Union
 import torch
 from torch import nn
 
+from ..models import _shape
+
 
 @dataclass(frozen=True, slots=True)
 class LoadPretrainedResult:
@@ -68,7 +70,13 @@ def load_pretrained(
             OR any target key has no source. Default False (fine-tuning
             commonly partial-loads). Either way a key both sides hold
             with different shapes raises ``RuntimeError`` before anything
-            is copied.
+            is copied. An uninitialized lazy tensor (``nn.LazyLinear``
+            before its first forward) on either side matches any shape;
+            loading materializes a lazy target from the source's shape.
+            An uninitialized source tensor into a materialized target
+            key also raises ``RuntimeError`` before anything is copied,
+            as does a source that materializes only some of a lazy
+            layer's tensors (``0.weight`` but not ``0.bias``).
         prefix: optional prefix to strip from source keys before
             matching. E.g., ``prefix="model."`` turns ``model.layer.0``
             into ``layer.0``. Applied BEFORE ``key_map``.
@@ -131,17 +139,61 @@ def load_pretrained(
 
     # A key both sides hold with different shapes would make load_state_dict
     # raise after it had already copied every other tensor: refuse first,
-    # so a refused load leaves the module untouched.
+    # so a refused load leaves the module untouched. An uninitialized lazy
+    # tensor has no shape yet and matches any: load_state_dict materializes it.
+    # Only tensors have shapes: a module's `get_extra_state()` entry may be
+    # any object, and load_state_dict hands it to `set_extra_state()` as is.
     target_state = module.state_dict()
-    mismatched = [
-        f"{key} {tuple(remapped[key].shape)} -> {tuple(target_state[key].shape)}"
+    tensor_keys = [
+        key
         for key in loaded_keys
-        if isinstance(remapped[key], torch.Tensor) and remapped[key].shape != target_state[key].shape
+        if isinstance(remapped[key], torch.Tensor) and isinstance(target_state[key], torch.Tensor)
+    ]
+    mismatched = [
+        f"{key} {source_shape} -> {target_shape}"
+        for key in tensor_keys
+        for source_shape, target_shape in ((_shape(remapped[key]), _shape(target_state[key])),)
+        if source_shape is not None and target_shape is not None and source_shape != target_shape
     ]
     if mismatched:
         raise RuntimeError(
             "load_pretrained: these keys have different shapes in the source and the module (nothing was "
             f"loaded): {mismatched}. Drop them from the source, or rename them with key_map, to load the rest."
+        )
+    # The reverse cannot load at all: torch has no shape to copy from an
+    # uninitialized source tensor into a materialized one, and would raise
+    # only after copying the keys before it.
+    unmaterialized = [
+        key for key in tensor_keys if _shape(remapped[key]) is None and _shape(target_state[key]) is not None
+    ]
+    if unmaterialized:
+        raise RuntimeError(
+            "load_pretrained: these source keys are uninitialized lazy tensors but the module's are "
+            f"materialized (nothing was loaded): {unmaterialized}. Run a forward through the source first, "
+            "or drop them from the source, to load the rest."
+        )
+    # A lazy layer materializes tensor by tensor: a source holding only some
+    # of its tensors (`0.weight` but not `0.bias`) would leave it half
+    # materialized, and its first forward would fail. Refuse that as well.
+    materializing = {
+        key for key in tensor_keys if _shape(target_state[key]) is None and _shape(remapped[key]) is not None
+    }
+    lazy_by_owner: dict[str, list[str]] = {}
+    for key, value in target_state.items():
+        if nn.parameter.is_lazy(value):
+            lazy_by_owner.setdefault(key.rpartition(".")[0], []).append(key)
+    left_lazy = sorted(
+        key
+        for keys in lazy_by_owner.values()
+        if materializing.intersection(keys)
+        for key in keys
+        if key not in materializing
+    )
+    if left_lazy:
+        raise RuntimeError(
+            "load_pretrained: the source materializes part of a lazy layer but not these of its tensors, "
+            f"which would stay uninitialized (nothing was loaded): {left_lazy}. Give the source every tensor "
+            "of a lazy layer, or none of them."
         )
 
     # 4. Apply only the overlapping keys. PyTorch's load_state_dict
