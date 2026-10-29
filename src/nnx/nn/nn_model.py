@@ -590,12 +590,15 @@ class _ResumeWindow:
     engine committing); a custom step may never report one, so its first
     return closes the window too. A later failure keeps the trained state,
     as in a fresh fit. Used as a context manager, as often as the guarded
-    code needs; unarmed (no resume) it is a no-op."""
+    code needs; unarmed (no resume) it rolls nothing back. Armed or not,
+    ``updated`` says whether it closed: :class:`_CallbackFinalizer` tells
+    ``on_train_end`` that a failing fit trained nothing (#526)."""
 
     def __init__(self) -> None:
         self._rollback: Optional[Callable[[], None]] = None
         self._engine: Any = None
         self._engine_commits = 0
+        self.updated = False
 
     def arm(self, net: torch.nn.Module, train_loader: Any) -> None:
         """Snapshot the model and RNG a resume is about to replace; a failure
@@ -612,6 +615,7 @@ class _ResumeWindow:
 
     def close(self) -> None:
         self._rollback = None
+        self.updated = True
 
     def __enter__(self) -> _ResumeWindow:
         return self
@@ -621,7 +625,7 @@ class _ResumeWindow:
             self.close()  # the objective's update committed before the failure
         rollback = self._rollback
         if exc_type is not None and rollback is not None:
-            self.close()
+            self._rollback = None  # used once; the fit still trained nothing
             rollback()
 
 
@@ -1178,13 +1182,18 @@ class _CallbackFinalizer:
     """Runs ``on_train_begin`` (``start``) and, as the block closes, the
     started callbacks' ``on_train_end``. With ``keep_error`` (DDP, #540) the
     first ``on_train_end`` error of a fit that trained is kept in ``error``
-    instead of raised, for the caller to agree on every rank."""
+    instead of raised, for the caller to agree on every rank. A fit failing
+    while its ``window`` is still open trained nothing: ``on_train_end`` then
+    sees ``ctx.failed_before_update`` set (#526)."""
 
-    def __init__(self, callbacks: list[Any], ctx: Any, *, keep_error: bool = False):
+    def __init__(
+        self, callbacks: list[Any], ctx: Any, *, keep_error: bool = False, window: Optional[_ResumeWindow] = None
+    ):
         self._callbacks = callbacks
         self._ctx = ctx
         self._started: list[Any] = []
         self._keep_error = keep_error
+        self._window = window
         self.error: Optional[BaseException] = None
 
     def __enter__(self):
@@ -1197,6 +1206,8 @@ class _CallbackFinalizer:
 
     def __exit__(self, exc_type, exc, tb):
         cleanup_errors: list[BaseException] = []
+        if exc is not None and self._window is not None and not self._window.updated:
+            self._ctx.failed_before_update = True
         # FEAT-036: a journal run lends history_access="full" callbacks the
         # whole history (read back once); everyone else sees ctx.idps as is.
         history = getattr(self._ctx, "history_records", None)
@@ -4776,7 +4787,9 @@ class NNModel(_HubMixinBase):
         with (
             torch.set_grad_enabled(True),
             tqdm(colour="blue", total=n_iter, desc="Training", disable=tqdm_disabled) as tqdm_bar,
-            _CallbackFinalizer(normalized_callbacks, ctx, keep_error=ddp is not None) as callback_lifecycle,
+            _CallbackFinalizer(
+                normalized_callbacks, ctx, keep_error=ddp is not None, window=resume_window
+            ) as callback_lifecycle,
             # Innermost: a failure before the first committed update (a refused
             # on_train_begin, the component restore, the first epoch's start,
             # fetch or step) is rolled back before on_train_end runs (#507).
@@ -5951,3 +5964,8 @@ class _CallbackContext:
         # #394: the training scheduler, read-only for callbacks (None outside
         # NNModel.train, e.g. a Trainer's named schedulers).
         self.scheduler: Any = None
+        # #526: set before on_train_end when the fit is failing before its
+        # first update (a custom step's first return counts), so nothing
+        # trained: a callback that changed the net in on_train_begin (QAT's
+        # prepare) can hand it back instead of finishing its transform.
+        self.failed_before_update: bool = False

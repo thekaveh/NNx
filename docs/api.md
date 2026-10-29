@@ -14937,6 +14937,17 @@ pickle quantizer-specific state alongside their checkpoint, and
 tracks the prepare/convert phase via ``self.is_prepared`` and
 ``self.is_converted`` for downstream inspection.
 
+QAT refuses, before ``prepare`` changes anything, a net where it would
+swap a Linear whose parent reads its weight instead of calling it: the
+base of a :class:`~nnx.peft.DoRALinear` (use LoRA there) and
+``nn.MultiheadAttention.out_proj``, which are never called, so training
+would skip their fake quantization; and ``linear1`` / ``linear2`` of a
+torch ``TransformerEncoderLayer`` that can take the eval fast path
+(``batch_first``, a relu or gelu activation, an even head count), which
+reads their weights, so the converted net's eval forward would fail. A
+fit that fails before its first update gets its unprepared net back,
+unconverted.
+
 A completed conversion also contributes a versioned checkpoint transform
 containing ``qat_config`` and ``groupsize``. The final ``LAST`` checkpoint
 persists that recipe, so :meth:`NNModel.from_checkpoint` can rebuild the
@@ -14960,6 +14971,20 @@ nnx.quantize.qat.QATLifecycleCallback.on_train_begin(self, ctx: '_CallbackContex
 
 Insert fake-quant ops into ``ctx.model.net`` in place.
 
+**Details**
+
+```text
+Raises:
+    TypeError: if QAT would swap the base of a
+        :class:`~nnx.peft.DoRALinear`, which reads its base's weight
+        and never calls it. Use LoRA for a layer QAT prepares.
+    ValueError: if QAT would swap ``nn.MultiheadAttention.out_proj``
+        (never called) or ``linear1`` / ``linear2`` of a
+        ``TransformerEncoderLayer`` that can take the eval fast path
+        (which reads them), or if it would swap nothing. The net is
+        unchanged after each refusal.
+```
+
 ##### `nnx.quantize.qat.QATLifecycleCallback.on_train_end`
 
 ```python
@@ -14976,6 +15001,11 @@ outputs and is suitable for inference / ONNX export. The model
 is no longer trainable through the usual FP32 optimizer path —
 a fresh training session on the same NNModel would need a new
 QATLifecycleCallback.
+
+A fit that fails before its first update (``ctx.failed_before_update``:
+a later callback's ``on_train_begin`` raising, say) trained nothing, so
+it is not converted: the layers ``prepare`` replaced are put back, and
+``is_prepared`` and ``is_converted`` are both ``False`` again.
 ```
 
 ##### `nnx.quantize.qat.QATLifecycleCallback.checkpoint_transforms`
