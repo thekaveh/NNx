@@ -260,3 +260,170 @@ def test_baked_pruning_of_a_dora_base_and_unbaked_pruning_of_lora_and_ia3_bases_
         apply(other, "0")
         assert nnx_prune.magnitude_prune(other, 0.5, layer_pattern="0.base", bake=False) == 1
         assert hasattr(other[0].base, "weight_mask")
+
+
+# -------------------------------------------------------------------------
+# FIX-086 (#554): parametrized weights are refused before any layer is pruned
+# -------------------------------------------------------------------------
+
+
+def _legacy(norm):
+    def apply(lin):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # the legacy hooks' deprecation notice
+            norm(lin)
+
+    return apply
+
+
+class _Scale(nn.Module):
+    def forward(self, w):
+        return 2 * w
+
+
+def _parametrize_weight(lin):
+    from torch.nn.utils import parametrize
+
+    parametrize.register_parametrization(lin, "weight", _Scale())
+
+
+_WEIGHT_REPARAMETERIZATIONS = {
+    "weight_norm": nn.utils.parametrizations.weight_norm,
+    "spectral_norm": nn.utils.parametrizations.spectral_norm,
+    "orthogonal": nn.utils.parametrizations.orthogonal,
+    "custom": _parametrize_weight,
+    "legacy_weight_norm": _legacy(nn.utils.weight_norm),
+    "legacy_spectral_norm": _legacy(nn.utils.spectral_norm),
+}
+
+
+def _zero_fraction(lin) -> float:
+    return float((lin.weight == 0).float().mean())
+
+
+def _snapshot(net):
+    return {k: v.clone() for k, v in net.state_dict().items()}
+
+
+def _assert_unchanged(net, state):
+    assert sorted(net.state_dict()) == sorted(state)
+    assert all(torch.equal(net.state_dict()[k], v) for k, v in state.items())
+
+
+def _context_net():
+    """The #554 Context net: only the SECOND Linear is weight-normed, built
+    through ``NNModel(module=...)`` as NNx advises for such a net."""
+    from nnx import Losses, NNModel, NNModelParams
+
+    torch.manual_seed(0)
+    module = nn.Sequential(nn.Linear(16, 16), nn.ReLU(), nn.Linear(16, 4))
+    nn.utils.parametrizations.weight_norm(module[2])
+    return NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY)).net
+
+
+@pytest.mark.parametrize("bake", [True, False])
+def test_context_refuses_a_later_parametrized_linear_and_modifies_nothing(bake):
+    """#554 Context: a raw TypeError after layer 0 was already pruned to 0.50."""
+    net = _context_net()
+    state = _snapshot(net)
+    hooks = [len(m._forward_pre_hooks) for m in net.modules()]
+    with pytest.raises(ValueError) as info:
+        nnx_prune.magnitude_prune(net, 0.5, bake=bake)
+    message = str(info.value)
+    assert "Linear 2 (parametrized by _WeightNorm) has a parametrized weight" in message
+    assert "remove_parametrizations" in message and "exclude it with layer_pattern" in message
+    assert message.endswith("Nothing was modified.")
+    _assert_unchanged(net, state)
+    assert [len(m._forward_pre_hooks) for m in net.modules()] == hooks
+    assert _zero_fraction(net[0]) == 0.0
+
+
+def test_retry_after_removing_the_parametrization_prunes_each_layer_once():
+    """#554 Context: the bake=False retry left layer 0 at 0.75 (pruned twice)."""
+    from torch.nn.utils import parametrize
+
+    net = _context_net()
+    with pytest.raises(ValueError):
+        nnx_prune.magnitude_prune(net, 0.5, bake=False)
+    parametrize.remove_parametrizations(net[2], "weight")
+    assert nnx_prune.magnitude_prune(net, 0.5, bake=False) == 2
+    assert _zero_fraction(net[0]) == 0.5
+    assert _zero_fraction(net[2]) == 0.5
+
+
+@pytest.mark.parametrize("bake", [True, False])
+@pytest.mark.parametrize("form", list(_WEIGHT_REPARAMETERIZATIONS))
+def test_every_weight_reparameterization_after_a_plain_linear_is_refused(form, bake):
+    torch.manual_seed(0)
+    net = _TinyNet()
+    _WEIGHT_REPARAMETERIZATIONS[form](net.layers[1])
+    state = _snapshot(net)
+    with pytest.raises(ValueError, match=r"Linear layers\.1 \(.+\) has a parametrized weight.*Nothing was modified"):
+        nnx_prune.magnitude_prune(net, 0.5, bake=bake)
+    _assert_unchanged(net, state)
+    assert _zero_fraction(net.layers[0]) == 0.0
+
+
+def test_one_error_lists_every_parametrized_linear():
+    torch.manual_seed(0)
+    net = _TinyNet()
+    nn.utils.parametrizations.spectral_norm(net.layers[1])
+    _legacy(nn.utils.weight_norm)(net.layers[2])
+    state = _snapshot(net)
+    with pytest.raises(
+        ValueError,
+        match=r"Linears layers\.1 \(parametrized by _SpectralNorm\), layers\.2 \(legacy weight_norm\) have a "
+        r"parametrized weight.*exclude them with layer_pattern",
+    ):
+        nnx_prune.magnitude_prune(net, 0.5)
+    _assert_unchanged(net, state)
+
+
+@pytest.mark.parametrize("bake", [True, False])
+def test_a_parametrized_root_linear_is_refused_without_the_layer_pattern_remedy(bake):
+    """Excluding the root Linear with layer_pattern would leave nothing to prune."""
+    torch.manual_seed(0)
+    net = nn.Linear(16, 4)
+    nn.utils.parametrizations.weight_norm(net)
+    state = _snapshot(net)
+    with pytest.raises(ValueError) as info:
+        nnx_prune.magnitude_prune(net, 0.5, bake=bake)
+    message = str(info.value)
+    assert message.startswith(
+        "magnitude_prune: the root Linear (parametrized by _WeightNorm) has a parametrized weight"
+    )
+    assert "remove_parametrizations" in message and "layer_pattern" not in message
+    assert message.endswith("Nothing was modified.")
+    _assert_unchanged(net, state)
+
+
+def test_excluding_the_parametrized_linear_with_layer_pattern_prunes_the_rest():
+    torch.manual_seed(0)
+    net = _TinyNet()
+    nn.utils.parametrizations.weight_norm(net.layers[1])
+    assert nnx_prune.magnitude_prune(net, 0.5, layer_pattern="layers.[02]") == 2
+    assert _zero_fraction(net.layers[0]) == 0.5
+
+
+def test_a_bias_only_parametrization_still_prunes_every_target():
+    from torch.nn.utils import parametrize
+
+    torch.manual_seed(0)
+    net = nn.Sequential(nn.Linear(16, 16), nn.ReLU(), nn.Linear(16, 4))
+    parametrize.register_parametrization(net[2], "bias", _Scale())
+    assert nnx_prune.magnitude_prune(net, 0.5) == 2
+    assert _zero_fraction(net[0]) == 0.5
+    assert _zero_fraction(net[2]) == 0.5
+
+
+def test_two_unbaked_calls_compose():
+    """An unbaked prune mask is a reparameterization too, but not one the
+    refusal counts: successive bake=False calls keep composing."""
+    torch.manual_seed(0)
+    net = nn.Sequential(nn.Linear(16, 16), nn.ReLU(), nn.Linear(16, 4))
+    assert nnx_prune.magnitude_prune(net, 0.5, bake=False) == 2
+    assert nnx_prune.magnitude_prune(net, 0.5, bake=False) == 2
+    assert _zero_fraction(net[0]) == 0.75
+    assert _zero_fraction(net[2]) == 0.75
