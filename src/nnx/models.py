@@ -201,7 +201,10 @@ class RuntimeModule:
     ``evaluate`` or a direct call), ``NNModel`` takes its descriptor afresh,
     so ``params``, checkpoints and its later runs use the materialized
     descriptor. A lazy module whose weights are loaded before any forward
-    is materialized at the wrap and described as a dry-run one. A reload
+    is materialized at the wrap and described as a dry-run one (a forward
+    on loaded weights is not one: torch then leaves ``in_channels`` /
+    ``num_features`` of lazy conv and norm layers at 0, so load and wrap,
+    or dry-run before loading). A reload
     compares an uninitialized lazy module with a materialized descriptor
     after the saved weights materialize it (their
     names and shapes are checked first, and nothing loads on a refusal).
@@ -431,8 +434,10 @@ def _materialized_view(plan: _Plan) -> Iterator[None]:
 
 def _complete_lazy_materialization(module: nn.Module) -> bool:
     """Finish materializing ``module``'s lazy layers whose parameters are all
-    loaded, exactly as their first forward would: set what that forward
-    infers, drop torch's lazy hooks and switch to the final class. Returns
+    loaded as a dry-run forward would have: set what that forward infers on
+    uninitialized layers (torch's own forward on loaded weights leaves the
+    ``in_channels`` / ``num_features`` of lazy conv and norm layers at 0),
+    drop torch's lazy hooks and switch to the final class. Returns
     whether every pending lazy layer could be finished (nothing changes
     otherwise)."""
     tensors = {name: value for name, value in module.state_dict().items() if isinstance(value, torch.Tensor)}

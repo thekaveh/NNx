@@ -297,8 +297,8 @@ layers still to materialize (``nn.LazyLinear`` before its first
 forward) also matches a descriptor taken after materialization: its
 parameter names and shapes are checked against the saved weights,
 and the topology they materialize against the descriptor, before
-any weight loads; the weights then materialize it, as its first
-forward would.
+any weight loads; the weights then materialize it, as a dry-run
+forward would have.
 
 The precision policy is re-resolved on the destination
 device (the constructor resolves it) — never read from the
@@ -2740,7 +2740,10 @@ materialized (its first forward, in training, ``predict``,
 ``evaluate`` or a direct call), ``NNModel`` takes its descriptor afresh,
 so ``params``, checkpoints and its later runs use the materialized
 descriptor. A lazy module whose weights are loaded before any forward
-is materialized at the wrap and described as a dry-run one. A reload
+is materialized at the wrap and described as a dry-run one (a forward
+on loaded weights is not one: torch then leaves ``in_channels`` /
+``num_features`` of lazy conv and norm layers at 0, so load and wrap,
+or dry-run before loading). A reload
 compares an uninitialized lazy module with a materialized descriptor
 after the saved weights materialize it (their
 names and shapes are checked first, and nothing loads on a refusal).
