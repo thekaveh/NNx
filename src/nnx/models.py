@@ -457,29 +457,38 @@ def _materialized_view(plan: _Plan) -> Iterator[None]:
 
 
 def _complete_lazy_materialization(module: nn.Module) -> bool:
-    """Finish materializing ``module``'s lazy layers whose parameters are all
-    loaded as a dry-run forward would have: set what that forward infers on
-    uninitialized layers (torch's own forward on loaded weights leaves the
+    """Finish materializing each of ``module``'s pending lazy layers whose
+    tensors are all loaded, as a dry-run forward would have: set what that
+    forward infers (torch's own forward on loaded weights leaves the
     ``in_channels`` / ``num_features`` of lazy conv and norm layers at 0),
-    drop torch's lazy hooks and switch to the final class. Returns
-    whether every pending lazy layer could be finished (nothing changes
-    otherwise)."""
-    tensors = {name: value for name, value in module.state_dict().items() if isinstance(value, torch.Tensor)}
-    if any(nn.parameter.is_lazy(value) for value in tensors.values()):
-        return False
-    plan = _materialization_plan(module, {name: _shape(value) for name, value in tensors.items()})
-    if plan is None:
-        return False
-    for sub, inferred, final in plan:
-        for key, value in inferred.items():
-            setattr(sub, key, value)
-        # What torch's _infer_parameters does once a layer is initialized.
-        for hook in ("_initialize_hook", "_load_hook"):
-            getattr(sub, hook).remove()
-            delattr(sub, hook)
-        if final is not None:
-            sub.__class__ = final
-    return True
+    drop torch's lazy hooks and switch to the final class. Uninitialized
+    layers, and lazy layers torch does not ship, are left to their first
+    forward. Returns whether no lazy layer is left pending."""
+    for _, layer in _pending_lazy_modules(module):
+        tensors = {name: value for name, value in layer.state_dict().items() if isinstance(value, torch.Tensor)}
+        if any(nn.parameter.is_lazy(value) for value in tensors.values()):
+            continue
+        plan = _materialization_plan(layer, {name: _shape(value) for name, value in tensors.items()})
+        for sub, inferred, final in plan or ():
+            for key, value in inferred.items():
+                setattr(sub, key, value)
+            # What torch's _infer_parameters does once a layer is initialized.
+            for hook in ("_initialize_hook", "_load_hook"):
+                getattr(sub, hook).remove()
+                delattr(sub, hook)
+            if final is not None:
+                sub.__class__ = final
+    return not _has_pending_lazy(module)
+
+
+def _complete_loaded_lazy_layer(layer: nn.Module, _incompatible_keys: Any) -> None:
+    """``load_state_dict`` post-hook that ``NNModel`` registers on each
+    pending lazy layer of a wrapped module (#562): weights loaded after the
+    wrap, through the module or the layer, finish the layer's
+    materialization at that load, as the wrap does for weights loaded
+    before it (torch's own forward on them would leave its
+    ``in_channels`` / ``num_features`` at 0)."""
+    _complete_lazy_materialization(layer)
 
 
 def _shape(value: torch.Tensor) -> Optional[tuple[int, ...]]:

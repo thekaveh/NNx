@@ -645,7 +645,7 @@ class _ImageLoader:
         return DataLoader(TensorDataset(X, (X.flatten(1)[:, 0] > 0).long()), batch_size=4)
 
 
-@pytest.mark.parametrize(
+_LAZY_CONV_AND_NORM_NETS = pytest.mark.parametrize(
     ("build", "shape"),
     [
         (
@@ -666,6 +666,9 @@ class _ImageLoader:
     ],
     ids=["conv1d-batchnorm", "convtranspose2d-instancenorm"],
 )
+
+
+@_LAZY_CONV_AND_NORM_NETS
 def test_lazy_conv_and_norm_layers_reload_into_fresh_instances(build, shape):
     module = build()
     module(torch.zeros(2, *shape))
@@ -676,6 +679,37 @@ def test_lazy_conv_and_norm_layers_reload_into_fresh_instances(build, shape):
     fresh = build()
     reloaded = NNModel.from_checkpoint(checkpoint, module=fresh)
     assert RuntimeModule.of(fresh) == model.params.net
+    X = torch.randn(3, *shape)
+    np.testing.assert_allclose(reloaded.predict(X).logits, model.predict(X).logits, rtol=1e-6, atol=1e-6)
+
+
+@_LAZY_CONV_AND_NORM_NETS
+@pytest.mark.parametrize("load", ["module", "layers"])
+def test_lazy_weights_loaded_after_the_wrap_materialize_as_a_dry_run_and_reload_into_fresh_instances(
+    build, shape, load
+):
+    source = build()
+    source(torch.zeros(2, *shape))  # a dry run
+    module = build()
+    if load == "layers":  # one layer before the wrap, the others after it, layer by layer
+        module[0].load_state_dict(source[0].state_dict())
+    model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    if load == "module":
+        model.net.load_state_dict(source.state_dict())
+    else:
+        assert repr(model.net[0]) == repr(source[0]) and _is_uninitialized(model.net[1])  # wrapped part-loaded
+        for layer, weights in list(zip(model.net, source, strict=True))[1:]:
+            layer.load_state_dict(weights.state_dict())
+    # materialized at the load as by the dry run: torch's own forward on loaded weights would leave the
+    # conv's in_channels and the norm's num_features at 0 (and fail an affine instance norm's forward)
+    assert repr(model.net) == repr(source)
+    run = model.train(params=_params(_ImageLoader.of(shape), epochs=1))
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    assert checkpoint.model_params.net == model.params.net == RuntimeModule.of(model.net) == RuntimeModule.of(source)
+    assert not any(layer._load_state_dict_post_hooks for layer in model.net.modules())  # the wrap's hooks are gone
+    fresh = build()
+    reloaded = NNModel.from_checkpoint(checkpoint, module=fresh)
     X = torch.randn(3, *shape)
     np.testing.assert_allclose(reloaded.predict(X).logits, model.predict(X).logits, rtol=1e-6, atol=1e-6)
 

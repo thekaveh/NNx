@@ -54,10 +54,12 @@ from ..models import (
     RuntimeModule,
     _as_inputs,
     _complete_lazy_materialization,
+    _complete_loaded_lazy_layer,
     _has_pending_lazy,
     _lazy_layers_emulable,
     _materialized_class_name,
     _materialized_topology,
+    _pending_lazy_modules,
     _same_class_once_materialized,
     _unmaterialized_topology,
     _UnpackBatch,
@@ -3531,6 +3533,7 @@ class NNModel(_HubMixinBase):
                 if _has_pending_lazy(module) and _lazy_layers_emulable(module)
                 else None
             )
+            self._lazy_load_hooks: list[torch.utils.hooks.RemovableHandle] = []
             if self._lazy_wrap_keys is not None and not _checked_lazy_reload(module, cast(RuntimeModule, net)):
                 # Lazy layers whose weights are loaded (load_state_dict, or
                 # matched as the module they become by _match_lazy_module):
@@ -3538,6 +3541,15 @@ class NNModel(_HubMixinBase):
                 # now that every check passed, so the module is described as
                 # a dry-run one. Uninitialized layers stay as they are.
                 _complete_lazy_materialization(module)
+                # Weights loaded after the wrap (model.net.load_state_dict, or
+                # into one of its layers) finish each lazy layer at that load
+                # the same way, before torch's own forward on them could; the
+                # hooks go once nothing is pending (_refresh_lazy_descriptor).
+                # from_checkpoint finishes its own load after its checks.
+                self._lazy_load_hooks = [
+                    layer.register_load_state_dict_post_hook(_complete_loaded_lazy_layer)
+                    for _, layer in _pending_lazy_modules(module)
+                ]
             # Module.to moves in place and returns the same object.
             self.net = module.to(self.device)
             self._refresh_lazy_descriptor()
@@ -3563,9 +3575,10 @@ class NNModel(_HubMixinBase):
     @property
     def params(self) -> NNModelParams:
         """The model's :class:`NNModelParams`. A wrapped lazy module is
-        described as materialized from the first read after its first
-        forward, wherever that ran: ``train``, ``predict``, ``evaluate`` or a
-        direct call of ``net`` (#562)."""
+        described as materialized from the first read after it
+        materialized: at its first forward, wherever that ran (``train``,
+        ``predict``, ``evaluate`` or a direct call of ``net``), or at a load
+        of its weights (#562)."""
         if getattr(self, "_lazy_wrap_keys", None) is not None:
             self._refresh_lazy_descriptor()
         return self._params
@@ -3576,16 +3589,19 @@ class NNModel(_HubMixinBase):
 
     def _refresh_lazy_descriptor(self) -> None:
         """Take a wrapped lazy module's :class:`RuntimeModule` descriptor
-        afresh once it has materialized (its first forward), so ``params``,
-        checkpoints and later runs describe the module as it now is (#562). A
-        run already reserved keeps its id; nothing changes for any other
-        module, or when anything but materialization changed the module's
-        state keys."""
+        afresh once it has materialized (its first forward, or a load of its
+        weights), so ``params``, checkpoints and later runs describe the
+        module as it now is (#562), and drop the wrap's load hooks. A run
+        already reserved keeps its id; nothing changes for any other module,
+        or when anything but materialization changed the module's state
+        keys."""
         keys = getattr(self, "_lazy_wrap_keys", None)
         module = getattr(self, "net", None)
         if keys is None or module is None or _has_pending_lazy(module):
             return
         self._lazy_wrap_keys = None
+        for handle in self._lazy_load_hooks:
+            handle.remove()
         net = self._params.net
         if isinstance(net, RuntimeModule) and _tensor_keys(module.state_dict()) == keys:
             descriptor = RuntimeModule.of(module)

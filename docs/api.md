@@ -207,7 +207,7 @@ no other NNModel functionality is affected.
 property nnx.nn.nn_model.NNModel.params
 ```
 
-The model's `NNModelParams`. A wrapped lazy module is described as materialized from the first read after its first forward, wherever that ran: ``train``, ``predict``, ``evaluate`` or a direct call of ``net`` (#562).
+The model's `NNModelParams`. A wrapped lazy module is described as materialized from the first read after it materialized: at its first forward, wherever that ran (``train``, ``predict``, ``evaluate`` or a direct call of ``net``), or at a load of its weights (#562).
 
 ##### `nnx.nn.nn_model.NNModel.task_adapter`
 
