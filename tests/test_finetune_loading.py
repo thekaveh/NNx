@@ -392,3 +392,40 @@ def test_load_pretrained_into_a_module_with_non_tensor_extra_state(lazy, source_
     assert result.loaded_keys == (tensors if source_kind == "tensors_only" else ["_extra_state", *tensors])
     assert target.tag == ("target" if source_kind == "tensors_only" else "source")
     assert torch.equal(target.lin.weight, source.lin.weight) and torch.equal(target.lin.bias, source.lin.bias)
+
+
+class _AnyExtraState(nn.Module):
+    """A module whose extra state is whatever it was last given."""
+
+    def __init__(self, extra: object, lazy: bool) -> None:
+        super().__init__()
+        self.lin = nn.LazyLinear(3) if lazy else nn.Linear(4, 3)
+        self.extra = extra
+
+    def get_extra_state(self) -> object:
+        return self.extra
+
+    def set_extra_state(self, state: object) -> None:
+        self.extra = state
+
+
+@pytest.mark.filterwarnings("ignore:Lazy modules are a new feature")
+@pytest.mark.parametrize(
+    "target_extra, source_extra",
+    [({"tag": "target"}, torch.ones(2)), (torch.ones(2), {"tag": "source"})],
+    ids=["tensor_into_non_tensor", "non_tensor_into_tensor"],
+)
+def test_mixed_tensor_and_non_tensor_extra_state_loads_through_set_extra_state(target_extra, source_extra):
+    """Only a key that is a tensor on both sides is shape-checked; any other
+    `_extra_state` pair reaches `set_extra_state`, as torch loads it."""
+    torch.manual_seed(0)
+    target, source = _AnyExtraState(target_extra, lazy=True), _AnyExtraState(source_extra, lazy=False)
+
+    result = load_pretrained(target, source)
+
+    assert result.loaded_keys == ["_extra_state", "lin.bias", "lin.weight"]
+    if isinstance(source_extra, torch.Tensor):
+        assert isinstance(target.extra, torch.Tensor) and torch.equal(target.extra, source_extra)
+    else:
+        assert target.extra == source_extra
+    assert torch.equal(target.lin.weight, source.lin.weight)
