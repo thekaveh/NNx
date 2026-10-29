@@ -98,7 +98,10 @@ def is_categorical(target: np.ndarray, probabilities: np.ndarray) -> bool:
 def nll_terms(target: np.ndarray, probabilities: np.ndarray, epsilon: Optional[float] = NLL_EPSILON) -> np.ndarray:
     """``-log p(target)`` per row (categorical: class axis last) or per
     output (Bernoulli), in float64. Probabilities are clipped to
-    ``[epsilon, 1]`` first; ``epsilon=None`` is exact (``+inf`` at 0)."""
+    ``[epsilon, 1]`` first; ``epsilon=None`` is exact (``+inf`` at 0). A
+    Bernoulli target-0 term reads ``1 - p``, so it is only as precise as
+    ``p`` near 1: float32 ``p`` is exactly 1 from a logit of about 16.6
+    (the term then reads the floor), float64 ``p`` from about 36.7."""
     low = 0.0 if epsilon is None else epsilon
     with np.errstate(divide="ignore", invalid="ignore"):
         if is_categorical(target, probabilities):  # read one entry per row, then widen

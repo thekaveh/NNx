@@ -875,6 +875,13 @@ are decoded with the task's threshold. Multilabel F1 needs
 `config={"average": "binary"}`, the positive-decision F1 pooled over every
 output; per-label averaging is not available.
 
+The multilabel (Bernoulli) `nll` takes the sigmoid in float64 on the CPU,
+for float32, float64 and MPS outputs alike. Each term then matches
+`BCEWithLogitsLoss` within about 1e-4 nats for target 0 and target 1, up to
+the 1e-12 floor (27.631 nats) that caps both. A float32 sigmoid is exactly 1
+from a logit of about 16.6, so a confident false positive would otherwise
+read the floor instead of its logit.
+
 `evaluate(loader, metrics=...)` computes them over the whole loader, and the
 default training step over the whole training epoch. The values land in the
 records' `metrics` under each name. The input must be one the model can
@@ -2765,6 +2772,12 @@ NNModel.train(eval_step_fn=streaming_eval_step) ──► the default validation
     - `update(target, probabilities=..., labels=..., values=..., valid=...)`
       takes a batch's inputs. `update_logits(target, logits)` derives them
       from raw outputs as `evaluate()` does.
+    - A bernoulli `nll` term of target 0 reads `1 - p`. Probabilities the
+      caller already rounded to float32, such as a float32 model's
+      `predict_proba()`, keep float32's limit there: `p` is exactly 1 from a
+      logit of about 16.6, so the term reads the 1e-12 floor (27.631 nats)
+      instead of the logit. `update_logits` avoids it, since it takes the
+      sigmoid in float64 (see [§6.4](#64-named-metrics-and-monitors)).
     - Masked entries are not scored. They are `valid=False`, a NaN target
       (including a one-hot / soft row holding a NaN), or a categorical target
       equal to the task's `ignore_index`. This is the standalone accumulator's
