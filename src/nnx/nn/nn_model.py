@@ -3540,7 +3540,12 @@ class NNModel(_HubMixinBase):
                 # finish that materialization as a dry-run forward would have,
                 # now that every check passed, so the module is described as
                 # a dry-run one. Uninitialized layers stay as they are.
-                _complete_lazy_materialization(module)
+                pending = len(_pending_lazy_modules(module))
+                if not _complete_lazy_materialization(module) and len(_pending_lazy_modules(module)) < pending:
+                    # Some lazy layers were loaded before the wrap and others
+                    # not: describe the module as it now is, so that params
+                    # match it until the rest materializes.
+                    self._params = replace(self._params, net=RuntimeModule.of(module))
                 # Weights loaded after the wrap (model.net.load_state_dict, or
                 # into one of its layers) finish each lazy layer at that load
                 # the same way, before torch's own forward on them could; the
