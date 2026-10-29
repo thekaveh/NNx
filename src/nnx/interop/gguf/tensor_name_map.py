@@ -125,11 +125,17 @@ def _refuse_reparameterized(net: torch.nn.Module) -> None:
             "torch.nn.utils.parametrizations forms, which export reads"
         )
     tied_head = ""
-    if "lm_head.weight" in masked and getattr(getattr(net, "params", None), "tie_embeddings", False):
-        # Named even past the first five: GGUF has no slot for a tied head's mask.
-        tied_head = (
-            " The masked lm_head.weight is tied: its one GGUF slot, token_embd.weight, holds the unmasked embedding."
-        )
+    if getattr(getattr(net, "params", None), "tie_embeddings", False):
+        # Named even past the first five: GGUF has no slot for a tied head's mask or norm.
+        if "lm_head.weight" in masked:
+            tied_head = (
+                " The masked lm_head.weight is tied: its one GGUF slot, token_embd.weight, holds the unmasked "
+                "embedding."
+            )
+        if any(name.startswith("lm_head") for name in normed):
+            # A parametrization would untie the head, and token_embd cannot hold both weights.
+            tied_head += " The tied lm_head must have its norm removed, not parametrized."
+
     raise TypeError(
         f"GGUF export reads each module's stored weight, but {' and '.join(problems)}. A prune mask or legacy "
         f"norm recomputes the weight only when its module is called, so the file would not hold the weights the "
@@ -162,7 +168,7 @@ def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:
             hook (see :func:`nnx.interop.gguf.write_gguf`).
     """
     _refuse_adapters(net)
-    # Nor does a weight that a forward pre-hook recomputes.
+    # A weight that a forward pre-hook recomputes is stale in storage.
     _refuse_reparameterized(net)
     out: dict[str, np.ndarray] = {}
 

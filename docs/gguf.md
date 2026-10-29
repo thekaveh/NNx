@@ -64,7 +64,9 @@ Bake or remove forward-pre-hook reparameterizations before exporting:
   `remove_spectral_norm`, or use the `torch.nn.utils.parametrizations` forms,
   which compute the weight on every read. Export a `spectral_norm`
   parametrization in eval mode: in training mode, each read takes one more
-  power-iteration step.
+  power-iteration step. A tied `lm_head` must have its norm removed: a
+  parametrization unties it, and its one GGUF slot, `token_embd`, holds only
+  the embedding.
 
 `write_gguf` and `export_ollama_modelfile` refuse such a hook on any module
 with a `TypeError` that names the affected tensors and the fix.
