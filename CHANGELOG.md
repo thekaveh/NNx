@@ -150,6 +150,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - Offline distillation scores an fp64 student in its own dtype; `to_onnx` takes a float64 NumPy example.
     - NumPy strings and bools in model, metric, optimizer-factory and provenance configs are stored as plain values; decision-result ids too, and (#515) spec ids, names, kinds and modes.
     - `deepen` refuses a hooked target ReLU; `widen` looks only at hooks on the path to its consumer.
+    - `low_rank_factorize`, `expand_embedding` and `low_rank` recipe operations refuse a source with a hook of its own instead of silently dropping it (a `lora` operation keeps its target's hooks); `deepen` refuses a container registered under several paths (a tied block, a `self.backbone = self.body` alias) instead of splitting it ([#524](https://github.com/thekaveh/NNx/issues/524)).
     - `Trainer` refuses a `stop_at_update` set in `on_optimizer_update` at that update, with advice that applies.
     - `NNPreferenceDataset` validates its lengths and pad id before encoding; `NNCheckpoint.to_file` refuses an unknown format before creating a directory; `split_links` refuses a bare-string `categories`.
     - Knowledge distillation refuses single-logit heads (the soft loss was always 0) and a teacher of another shape; distillation, Mixup / CutMix and MoE steps threshold a BCE head's predictions instead of taking an argmax over one logit.

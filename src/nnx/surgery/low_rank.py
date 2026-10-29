@@ -31,7 +31,7 @@ from torch import nn
 from torch.nn.utils import skip_init
 
 from .._validation import require_count
-from ._utils import copy_param_roles, refuse_parametrized, stock_forward
+from ._utils import copy_param_roles, refuse_hooked, refuse_parametrized, stock_forward
 
 _SUPPORTED_METHODS = ("svd",)
 
@@ -65,11 +65,17 @@ def low_rank_factorize(
             with its own ``forward``).
         ValueError: if ``rank`` is out of range, ``method`` unknown, or
             ``linear`` carries a parametrization, a legacy ``weight_norm`` /
-            ``spectral_norm`` hook or an unbaked prune mask.
+            ``spectral_norm`` hook or an unbaked prune mask; or if ``linear``
+            has any other forward hook, forward pre-hook or backward hook,
+            which would stay on the discarded Linear (remove it and, if it
+            should still apply, re-register it on the returned factors).
+            ``linear`` and its hooks are left unchanged.
     """
     if not stock_forward(linear, nn.Linear):  # a subclass's own forward would be dropped
         raise TypeError(f"low_rank_factorize requires an nn.Linear, got {type(linear).__name__}")
     refuse_parametrized(linear, "low_rank_factorize's Linear")
+    # The hook would stay on the discarded Linear, not run on the factors.
+    refuse_hooked(linear, f"low_rank_factorize's {linear!r}")
     if method not in _SUPPORTED_METHODS:
         raise ValueError(f"unsupported method {method!r}; supported: {_SUPPORTED_METHODS}")
 

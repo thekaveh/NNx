@@ -534,3 +534,84 @@ def test_deepen_refuses_a_hooked_target_relu():
     model[1].register_forward_hook(lambda module, args, out: out - 1.0)
     with pytest.raises(ValueError, match="has hooks"):
         deepen(model, after_layer_name="1")
+
+
+# ---------- FIX-057 (#524): an aliased container is refused before any copy ------------
+
+
+class _Tied(nn.Module):  # one block applied twice (ALBERT-style sharing)
+    def __init__(self):
+        super().__init__()
+        block = nn.Sequential(nn.Linear(6, 6), nn.ReLU(), nn.Linear(6, 6))
+        self.blocks = nn.ModuleList([block, block])
+
+    def forward(self, x):
+        for b in self.blocks:
+            x = b(x)
+        return x
+
+
+class _Aliased(nn.Module):  # a convenience alias that forward uses
+    def __init__(self):
+        super().__init__()
+        self.body = nn.Sequential(nn.Linear(6, 6), nn.ReLU(), nn.Linear(6, 3))
+        self.backbone = self.body
+
+    def forward(self, x):
+        return self.backbone(x)
+
+
+class _ListView(nn.Module):  # FeedFwdNN.layers also registered as a second attribute
+    def __init__(self):
+        super().__init__()
+        self.net = _ffn(input_dim=6, hidden_dims=[6, 6], output_dim=3)
+        self.layers_view = self.net.layers
+
+    def forward(self, x):
+        return self.net(x)
+
+
+@pytest.mark.parametrize(
+    "make, site, paths",
+    [
+        (_Tied, "blocks.0.1", ["blocks.0", "blocks.1"]),
+        (_Aliased, "body.1", ["body", "backbone"]),
+        (_ListView, "net.layers.0", ["net.layers", "layers_view"]),
+    ],
+    ids=["tied_blocks", "attribute_alias", "module_list_alias"],
+)
+def test_deepen_refuses_an_aliased_container_before_copying(make, site, paths, monkeypatch):
+    """At e69fd74 the rebuilt container was written back at one path only: the
+    tied block split (lengths 5 and 3, the new layer ran once per forward), and
+    under an alias forward used, the 42 new parameters never ran."""
+    import importlib
+    from types import SimpleNamespace
+
+    deepen_module = importlib.import_module("nnx.surgery.deepen")  # the package re-exports the function
+
+    torch.manual_seed(0)
+    model = make()
+    before = [(name, id(module)) for name, module in model.named_modules(remove_duplicate=False)]
+
+    def no_copy(*args, **kwargs):
+        raise AssertionError("the model was copied before the refusal")
+
+    monkeypatch.setattr(deepen_module, "copy", SimpleNamespace(deepcopy=no_copy))
+    with pytest.raises(ValueError, match=r"registered under multiple paths") as caught:
+        deepen(model, after_layer_name=site)
+    assert str(paths) in str(caught.value)
+    assert [(name, id(module)) for name, module in model.named_modules(remove_duplicate=False)] == before
+
+
+def test_deepen_accepts_a_container_reached_through_an_aliased_ancestor():
+    """Two paths through one aliased ancestor reach a single slot: writing the
+    rebuilt container there changes it for both, so the insertion runs on every
+    use and nothing splits."""
+    torch.manual_seed(0)
+    outer = nn.Module()
+    outer.a = nn.Sequential(nn.Sequential(nn.Linear(6, 6), nn.ReLU(), nn.Linear(6, 3)))
+    outer.b = outer.a
+    deeper = deepen(outer, after_layer_name="a.0.1")
+    assert deeper.a is deeper.b and len(deeper.a[0]) == 5
+    x = torch.randn(4, 6)
+    torch.testing.assert_close(deeper.b(x), outer.b(x), rtol=1e-5, atol=1e-5)

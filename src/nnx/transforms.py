@@ -13,7 +13,9 @@ and their order. A recipe needs a model NNx can rebuild — built-in
 ``Nets`` or a registered ``ModelSpec``; a runtime-only ``module=`` is
 refused. :meth:`TransformRecipe.validate` checks a model against
 the whole recipe — every target present, an ``nn.Linear``, registered once,
-no target inside another operation's subtree, no version this NNx does not
+no target inside another operation's subtree, no hook of its own on a
+``low_rank`` target (the factors would drop it; a LoRA wrapper calls its
+base, so a ``lora`` target keeps its hooks), no version this NNx does not
 know, no optimizer holding a parameter the recipe replaces — and mutates
 nothing; :meth:`TransformRecipe.materialize` then either changes the given
 model in place (``materialization="in_place"``, the default) or builds a
@@ -209,7 +211,8 @@ def lora(*targets: str, r: int = 8, alpha: float = 16.0, dropout: float = 0.0) -
 
 def low_rank(*targets: str, rank: int, method: str = "svd") -> TransformOp:
     """Replace each ``nn.Linear`` at ``targets`` by its rank-``rank``
-    factorization (``nnx.surgery.low_rank_factorize``)."""
+    factorization (``nnx.surgery.low_rank_factorize``). A target with a
+    hook of its own is refused, as ``low_rank_factorize`` refuses it."""
     return TransformOp(id=LOW_RANK, targets=tuple(targets), config={"rank": rank, "method": method})
 
 
@@ -538,6 +541,14 @@ def _validate(
             aliases = paths.get(id(module), [])
             if len(aliases) > 1:
                 problems.append((index, op.id, path, f"the same nn.Linear is registered under {aliases}"))
+            if op.id == LOW_RANK:  # a LoRA wrapper calls its base, so the base's hooks still run
+                from .surgery._utils import refuse_hooked, refuse_parametrized
+
+                try:
+                    refuse_parametrized(module, "the nn.Linear")
+                    refuse_hooked(module, "the nn.Linear")
+                except ValueError as refused:
+                    problems.append((index, op.id, path, str(refused)))
             if op.id == LOW_RANK and isinstance(op.config.get("rank"), int):
                 limit = min(module.in_features, module.out_features)
                 if op.config["rank"] > limit:

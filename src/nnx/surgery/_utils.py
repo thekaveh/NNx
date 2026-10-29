@@ -136,3 +136,42 @@ def refuse_parametrized(module: nn.Module, what: str) -> None:
             f"{what} carries an unbaked prune mask on {masks}; a surgery primitive would read a stale weight and "
             "drop the mask. Bake it first (torch.nn.utils.prune.remove, or magnitude_prune(bake=True))"
         )
+
+
+def registered_paths(model: nn.Module, target: nn.Module) -> list[str]:
+    """Every qualified path under which ``target`` is registered
+    (``named_modules`` deduplicates by default; an alias means the same
+    module is used in more than one place)."""
+    return [name for name, mod in model.named_modules(remove_duplicate=False) if mod is target]
+
+
+def hook_kinds(module: nn.Module) -> list[str]:
+    """The kinds of hook registered on ``module`` itself (global
+    ``register_module_*`` hooks are not the module's own)."""
+    kinds = {
+        "forward hook": module._forward_hooks,
+        "forward pre-hook": module._forward_pre_hooks,
+        "backward hook": module._backward_hooks,
+        "backward pre-hook": module._backward_pre_hooks,
+    }
+    return [kind for kind, hooks in kinds.items() if hooks]
+
+
+def has_hooks(module: nn.Module) -> bool:
+    return bool(hook_kinds(module))
+
+
+def refuse_hooked(module: nn.Module, what: str) -> None:
+    """A hook stays on the discarded original when a primitive returns a
+    rebuilt plain module, so its effect on the output (a clamp, a scale,
+    injected noise) would vanish silently. Call after
+    :func:`refuse_parametrized`: a legacy ``weight_norm`` /
+    ``spectral_norm`` or a prune mask is a forward pre-hook too, and its
+    own message is the more useful one."""
+    kinds = hook_kinds(module)
+    if kinds:
+        raise ValueError(
+            f"{what} has a {' and a '.join(kinds)}, which a surgery primitive would drop silently with the module "
+            "it replaces. Remove the hook first (its handle's .remove()) and, if it should still apply, "
+            "re-register it on the returned replacement"
+        )
