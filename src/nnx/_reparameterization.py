@@ -1,4 +1,4 @@
-"""Legacy forward-pre-hook reparameterizations on a module. Internal.
+"""Weight reparameterizations (``parametrize`` parametrizations, legacy forward-pre-hooks) on a module. Internal.
 
 An unbaked ``torch.nn.utils.prune`` mask and the legacy ``weight_norm`` /
 ``spectral_norm`` recompute a tensor (``weight`` from ``weight_orig`` and
@@ -6,7 +6,10 @@ An unbaked ``torch.nn.utils.prune`` mask and the legacy ``weight_norm`` /
 forward pre-hook, so code that reads the tensor without calling the module, or
 rebuilds the module, sees a stale value and drops the hook. Surgery, DoRA,
 ``magnitude_prune`` and the training preflight recognize them here, by hook
-type, never by parameter names.
+type, never by parameter names. A ``torch.nn.utils.parametrize``
+parametrization also replaces ``weight`` with a computed tensor;
+:func:`weight_reparameterization` detects it alongside the legacy hooks, for
+``magnitude_prune``.
 """
 
 from __future__ import annotations
