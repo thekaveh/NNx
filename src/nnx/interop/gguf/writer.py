@@ -181,9 +181,20 @@ def write_gguf(
         TypeError: when the network carries a PEFT adapter (LoRA / DoRA /
             IA3 / prefix tuning), or a projection (``w_qkv`` / ``w_o`` /
             ``w1``–``w3`` / ``lm_head``) is not a plain ``nn.Linear`` (a
-            low-rank factorized one): GGUF stores plain weights. Nothing is
-            written, and no directory is created; the same holds for a
-            tokenizer that cannot be read (its own error propagates).
+            low-rank factorized one): GGUF stores plain weights. Also when
+            any module (the tied ``lm_head`` and non-projections included)
+            carries an unbaked prune mask or a legacy ``weight_norm`` /
+            ``spectral_norm`` hook: these recompute ``.weight`` only when
+            the module is called, so the stored weight is stale after a
+            ``load_state_dict`` or an optimizer step, and a masked tied head
+            has no GGUF slot. Bake the masks first
+            (``torch.nn.utils.prune.remove``, or
+            ``magnitude_prune(bake=True)``), and remove the legacy norms
+            (``torch.nn.utils.remove_weight_norm`` /
+            ``remove_spectral_norm``) or use their
+            ``torch.nn.utils.parametrizations`` forms, which export reads.
+            Nothing is written, and no directory is created; the same holds
+            for a tokenizer that cannot be read (its own error propagates).
     """
     import torch
 
@@ -212,8 +223,9 @@ def write_gguf(
     # architecture from metadata picks the same shape we shipped.
     feed_forward_length = int(2 * params.ffn_mult * params.d_model / 3)
     head_dim = params.d_model // n_heads
-    # Read the network (which refuses a PEFT adapter or a factorized
-    # projection) and the tokenizer before anything touches the disk.
+    # Read the network (which refuses a PEFT adapter, a factorized
+    # projection, an unbaked prune mask or a legacy weight_norm /
+    # spectral_norm hook) and the tokenizer before anything touches the disk.
     tensors = map_tensors(transformer_nn)
     vocab = _tokenizer_vocab(tokenizer)
 

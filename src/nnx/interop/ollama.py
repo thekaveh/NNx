@@ -91,7 +91,8 @@ def export_ollama_modelfile(
 
     Stock Ollama does not implement the ``nnx_transformer`` GGUF
     architecture. Emission verifies bundle structure only; it does not
-    establish runtime compatibility.
+    establish runtime compatibility. A refused export writes neither
+    ``model.gguf`` nor the ``Modelfile``, and creates no ``out_dir``.
 
     Args:
         transformer_nn: An NNx ``TransformerNN`` instance — the model
@@ -116,6 +117,23 @@ def export_ollama_modelfile(
 
     Returns:
         Absolute path to the emitted ``Modelfile``.
+
+    Raises:
+        ValueError: when ``system``, ``template`` or a ``parameters`` key
+            or string value would break the Modelfile syntax, a parameter
+            is not in the supported set, or the quantization label is
+            unknown.
+        TypeError: when a parameter value has the wrong type, or when
+            :func:`write_gguf` refuses the network: a PEFT adapter, a
+            factorized projection, or an unbaked prune mask or legacy
+            ``weight_norm`` / ``spectral_norm`` hook on any module (bake
+            the masks with ``torch.nn.utils.prune.remove`` or
+            ``magnitude_prune(bake=True)``; remove the legacy norms with
+            ``torch.nn.utils.remove_weight_norm`` /
+            ``remove_spectral_norm`` or use their
+            ``torch.nn.utils.parametrizations`` forms).
+        ImportError: when ``gguf`` is not installed, or the quantization
+            needs ``llama-quantize``.
     """
     _validate_modelfile_inputs(system, template, parameters)
 

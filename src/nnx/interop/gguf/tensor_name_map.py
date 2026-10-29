@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 import torch
 
+from ..._reparameterization import UNNAMED, legacy_reparameterizations
+
 if TYPE_CHECKING:
     # Type-only import — same rationale as in writer.py.
     from nnx.nn.net.transformer_nn import TransformerNN
@@ -83,6 +85,64 @@ def _refuse_adapters(net: torch.nn.Module) -> None:
         )
 
 
+def _listed(names: list[str], what: str) -> str:
+    """``names`` (the first five, and how many in all) and the verb ``carry``."""
+    if len(names) == 1:
+        return f"{names[0]} carries {what}"
+    if len(names) > 5:
+        return f"{', '.join(names[:5])} … ({len(names)} in all) carry {what}"
+    return f"{', '.join(names[:-1])} and {names[-1]} carry {what}"
+
+
+def _refuse_reparameterized(net: torch.nn.Module) -> None:
+    """An unbaked prune mask and a legacy ``weight_norm`` / ``spectral_norm``
+    recompute ``.weight`` in a forward pre-hook, so the cached tensor export
+    reads is stale after a ``load_state_dict`` or an optimizer step, and a
+    masked tied ``lm_head`` has no GGUF slot of its own (``token_embd``
+    holds the unmasked embedding). Every module is checked, by hook type
+    (``nnx._reparameterization``), never by parameter names. The
+    ``torch.nn.utils.parametrize`` forms compute ``.weight`` on every read,
+    so they export."""
+    masked: list[str] = []
+    normed: list[str] = []
+    for path, module in net.named_modules():
+        masks, norms = legacy_reparameterizations(module)
+        for names, found in ((masks, masked), (norms, normed)):
+            for name in names:
+                # The tensor's qualified name, or the module's for a hook without one.
+                found.append((path or "<root>") if name == UNNAMED else f"{path}.{name}" if path else name)
+    if not masked and not normed:
+        return
+    problems: list[str] = []
+    fixes: list[str] = []
+    if masked:
+        problems.append(_listed(masked, "an unbaked prune mask"))
+        fixes.append("bake the masks (torch.nn.utils.prune.remove, or magnitude_prune(bake=True))")
+    if normed:
+        problems.append(_listed(normed, "a legacy weight_norm / spectral_norm hook"))
+        fixes.append(
+            "remove the legacy norms (torch.nn.utils.remove_weight_norm / remove_spectral_norm) or use their "
+            "torch.nn.utils.parametrizations forms, which export reads"
+        )
+    tied_head = ""
+    if getattr(getattr(net, "params", None), "tie_embeddings", False):
+        # Named even past the first five: GGUF has no slot for a tied head's mask or norm.
+        if "lm_head.weight" in masked:
+            tied_head = (
+                " The masked lm_head.weight is tied: its one GGUF slot, token_embd.weight, holds the unmasked "
+                "embedding."
+            )
+        if any(name.startswith("lm_head") for name in normed):
+            # A parametrization would untie the head, and token_embd cannot hold both weights.
+            tied_head += " The tied lm_head must have its norm removed, not parametrized."
+
+    raise TypeError(
+        f"GGUF export reads each module's stored weight, but {' and '.join(problems)}. A prune mask or legacy "
+        f"norm recomputes the weight only when its module is called, so the file would not hold the weights the "
+        f"forward uses.{tied_head} Before exporting, {'; and '.join(fixes)}."
+    )
+
+
 def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:
     """Walk a ``TransformerNN`` and return ``{gguf_name: numpy_array}``.
 
@@ -100,8 +160,16 @@ def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:
         When ``net.params.tie_embeddings`` is True, ``output.weight``
         is omitted (llama.cpp re-uses ``token_embd.weight`` for tied
         models).
+
+    Raises:
+        TypeError: when the network carries a PEFT adapter, a projection
+            is not a plain ``nn.Linear``, or any module carries an unbaked
+            prune mask or a legacy ``weight_norm`` / ``spectral_norm``
+            hook (see :func:`nnx.interop.gguf.write_gguf`).
     """
     _refuse_adapters(net)
+    # A weight that a forward pre-hook recomputes is stale in storage.
+    _refuse_reparameterized(net)
     out: dict[str, np.ndarray] = {}
 
     # Token embedding — always present, always named ``token_embd.weight``.
