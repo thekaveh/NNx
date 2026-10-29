@@ -706,8 +706,8 @@ def test_the_refusal_detects_the_hooks_by_type_not_by_parameter_names():
 
 def test_a_from_checkpoint_reload_into_an_unbaked_pruned_module_is_refused(tmp_path, monkeypatch):
     """NNModel(module=pruned).train, then from_checkpoint(module=a fresh
-    unbaked net): its cached weight is the fresh net's init (0.43 off per
-    entry), which write_gguf exported."""
+    unbaked net): its cached weight is the fresh net's init (about 0.35 off
+    per entry), which write_gguf exported."""
     import torch
     from torch.utils.data import DataLoader, TensorDataset
 
