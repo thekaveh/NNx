@@ -31,7 +31,15 @@ from torch.nn.utils import skip_init
 from .._validation import require_count
 from ..nn.enum.activations import Activations
 from ..nn.net.feed_fwd_nn import FeedFwdNN
-from ._utils import copy_param_roles, get_module, refuse_parametrized, set_module, stock_forward
+from ._utils import (
+    copy_param_roles,
+    get_module,
+    has_hooks,
+    refuse_parametrized,
+    registered_paths,
+    set_module,
+    stock_forward,
+)
 
 
 def widen(
@@ -232,23 +240,12 @@ _ELEMENTWISE_MODULES: tuple[type[nn.Module], ...] = (
 _WIDTH_DEPENDENT_ACTIVATIONS = frozenset({Activations.SOFTMAX})
 
 
-def _registered_paths(model: nn.Module, target: nn.Module) -> list[str]:
-    """Every qualified path under which ``target`` is registered
-    (``named_modules`` deduplicates by default; an alias means the same
-    module is used in more than one place)."""
-    return [name for name, mod in model.named_modules(remove_duplicate=False) if mod is target]
-
-
-def _has_hooks(module: nn.Module) -> bool:
-    return any((module._forward_hooks, module._forward_pre_hooks, module._backward_hooks, module._backward_pre_hooks))
-
-
 def _refuse_unproven_container(parent: nn.Module, where: str) -> None:
     """A container whose execution order is not its registration order: a
     subclass with its own forward, or hooks on the container itself."""
     stock = nn.Sequential.forward if isinstance(parent, nn.Sequential) else None
     own_forward = stock is not None and type(parent).forward is not stock
-    if own_forward or _has_hooks(parent):
+    if own_forward or has_hooks(parent):
         raise ValueError(
             f"widen() cannot prove the data flow of {where!r} ({type(parent).__name__}): a container with its "
             "own forward or hooks may transform between a layer and its consumer"
@@ -262,7 +259,7 @@ def _refuse_hooked_path(parent: nn.Module, keys: list[str], where: str) -> None:
         child = parent._modules[key]
         if child is not None:
             refuse_parametrized(child, f"widen(): {where!r} path module {key!r}")
-    hooked = [key for key in keys if (child := parent._modules[key]) is not None and _has_hooks(child)]
+    hooked = [key for key in keys if (child := parent._modules[key]) is not None and has_hooks(child)]
     if hooked:
         raise ValueError(
             f"widen() cannot prove the data flow of {where!r}: hooked modules on the path from the layer to its "
@@ -282,7 +279,7 @@ def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> st
     generic module, registration order is not data flow, so the
     consumer cannot be identified safely and the call is rejected.
     """
-    aliases = _registered_paths(model, layer)
+    aliases = registered_paths(model, layer)
     if len(aliases) > 1:
         raise ValueError(
             f"widen target {layer_name!r} is registered under multiple paths {aliases}: a shared (aliased) "
@@ -364,7 +361,7 @@ def _resolve_consumer(model: nn.Module, layer_name: str, layer: nn.Linear) -> st
         )
 
     consumer = get_module(model, consumer_name)
-    consumer_aliases = _registered_paths(model, consumer)
+    consumer_aliases = registered_paths(model, consumer)
     if len(consumer_aliases) > 1:
         raise ValueError(
             f"the consumer {consumer_name!r} of {layer_name!r} is registered under multiple paths "

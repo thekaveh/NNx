@@ -1391,3 +1391,67 @@ def test_a_lora_net_without_masks_or_legacy_norms_still_trains():
     model = _model()
     apply_lora_to(model.net, "layers.0", r=2)
     assert _train(model, n_epochs=1).id
+
+
+# --- FIX-057 (#524): a hooked low-rank target is refused; LoRA keeps the hook --------------------
+
+
+def _clamp(module, args, out):  # changes the output: dropping it silently changes the model
+    return out.clamp(max=0.1)
+
+
+@pytest.mark.parametrize("call", ["validate", "materialize"])
+def test_a_hooked_low_rank_target_is_refused_and_the_model_kept(call):
+    """At e69fd74 the in-place factors replaced the hooked Linear and the hook
+    stayed on the discarded one: model.net's output moved by 0.54."""
+    model = _model()
+    model.net.layers[0].register_forward_hook(_clamp)
+    hooks = dict(model.net.layers[0]._forward_hooks)
+    before = _snapshot(model)
+    x = torch.randn(5, 6, generator=torch.Generator().manual_seed(1))
+    with torch.no_grad():
+        reference = model.net(x)
+    with pytest.raises(RecipeError) as caught:
+        getattr(TransformRecipe([low_rank("layers.0", rank=6)]), call)(model)
+    assert [p[:3] for p in caught.value.problems] == [(0, "low_rank", "layers.0")]
+    assert "has a forward hook" in caught.value.problems[0][3] and "re-register" in caught.value.problems[0][3]
+    assert "recipe operation 0 (low_rank), target 'layers.0'" in str(caught.value)
+    assert _same(before, _snapshot(model))  # identities, weights, flags, recorded transforms
+    assert dict(model.net.layers[0]._forward_hooks) == hooks
+    with torch.no_grad():
+        assert torch.equal(model.net(x), reference)
+
+
+def test_a_lora_recipe_on_a_hooked_target_is_exact_at_init():
+    """LoRALinear calls its base, so the base's hook still runs: a LoRA
+    operation keeps it and stays exact at init (lora_B starts at zero)."""
+    model = _model()
+    model.net.layers[0].register_forward_hook(_clamp)
+    model.net.eval()
+    x = torch.randn(5, 6, generator=torch.Generator().manual_seed(1))
+    with torch.no_grad():
+        reference = model.net(x)
+    TransformRecipe([lora("layers.0", r=2)]).validate(model)
+    TransformRecipe([lora("layers.0", r=2)]).materialize(model)
+    with torch.no_grad():
+        assert (model.net(x) - reference).abs().max().item() == 0.0
+    assert model.net.layers[0].base._forward_hooks
+
+
+@pytest.mark.parametrize(
+    "reparameterize, match",
+    [
+        (_legacy_norm(torch.nn.utils.weight_norm), "carries a legacy weight_norm / spectral_norm"),
+        (_l1_prune, "carries an unbaked prune mask"),
+    ],
+    ids=["weight_norm", "l1_unstructured"],
+)
+def test_a_reparameterized_low_rank_target_keeps_its_specific_message(reparameterize, match):
+    """A legacy norm or a prune mask is a forward pre-hook too: the low-rank
+    target is named with its own remedy, not as a generic hooked module."""
+    model = _model()
+    reparameterize(model.net.layers[0])
+    with pytest.raises(RecipeError) as caught:
+        TransformRecipe([low_rank("layers.0", rank=6)]).validate(model)
+    reasons = [p[3] for p in caught.value.problems if p[:3] == (0, "low_rank", "layers.0")]
+    assert len(reasons) == 1 and match in reasons[0] and "hook," not in reasons[0]

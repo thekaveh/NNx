@@ -30,7 +30,7 @@ from torch import nn
 from torch.nn.utils import skip_init
 
 from .._validation import require_count
-from ._utils import copy_param_roles, refuse_parametrized, stock_forward
+from ._utils import copy_param_roles, refuse_hooked, refuse_parametrized, stock_forward
 
 InitStrategy = Literal["zeros", "copy_mean"]
 
@@ -66,11 +66,16 @@ def expand_embedding(
         ValueError: if ``new_num_embeddings`` is not an integer strictly greater,
             if ``init`` is unknown, or if ``emb`` carries a parametrization, a
             legacy ``weight_norm`` / ``spectral_norm`` hook or an unbaked prune
-            mask.
+            mask; or if ``emb`` has any other forward hook, forward pre-hook or
+            backward hook (NEFTune-style noise, a scale), which would stay on
+            the source table. Raised before the new table is allocated; ``emb``
+            and its hooks are left unchanged.
     """
     if not stock_forward(emb, nn.Embedding):  # a subclass's own forward would be dropped
         raise TypeError(f"expand_embedding requires an nn.Embedding, got {type(emb).__name__}")
     refuse_parametrized(emb, "expand_embedding's Embedding")
+    # The hook would stay on the source table, not run on the new one.
+    refuse_hooked(emb, f"expand_embedding's {emb!r}")
     old_num = emb.num_embeddings
     new_num_embeddings = require_count(new_num_embeddings, "new_num_embeddings", owner="expand_embedding", minimum=1)
     if new_num_embeddings <= old_num:
