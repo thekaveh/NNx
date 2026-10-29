@@ -22,6 +22,7 @@ test file is harmless on a minimal install.
 from __future__ import annotations
 
 import importlib.util
+from typing import Any
 
 import pytest
 
@@ -591,3 +592,218 @@ def test_a_refused_ollama_export_creates_no_directory(tmp_path, case):
         with pytest.raises(AttributeError, match="get_vocab"):
             export_ollama_modelfile(_tiny_transformer(), None, out)  # type: ignore[arg-type]
     assert not (tmp_path / "ollama").exists()
+
+
+# -------------------- unbaked reparameterizations (FIX-058) --------------------
+#
+# An unbaked prune mask and a legacy weight_norm / spectral_norm hook
+# recompute ``.weight`` in a forward pre-hook, so the cached tensor the
+# export reads goes stale on a load_state_dict or optimizer step, and a
+# masked tied head has no GGUF slot of its own (token_embd holds the
+# unmasked embedding). Export refuses them, by hook type.
+
+_PRUNE_FIX = ("torch.nn.utils.prune.remove", "magnitude_prune(bake=True)")
+_NORM_FIX = ("torch.nn.utils.remove_weight_norm", "remove_spectral_norm", "torch.nn.utils.parametrizations")
+
+
+def _pruned(seed: int, pattern: str = "blocks.*") -> TransformerNN:
+    import torch
+
+    from nnx.prune import magnitude_prune
+
+    torch.manual_seed(seed)
+    net = _tiny_transformer()
+    magnitude_prune(net, 0.5, layer_pattern=pattern, bake=False)
+    return net
+
+
+def _legacy_normed(seed: int, norm: str, path: str) -> TransformerNN:
+    import warnings
+
+    import torch
+
+    torch.manual_seed(seed)
+    net = _tiny_transformer()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # legacy weight_norm's deprecation notice
+        getattr(torch.nn.utils, norm)(net.get_submodule(path))
+    return net
+
+
+def _refused_net(case: str) -> tuple[TransformerNN, str, tuple[str, ...]]:
+    """The net, a tensor the refusal must name, and the fix it must give."""
+    import torch
+
+    if case == "reload":  # an unbaked checkpoint reloaded into a re-pruned net
+        net = _pruned(1)
+        net.load_state_dict(_pruned(0).state_dict())
+        return net, "blocks.0.attn.w_qkv.weight", _PRUNE_FIX
+    if case == "finetuned":  # a prune-then-finetune loop ending on opt.step()
+        net = _pruned(0)
+        opt = torch.optim.SGD(net.parameters(), lr=0.1)
+        net(torch.randint(0, 64, (2, 8))).pow(2).mean().backward()
+        opt.step()
+        return net, "blocks.0.ffn.w1.weight", _PRUNE_FIX
+    if case == "tied-head":  # no reload or step: the masked tied head has no GGUF slot
+        return _pruned(0, pattern="*"), "lm_head.weight is tied", _PRUNE_FIX
+    norm, path = {
+        "weight_norm": ("weight_norm", "blocks.0.ffn.w1"),
+        "spectral_norm": ("spectral_norm", "blocks.1.attn.w_o"),
+        "embedding-weight_norm": ("weight_norm", "tok_embed"),  # not a projection
+    }[case]
+    net = _legacy_normed(1, norm, path)
+    net.load_state_dict(_legacy_normed(0, norm, path).state_dict())
+    return net, f"{path}.weight", _NORM_FIX
+
+
+_REFUSED_CASES = ["reload", "finetuned", "tied-head", "weight_norm", "spectral_norm", "embedding-weight_norm"]
+
+
+@pytest.mark.parametrize("exporter", ["map_tensors", "write_gguf", "export_ollama_modelfile"])
+@pytest.mark.parametrize("case", _REFUSED_CASES)
+def test_an_unbaked_reparameterization_is_refused_before_anything_is_written(tmp_path, case, exporter):
+    """Every case wrote a stale or unmasked weight (up to 0.35 off per entry)
+    with no error; each exporter now raises TypeError naming the tensor and
+    the fix, and leaves no .gguf, model.gguf or Modelfile behind."""
+    from nnx.interop.gguf import write_gguf
+    from nnx.interop.gguf.tensor_name_map import map_tensors
+    from nnx.interop.ollama import export_ollama_modelfile
+
+    net, name, fixes = _refused_net(case)
+    tokenizer = _tiny_tokenizer(tmp_path)
+    out = tmp_path / "out"
+    with pytest.raises(TypeError, match="GGUF export reads") as info:
+        if exporter == "map_tensors":
+            map_tensors(net)
+        elif exporter == "write_gguf":
+            write_gguf(net, tokenizer, out / "model.gguf")
+        else:
+            export_ollama_modelfile(net, tokenizer, out)
+    message = str(info.value)
+    assert name in message
+    assert all(fix in message for fix in fixes), message
+    assert not out.exists()
+
+
+def test_the_refusal_detects_the_hooks_by_type_not_by_parameter_names():
+    """Plain parameters that merely share the reparameterizations' names
+    export; a prune hook on a non-projection module is still refused."""
+    import torch
+
+    from nnx.interop.gguf.tensor_name_map import map_tensors
+
+    net = _tiny_transformer()
+    lin = net.blocks[0].ffn.w1
+    for suffix in ("_orig", "_mask", "_g", "_v"):
+        lin.register_parameter(f"weight{suffix}", torch.nn.Parameter(torch.zeros_like(lin.weight)))
+    assert "blk.0.ffn_gate.weight" in map_tensors(net)
+
+    net = _tiny_transformer()
+    torch.nn.utils.prune.random_unstructured(net.norm_out, "weight", amount=0.5)
+    with pytest.raises(TypeError, match=r"norm_out\.weight"):
+        map_tensors(net)
+
+
+def test_a_from_checkpoint_reload_into_an_unbaked_pruned_module_is_refused(tmp_path, monkeypatch):
+    """NNModel(module=pruned).train, then from_checkpoint(module=a fresh
+    unbaked net): its cached weight is the fresh net's init (0.43 off per
+    entry), which write_gguf exported."""
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx import Losses, NNCheckpoint, NNModel, NNModelParams, NNOptimParams, NNTrainParams
+    from nnx.interop.gguf import write_gguf
+    from nnx.lm_tasks import CausalLMTask
+    from nnx.nn.enum.checkpoints import Checkpoints
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    ids = torch.randint(0, 64, (8, 6), generator=torch.Generator().manual_seed(0))
+    model = NNModel(module=_pruned(0), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    run = model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            train_loader=DataLoader(TensorDataset(ids, ids), batch_size=4),
+            optim=NNOptimParams.builder().sgd(max_lr=0.1).build(),
+            save_phase_checkpoints=False,
+        ),
+        objective=CausalLMTask(vocab_size=64, alignment="pre_shifted").objective(),
+    )
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    reloaded = NNModel.from_checkpoint(checkpoint, module=_pruned(1))
+    out = tmp_path / "out" / "model.gguf"
+    with pytest.raises(TypeError, match="unbaked prune mask"):
+        write_gguf(reloaded.net, _tiny_tokenizer(tmp_path), out)  # type: ignore[arg-type]
+    assert not out.parent.exists()
+
+
+def _rebuilt_from_gguf(path, params: NNTransformerParams) -> TransformerNN:
+    """A plain TransformerNN holding the file's tensors: its forward is what
+    a GGUF reader of the file computes."""
+    import gguf
+    import numpy as np
+    import torch
+
+    stored = {t.name: torch.from_numpy(np.array(t.data)) for t in gguf.GGUFReader(str(path)).tensors}
+    net = TransformerNN(params=params)
+
+    def put(module: torch.nn.Module, name: str, rows: slice = slice(None)) -> None:
+        weight = module.weight
+        assert isinstance(weight, torch.Tensor)
+        with torch.no_grad():
+            weight[rows].copy_(stored[name].reshape(weight[rows].shape))
+
+    d = params.d_model
+    put(net.tok_embed, "token_embd.weight")  # also the tied head
+    for i, block in enumerate(net.blocks):
+        b: Any = block
+        put(b.norm1, f"blk.{i}.attn_norm.weight")
+        for j, part in enumerate(("q", "k", "v")):
+            put(b.attn.w_qkv, f"blk.{i}.attn_{part}.weight", slice(j * d, (j + 1) * d))
+        put(b.attn.w_o, f"blk.{i}.attn_output.weight")
+        put(b.norm2, f"blk.{i}.ffn_norm.weight")
+        put(b.ffn.w1, f"blk.{i}.ffn_gate.weight")
+        put(b.ffn.w2, f"blk.{i}.ffn_down.weight")
+        put(b.ffn.w3, f"blk.{i}.ffn_up.weight")
+    put(net.norm_out, "output_norm.weight")
+    return net.eval()
+
+
+@pytest.mark.parametrize(
+    "case", ["bake=True", "prune.remove", "parametrizations.weight_norm", "parametrizations.spectral_norm"]
+)
+def test_baked_and_parametrized_nets_still_export_the_weights_the_forward_uses(tmp_path, case):
+    """A baked mask is a plain weight, and a torch.nn.utils.parametrize
+    form computes ``.weight`` on every read, so the file holds the forward's
+    weights: a plain net rebuilt from it gives the same logits exactly. The
+    spectral_norm parametrization is compared in eval mode, where reading
+    the weight does not step its power iteration."""
+    import torch
+    from torch.nn.utils import parametrizations
+    from torch.nn.utils import prune as torch_prune
+
+    from nnx.interop.gguf import write_gguf
+    from nnx.prune import magnitude_prune
+
+    torch.manual_seed(0)
+    net = _tiny_transformer()
+    if case == "bake=True":
+        magnitude_prune(net, 0.5)  # every Linear, the tied head included
+    elif case == "prune.remove":
+        magnitude_prune(net, 0.5, layer_pattern="blocks.*", bake=False)
+        net.load_state_dict(_pruned(1).state_dict())
+        for module in net.modules():
+            if hasattr(module, "weight_mask"):
+                torch_prune.remove(module, "weight")
+    elif case == "parametrizations.weight_norm":
+        parametrizations.weight_norm(net.blocks[0].ffn.w1)
+        parametrizations.weight_norm(net.blocks[1].attn.w_qkv)
+    else:
+        parametrizations.spectral_norm(net.blocks[1].attn.w_o)
+    net.eval()
+    path = write_gguf(net, _tiny_tokenizer(tmp_path), tmp_path / "model.gguf", quantization="F32")
+    rebuilt = _rebuilt_from_gguf(path, net.params)
+    x = torch.randint(0, 64, (2, 8), generator=torch.Generator().manual_seed(0))
+    with torch.no_grad():
+        assert torch.equal(rebuilt(x), net(x))

@@ -16857,9 +16857,20 @@ Raises:
     TypeError: when the network carries a PEFT adapter (LoRA / DoRA /
         IA3 / prefix tuning), or a projection (``w_qkv`` / ``w_o`` /
         ``w1``–``w3`` / ``lm_head``) is not a plain ``nn.Linear`` (a
-        low-rank factorized one): GGUF stores plain weights. Nothing is
-        written, and no directory is created; the same holds for a
-        tokenizer that cannot be read (its own error propagates).
+        low-rank factorized one): GGUF stores plain weights. Also when
+        any module (the tied ``lm_head`` and non-projections included)
+        carries an unbaked prune mask or a legacy ``weight_norm`` /
+        ``spectral_norm`` hook: these recompute ``.weight`` only when
+        the module is called, so the stored weight is stale after a
+        ``load_state_dict`` or an optimizer step, and a masked tied head
+        has no GGUF slot. Bake the masks first
+        (``torch.nn.utils.prune.remove``, or
+        ``magnitude_prune(bake=True)``), and remove the legacy norms
+        (``torch.nn.utils.remove_weight_norm`` /
+        ``remove_spectral_norm``) or use their
+        ``torch.nn.utils.parametrizations`` forms, which export reads.
+        Nothing is written, and no directory is created; the same holds
+        for a tokenizer that cannot be read (its own error propagates).
 ```
 
 
@@ -16888,6 +16899,12 @@ Returns:
     When ``net.params.tie_embeddings`` is True, ``output.weight``
     is omitted (llama.cpp re-uses ``token_embd.weight`` for tied
     models).
+
+Raises:
+    TypeError: when the network carries a PEFT adapter, a projection
+        is not a plain ``nn.Linear``, or any module carries an unbaked
+        prune mask or a legacy ``weight_norm`` / ``spectral_norm``
+        hook (see :func:`nnx.interop.gguf.write_gguf`).
 ```
 
 
@@ -16904,7 +16921,8 @@ Emit an experimental ``model.gguf`` + ``Modelfile`` bundle.
 ```text
 Stock Ollama does not implement the ``nnx_transformer`` GGUF
 architecture. Emission verifies bundle structure only; it does not
-establish runtime compatibility.
+establish runtime compatibility. A refused export writes neither
+``model.gguf`` nor the ``Modelfile``, and creates no ``out_dir``.
 
 Args:
     transformer_nn: An NNx ``TransformerNN`` instance — the model
@@ -16929,6 +16947,23 @@ Args:
 
 Returns:
     Absolute path to the emitted ``Modelfile``.
+
+Raises:
+    ValueError: when ``system``, ``template`` or a ``parameters`` key
+        or string value would break the Modelfile syntax, a parameter
+        is not in the supported set, or the quantization label is
+        unknown.
+    TypeError: when a parameter value has the wrong type, or when
+        :func:`write_gguf` refuses the network: a PEFT adapter, a
+        factorized projection, or an unbaked prune mask or legacy
+        ``weight_norm`` / ``spectral_norm`` hook on any module (bake
+        the masks with ``torch.nn.utils.prune.remove`` or
+        ``magnitude_prune(bake=True)``; remove the legacy norms with
+        ``torch.nn.utils.remove_weight_norm`` /
+        ``remove_spectral_norm`` or use their
+        ``torch.nn.utils.parametrizations`` forms).
+    ImportError: when ``gguf`` is not installed, or the quantization
+        needs ``llama-quantize``.
 ```
 
 

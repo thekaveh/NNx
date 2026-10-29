@@ -49,6 +49,28 @@ metadata, and stable tensor names. The fused QKV projection is split into
 `attn_q`, `attn_k`, and `attn_v`; SwiGLU projections are similarly mapped to
 separate gate, up, and down tensors.
 
+The writer reads each module's stored weight; it does not call the module.
+Bake or remove forward-pre-hook reparameterizations before exporting:
+
+- An unbaked prune mask (`magnitude_prune(bake=False)` or a
+  `torch.nn.utils.prune` method) recomputes `.weight` from `weight_orig` and
+  `weight_mask` only when the module is called. After a `load_state_dict` or
+  an optimizer step, the stored weight is stale. A masked tied `lm_head` has
+  no GGUF slot of its own, because `token_embd` holds the unmasked embedding.
+  Bake the masks with `torch.nn.utils.prune.remove`, or prune with
+  `magnitude_prune(bake=True)`.
+- The legacy `torch.nn.utils.weight_norm` and `spectral_norm` hooks have the
+  same problem. Remove them with `torch.nn.utils.remove_weight_norm` /
+  `remove_spectral_norm`, or use the `torch.nn.utils.parametrizations` forms,
+  which compute the weight on every read. Export a `spectral_norm`
+  parametrization in eval mode: in training mode, each read takes one more
+  power-iteration step.
+
+`write_gguf` and `export_ollama_modelfile` refuse such a hook on any module
+with a `TypeError` that names the affected tensors and the fix.
+They also refuse PEFT adapters and factorized projections. A refused export
+writes no `.gguf`, `model.gguf` or Modelfile.
+
 The upstream Python reader can inspect the resulting container:
 
 ```python
