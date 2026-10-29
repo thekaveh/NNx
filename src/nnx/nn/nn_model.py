@@ -26,6 +26,7 @@ from typing_extensions import Self
 
 from .._confusion import LabelCounts, label_counts, label_kind, record_scores
 from .._metrics import _resolve_metric_with_provenance, _resolve_scheduler_metric, classification_edp
+from .._reparameterization import UNNAMED, legacy_reparameterizations
 from .._scheduler_clock import (
     HORIZON_KINDS,
     NO_UPDATE_REPORTER,
@@ -1076,6 +1077,25 @@ def _parametrized_prefix(key: str) -> str:
     ``X.parametrizations.name.original*``; a top-level ``name`` has no ``X.``)."""
     head, _, name = key.rpartition(".")
     return f"{head}.parametrizations.{name}.original" if head else f"parametrizations.{name}.original"
+
+
+def _reparameterizing_hooks(net: torch.nn.Module, base_keys: set[str]) -> tuple[set[str], set[str]]:
+    """The tensors (``X.base.weight``) an unbaked prune mask and a legacy
+    ``weight_norm`` / ``spectral_norm`` recompute in a forward pre-hook,
+    found by hook type wherever they sit (below a PEFT wrapper too), unless
+    the descriptor's own net carries that reparameterization."""
+    masked: set[str] = set()
+    normed: set[str] = set()
+    for path, module in net.named_modules():
+        masks, norms = legacy_reparameterizations(module)
+        for names, found, own in ((masks, masked, ("_mask",)), (norms, normed, ("_g", "_orig"))):
+            for name in names:
+                if name == UNNAMED:
+                    continue
+                key = f"{path}.{name}" if path else name
+                if not any(f"{key}{suffix}" in base_keys for suffix in own):
+                    found.add(key)
+    return masked, normed
 
 
 def _replaced_layers(state_keys: Iterable[str], base_keys: Iterable[str]) -> tuple[list[str], list[str]]:
@@ -3472,12 +3492,20 @@ class NNModel(_HubMixinBase):
             return
         expected_keys = set(base_state)
         actual_keys = _tensor_keys(self.net.state_dict())
+        # Masks and legacy norms below a PEFT wrapper (X.base.weight_orig) are
+        # not under a descriptor key, so they are found by their hooks (FIX-056).
+        # The state-key clauses below are kept on purpose as a backstop: they
+        # read the state layout, so they also catch a hook with no recorded name.
+        masked, normed = _reparameterizing_hooks(self.net, expected_keys)
         reparameterized = sorted(
-            key[: -len("_orig")]
-            for key in actual_keys - expected_keys
-            if key.endswith("_orig")
-            and key[: -len("_orig")] in expected_keys
-            and f"{key[: -len('_orig')]}_mask" in actual_keys  # a legacy spectral_norm has _u / _v instead
+            {
+                key[: -len("_orig")]
+                for key in actual_keys - expected_keys
+                if key.endswith("_orig")
+                and key[: -len("_orig")] in expected_keys
+                and f"{key[: -len('_orig')]}_mask" in actual_keys  # a legacy spectral_norm has _u / _v instead
+            }
+            | masked
         )
         if reparameterized:
             raise ValueError(
@@ -3494,11 +3522,14 @@ class NNModel(_HubMixinBase):
         # A parametrization (weight_norm, spectral_norm, register_parametrization)
         # replaces X.name by X.parametrizations.name.original* or X.name_g / X.name_v.
         parametrized = sorted(
-            key
-            for key in expected_keys - actual_keys
-            if any(other.startswith(_parametrized_prefix(key)) for other in actual_keys)
-            or {f"{key}_g", f"{key}_v"} <= actual_keys  # legacy weight_norm
-            or {f"{key}_orig", f"{key}_u"} <= actual_keys  # legacy spectral_norm
+            {
+                key
+                for key in expected_keys - actual_keys
+                if any(other.startswith(_parametrized_prefix(key)) for other in actual_keys)
+                or {f"{key}_g", f"{key}_v"} <= actual_keys  # legacy weight_norm
+                or {f"{key}_orig", f"{key}_u"} <= actual_keys  # legacy spectral_norm
+            }
+            | normed
         )
         if parametrized:
             raise ValueError(

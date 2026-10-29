@@ -77,7 +77,9 @@ def magnitude_prune(
     Raises:
         ValueError: if ``sparsity`` is outside ``[0, 1)``, or if
             ``bake=False`` selects a Linear whose parent reads its weight
-            directly (``nn.MultiheadAttention``'s ``out_proj``).
+            directly (``nn.MultiheadAttention``'s ``out_proj``, or the
+            ``base`` of a :class:`~nnx.peft.DoRALinear`). Nothing is
+            modified.
 
     **Idempotency note:** with ``bake=True``, calling ``magnitude_prune``
     twice at the same ``sparsity`` is a no-op for the second call —
@@ -116,6 +118,22 @@ def magnitude_prune(
                 f"magnitude_prune(bake=False): {', '.join(read_directly)} are read by their parent's weight "
                 "directly, so a mask could not apply; exclude them with layer_pattern or use bake=True. Nothing "
                 "was modified."
+            )
+        # DoRALinear reads its base's weight directly as well (FIX-056); refused
+        # here rather than through WEIGHT_READING_PARENTS, which also governs
+        # PEFT slot selection and recipe validation.
+        from ..peft.dora import DoRALinear
+
+        dora_bases = [
+            f"{name}.base" if name else "base"
+            for name, parent in net.named_modules()
+            if isinstance(parent, DoRALinear) and any(parent.base is mod for _, mod in targets)
+        ]
+        if dora_bases:
+            raise ValueError(
+                f"magnitude_prune(bake=False): {', '.join(dora_bases)} are the base of a DoRALinear, which reads "
+                "the weight directly, so a mask could not apply; exclude them with layer_pattern, use bake=True, "
+                "or adapt them with LoRA, which calls the base layer. Nothing was modified."
             )
 
     for _, mod in targets:

@@ -13869,12 +13869,30 @@ the LoRA-only helpers omit ``magnitude``. Like :class:`LoRALinear`,
 the wrapper and its update dropout inherit the base layer's
 train/eval mode at construction.
 
+DoRA reads the base's ``weight`` and ``bias`` and never calls the base
+layer, so it refuses a base whose own forward path would be skipped:
+a subclass or instance ``forward``, forward / pre / backward hooks, an
+unbaked prune mask or a legacy ``torch.nn.utils.weight_norm`` /
+``spectral_norm`` (they update ``weight`` only when the layer is called)
+and a quantized weight (torchao int8), which DoRA cannot norm. The
+refusal comes before the base is frozen, at construction, and at
+forward for a base changed after wrapping. Use :class:`LoRALinear` for
+such a layer. A ``torch.nn.utils.parametrizations`` norm recomputes
+``weight`` on every access and is supported. The hooks
+:func:`nnx.viz.summary` installs on every submodule for its one pass
+are exempt; a hook it did not install is still refused inside it.
+
 Args:
     base: the :class:`nn.Linear` to wrap. Its parameters are frozen
         on construction (inherited from LoRALinear).
     r: low-rank dim for the LoRA residual. Must be positive.
     alpha: scaling numerator. Effective LoRA scale is ``alpha / r``.
     dropout: dropout on the LoRA update path. Range ``[0, 1)``.
+
+Raises:
+    TypeError: if ``base`` is not an :class:`nn.Linear`, or carries one
+        of the features above (at forward too, when added after
+        wrapping). Nothing is frozen by a refused construction.
 ```
 
 ##### `nnx.peft.dora.DoRALinear.forward`
@@ -13931,9 +13949,12 @@ Raises:
         wrapped once; tied tensors between distinct modules are outside
         this check (see :func:`nnx.peft.apply_lora_to`).
     TypeError: if a selected Linear is a subclass with its own
-        ``forward`` (a QAT fake-quantized layer), which DoRA's recomposed
-        matmul would bypass. Every wrapper is built before any slot is
-        replaced, so a refused call modifies nothing.
+        ``forward`` (a QAT fake-quantized layer), or carries an instance
+        ``forward``, a hook, an unbaked prune mask, a legacy
+        ``weight_norm`` / ``spectral_norm`` or a quantized weight, which
+        DoRA's recomposed matmul would bypass (see :class:`DoRALinear`).
+        Every wrapper is built before any slot is replaced, so a refused
+        call modifies nothing.
 ```
 
 
@@ -14452,7 +14473,9 @@ Returns:
 Raises:
     ValueError: if ``sparsity`` is outside ``[0, 1)``, or if
         ``bake=False`` selects a Linear whose parent reads its weight
-        directly (``nn.MultiheadAttention``'s ``out_proj``).
+        directly (``nn.MultiheadAttention``'s ``out_proj``, or the
+        ``base`` of a :class:`~nnx.peft.DoRALinear`). Nothing is
+        modified.
 
 **Idempotency note:** with ``bake=True``, calling ``magnitude_prune``
 twice at the same ``sparsity`` is a no-op for the second call —
@@ -14796,7 +14819,10 @@ Returns:
     deep-copy of ``model.net``. The new model can be used for
     ``predict`` / ``evaluate`` / ``generate`` / ``to_onnx`` exactly
     like the original; ``train`` on the quantized model is not
-    supported (QAT lands in a separate module).
+    supported (QAT lands in a separate module). A
+    :class:`~nnx.peft.DoRALinear` cannot norm an int8 base, so the
+    quantized copy of a DoRA-adapted net raises ``TypeError`` at its
+    first forward; LoRA and IA3 adapters compose with int8 bases.
 
 Raises:
     ImportError: if ``torchao`` is not installed. Install with

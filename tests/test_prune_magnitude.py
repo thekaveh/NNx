@@ -218,3 +218,45 @@ def test_magnitude_prune_state_dict_load_round_trips_under_bake():
     assert set(src.keys()) == set(dst.keys())
     for name in src:
         assert torch.equal(src[name].detach(), dst[name].detach()), f"loaded {name!r} mismatch"
+
+
+# -------------------------------------------------------------------------
+# FIX-056 (#523): DoRALinear reads its base's weight directly
+# -------------------------------------------------------------------------
+
+
+def _dora_net() -> nn.Sequential:
+    from nnx.peft import apply_dora_to
+
+    torch.manual_seed(0)
+    net = nn.Sequential(nn.Linear(6, 6), nn.ReLU(), nn.Linear(6, 2))
+    apply_dora_to(net, "0", r=2)
+    return net
+
+
+@pytest.mark.parametrize("pattern", ["0.base", "*"])
+def test_unbaked_pruning_refuses_a_dora_base_and_modifies_nothing(pattern):
+    """#523 Context: the accepted mask never applied, and a strict reload of a
+    pruned DoRA net came back 0.6289 away from the saved model."""
+    net = _dora_net()
+    state = {k: v.clone() for k, v in net.state_dict().items()}
+    hooks = [len(m._forward_pre_hooks) for m in net.modules()]
+    with pytest.raises(ValueError, match=r"0\.base are the base of a DoRALinear.*Nothing was modified"):
+        nnx_prune.magnitude_prune(net, 0.5, layer_pattern=pattern, bake=False)
+    assert net.state_dict().keys() == state.keys()
+    assert all(torch.equal(net.state_dict()[k], v) for k, v in state.items())
+    assert [len(m._forward_pre_hooks) for m in net.modules()] == hooks
+
+
+def test_baked_pruning_of_a_dora_base_and_unbaked_pruning_of_lora_and_ia3_bases_still_work():
+    from nnx.peft import apply_ia3_to, apply_lora_to
+
+    net = _dora_net()
+    assert nnx_prune.magnitude_prune(net, 0.5, layer_pattern="0.base") == 1  # baked: a plain weight again
+    assert (net[0].base.weight == 0).sum() == 18
+    net(torch.randn(2, 6))
+    for apply in (apply_lora_to, apply_ia3_to):
+        other = nn.Sequential(nn.Linear(6, 6), nn.ReLU(), nn.Linear(6, 2))
+        apply(other, "0")
+        assert nnx_prune.magnitude_prune(other, 0.5, layer_pattern="0.base", bake=False) == 1
+        assert hasattr(other[0].base, "weight_mask")

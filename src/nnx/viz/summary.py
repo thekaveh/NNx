@@ -94,11 +94,15 @@ def summary(
             "pass batch= or input_data={name: tensor}"
         )
 
+    from ..peft.dora import _tool_hooks
     from ..utils import _capture_training_modes, _restore_training_modes
 
     training_modes = _capture_training_modes(model)
     try:
-        return _run_summary(_ti_summary, model, input_size, input_data, depth, col_names, kwargs)
+        # torchinfo hooks every submodule for this one pass, a DoRA base included,
+        # which DoRA would otherwise refuse as a user's hook (FIX-056).
+        with _tool_hooks():
+            return _run_summary(_ti_summary, model, input_size, input_data, depth, col_names, kwargs)
     finally:
         _restore_training_modes(training_modes)
 

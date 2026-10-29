@@ -10,6 +10,7 @@ from nnx import (
     DoRALinear,
     LoRALinear,
     apply_dora_to,
+    apply_lora_to,
     load_lora_weights,
     save_lora_weights,
 )
@@ -442,3 +443,275 @@ def test_dora_wraps_a_subclass_without_its_own_forward_and_keeps_frozen_flags_on
     with pytest.raises(TypeError):
         apply_dora_to(refused, "*")
     assert [p.requires_grad for p in refused.parameters()] == flags
+
+
+# -------------------------------------------------------------------------
+# FIX-056 (#523): bases whose forward path DoRA's recomposed matmul skips
+# -------------------------------------------------------------------------
+
+
+_X = torch.randn(5, 6, generator=torch.Generator().manual_seed(3))
+
+
+def _mlp(seed: int = 0) -> nn.Sequential:
+    torch.manual_seed(seed)
+    return nn.Sequential(nn.Linear(6, 6), nn.ReLU(), nn.Linear(6, 2))
+
+
+def _instance_forward(layer: nn.Linear) -> None:
+    stock = layer.forward
+    layer.forward = lambda inp: stock(inp) + 1.0  # type: ignore[method-assign]
+
+
+def _legacy(norm: str):
+    import warnings
+
+    from torch.nn.utils import spectral_norm, weight_norm
+
+    def apply(layer: nn.Linear) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # legacy weight_norm's deprecation notice
+            (weight_norm if norm == "weight_norm" else spectral_norm)(layer)
+
+    return apply
+
+
+def _prune_mask(layer: nn.Linear) -> None:
+    from nnx.prune import magnitude_prune
+
+    magnitude_prune(nn.Sequential(layer), 0.5, bake=False)
+
+
+# Each feature with the remedy its refusal names. Context of #523 measured the
+# wrapper's silent step-0 drift: forward hook 0.3573, pre-hook 0.1937, instance
+# forward 0.7405, legacy spectral_norm 3.5342; masks and legacy weight_norm
+# crashed the second training step.
+_BYPASSED = {
+    "forward_hook": (lambda layer: layer.register_forward_hook(lambda m, i, o: o * 2), "forward hook.*LoRA"),
+    "forward_pre_hook": (
+        lambda layer: layer.register_forward_pre_hook(lambda m, args: (args[0] * 0.5,)),
+        "forward pre-hook.*LoRA",
+    ),
+    "backward_hook": (lambda layer: layer.register_full_backward_hook(lambda m, gi, go: None), "backward hook.*LoRA"),
+    "backward_pre_hook": (
+        lambda layer: layer.register_full_backward_pre_hook(lambda m, go: None),
+        "backward hook.*LoRA",
+    ),
+    "instance_forward": (_instance_forward, "instance forward override.*LoRA"),
+    "prune_mask": (_prune_mask, "unbaked prune mask.*Bake the mask"),
+    "legacy_weight_norm": (_legacy("weight_norm"), "legacy weight_norm.*Remove the norm"),
+    "legacy_spectral_norm": (_legacy("spectral_norm"), "legacy weight_norm / spectral_norm.*Remove the norm"),
+}
+
+
+def _state(net: nn.Module):
+    return (
+        [(name, type(m)) for name, m in net.named_modules()],
+        [(name, p.requires_grad) for name, p in net.named_parameters()],
+        [(name, m.training) for name, m in net.named_modules()],
+    )
+
+
+@pytest.mark.parametrize("kind", list(_BYPASSED))
+@pytest.mark.parametrize("how", ["apply_dora_to", "DoRALinear"])
+def test_dora_refuses_a_base_whose_forward_path_it_would_skip_and_changes_nothing(kind, how):
+    add, match = _BYPASSED[kind]
+    net = _mlp()
+    net[2].eval()  # a mixed-mode net: every flag must survive the refusal
+    add(net[0])
+    before = _state(net)
+    with pytest.raises(TypeError, match=match):
+        if how == "apply_dora_to":
+            apply_dora_to(net, "*", r=2)
+        else:
+            DoRALinear(net[0], r=2)
+    assert _state(net) == before
+
+
+def test_lora_still_wraps_every_base_dora_refuses():
+    for kind, (add, _) in _BYPASSED.items():
+        net = _mlp().eval()  # spectral_norm's power iteration runs in train mode only
+        add(net[0])
+        with torch.no_grad():
+            before = net(_X)
+            apply_lora_to(net, "0", r=2)
+            assert torch.equal(net(_X), before), kind
+
+
+def _l1_prune_base(wrapper: DoRALinear) -> None:
+    torch.nn.utils.prune.l1_unstructured(wrapper.base, "weight", 0.5)
+
+
+@pytest.mark.parametrize(
+    "change, match",
+    [
+        (lambda w: w.base.register_forward_hook(lambda m, i, o: None), "forward hook"),
+        (lambda w: w.base.register_forward_pre_hook(lambda m, args: None), "forward pre-hook"),
+        (lambda w: w.base.register_full_backward_hook(lambda m, gi, go: None), "backward hook"),
+        (lambda w: w.base.register_full_backward_pre_hook(lambda m, go: None), "backward hook"),
+        (_l1_prune_base, "unbaked prune mask"),
+    ],
+    ids=["forward_hook", "forward_pre_hook", "backward_hook", "backward_pre_hook", "l1_unstructured"],
+)
+def test_a_base_changed_after_wrapping_is_refused_at_forward(change, match):
+    """#523 Context: hooks on ``.base`` fired 0 times under DoRA (LoRA: 1),
+    and a mask on ``.base`` reloaded 0.6289 away from the saved model."""
+    net = _mlp()
+    apply_dora_to(net, "0", r=2)
+    change(net[0])
+    with pytest.raises(TypeError, match=f"DoRA's base now has an? {match}.*, added after wrapping"):
+        net(_X)
+
+
+def _parametrized(kind: str):
+    from torch.nn.utils import parametrizations
+
+    def apply(layer: nn.Linear) -> None:
+        (parametrizations.weight_norm if kind == "weight_norm" else parametrizations.spectral_norm)(layer)
+
+    return apply
+
+
+class _Tagged(nn.Linear):  # no forward of its own
+    pass
+
+
+def _tagged(net: nn.Sequential) -> None:
+    tagged = _Tagged(6, 6)
+    tagged.load_state_dict(net[0].state_dict())
+    net[0] = tagged
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        lambda net: _parametrized("weight_norm")(net[0]),
+        lambda net: _parametrized("spectral_norm")(net[0]),
+        _tagged,
+    ],
+    ids=["parametrizations.weight_norm", "parametrizations.spectral_norm", "subclass_without_forward"],
+)
+def test_dora_still_wraps_parametrized_and_subclassed_bases_with_parity_and_trains(prepare):
+    net = _mlp()
+    prepare(net)
+    net.eval()  # spectral_norm's power iteration runs in train mode only
+    with torch.no_grad():
+        before = net(_X)
+        assert apply_dora_to(net, "0", r=2) == 1
+        after = net(_X)
+    assert (after - before).abs().max() <= 1e-6
+    net.train()
+    opt = torch.optim.SGD([p for p in net.parameters() if p.requires_grad], lr=0.1)
+    for _ in range(3):  # the refused legacy forms crashed the second step
+        loss = net(_X).pow(2).sum()
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+    assert torch.isfinite(net(_X)).all()
+
+
+@pytest.mark.parametrize("strict", [False, True], ids=["non_strict", "strict"])
+def test_a_plain_dora_net_still_exports(strict):
+    """#523 review: non-strict ``torch.export`` traces with FakeTensor weights,
+    which the quantized-weight check must not take for a quantized one."""
+    net = _mlp()
+    apply_dora_to(net, "0", r=2)
+    net.eval()
+    exported = torch.export.export(net, (_X,), strict=strict)
+    with torch.no_grad():
+        assert torch.allclose(exported.module()(_X), net(_X))
+
+
+def test_a_plain_dora_net_runs_under_fake_tensor_mode():
+    from torch._subclasses.fake_tensor import FakeTensorMode
+    from torch.func import functional_call
+
+    net = _mlp()
+    apply_dora_to(net, "0", r=2)
+    with FakeTensorMode(allow_non_fake_inputs=True) as mode:
+        fake = {k: mode.from_tensor(v) for k, v in net.state_dict().items()}
+        out = functional_call(net, fake, (mode.from_tensor(_X),))
+    assert out.shape == (5, 2)
+
+
+def test_a_training_forward_runs_a_dora_base_parametrization_once():
+    """#523 review: inspecting the weight must not read ``base.weight``, which
+    reruns the parametrization (a second spectral_norm power-iteration step)."""
+    from torch.nn.utils import parametrizations
+
+    net = _mlp()
+    parametrizations.spectral_norm(net[0])
+    norm = net[0].parametrizations.weight[0]
+    apply_dora_to(net, "0", r=2)
+    calls = []
+    stock = type(norm).forward
+    norm.forward = lambda w: (calls.append(1), stock(norm, w))[1]  # type: ignore[method-assign]
+    for _ in range(3):
+        net(_X).sum().backward()
+    assert len(calls) == 3
+
+
+# -------------------------------------------------------------------------
+# #523 review: NNx's own hook-based tools (nnx.viz.summary) stay exempt
+# -------------------------------------------------------------------------
+
+
+def test_only_hooks_an_nnx_tool_registers_are_exempt_and_never_after_it():
+    from nnx.peft.dora import _tool_hooks
+
+    net = _mlp()
+    apply_dora_to(net, "0", r=2)
+    before = net[0].base.register_forward_hook(lambda m, i, o: None)
+    with _tool_hooks():
+        with pytest.raises(TypeError, match="forward hook"):
+            net(_X)  # a user's hook from before the tool stays refused
+        before.remove()
+        tool = net[0].base.register_forward_pre_hook(lambda m, args: None)
+        with _tool_hooks():  # nested: the outer tool's hooks stay exempt inside
+            net(_X)
+        net(_X)  # the inner block's exit restores the outer one
+    with pytest.raises(TypeError, match="forward pre-hook"):
+        net(_X)  # nothing outlives the block
+    tool.remove()
+    net(_X)
+
+
+@pytest.mark.parametrize("kind", ["instance_forward", "prune_mask", "legacy_weight_norm", "legacy_spectral_norm"])
+def test_a_tool_block_relaxes_only_the_hook_check(kind):
+    from nnx.peft.dora import _tool_hooks
+
+    add, match = _BYPASSED[kind]
+    net = _mlp()
+    apply_dora_to(net, "0", r=2)
+    with _tool_hooks():
+        add(net[0].base)  # applied after wrapping, inside the block
+        with pytest.raises(TypeError, match=match.split(".*")[0]):
+            net(_X)
+
+
+def test_a_tool_block_does_not_reach_another_thread():
+    import threading
+
+    from nnx.peft.dora import _tool_hooks
+
+    net = _mlp()
+    apply_dora_to(net, "0", r=2)
+    errors: list[BaseException] = []
+    entered, hooked = threading.Event(), threading.Event()
+
+    def other() -> None:
+        entered.wait(5)
+        net[0].base.register_forward_hook(lambda m, i, o: None)
+        hooked.set()
+        try:
+            net(_X)
+        except TypeError as e:
+            errors.append(e)
+
+    worker = threading.Thread(target=other)
+    worker.start()
+    with _tool_hooks():
+        entered.set()
+        hooked.wait(5)
+        worker.join(5)
+    assert len(errors) == 1 and "forward hook" in str(errors[0])

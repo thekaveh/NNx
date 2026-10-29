@@ -118,3 +118,14 @@ def test_a_three_dimensional_attribution_renders_its_first_sample():
     attr = torch.stack([torch.zeros(2, 3), torch.ones(2, 3)])
     fig = _attribution_to_figure(attr, attr)
     assert torch.equal(torch.tensor(fig.data[0].z), torch.zeros(2, 3, dtype=torch.float64))
+
+
+@pytest.mark.parametrize("method", SUPPORTED_METHODS)
+def test_attribute_runs_on_a_dora_net(method, tiny_model, tiny_input):
+    # DeepLift hooks the net's nonlinearities only, never DoRA's base, which
+    # DoRA refuses a hook on at forward (#523).
+    from nnx.peft import apply_dora_to
+
+    apply_dora_to(tiny_model.net, "layers.*", r=2)
+    attr, _ = attribute(tiny_model, tiny_input, method=method, target=0)
+    assert attr.shape == tiny_input.shape

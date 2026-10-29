@@ -188,7 +188,7 @@ def wrap_selected_linears(
     Building a wrapper already freezes its base, so nothing is constructed
     until the whole matched set has passed :func:`select_linear_slots`.
     Every wrapper is built before any slot is replaced; a wrapper that
-    fails to build (a quantized weight DoRA cannot norm, say) restores the
+    fails to build (a base DoRA refuses, say) restores the
     bases' trainability and leaves every slot as it was.
     """
     targets = select_linear_slots(
