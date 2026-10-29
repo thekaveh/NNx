@@ -700,6 +700,55 @@ def test_a_refused_lazy_reload_leaves_the_module_unmaterialized():
     assert type(loaded[0]) is nn.LazyLinear and hasattr(loaded[0], "_initialize_hook")
 
 
+@pytest.mark.parametrize("materialize", ["predict", "evaluate", "forward"])
+def test_a_lazy_module_materialized_outside_training_is_described_as_materialized(materialize):
+    model = NNModel(module=_lazy(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    if materialize == "predict":
+        model.predict(torch.randn(3, 4))
+    elif materialize == "evaluate":
+        model.evaluate(_loader())
+    else:
+        model.net(torch.randn(3, 4))  # a direct call of the wrapped module
+    assert model.params.net == RuntimeModule.of(model.net)
+    assert NNModel(module=model.net, params=model.params).net is model.net
+    params = _params(_loader(), epochs=1)
+    dry = NNModel(module=_dry_run(_lazy()), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    # the module had materialized when train() started: the run takes the materialized id
+    assert model.train(params=params).id == NNRun(train=params, model=dry.params, net=None).id
+
+
+def test_a_lazy_module_with_loaded_weights_is_wrapped_as_a_dry_run_one():
+    source = _dry_run(_lazy())
+    loaded = _lazy()
+    loaded.load_state_dict(source.state_dict())  # weights in, not yet a forward
+    model = NNModel(module=loaded, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    assert type(loaded[0]) is nn.Linear and not hasattr(loaded[0], "_initialize_hook")  # materialized at the wrap
+    dry = NNModel(module=_dry_run(_lazy()), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    assert model.params == dry.params  # one descriptor, so one run id, as a dry-run-wrapped module
+    assert model.predict(torch.randn(3, 4)).logits.shape == (3, 2)
+
+
+def test_a_lazy_reload_without_weights_to_check_names_its_cause():
+    from nnx.nn.params.nn_checkpoint import NNCheckpointTransform
+
+    _, checkpoint, _ = _train_lazy(_dry_run(_lazy()))
+    # a non-recipe transform (torchao_qat, say): the saved weights fit only the transformed module
+    transformed = NNCheckpoint(
+        idp=checkpoint.idp,
+        model_params=checkpoint.model_params,
+        net_params=None,
+        net_state=checkpoint.net_state,
+        transforms=(NNCheckpointTransform(name="callback_own", version=1, options={}),),
+    )
+    fresh = _lazy()
+    with pytest.raises(ValueError, match="lazy layers that are not materialized") as refused:
+        NNModel.from_checkpoint(transformed, module=fresh)
+    message = str(refused.value)
+    assert "recorded transforms" in message and "dry-run forward" in message
+    assert "torch does not ship" not in message  # nn.LazyLinear is one torch ships
+    assert _is_uninitialized(fresh)
+
+
 def test_to_onnx_refuses_a_mapping_example_before_writing(tmp_path):
     model = NNModel(module=nn.Linear(4, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
     path = tmp_path / "model.onnx"

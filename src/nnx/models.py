@@ -197,10 +197,13 @@ class RuntimeModule:
     uninitialized lazy nets that will see different input widths share a
     descriptor and a run id, so give them distinct ``data_id`` / ``salt``
     values (or dry-run them first). Once the wrapped module has
-    materialized, ``NNModel`` takes its descriptor afresh, so checkpoints
-    describe the trained module and its later runs use the materialized
-    descriptor's id. A reload compares an uninitialized lazy module with a
-    materialized descriptor after the saved weights materialize it (their
+    materialized (its first forward, in training, ``predict``,
+    ``evaluate`` or a direct call), ``NNModel`` takes its descriptor afresh,
+    so ``params``, checkpoints and its later runs use the materialized
+    descriptor. A lazy module whose weights are loaded before any forward
+    is materialized at the wrap and described as a dry-run one. A reload
+    compares an uninitialized lazy module with a materialized descriptor
+    after the saved weights materialize it (their
     names and shapes are checked first, and nothing loads on a refusal).
     A module holding a lazy layer torch does not ship keeps its wrap-time
     descriptor: only a forward reveals what such a layer infers.

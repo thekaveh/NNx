@@ -526,9 +526,6 @@ class ModelCheckpoint(Callback):
         # is written, so a stateful resume from this file fails before
         # anything is restored; resume_mode="weights_only" (or "auto")
         # warm-starts from its weights.
-        refresh = getattr(ctx.model, "_refresh_lazy_descriptor", None)
-        if refresh is not None:
-            refresh()  # #562: a lazy module is described as materialized
         ckpt = NNCheckpoint(
             idp=ctx.idp,
             model_params=ctx.model.params,
