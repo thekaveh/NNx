@@ -186,3 +186,46 @@ def test_tied_output_head_is_not_an_alias_but_shares_its_tensor():
     assert nnx.peft.apply_lora_to(net, "*", r=2) > 0
     assert isinstance(net.lm_head, LoRALinear)
     assert net.tok_embed.weight.requires_grad is False
+
+
+@pytest.mark.parametrize("kind", ["lora", "dora"])
+def test_bad_options_are_refused_before_the_alias_preflight(kind):
+    """#555: options are checked before matching, so an invalid ``r`` is
+    reported (not the alias) and nothing is modified."""
+    apply = {"lora": nnx.peft.apply_lora_to, "dora": nnx.peft.apply_dora_to}[kind]
+    model = _aliased_model()
+    before = _snapshot(model)
+    with pytest.raises(ValueError, match="rank r must be positive, got 0"):
+        apply(model, "*", r=0)
+    _assert_unchanged(model, before)
+
+
+@pytest.mark.parametrize("kind", sorted(_HELPERS))
+def test_a_wrap_failing_after_the_first_wrapper_restores_the_rng_for_every_helper(kind, monkeypatch):
+    """#555: ``wrap_selected_linears`` restores the global random streams
+    on any build failure, for each ``apply_*_to`` helper (IA3 draws
+    nothing of its own; the failing wrap below does)."""
+    import importlib
+
+    module = importlib.import_module(f"nnx.peft.{kind}")
+    real = module.wrap_selected_linears
+
+    def failing(root, name_patterns, *, wrap, **kwargs):
+        built = []
+
+        def wrap_then_fail(base):
+            if built:
+                torch.rand(1)
+                raise RuntimeError("interrupted mid-build")
+            built.append(wrap(base))
+            return built[-1]
+
+        return real(root, name_patterns, wrap=wrap_then_fail, **kwargs)
+
+    monkeypatch.setattr(module, "wrap_selected_linears", failing)
+    model = _aliased_model()
+    before, rng = _snapshot(model), torch.get_rng_state()
+    with pytest.raises(RuntimeError, match="mid-build"):
+        _HELPERS[kind](model, "first", "c")
+    assert torch.equal(torch.get_rng_state(), rng)
+    _assert_unchanged(model, before)
