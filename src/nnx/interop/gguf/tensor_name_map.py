@@ -132,9 +132,9 @@ def _refuse_reparameterized(net: torch.nn.Module) -> None:
             " The masked lm_head.weight is tied: its one GGUF slot, token_embd.weight, holds the unmasked embedding."
         )
     raise TypeError(
-        f"GGUF export reads each module's stored weight, but {' and '.join(problems)}, which recompute the "
-        f"weight only when the module is called: the file would not hold the weights the forward uses.{tied_head} "
-        f"Before exporting, {'; and '.join(fixes)}."
+        f"GGUF export reads each module's stored weight, but {' and '.join(problems)}. A prune mask or legacy "
+        f"norm recomputes the weight only when its module is called, so the file would not hold the weights the "
+        f"forward uses.{tied_head} Before exporting, {'; and '.join(fixes)}."
     )
 
 
