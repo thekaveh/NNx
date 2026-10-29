@@ -827,3 +827,70 @@ def test_qat_trains_a_net_whose_dora_base_it_does_not_swap(loop, tmp_path, monke
     assert types["layers.1"] == "Int8DynActInt4WeightLinear"
     with torch.no_grad():
         assert torch.isfinite(model.net(x)).all()
+
+
+# -------------------------------------------------------------------------
+# #555: a refused or failed apply_dora_to leaves the random streams alone
+# -------------------------------------------------------------------------
+
+
+class _Scaled(nn.Linear):  # its own forward, like a QAT fake-quantized layer
+    def forward(self, x):
+        return super().forward(x) * 2
+
+
+def _model_state(model: nn.Module):
+    return (
+        [(name, type(m), m.training) for name, m in model.named_modules()],
+        [(name, p.requires_grad) for name, p in model.named_parameters()],
+    )
+
+
+@pytest.mark.parametrize("custom_first", [True, False], ids=["custom-first", "after-a-plain-linear"])
+def test_a_refused_apply_dora_to_leaves_the_rng_slots_flags_and_modes_unchanged(custom_first):
+    """#555: a plain Linear before the refused base already drew its
+    lora_A init when the refusal came."""
+    first, second = (_Scaled(3, 4), nn.Linear(4, 2)) if custom_first else (nn.Linear(3, 4), _Scaled(4, 2))
+    model = nn.Sequential(first, nn.ReLU(), second)
+    model[2].eval()
+    before, rng = _model_state(model), torch.get_rng_state()
+    with pytest.raises(TypeError, match="_Scaled"):
+        apply_dora_to(model, "*", r=2)
+    assert torch.equal(torch.get_rng_state(), rng)
+    assert _model_state(model) == before
+
+
+def test_a_failed_dora_wrap_of_an_int8_base_leaves_the_rng_slots_flags_and_modes_unchanged():
+    """#555: the plain Linear's DoRA wrapper was built (and drew) before
+    the torchao int8 weight-only base was refused."""
+    pytest.importorskip("torchao")
+    from torchao.quantization import Int8WeightOnlyConfig, quantize_
+
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(16, 16), nn.ReLU(), nn.Linear(16, 16))
+    quantize_(
+        model,
+        Int8WeightOnlyConfig(version=2, set_inductor_config=False),
+        filter_fn=lambda module, fqn: fqn == "2",
+    )
+    model[0].eval()
+    before, rng = _model_state(model), torch.get_rng_state()
+    with pytest.raises(TypeError, match="quantized weight"):
+        apply_dora_to(model, "*", r=2)
+    assert torch.equal(torch.get_rng_state(), rng)
+    assert _model_state(model) == before
+
+
+def test_a_seeded_lora_fallback_after_a_refused_dora_initializes_as_a_direct_lora_call():
+    """#555: the refusal says "Use LoRA"; trying DoRA first must not shift
+    the seeded LoRA initialization."""
+    inits = []
+    for try_dora_first in (False, True):
+        model = nn.Sequential(nn.Linear(3, 4), nn.ReLU(), _Scaled(4, 2))
+        torch.manual_seed(123)
+        if try_dora_first:
+            with pytest.raises(TypeError, match="Use LoRA"):
+                apply_dora_to(model, "*", r=2)
+        assert apply_lora_to(model, "*", r=2) == 2
+        inits.append((model[0].lora_A.detach().clone(), model[2].lora_A.detach().clone()))
+    assert all(torch.equal(a, b) for a, b in zip(*inits, strict=True))
