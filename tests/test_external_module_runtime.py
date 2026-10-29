@@ -544,6 +544,31 @@ def test_lazy_reloads_refuse_other_shapes_classes_and_hyperparameters_before_loa
         assert _is_uninitialized(module)  # refused before any weight loaded
 
 
+def test_only_a_lazy_reloads_weight_check_names_attached_submodules():
+    import dataclasses
+
+    probe = {"probe.weight": torch.zeros(3)}  # a top-level submodule the training run attached
+    dense = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+    _, checkpoint, _ = _train_lazy(dense, data_id="dense")
+    attached = dataclasses.replace(checkpoint, net_state={**checkpoint.net_state, **probe})
+    wider = nn.Sequential(nn.Linear(4, 9), nn.ReLU(), nn.Linear(9, 2))
+    # a non-lazy descriptor mismatch is refused as is: excluding the probe would not help
+    for excluded in ((), ("probe",)):
+        with pytest.raises(ValueError, match="does not match the descriptor") as refused:
+            NNModel.from_checkpoint(attached, module=wider, exclude_submodules=excluded)
+        assert "exclude_submodules" not in str(refused.value) and "lazy" not in str(refused.value)
+    # a lazy module checked against the saved weights is told what to exclude
+    model, checkpoint, _ = _train_lazy(_dry_run(_lazy()), data_id="lazy")
+    attached = dataclasses.replace(checkpoint, net_state={**checkpoint.net_state, **probe})
+    module = _lazy()
+    with pytest.raises(ValueError, match=r"exclude_submodules=\('probe',\)"):
+        NNModel.from_checkpoint(attached, module=module)
+    assert _is_uninitialized(module)
+    reloaded = NNModel.from_checkpoint(attached, module=module, exclude_submodules=("probe",))
+    X = torch.randn(5, 4)
+    np.testing.assert_array_equal(reloaded.predict(X).logits, model.predict(X).logits)
+
+
 def test_a_checkpoint_described_before_materialization_reloads_into_a_fresh_instance():
     import dataclasses
 
@@ -588,13 +613,15 @@ class _ImageLoader:
             (2, 6),
         ),
         (
+            # in_channels (4) differs from out_channels / groups (3): the
+            # transposed weight (4, 3, k, k) tells its two dimensions apart
             lambda: nn.Sequential(
-                nn.LazyConvTranspose2d(4, 2, groups=2),
+                nn.LazyConvTranspose2d(6, 2, groups=2),
                 nn.LazyInstanceNorm2d(affine=True),
                 nn.Flatten(),
                 nn.LazyLinear(2),
             ),
-            (2, 3, 3),
+            (4, 3, 3),
         ),
     ],
     ids=["conv1d-batchnorm", "convtranspose2d-instancenorm"],

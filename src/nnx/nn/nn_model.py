@@ -3273,14 +3273,16 @@ def _resolve_net_descriptor(
     *,
     state: Optional[Mapping[str, Any]] = None,
     reloading: bool = False,
+    explain_state: Optional[Callable[[ValueError], Optional[Exception]]] = None,
 ) -> NNModelParams:
     """Check how a model's network is described (FEAT-006) and return the
     params to keep — with a wrapped module's :class:`RuntimeModule`
     descriptor filled in. ``state`` (``from_checkpoint``'s saved weights,
     ``reloading`` there) lets a lazy ``module`` match a descriptor taken
-    after materialization once they are checked against it (#562). Nothing
-    here changes ``module``: the caller materializes it after its own
-    checks."""
+    after materialization once they are checked against it (#562);
+    ``explain_state`` explains that check's refusal, never a descriptor
+    mismatch. Nothing here changes ``module``: the caller materializes it
+    after its own checks."""
     net = params.net
     if module is not None:
         if not isinstance(module, torch.nn.Module):
@@ -3292,7 +3294,7 @@ def _resolve_net_descriptor(
             return replace(params, net=descriptor)
         if isinstance(net, RuntimeModule):
             if net != descriptor and not _checked_lazy_reload(module, net):
-                _match_lazy_module(net, descriptor, module, state, reloading=reloading)
+                _match_lazy_module(net, descriptor, module, state, reloading=reloading, explain_state=explain_state)
             return params
         raise ValueError(
             f"module= wraps a caller-owned module, so NNModelParams.net must be None (or that module's "
@@ -3323,15 +3325,18 @@ _LAZY_RULE = (
 )
 
 
-def _descriptor_mismatch(descriptor: RuntimeModule, net: RuntimeModule, *, after_load: bool = False) -> str:
+def _descriptor_mismatch(
+    descriptor: RuntimeModule, net: RuntimeModule, *, after_load: bool = False, lazy: bool = True
+) -> str:
     """The refusal of a module whose descriptor differs from ``net``; one of
     the same class may differ only by lazy materialization, so the message
-    states that rule and its remedies (#562)."""
+    states that rule and its remedies (#562) — unless ``lazy`` is false: the
+    saved weights already rule that out."""
     message = (
         f"module {descriptor.module} (topology {descriptor.topology}) does not match the descriptor "
         f"{net.module} (topology {net.topology})"
     )
-    if not _same_class_once_materialized(descriptor.module, net.module):
+    if not lazy or not _same_class_once_materialized(descriptor.module, net.module):
         return message
     if after_load:
         return (
@@ -3352,17 +3357,27 @@ def _match_lazy_module(
     state: Optional[Mapping[str, Any]],
     *,
     reloading: bool,
+    explain_state: Optional[Callable[[ValueError], Optional[Exception]]] = None,
 ) -> None:
     """Accept ``module`` for the descriptor ``net`` it does not match exactly
     only when it is the same class once materialized, with lazy layers still
     to materialize, and materializing them from ``state`` (or from the
     weights they already hold) — checked against the module first — gives
-    exactly ``net``. Anything else is refused. Only checks: the caller loads
-    the weights and finishes the materialization (#562)."""
+    exactly ``net``. Anything else is refused; ``explain_state`` explains
+    only the refusal of that check. Only checks: the caller loads the
+    weights and finishes the materialization (#562)."""
     if not _same_class_once_materialized(descriptor.module, net.module) or not _has_pending_lazy(module):
-        raise ValueError(_descriptor_mismatch(descriptor, net))
+        # A materialized module whose shapes or names differ from the saved
+        # weights differs by more than lazy materialization.
+        raise ValueError(_descriptor_mismatch(descriptor, net, lazy=state is None or _fits_state(module, state)))
     if state is not None:
-        check_state_schema(module, state, what=f"checkpoint of {net}")
+        try:
+            check_state_schema(module, state, what=f"checkpoint of {net}")
+        except ValueError as error:
+            explained = explain_state(error) if explain_state is not None else None
+            if explained is not None:
+                raise explained from error
+            raise
     topology = _materialized_topology(module, state or {})
     if topology is None:
         dry_run = "materialize it with a dry-run forward (module(example_input)) before passing it as module="
@@ -3388,6 +3403,14 @@ def _match_lazy_module(
     if topology != net.topology:
         materialized = RuntimeModule(_materialized_class_name(descriptor.module), topology)
         raise ValueError(_descriptor_mismatch(materialized, net, after_load=True))
+
+
+def _fits_state(module: torch.nn.Module, state: Mapping[str, Any]) -> bool:
+    try:
+        check_state_schema(module, state, what="")
+    except ValueError:
+        return False
+    return True
 
 
 # #562: the module= that from_checkpoint has checked against the saved
@@ -3486,7 +3509,7 @@ class NNModel(_HubMixinBase):
             if self._lazy_wrap_keys is not None and not _checked_lazy_reload(module, cast(RuntimeModule, net)):
                 # Lazy layers whose weights are loaded (load_state_dict, or
                 # matched as the module they become by _match_lazy_module):
-                # finish that materialization, as their first forward would,
+                # finish that materialization as a dry-run forward would have,
                 # now that every check passed, so the module is described as
                 # a dry-run one. Uninitialized layers stay as they are.
                 _complete_lazy_materialization(module)
@@ -3896,8 +3919,8 @@ class NNModel(_HubMixinBase):
         forward) also matches a descriptor taken after materialization: its
         parameter names and shapes are checked against the saved weights,
         and the topology they materialize against the descriptor, before
-        any weight loads; the weights then materialize it, as its first
-        forward would.
+        any weight loads; the weights then materialize it, as a dry-run
+        forward would have.
 
         The precision policy is re-resolved on the destination
         device (the constructor resolves it) — never read from the
@@ -3963,15 +3986,16 @@ class NNModel(_HubMixinBase):
             # a lazy module still to materialize is checked against them (a
             # recorded transform's weights fit only the transformed topology)
             # and materialized from them once they load, after every check.
-            try:
-                _resolve_net_descriptor(
-                    None, model_params, module, state=None if transforms else net_state, reloading=True
-                )
-            except ValueError as error:
-                explained = _attached_submodules_error(error, module, net_state, rebuild_call, excluded)
-                if explained is not None:
-                    raise explained from error
-                raise
+            _resolve_net_descriptor(
+                None,
+                model_params,
+                module,
+                state=None if transforms else net_state,
+                reloading=True,
+                explain_state=lambda error: _attached_submodules_error(
+                    error, module, net_state, rebuild_call, excluded
+                ),
+            )
             matched_lazily = not transforms and RuntimeModule.of(module) != net
             checked = _CHECKED_LAZY_RELOAD.set((module, net))
             try:
