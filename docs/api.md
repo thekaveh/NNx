@@ -14942,7 +14942,8 @@ swap a Linear whose parent reads its weight instead of calling it: the
 base of a :class:`~nnx.peft.DoRALinear` (use LoRA there) and
 ``nn.MultiheadAttention.out_proj``, which are never called, so training
 would skip their fake quantization; and ``linear1`` / ``linear2`` of a
-``batch_first`` torch ``TransformerEncoderLayer``, whose eval fast path
+torch ``TransformerEncoderLayer`` that can take the eval fast path
+(``batch_first``, a relu or gelu activation, an even head count), which
 reads their weights, so the converted net's eval forward would fail. A
 fit that fails before its first update gets its unprepared net back,
 unconverted.
@@ -14979,8 +14980,8 @@ Raises:
         and never calls it. Use LoRA for a layer QAT prepares.
     ValueError: if QAT would swap ``nn.MultiheadAttention.out_proj``
         (never called) or ``linear1`` / ``linear2`` of a
-        ``batch_first`` ``TransformerEncoderLayer`` (read by its eval
-        fast path), or if it would swap nothing. The net is
+        ``TransformerEncoderLayer`` that can take the eval fast path
+        (which reads them), or if it would swap nothing. The net is
         unchanged after each refusal.
 ```
 

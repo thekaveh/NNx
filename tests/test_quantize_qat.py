@@ -475,15 +475,15 @@ def test_a_split_qat_run_with_dropout_equals_the_uninterrupted_run(tmp_path, mon
 # -------------------------------------------------------------------------
 
 
-def _fit(model: NNModel, loop: str, callbacks: list, loader, *, n_epochs: int = 1) -> None:
-    """A QAT fit through ``NNModel.train`` or ``Trainer.train``."""
+def _fit(model: NNModel, loop: str, callbacks: list, loader, *, n_epochs: int = 1, **resume):
+    """A QAT fit through ``NNModel.train`` or ``Trainer.train``; ``resume``
+    goes to the train params. Returns the run."""
     from nnx import NNEvaluationDataPoint, NNTrainerParams, Trainer
 
     optim = NNOptimParams.builder().sgd(max_lr=0.1).build()
     if loop == "nnmodel":
-        params = NNTrainParams(n_epochs=n_epochs, train_loader=loader, optim=optim)
-        model.train(params=params, callbacks=callbacks, train_step_fn=qat_train_step_factory())
-        return
+        params = NNTrainParams(n_epochs=n_epochs, train_loader=loader, optim=optim, **resume)
+        return model.train(params=params, callbacks=callbacks, train_step_fn=qat_train_step_factory())
 
     def trainer_step(ctx):
         ctx.model.net.train()
@@ -495,8 +495,8 @@ def _fit(model: NNModel, loop: str, callbacks: list, loader, *, n_epochs: int = 
         optimizer.step()
         return NNEvaluationDataPoint(loss=float(loss.detach()), error=float(loss.detach()))
 
-    params = NNTrainerParams(n_epochs=n_epochs, train_loader=loader, optims={"main": optim})
-    Trainer(model).train(params=params, trainer_step_fn=trainer_step, callbacks=callbacks)
+    params = NNTrainerParams(n_epochs=n_epochs, train_loader=loader, optims={"main": optim}, **resume)
+    return Trainer(model).train(params=params, trainer_step_fn=trainer_step, callbacks=callbacks)
 
 
 def _types(net: torch.nn.Module) -> dict[str, str]:
@@ -562,8 +562,25 @@ def test_qat_refuses_a_transformer_layers_linears_naming_each():
     assert "0.linear2 (read by its parent TransformerEncoderLayer)" in message
     assert "0.self_attn.out_proj (read by its parent MultiheadAttention)" in message
     assert "MultiheadAttention reads out_proj's weight and never calls it" in message
-    assert "its eval fast path reads their weights directly" in message
+    assert "that fast path reads their weights directly" in message
     assert _types(net) == before and not callback.is_prepared
+
+
+def test_qat_refusal_lists_the_first_ten_paths_it_names():
+    """Review of #526: a deep batch_first encoder named every out_proj,
+    linear1 and linear2; the list stops at ten, as the DoRA refusal's does."""
+    layer = torch.nn.TransformerEncoderLayer(64, 4, dim_feedforward=64, batch_first=True)
+    net = torch.nn.Sequential(torch.nn.TransformerEncoder(layer, 12, enable_nested_tensor=False))
+
+    class _Ctx:
+        model = type("M", (), {"net": net})()
+
+    with pytest.raises(ValueError) as refusal:
+        QATLifecycleCallback(groupsize=32).on_train_begin(_Ctx())
+    message = str(refusal.value)
+    assert message.count("(read by its parent") == 10
+    assert "0.layers.0.self_attn.out_proj (read by its parent MultiheadAttention), 0.layers.0.linear1" in message
+    assert ", … and 26 more: MultiheadAttention reads out_proj's weight" in message
 
 
 class _TransformerLayerNet(torch.nn.Module):
@@ -576,9 +593,15 @@ class _TransformerLayerNet(torch.nn.Module):
         if kind == "decoder":
             self.layer = torch.nn.TransformerDecoderLayer(48, 4, dim_feedforward=64, dropout=0.0, batch_first=True)
         else:
-            batch_first = kind == "encoder_batch_first"
+            # Each encoder kind but "encoder_batch_first" fails one of the
+            # fast path's configuration preconditions.
             self.layer = torch.nn.TransformerEncoderLayer(
-                48, 4, dim_feedforward=64, dropout=0.0, batch_first=batch_first
+                48,
+                3 if kind == "encoder_odd_heads" else 4,
+                dim_feedforward=64,
+                dropout=0.0,
+                activation=torch.tanh if kind == "encoder_tanh" else "relu",
+                batch_first=kind != "encoder",
             )
         self.decoder = kind == "decoder"
         self.head = torch.nn.Linear(48, 2)
@@ -588,12 +611,13 @@ class _TransformerLayerNet(torch.nn.Module):
         return self.head(h.mean(1))
 
 
-@pytest.mark.parametrize("kind", ["decoder", "encoder"])
+@pytest.mark.parametrize("kind", ["decoder", "encoder", "encoder_tanh", "encoder_odd_heads"])
 def test_qat_converts_a_transformer_layers_linears_it_calls(kind, tmp_path, monkeypatch):
-    """Review of #526: a TransformerDecoderLayer has no fast path and a
-    non-batch_first encoder layer never takes it, so both call linear1 /
-    linear2: QAT fake-quantizes and converts them, and the converted eval
-    forward runs."""
+    """Review of #526: a TransformerDecoderLayer has no fast path, and an
+    encoder layer that is not batch_first, has a tanh activation or an odd
+    head count never takes it, so each calls linear1 / linear2: QAT
+    fake-quantizes and converts them, and the converted eval forward runs
+    (as it did before #526)."""
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
     monkeypatch.chdir(tmp_path)
     torch.manual_seed(0)
@@ -690,6 +714,30 @@ def test_a_fit_failing_before_its_first_update_hands_back_the_unprepared_net(loo
     _fit(model, loop, [callback], _make_loader())
     assert callback.is_prepared and callback.is_converted
     assert _types(model.net)["layers.0"] == "Int8DynActInt4WeightLinear"
+
+
+@pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
+def test_a_resumed_fit_failing_before_its_first_update_hands_back_the_pre_resume_net(loop, tmp_path, monkeypatch):
+    """Review of #526: a resume that fails before its first update is rolled
+    back to the model it replaced (#507). That rollback must still tell QAT's
+    on_train_end the fit trained nothing, or it converts the restored net."""
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.chdir(tmp_path)
+    torch.manual_seed(0)
+    run = _fit(_make_model(), loop, [], _make_loader())
+    torch.manual_seed(1)
+    model = _make_model()
+    before = _types(model.net)
+    state = {key: value.clone() for key, value in model.net.state_dict().items()}
+    callback = QATLifecycleCallback()
+
+    with pytest.raises(RuntimeError, match="a later callback failed"):
+        _fit(model, loop, [callback, _RaisesOnTrainBegin()], _make_loader(), n_epochs=2, resume_from_run_id=run.id)
+
+    assert _types(model.net) == before
+    assert all(torch.equal(value, state[key]) for key, value in model.net.state_dict().items())
+    assert not callback.is_prepared and not callback.is_converted
+    assert callback.checkpoint_transforms() == ()
 
 
 @pytest.mark.parametrize("loop", ["nnmodel", "trainer"])
