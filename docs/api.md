@@ -8322,7 +8322,7 @@ Wrap each ``nn.Linear`` at ``targets`` in a `LoRALinear` (``r``, ``alpha``, ``dr
 nnx.transforms.low_rank(*targets: 'str', rank: 'int', method: 'str' = 'svd') -> 'TransformOp'
 ```
 
-Replace each ``nn.Linear`` at ``targets`` by its rank-``rank`` factorization (``nnx.surgery.low_rank_factorize``).
+Replace each ``nn.Linear`` at ``targets`` by its rank-``rank`` factorization (``nnx.surgery.low_rank_factorize``). A target with a hook of its own is refused, as ``low_rank_factorize`` refuses it.
 
 
 #### `nnx.transforms.check_optimizer`
@@ -14677,8 +14677,12 @@ Raises:
         function-preservation); if the ReLU is not fed by an
         ``nn.Linear`` through elementwise / norm modules only; if the
         Sequential is a subclass or carries its own parameters, buffers
-        or hooks, or the target ReLU has hooks; or if a ModuleList is not
-        the ``layers`` / ``fcs`` of a stock FeedFwdNN / ConvNN.
+        or hooks, or the target ReLU has hooks; if a ModuleList is not
+        the ``layers`` / ``fcs`` of a stock FeedFwdNN / ConvNN; or if the
+        Sequential / ModuleList holding the site is registered under more
+        than one path (``ModuleList([block, block])``, ``self.backbone =
+        self.body``), which a rebuild at one path would split. The message
+        names every path; it is raised before the model is copied.
 ```
 
 
@@ -14752,7 +14756,11 @@ Raises:
         with its own ``forward``).
     ValueError: if ``rank`` is out of range, ``method`` unknown, or
         ``linear`` carries a parametrization, a legacy ``weight_norm`` /
-        ``spectral_norm`` hook or an unbaked prune mask.
+        ``spectral_norm`` hook or an unbaked prune mask; or if ``linear``
+        has any other forward hook, forward pre-hook, backward hook or
+        backward pre-hook, which would stay on the discarded Linear
+        (remove it and, if it should still apply, re-register it on the
+        returned factors). ``linear`` and its hooks are left unchanged.
 ```
 
 
@@ -14790,7 +14798,10 @@ Raises:
     ValueError: if ``new_num_embeddings`` is not an integer strictly greater,
         if ``init`` is unknown, or if ``emb`` carries a parametrization, a
         legacy ``weight_norm`` / ``spectral_norm`` hook or an unbaked prune
-        mask.
+        mask; or if ``emb`` has any other forward hook, forward pre-hook,
+        backward hook or backward pre-hook (NEFTune-style noise, a scale),
+        which would stay on the source table. Raised before the new table
+        is allocated; ``emb`` and its hooks are left unchanged.
 ```
 
 

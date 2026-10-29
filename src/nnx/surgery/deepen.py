@@ -58,7 +58,7 @@ from torch.nn.utils import skip_init
 
 from ..nn.enum.activations import Activations
 from ..nn.params.nn_params import NNParams
-from ._utils import get_module, set_module
+from ._utils import get_module, has_hooks, registered_paths, set_module
 
 
 def deepen(
@@ -110,33 +110,60 @@ def deepen(
             function-preservation); if the ReLU is not fed by an
             ``nn.Linear`` through elementwise / norm modules only; if the
             Sequential is a subclass or carries its own parameters, buffers
-            or hooks, or the target ReLU has hooks; or if a ModuleList is not
-            the ``layers`` / ``fcs`` of a stock FeedFwdNN / ConvNN.
+            or hooks, or the target ReLU has hooks; if a ModuleList is not
+            the ``layers`` / ``fcs`` of a stock FeedFwdNN / ConvNN; or if the
+            Sequential / ModuleList holding the site is registered under more
+            than one path (``ModuleList([block, block])``, ``self.backbone =
+            self.body``), which a rebuild at one path would split. The message
+            names every path; it is raised before the model is copied.
     """
-    new_model = copy.deepcopy(model)
-    target = get_module(new_model, after_layer_name)
+    target = get_module(model, after_layer_name)
 
     # Locate the parent container so we can splice.
     parent_path, _, attr = after_layer_name.rpartition(".")
-    parent = new_model if not parent_path else new_model.get_submodule(parent_path)
+    parent = model if not parent_path else model.get_submodule(parent_path)
 
     if isinstance(target, nn.ReLU) and type(target).forward is not nn.ReLU.forward:
         raise TypeError(
             f"deepen: {after_layer_name!r} is a {type(target).__name__} with its own forward; the identity layer "
             "preserves the function only after a stock nn.ReLU (non-negative output)"
         )
-    if isinstance(target, nn.ReLU) and isinstance(parent, nn.Sequential):
+    in_sequential = isinstance(target, nn.ReLU) and isinstance(parent, nn.Sequential)
+    in_module_list = isinstance(target, nn.Linear) and isinstance(parent, nn.ModuleList)
+    if not (in_sequential or in_module_list):
+        raise TypeError(
+            f"deepen: cannot insert after {after_layer_name!r} "
+            f"({type(target).__name__} in a {type(parent).__name__} parent). "
+            "Supported sites: nn.ReLU inside nn.Sequential, or nn.Linear "
+            "inside an nn.ModuleList whose parent applies an activation."
+        )
+    _refuse_aliased_container(model, parent, parent_path)
+
+    new_model = copy.deepcopy(model)
+    if in_sequential:
         return _insert_after_relu_in_sequential(new_model, parent_path, attr)
-
-    if isinstance(target, nn.Linear) and isinstance(parent, nn.ModuleList):
-        return _insert_after_linear_in_module_list(new_model, parent_path, attr, target)
-
-    raise TypeError(
-        f"deepen: cannot insert after {after_layer_name!r} "
-        f"({type(target).__name__} in a {type(parent).__name__} parent). "
-        "Supported sites: nn.ReLU inside nn.Sequential, or nn.Linear "
-        "inside an nn.ModuleList whose parent applies an activation."
+    return _insert_after_linear_in_module_list(
+        new_model, parent_path, attr, cast(nn.Linear, get_module(new_model, after_layer_name))
     )
+
+
+def _refuse_aliased_container(model: nn.Module, container: nn.Module, parent_path: str) -> None:
+    """The rebuilt container is written back at one slot, so a container
+    registered in two slots (``ModuleList([block, block])``, or
+    ``self.backbone = self.body``) would be split: the other slot keeps the
+    old container, and a forward that runs it never runs the inserted
+    layer. Paths that reach the one slot through an aliased *ancestor*
+    are fine, since writing the slot changes it for every path."""
+    paths = registered_paths(model, container)
+    slots = set()
+    for path in paths:
+        owner_path, _, key = path.rpartition(".")
+        slots.add((id(model.get_submodule(owner_path) if owner_path else model), key))
+    if len(slots) > 1:
+        raise ValueError(
+            f"deepen: the container {parent_path!r} is registered under multiple paths {paths}: a shared (aliased) "
+            "container is used in more than one place, and rebuilding it at one path would split it from the others"
+        )
 
 
 def _insert_after_relu_in_sequential(
@@ -163,20 +190,12 @@ def _insert_after_relu_in_sequential(
     # The rebuild is a plain nn.Sequential of the same children: anything
     # else the container carries (a subclass's forward, its own parameters
     # or buffers, hooks) would be dropped and the forward would change.
-    hooks = (
-        parent._forward_hooks,
-        parent._forward_pre_hooks,
-        parent._backward_hooks,
-        parent._backward_pre_hooks,
-    )
-    if type(parent) is not nn.Sequential or parent._parameters or parent._buffers or any(hooks):
+    if type(parent) is not nn.Sequential or parent._parameters or parent._buffers or has_hooks(parent):
         raise ValueError(
             f"deepen: Sequential {parent_path or '<root>'!r} is a {type(parent).__name__} with its own "
             "forward, parameters, buffers or hooks, which a rebuilt nn.Sequential would drop"
         )
-    from .widen import _has_hooks
-
-    if _has_hooks(parent._modules[attr]):  # the inserted ReLU(I·y) would act on the hook's output
+    if has_hooks(parent._modules[attr]):  # the inserted ReLU(I·y) would act on the hook's output
         raise ValueError(
             f"deepen: the ReLU {attr!r} in {parent_path or '<root>'!r} has hooks, which the insertion would change"
         )

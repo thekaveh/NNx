@@ -191,3 +191,79 @@ def test_low_rank_preserves_module_mode(mode):
     factors = low_rank_factorize(base, rank=4)
     assert factors.training is mode
     assert all(m.training is mode for m in factors)
+
+
+# ---------- FIX-057 (#524): a hooked source is refused, not stripped ------------
+
+
+def _clamp(module, args, out):  # changes the output: dropping it silently changes the model
+    return out.clamp(max=0.1)
+
+
+@pytest.mark.parametrize(
+    "register, kind",
+    [
+        (lambda layer: layer.register_forward_hook(_clamp), "forward hook"),
+        (lambda layer: layer.register_forward_pre_hook(lambda module, args: (args[0] * 2,)), "forward pre-hook"),
+        (lambda layer: layer.register_full_backward_hook(lambda module, gin, gout: None), "backward hook"),
+        (lambda layer: layer.register_full_backward_pre_hook(lambda module, gout: None), "backward pre-hook"),
+    ],
+    ids=["forward", "forward_pre", "full_backward", "full_backward_pre"],
+)
+def test_low_rank_factorize_refuses_a_hooked_linear_and_leaves_it_unchanged(register, kind):
+    """At e69fd74 the factors replaced a hooked Linear and the hook stayed on
+    the discarded one: full rank, documented as exact, was off by 0.78."""
+    torch.manual_seed(0)
+    linear = nn.Linear(6, 6)
+    handle = register(linear)
+    x = torch.randn(5, 6)
+    with torch.no_grad():
+        before = linear(x)
+    weight, bias = linear.weight.detach().clone(), linear.bias.detach().clone()
+    hooks = [
+        dict(d)
+        for d in (linear._forward_hooks, linear._forward_pre_hooks, linear._backward_hooks, linear._backward_pre_hooks)
+    ]
+    with pytest.raises(
+        ValueError, match=rf"Linear\(in_features=6, out_features=6, bias=True\) has a {kind}.*re-register"
+    ):
+        low_rank_factorize(linear, rank=6)
+    assert torch.equal(linear.weight, weight) and torch.equal(linear.bias, bias)
+    assert [
+        dict(d)
+        for d in (linear._forward_hooks, linear._forward_pre_hooks, linear._backward_hooks, linear._backward_pre_hooks)
+    ] == hooks
+    with torch.no_grad():
+        assert torch.equal(linear(x), before)
+    handle.remove()  # the advised fix: once the hook is gone, the factorization runs
+    assert isinstance(low_rank_factorize(linear, rank=6), nn.Sequential)
+
+
+def test_low_rank_factorize_advises_removing_every_hook_when_there_are_several():
+    linear = nn.Linear(4, 4)
+    linear.register_forward_hook(_clamp)
+    linear.register_forward_pre_hook(lambda module, args: None)
+    with pytest.raises(ValueError, match="forward hook and a forward pre-hook") as caught:
+        low_rank_factorize(linear, rank=2)
+    assert "Remove the hooks first (the handles' .remove())" in str(caught.value)
+    assert "re-register them on the returned replacement" in str(caught.value)
+
+
+def test_low_rank_factorize_keeps_the_specific_reparameterization_messages():
+    """A weight_norm / spectral_norm or prune mask is a hook too; its own
+    message, with its own remedy, still wins over the generic hook refusal."""
+    import warnings
+
+    from torch.nn.utils import parametrizations, prune
+
+    with pytest.raises(ValueError, match=r"carries a parametrization \(\['weight'\]\)"):
+        low_rank_factorize(parametrizations.weight_norm(nn.Linear(4, 4)), rank=2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # the legacy forms' deprecation notice
+        for legacy in (torch.nn.utils.weight_norm, torch.nn.utils.spectral_norm):
+            with pytest.raises(ValueError, match="carries a legacy weight_norm / spectral_norm"):
+                low_rank_factorize(legacy(nn.Linear(4, 4)), rank=2)
+    pruned = nn.Linear(4, 4)
+    prune.l1_unstructured(pruned, "weight", amount=0.5)
+    with pytest.raises(ValueError, match="carries an unbaked prune mask"):
+        low_rank_factorize(pruned, rank=2)

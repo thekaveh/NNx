@@ -144,3 +144,59 @@ def test_expand_embedding_keeps_a_frozen_source_frozen():
     new_emb, _ = expand_embedding(emb, new_num_embeddings=6)
     assert not new_emb.weight.requires_grad
     assert not new_emb.training
+
+
+# ---------- FIX-057 (#524): a hooked source is refused, not stripped ------------
+
+
+@pytest.mark.parametrize(
+    "register, kind",
+    [
+        (lambda table: table.register_forward_hook(lambda module, args, out: out * 3.0), "forward hook"),
+        (lambda table: table.register_forward_pre_hook(lambda module, args: (args[0].flip(0),)), "forward pre-hook"),
+        (lambda table: table.register_full_backward_pre_hook(lambda module, gout: None), "backward pre-hook"),
+    ],
+    ids=["forward", "forward_pre", "full_backward_pre"],
+)
+def test_expand_embedding_refuses_a_hooked_table_before_allocating(register, kind, monkeypatch):
+    """At e69fd74 a NEFTune-style hook stayed on the source table, so the
+    original ids looked up differently (max|diff| 2.62)."""
+    import nnx.surgery.embedding as embedding_module
+
+    torch.manual_seed(0)
+    emb = nn.Embedding(5, 4)
+    register(emb)
+    ids = torch.tensor([0, 1, 4])
+    with torch.no_grad():
+        before = emb(ids)
+    weight = emb.weight.detach().clone()
+    hooks = (dict(emb._forward_hooks), dict(emb._forward_pre_hooks), dict(emb._backward_pre_hooks))
+
+    def no_allocation(*args, **kwargs):
+        raise AssertionError("the new table was allocated before the refusal")
+
+    monkeypatch.setattr(embedding_module, "skip_init", no_allocation)
+    with pytest.raises(ValueError, match=rf"Embedding\(5, 4\) has a {kind}.*re-register"):
+        expand_embedding(emb, new_num_embeddings=7)
+    assert torch.equal(emb.weight, weight)
+    assert (dict(emb._forward_hooks), dict(emb._forward_pre_hooks), dict(emb._backward_pre_hooks)) == hooks
+    with torch.no_grad():
+        assert torch.equal(emb(ids), before)
+
+
+def test_expand_embedding_keeps_the_specific_reparameterization_messages():
+    import warnings
+
+    from torch.nn.utils import parametrizations, prune
+
+    with pytest.raises(ValueError, match=r"carries a parametrization \(\['weight'\]\)"):
+        expand_embedding(parametrizations.spectral_norm(nn.Embedding(4, 3)), new_num_embeddings=6)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # the legacy form's deprecation notice
+        legacy = torch.nn.utils.spectral_norm(nn.Embedding(4, 3))
+    with pytest.raises(ValueError, match="carries a legacy weight_norm / spectral_norm"):
+        expand_embedding(legacy, new_num_embeddings=6)
+    pruned = nn.Embedding(4, 3)
+    prune.l1_unstructured(pruned, "weight", amount=0.5)
+    with pytest.raises(ValueError, match="carries an unbaked prune mask"):
+        expand_embedding(pruned, new_num_embeddings=6)
