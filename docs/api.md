@@ -14760,8 +14760,7 @@ Raises:
         has any other forward hook, forward pre-hook, backward hook or
         backward pre-hook, which would stay on the discarded Linear
         (remove it and, if it should still apply, re-register it on the
-        returned factors).
-        ``linear`` and its hooks are left unchanged.
+        returned factors). ``linear`` and its hooks are left unchanged.
 ```
 
 
@@ -14801,8 +14800,8 @@ Raises:
         legacy ``weight_norm`` / ``spectral_norm`` hook or an unbaked prune
         mask; or if ``emb`` has any other forward hook, forward pre-hook,
         backward hook or backward pre-hook (NEFTune-style noise, a scale),
-        which would stay on the source table. Raised before the new table is allocated; ``emb``
-        and its hooks are left unchanged.
+        which would stay on the source table. Raised before the new table
+        is allocated; ``emb`` and its hooks are left unchanged.
 ```
 
 
