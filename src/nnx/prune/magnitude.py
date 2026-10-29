@@ -111,18 +111,23 @@ def magnitude_prune(
     # A parametrized weight is computed, not a registered Parameter, so torch's
     # pruning fails on it mid-loop, after earlier matches were already pruned
     # (FIX-086). Refuse every such target before touching any of them.
-    reparameterized = [
-        f"{name or 'the root module'} ({kind})"
-        for name, mod in targets
-        if (kind := weight_reparameterization(mod)) is not None
-    ]
+    reparameterized = [(name, kind) for name, mod in targets if (kind := weight_reparameterization(mod)) is not None]
     if reparameterized:
-        linears, have, them = ("Linears", "have", "them") if len(reparameterized) > 1 else ("Linear", "has", "it")
+        named = [f"{name} ({kind})" for name, kind in reparameterized if name]
+        subjects = [f"the root Linear ({kind})" for name, kind in reparameterized if not name]
+        if named:
+            subjects.append(f"{'Linears' if len(named) > 1 else 'Linear'} {', '.join(named)}")
+        several = len(reparameterized) > 1
+        # Excluding the root Linear with layer_pattern leaves nothing to prune,
+        # so that remedy is offered only when every offender is a submodule.
+        exclude = (
+            "" if len(named) < len(reparameterized) else f" or exclude {'them' if several else 'it'} with layer_pattern"
+        )
         raise ValueError(
-            f"magnitude_prune: {linears} {', '.join(reparameterized)} {have} a parametrized weight, which torch's "
-            "pruning cannot mask. Remove the parametrization first (torch.nn.utils.parametrize."
+            f"magnitude_prune: {' and '.join(subjects)} {'have' if several else 'has'} a parametrized weight, which "
+            "torch's pruning cannot mask. Remove the parametrization first (torch.nn.utils.parametrize."
             "remove_parametrizations, or torch.nn.utils.remove_weight_norm / remove_spectral_norm for the legacy "
-            f"hooks) or exclude {them} with layer_pattern. Nothing was modified."
+            f"hooks){exclude}. Nothing was modified."
         )
     if not bake:
         # The mask is applied by a forward pre-hook, which never runs when a

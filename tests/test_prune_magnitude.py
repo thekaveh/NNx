@@ -381,6 +381,24 @@ def test_one_error_lists_every_parametrized_linear():
     _assert_unchanged(net, state)
 
 
+@pytest.mark.parametrize("bake", [True, False])
+def test_a_parametrized_root_linear_is_refused_without_the_layer_pattern_remedy(bake):
+    """Excluding the root Linear with layer_pattern would leave nothing to prune."""
+    torch.manual_seed(0)
+    net = nn.Linear(16, 4)
+    nn.utils.parametrizations.weight_norm(net)
+    state = _snapshot(net)
+    with pytest.raises(ValueError) as info:
+        nnx_prune.magnitude_prune(net, 0.5, bake=bake)
+    message = str(info.value)
+    assert message.startswith(
+        "magnitude_prune: the root Linear (parametrized by _WeightNorm) has a parametrized weight"
+    )
+    assert "remove_parametrizations" in message and "layer_pattern" not in message
+    assert message.endswith("Nothing was modified.")
+    _assert_unchanged(net, state)
+
+
 def test_excluding_the_parametrized_linear_with_layer_pattern_prunes_the_rest():
     torch.manual_seed(0)
     net = _TinyNet()
