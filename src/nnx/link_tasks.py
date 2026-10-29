@@ -605,11 +605,28 @@ def link_metrics(probabilities: Any, targets: Any, *, from_logits: bool = False)
     exactly 0 or 1 for a confident model (beyond ``|logit|`` ≈ 16.6 in
     float32, 36.7 in float64), tying candidates the logits tell apart and
     clipping their loss; logits stay exact at any confidence. The task's
-    evaluation scores the logits."""
+    evaluation scores the logits.
+
+    The scores are ``(K,)`` (binary) or ``(K, C)`` with ``C >= 2``
+    (categorical), and the targets are always ``(K,)``: one 0 / 1 label or
+    class index per candidate, as :class:`LinkPrediction` holds them. Any
+    other shape raises :class:`LinkTaskError`: a ``(K, 1)`` target column
+    would broadcast against the scores into a ``(K, K)`` grid, so it is
+    refused, never raveled (ravel it yourself); so are one-hot ``(K, C)``
+    targets, a ``(K, 1)`` score column, scalars and higher-rank arrays."""
     if not isinstance(from_logits, bool):
         raise LinkTaskError(f"from_logits must be a bool, got {from_logits!r}")
     p = np.asarray(probabilities, dtype=np.float64)
     y = np.asarray(targets)
+    if not (p.ndim == 1 or (p.ndim == 2 and p.shape[1] >= 2)):
+        raise LinkTaskError(
+            f"scores must be (K,) for binary candidates or (K, C) with C >= 2 categories, got shape {p.shape}"
+        )
+    if y.ndim != 1:
+        raise LinkTaskError(
+            f"targets must be (K,): one 0 / 1 label or class index per candidate (not a column or one-hot), "
+            f"got shape {y.shape}"
+        )
     if p.shape[0] != y.shape[0]:
         raise LinkTaskError(f"{p.shape[0]} predictions for {y.shape[0]} targets")
     if y.shape[0] == 0:
