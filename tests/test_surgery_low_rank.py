@@ -206,8 +206,9 @@ def _clamp(module, args, out):  # changes the output: dropping it silently chang
         (lambda layer: layer.register_forward_hook(_clamp), "forward hook"),
         (lambda layer: layer.register_forward_pre_hook(lambda module, args: (args[0] * 2,)), "forward pre-hook"),
         (lambda layer: layer.register_full_backward_hook(lambda module, gin, gout: None), "backward hook"),
+        (lambda layer: layer.register_full_backward_pre_hook(lambda module, gout: None), "backward pre-hook"),
     ],
-    ids=["forward", "forward_pre", "full_backward"],
+    ids=["forward", "forward_pre", "full_backward", "full_backward_pre"],
 )
 def test_low_rank_factorize_refuses_a_hooked_linear_and_leaves_it_unchanged(register, kind):
     """At e69fd74 the factors replaced a hooked Linear and the hook stayed on
@@ -219,13 +220,19 @@ def test_low_rank_factorize_refuses_a_hooked_linear_and_leaves_it_unchanged(regi
     with torch.no_grad():
         before = linear(x)
     weight, bias = linear.weight.detach().clone(), linear.bias.detach().clone()
-    hooks = [dict(d) for d in (linear._forward_hooks, linear._forward_pre_hooks, linear._backward_hooks)]
+    hooks = [
+        dict(d)
+        for d in (linear._forward_hooks, linear._forward_pre_hooks, linear._backward_hooks, linear._backward_pre_hooks)
+    ]
     with pytest.raises(
         ValueError, match=rf"Linear\(in_features=6, out_features=6, bias=True\) has a {kind}.*re-register"
     ):
         low_rank_factorize(linear, rank=6)
     assert torch.equal(linear.weight, weight) and torch.equal(linear.bias, bias)
-    assert [dict(d) for d in (linear._forward_hooks, linear._forward_pre_hooks, linear._backward_hooks)] == hooks
+    assert [
+        dict(d)
+        for d in (linear._forward_hooks, linear._forward_pre_hooks, linear._backward_hooks, linear._backward_pre_hooks)
+    ] == hooks
     with torch.no_grad():
         assert torch.equal(linear(x), before)
     handle.remove()  # the advised fix: once the hook is gone, the factorization runs

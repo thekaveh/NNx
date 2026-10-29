@@ -154,8 +154,9 @@ def test_expand_embedding_keeps_a_frozen_source_frozen():
     [
         (lambda table: table.register_forward_hook(lambda module, args, out: out * 3.0), "forward hook"),
         (lambda table: table.register_forward_pre_hook(lambda module, args: (args[0].flip(0),)), "forward pre-hook"),
+        (lambda table: table.register_full_backward_pre_hook(lambda module, gout: None), "backward pre-hook"),
     ],
-    ids=["forward", "forward_pre"],
+    ids=["forward", "forward_pre", "full_backward_pre"],
 )
 def test_expand_embedding_refuses_a_hooked_table_before_allocating(register, kind, monkeypatch):
     """At e69fd74 a NEFTune-style hook stayed on the source table, so the
@@ -169,7 +170,7 @@ def test_expand_embedding_refuses_a_hooked_table_before_allocating(register, kin
     with torch.no_grad():
         before = emb(ids)
     weight = emb.weight.detach().clone()
-    hooks = (dict(emb._forward_hooks), dict(emb._forward_pre_hooks))
+    hooks = (dict(emb._forward_hooks), dict(emb._forward_pre_hooks), dict(emb._backward_pre_hooks))
 
     def no_allocation(*args, **kwargs):
         raise AssertionError("the new table was allocated before the refusal")
@@ -178,7 +179,7 @@ def test_expand_embedding_refuses_a_hooked_table_before_allocating(register, kin
     with pytest.raises(ValueError, match=rf"Embedding\(5, 4\) has a {kind}.*re-register"):
         expand_embedding(emb, new_num_embeddings=7)
     assert torch.equal(emb.weight, weight)
-    assert (dict(emb._forward_hooks), dict(emb._forward_pre_hooks)) == hooks
+    assert (dict(emb._forward_hooks), dict(emb._forward_pre_hooks), dict(emb._backward_pre_hooks)) == hooks
     with torch.no_grad():
         assert torch.equal(emb(ids), before)
 
