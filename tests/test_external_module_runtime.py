@@ -585,6 +585,45 @@ def test_a_checkpoint_described_before_materialization_reloads_into_a_fresh_inst
     assert NNModel(module=module, params=reloaded.params).net is module
 
 
+def test_a_loaded_lazy_module_against_a_descriptor_taken_before_materialization_names_the_lazy_remedy():
+    import dataclasses
+
+    model, checkpoint, _ = _train_lazy(_lazy())
+    wrap_time = NNModel(module=_lazy(), params=NNModelParams(loss=Losses.CROSS_ENTROPY)).params
+    older = dataclasses.replace(
+        checkpoint, model_params=dataclasses.replace(checkpoint.model_params, net=wrap_time.net)
+    )
+
+    def loaded() -> nn.Module:
+        module = _lazy()
+        module.load_state_dict(checkpoint.net_state)  # weights in, not yet a forward
+        return module
+
+    for reload in (
+        lambda module: NNModel(module=module, params=wrap_time),
+        lambda module: NNModel.from_checkpoint(older, module=module),
+    ):
+        module = loaded()
+        with pytest.raises(ValueError, match="does not match the descriptor") as refused:
+            reload(module)
+        message = str(refused.value)
+        assert "before vs after materialization" in message and "fresh, unmaterialized instance" in message
+        assert "hyperparameters or shapes differ" not in message
+        assert type(module[0]) is nn.LazyLinear and hasattr(module[0], "_initialize_hook")  # left as given
+    # the remedy: a fresh instance still matches the wrap-time descriptor and reloads the weights
+    assert NNModel(module=_lazy(), params=wrap_time).params == wrap_time
+    reloaded = NNModel.from_checkpoint(older, module=_lazy())
+    X = torch.randn(5, 4)
+    np.testing.assert_array_equal(reloaded.predict(X).logits, model.predict(X).logits)
+    # without saved weights, a real mismatch is not blamed on them
+    materialized = NNModel(module=_dry_run(_lazy()), params=NNModelParams(loss=Losses.CROSS_ENTROPY)).params
+    dropout = _lazy(dropout=0.5)
+    dropout.load_state_dict(checkpoint.net_state)
+    with pytest.raises(ValueError, match="once its lazy layers materialize") as refused:
+        NNModel(module=dropout, params=materialized)
+    assert "saved weights" not in str(refused.value)
+
+
 def test_an_uninitialized_module_cannot_match_a_materialized_descriptor_without_weights():
     materialized = NNModel(module=_dry_run(_lazy()), params=NNModelParams(loss=Losses.CROSS_ENTROPY)).params
     module = _lazy()

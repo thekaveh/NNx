@@ -2743,10 +2743,11 @@ descriptor. A lazy module whose weights are loaded before any forward
 is materialized at the wrap and described as a dry-run one (a forward
 on loaded weights is not one: torch then leaves ``in_channels`` /
 ``num_features`` of lazy conv and norm layers at 0, so load and wrap,
-or dry-run before loading). A reload
-compares an uninitialized lazy module with a materialized descriptor
-after the saved weights materialize it (their
-names and shapes are checked first, and nothing loads on a refusal).
+or dry-run before loading); it does not match a descriptor taken
+before materialization, which a fresh, unmaterialized instance does. A
+reload compares an uninitialized lazy module with a materialized
+descriptor after the saved weights materialize it (their names and
+shapes are checked first, and nothing loads on a refusal).
 A module holding a lazy layer torch does not ship keeps its wrap-time
 descriptor: only a forward reveals what such a layer infers.
 ```
