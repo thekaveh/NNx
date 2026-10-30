@@ -495,21 +495,25 @@ def test_provenance_files_still_load_and_keep_their_documented_errors(tmp_path):
         (frozenset({"neg", "pos"}), "an ordered sequence of class names"),
         ({"neg": 0, "pos": 1}, "an ordered sequence of class names"),
         ({"neg": 0, "pos": 1}.keys(), "an ordered sequence of class names"),
+        (iter({"neg", "mid", "pos"}), "an ordered sequence of class names"),
+        (iter({"neg": 0, "pos": 1}), "an ordered sequence of class names"),
         ("neg", "an ordered sequence of class names"),
         (["neg", "neg"], "unique"),
         (["", "pos"], "non-empty strings"),
     ],
-    ids=["set", "frozenset", "dict", "dict-keys", "str", "duplicate", "empty-string"],
+    ids=["set", "frozenset", "dict", "dict-keys", "set-iterator", "dict-iterator", "str", "duplicate", "empty-string"],
 )
 def test_manifest_labels_refuse_sets_mappings_and_strings(labels, match):
     """A set's order, and with it ``labels`` and the fingerprint, followed
-    PYTHONHASHSEED; a dict recorded its keys; duplicate and empty labels
-    were kept. NumPy and pandas labels stay."""
+    PYTHONHASHSEED, also through ``iter(set)``, which the manifest's
+    one-shot iterator support read; a dict recorded its keys; duplicate and
+    empty labels were kept. NumPy and pandas labels (and a generator) stay."""
     with pytest.raises(TypeError, match=f"labels must be {match}"):
         ExperimentManifest(labels=labels)
     manifest = ExperimentManifest(labels=pd.Index(["neg", "mid", "pos"]))
     assert manifest.labels == ("neg", "mid", "pos") and all(type(label) is str for label in manifest.labels)
     assert manifest.fingerprint() == ExperimentManifest(labels=np.array(["neg", "mid", "pos"])).fingerprint()
+    assert ExperimentManifest(labels=(label for label in ["neg", "mid", "pos"])) == manifest
 
 
 @pytest.mark.parametrize("labels", [["neg", "neg"], ["", "pos"]], ids=["duplicate", "empty-string"])

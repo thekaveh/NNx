@@ -316,13 +316,17 @@ def test_zero_rows_with_an_empty_sample_id_list():
 # ------------------------------------------- FIX-082 (#550): one labels= rule, shared id and logit readers
 
 
-@pytest.mark.parametrize("unordered", [{"neg", "pos"}, frozenset({"neg", "pos"})], ids=["set", "frozenset"])
+@pytest.mark.parametrize(
+    "unordered",
+    [{"neg", "pos"}, frozenset({"neg", "pos"}), iter({"neg", "pos"})],
+    ids=["set", "frozenset", "set-iterator"],
+)
 def test_class_labels_refuses_unordered_containers(unordered):
     """A set iterates in an order that follows PYTHONHASHSEED, so its labels
     would name other columns in another process; the refusal says why."""
     from nnx._probability import class_labels
 
-    with pytest.raises(ValueError, match=r"got a (set|frozenset): unordered containers"):
+    with pytest.raises(ValueError, match=r"got a (set|frozenset|set_iterator): unordered containers"):
         class_labels(unordered, error=ValueError)
     assert class_labels(["neg", "pos"], error=ValueError) == ("neg", "pos")
 
