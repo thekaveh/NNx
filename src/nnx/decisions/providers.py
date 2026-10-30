@@ -248,9 +248,11 @@ class FixedHeadProvider:
     ``SoftMarginLoss`` (one logistic objective) a Bernoulli one;
     ``MSELoss``, ``L1Loss``, ``SmoothL1Loss``, ``HuberLoss``,
     ``PoissonNLLLoss`` and ``GaussianNLLLoss`` a regression one. Any other
-    task-less loss (``MultiLabelMarginLoss``, a custom loss such as a focal
-    loss) raises :class:`UnsupportedCapability` at construction instead of
-    being served as a softmax: declare the model's ``TaskSpec``, or set
+    task-less loss raises :class:`UnsupportedCapability` at construction
+    instead of being served as a softmax. That covers
+    ``MultiLabelMarginLoss`` (a multilabel hinge, whose margin scores are no
+    probabilities) and custom losses. For logits trained with a custom loss
+    (a focal loss, say), declare the model's ``TaskSpec``, or set
     ``model.loss_fn`` to the matching ``CrossEntropyLoss``, ``NLLLoss`` or
     ``BCEWithLogitsLoss``. A ``BCELoss`` head outputs probabilities, not
     logits, and is refused with or without a task.
