@@ -17890,6 +17890,12 @@ Project the first `n_samples` test logits of `checkpoint` to 2D via t-SNE and re
 **Details**
 
 ```text
+Rows are read in loader order across test batches, as
+``predict(ds.test_loader)`` returns them: a PyG node batch
+(``NNGraphDataset``'s full-graph or neighbor loaders) gives only its
+leading seed rows, never the neighbor rows behind them, which supply
+message-passing context and can belong to other splits.
+
 Useful for eyeballing class separability of an intermediate
 checkpoint — pass the BEST checkpoint to see how well-trained the
 decision space ended up. Returns the Plotly Figure.

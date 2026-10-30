@@ -10,6 +10,7 @@ from __future__ import annotations
 import types
 
 import numpy as np
+import pytest
 import torch
 
 
@@ -175,3 +176,191 @@ def test_multi_line_plot_legends_every_dash_style_and_checks_label_counts():
     assert "x" in legend and "y" in legend
     with pytest.raises(ValueError, match="label per group"):
         VisUtils.multi_line_plot(x=x, yss=[[x], [x, x]], yss_legend=(["a"], ["x", "y"]), **common)
+
+
+# --- #529: a PyG node batch is plotted by its seed rows only ----------------------------------------
+
+
+def _row_tsne(monkeypatch):
+    """Swap t-SNE for a projection that puts row ``i`` at ``x = i``: the
+    projected input is captured, and each class trace's ``x`` values name
+    the rows drawn in that class's colour."""
+    from nnx import vis_utils
+
+    captured = {}
+
+    class _RowTSNE:
+        def __init__(self, **kwargs):
+            pass
+
+        def fit_transform(self, X):
+            captured["X"] = np.asarray(X)
+            return np.column_stack([np.arange(len(X), dtype=float), np.zeros(len(X))])
+
+    monkeypatch.setattr(vis_utils, "TSNE", _RowTSNE)
+    return captured
+
+
+def _rows_by_class(fig) -> list[list[int]]:
+    return [sorted(int(x) for x in trace.x) for trace in fig.data]
+
+
+class _TinyGraph:  # one 20-node graph: 10 train, 4 val, 6 test nodes (the ticket's example)
+    num_features, num_classes = 3, 2
+
+    def __init__(self, root=None, transform=None):
+        from torch_geometric.data import Data
+
+        n = torch.arange(20)
+        self._data = Data(
+            x=torch.randn(20, 3, generator=torch.Generator().manual_seed(7)),
+            edge_index=torch.stack([n, (n + 1) % 20]),
+            y=n % 2,
+            train_mask=n < 10,
+            val_mask=(n >= 10) & (n < 14),
+            test_mask=n >= 14,
+        )
+
+    def __getitem__(self, idx):
+        return self._data
+
+
+def _node_batch(seeds: int, neighbors: int, offset: int):
+    """A batch in the NeighborLoader layout: ``seeds`` class-0 seed rows
+    (``input_id`` / ``batch_size``), then ``neighbors`` class-1 rows that
+    only supply message-passing context."""
+    from torch_geometric.data import Data
+
+    n = torch.arange(seeds + neighbors)
+    batch = Data(
+        x=torch.randn(len(n), 3, generator=torch.Generator().manual_seed(offset)),
+        edge_index=torch.stack([n, (n + 1) % len(n)]),
+        y=(n >= seeds).long(),
+    )
+    batch.input_id = torch.arange(offset, offset + seeds)
+    batch.batch_size = seeds
+    return batch
+
+
+def _trained_checkpoint(net, train_loader, val_loader, input_dim, tmp_path, monkeypatch, **net_kwargs):
+    """(checkpoint, reloaded model) of a one-epoch run of the built-in ``net``."""
+    from nnx import (
+        Activations,
+        Checkpoints,
+        Devices,
+        Losses,
+        NNCheckpoint,
+        NNModel,
+        NNModelParams,
+        NNParams,
+        NNTrainParams,
+        set_seed,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    model = NNModel(
+        net_params=NNParams(
+            input_dim=input_dim,
+            output_dim=2,
+            hidden_dims=[4],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+            **net_kwargs,
+        ),
+        params=NNModelParams(net=net, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    run = model.train(params=NNTrainParams(n_epochs=1, train_loader=train_loader, val_loader=val_loader))
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    return checkpoint, NNModel.from_checkpoint(checkpoint=checkpoint)
+
+
+def _graph_checkpoint(net, tmp_path, monkeypatch, **net_kwargs):
+    from nnx import NNGraphDataset
+
+    ds = NNGraphDataset(ds_class=_TinyGraph, sampler="full")
+    checkpoint, reloaded = _trained_checkpoint(
+        net, ds.train_loader, ds.val_loader, 3, tmp_path, monkeypatch, **net_kwargs
+    )
+    return ds, checkpoint, reloaded
+
+
+@pytest.mark.parametrize(
+    ("net_name", "net_kwargs"),
+    [("GRAPH_CONV", {}), ("GRAPH_SAGE", {}), ("GRAPH_ATT", {"n_heads": 2}), ("FEED_FWD", {})],
+)
+def test_two_dim_tsne_plots_only_the_test_seed_rows_of_a_full_graph_batch(net_name, net_kwargs, tmp_path, monkeypatch):
+    """The full-graph test batch holds all 20 nodes, test seeds first: only
+    the 6 seeds are plotted, as ``predict(ds.test_loader)`` returns them —
+    not the train and validation nodes behind them."""
+    pytest.importorskip("torch_geometric")
+    from nnx import Nets
+    from nnx.vis_utils import VisUtils
+
+    ds, checkpoint, reloaded = _graph_checkpoint(getattr(Nets, net_name), tmp_path, monkeypatch, **net_kwargs)
+    expected = reloaded.predict(ds.test_loader).logits
+    (batch,) = ds.test_loader
+    labels = batch.y[: batch.batch_size].numpy()
+    assert len(expected) == len(labels) == 6 and batch.num_nodes == 20
+
+    captured = _row_tsne(monkeypatch)
+    fig = VisUtils.two_dim_tsne_checkpoint_logits(checkpoint, ds, n_samples=20, renderer=None)
+    np.testing.assert_array_equal(captured["X"], expected)  # the t-SNE input, row for row
+    assert sum(len(trace.x) for trace in fig.data) == 6
+    assert _rows_by_class(fig) == [np.flatnonzero(labels == c).tolist() for c in range(2)]  # the test labels
+
+
+def test_two_dim_tsne_plots_the_seed_rows_of_every_node_batch_in_order(tmp_path, monkeypatch):
+    """Two NeighborLoader-shaped batches of 3 class-0 seeds then 5 class-1
+    neighbors: the plot takes both batches' seeds in loader order, up to
+    ``n_samples``, and never a neighbor row."""
+    pytest.importorskip("torch_geometric")
+    from nnx import Nets
+    from nnx.vis_utils import VisUtils
+
+    _, checkpoint, reloaded = _graph_checkpoint(Nets.GRAPH_CONV, tmp_path, monkeypatch)
+    loader = [_node_batch(3, 5, offset=0), _node_batch(3, 5, offset=100)]
+    expected = reloaded.predict(loader).logits
+    assert len(expected) == 6
+    ds = types.SimpleNamespace(output_dim=2, test_loader=loader)
+
+    captured = _row_tsne(monkeypatch)
+    for n_samples, rows in ((4, 4), (6, 6), (20, 6)):
+        fig = VisUtils.two_dim_tsne_checkpoint_logits(checkpoint, ds, n_samples=n_samples, renderer=None)
+        np.testing.assert_array_equal(captured["X"], expected[:rows])
+        assert _rows_by_class(fig) == [list(range(rows)), []]  # every plotted row is a class-0 seed
+
+
+def test_two_dim_tsne_refuses_node_batches_with_fewer_than_two_seed_rows(tmp_path, monkeypatch):
+    """One seed row and five neighbors is one sample, not six."""
+    pytest.importorskip("torch_geometric")
+    from nnx import Nets
+    from nnx.vis_utils import VisUtils
+
+    _, checkpoint, _ = _graph_checkpoint(Nets.GRAPH_CONV, tmp_path, monkeypatch)
+    ds = types.SimpleNamespace(output_dim=2, test_loader=[_node_batch(1, 5, offset=0)])
+    _row_tsne(monkeypatch)
+    with pytest.raises(ValueError, match="at least 2 samples"):
+        VisUtils.two_dim_tsne_checkpoint_logits(checkpoint, ds, n_samples=6, renderer=None)
+
+
+def test_two_dim_tsne_plots_every_row_of_a_non_graph_built_in_net(tmp_path, monkeypatch):
+    """Tuple batches have no seed rows: a built-in net's rows are collected
+    across batches up to ``n_samples``, as before."""
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from nnx import Nets
+    from nnx.vis_utils import VisUtils
+
+    X = torch.randn(7, 4, generator=torch.Generator().manual_seed(3))
+    Y = torch.tensor([0, 1, 0, 1, 1, 0, 1])
+    loader = DataLoader(TensorDataset(X, Y), batch_size=3)
+    checkpoint, reloaded = _trained_checkpoint(Nets.FEED_FWD, loader, None, 4, tmp_path, monkeypatch)
+    expected = reloaded.predict(loader).logits
+    ds = types.SimpleNamespace(output_dim=2, test_loader=loader)
+
+    captured = _row_tsne(monkeypatch)
+    fig = VisUtils.two_dim_tsne_checkpoint_logits(checkpoint, ds, n_samples=5, renderer=None)
+    np.testing.assert_array_equal(captured["X"], expected[:5])
+    assert _rows_by_class(fig) == [np.flatnonzero(Y[:5].numpy() == c).tolist() for c in range(2)]
