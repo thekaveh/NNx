@@ -590,3 +590,20 @@ def test_a_quantized_dora_model_fails_at_forward_with_an_actionable_error():
     quantize_(net, Int8WeightOnlyConfig(version=2, set_inductor_config=False))
     with pytest.raises(TypeError, match="DoRA's base now has a weight of type .*Use LoRA"):
         net(X)
+
+
+def test_quantize_int8_shares_a_materialized_lazy_modules_params():
+    """A lazy module materialized by a direct call, params not read yet: the
+    sibling and the original still share one params, describing the
+    original's net (#562)."""
+    from nnx import RuntimeModule
+
+    torch.manual_seed(0)
+    model = NNModel(
+        module=torch.nn.Sequential(torch.nn.LazyLinear(8), torch.nn.ReLU(), torch.nn.Linear(8, 2)),
+        params=NNModelParams(loss=Losses.CROSS_ENTROPY),
+    )
+    model.net(torch.zeros(1, 4))
+    quantized = quantize_int8(model)
+    assert quantized.params is model.params
+    assert model.params.net == RuntimeModule.of(model.net)
