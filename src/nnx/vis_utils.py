@@ -263,6 +263,12 @@ class VisUtils:
         """Project the first `n_samples` test logits of `checkpoint` to 2D
         via t-SNE and render them colored by ground-truth class.
 
+        Rows are read in loader order across test batches, as
+        ``predict(ds.test_loader)`` returns them: a PyG node batch
+        (``NNGraphDataset``'s full-graph or neighbor loaders) gives only its
+        leading seed rows, never the neighbor rows behind them, which supply
+        message-passing context and can belong to other splits.
+
         Useful for eyeballing class separability of an intermediate
         checkpoint — pass the BEST checkpoint to see how well-trained the
         decision space ended up. Returns the Plotly Figure.
@@ -312,6 +318,13 @@ class VisUtils:
             if getattr(model, "_batch_adapter", None) is None:
                 test_X, test_Y = model.net.unpack_batch(test_batch)  # built-in nets
                 batch_logits = np.asarray(model.predict(X=test_X).logits)
+                # A PyG node batch leads with its seed rows (GraphNNBase.seed_count);
+                # the trailing neighbor rows only feed message passing and can belong
+                # to any split, so they are cut as predict(loader) cuts them (#529).
+                seed_count = getattr(model.net, "seed_count", None)
+                n_seed = seed_count(test_batch) if callable(seed_count) else None
+                if n_seed is not None:
+                    batch_logits, test_Y = batch_logits[:n_seed], test_Y[:n_seed]
             else:
                 # FEAT-006: the adapter splits the batch (positional and / or
                 # keyword inputs) inside the shared, mode-restoring predict path.
