@@ -504,7 +504,7 @@ def test_lazy_run_ids_follow_the_documented_materialization_rule():
     # wrapped before vs after materialization: two run ids, and a refusal that says so
     assert run_id(_lazy(), "c") != run_id(_dry_run(_lazy()), "c")
     materialized = NNModel(module=_dry_run(_lazy()), params=NNModelParams(loss=Losses.CROSS_ENTROPY)).params
-    with pytest.raises(ValueError, match="before vs after materialization gives different run ids") as refused:
+    with pytest.raises(ValueError, match="before vs after materialization gets a different run id") as refused:
         NNModel(module=_lazy(), params=materialized)
     assert "dry-run forward" in str(refused.value)
     # uninitialized lazy nets for different input widths share a descriptor (documented: use data_id / salt)
@@ -591,7 +591,15 @@ def _lazy_batchnorm() -> nn.Module:
     return nn.Sequential(nn.LazyLinear(8), nn.LazyBatchNorm1d(), nn.ReLU(), nn.Linear(8, 2))
 
 
-@pytest.mark.parametrize("build", [_lazy, _lazy_batchnorm], ids=["linear", "batchnorm"])
+def _top_level_lazy() -> nn.Module:
+    return nn.LazyLinear(2)
+
+
+def _first_lazy_linear(module: nn.Module) -> nn.Module:
+    return next(sub for sub in module.modules() if isinstance(sub, nn.Linear))
+
+
+@pytest.mark.parametrize("build", [_lazy, _lazy_batchnorm, _top_level_lazy], ids=["linear", "batchnorm", "top-level"])
 def test_a_loaded_lazy_module_against_a_descriptor_taken_before_materialization_names_the_lazy_remedy(build):
     import dataclasses
 
@@ -616,7 +624,8 @@ def test_a_loaded_lazy_module_against_a_descriptor_taken_before_materialization_
         message = str(refused.value)
         assert "before vs after materialization" in message and "fresh, unmaterialized instance" in message
         assert "hyperparameters or shapes differ" not in message
-        assert type(module[0]) is nn.LazyLinear and hasattr(module[0], "_initialize_hook")  # left as given
+        lazy = _first_lazy_linear(module)
+        assert type(lazy) is nn.LazyLinear and hasattr(lazy, "_initialize_hook")  # left as given
     # the remedy: a fresh instance still matches the wrap-time descriptor and reloads the weights
     assert NNModel(module=build(), params=wrap_time).params == wrap_time
     reloaded = NNModel.from_checkpoint(older, module=build())
@@ -804,7 +813,12 @@ def test_a_custom_lazy_layer_keeps_its_wrap_time_descriptor():
     _, dry_checkpoint, _ = _train_lazy(_dry_run(build()), data_id="dry")
     with pytest.raises(ValueError, match="before passing it as module=") as refused:
         NNModel.from_checkpoint(dry_checkpoint, module=build())
-    assert "NNModel.from_checkpoint(" not in str(refused.value)
+    assert "NNModel.from_checkpoint(" not in str(refused.value) and "torch does not ship" in str(refused.value)
+    # and the run wrapped uninitialized does not reload into a dry-run instance: the refusal names the remedy
+    with pytest.raises(ValueError, match="does not match the descriptor") as refused:
+        NNModel.from_checkpoint(checkpoint, module=_dry_run(build()))
+    assert "fresh, unmaterialized instance" in str(refused.value)
+    assert "not materialized yet" not in str(refused.value)
     assert NNModel.from_checkpoint(dry_checkpoint, module=_dry_run(build())).params == dry_checkpoint.model_params
 
 
@@ -824,6 +838,17 @@ def test_a_refused_lazy_reload_leaves_the_module_unmaterialized():
     with pytest.raises(TypeError, match="batch_adapter"):
         NNModel.from_checkpoint(checkpoint, module=fresh, batch_adapter=object())  # type: ignore[arg-type]
     assert _is_uninitialized(fresh) and type(fresh[0]) is nn.LazyLinear
+
+    # the refused reload's saved weights do not reach a later constructor, even when a subclass's
+    # constructor fails before NNModel's could consume them
+    class Refuses(NNModel):
+        def __init__(self, **kwargs) -> None:
+            raise RuntimeError("refused before NNModel.__init__")
+
+    with pytest.raises(RuntimeError, match="before NNModel"):
+        Refuses.from_checkpoint(checkpoint, module=fresh)
+    with pytest.raises(ValueError, match="lazy layers that are not materialized"):
+        NNModel(module=fresh, params=checkpoint.model_params)
     loaded = _lazy()
     loaded.load_state_dict(checkpoint.net_state)  # weights in, not yet a forward
     with pytest.raises(TypeError, match="batch_adapter"):
@@ -863,6 +888,50 @@ def test_a_lazy_layer_the_forward_never_reaches_keeps_the_wrap_time_descriptor()
     model.predict(torch.randn(3, 4))
     # documented: the module has not fully materialized, so its descriptor is not taken afresh
     assert model.params.net == wrap_time != RuntimeModule.of(model.net)
+
+
+class _Unreached(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.body = nn.LazyLinear(2)
+        self.unused = nn.LazyLinear(3)  # never called by forward
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.body(x)
+
+
+def test_a_run_with_a_lazy_layer_the_forward_never_reached_names_the_fresh_instance_remedy():
+    model, checkpoint, _ = _train_lazy(_Unreached())
+    assert not checkpoint.transforms
+    with pytest.raises(ValueError, match="never reached") as refused:
+        NNModel.from_checkpoint(checkpoint, module=model.net)
+    message = str(refused.value)
+    assert "fresh, unmaterialized instance" in message and "recorded transforms" not in message
+    with pytest.raises(ValueError, match="forward path"):
+        NNModel(module=model.net, params=model.params)
+    reloaded = NNModel.from_checkpoint(checkpoint, module=_Unreached())  # the remedy
+    X = torch.randn(5, 4)
+    np.testing.assert_array_equal(reloaded.predict(X).logits, model.predict(X).logits)
+
+
+def test_a_materialized_lazy_modules_descriptor_stays_fixed_after_it_is_taken():
+    """Taken afresh once: an edit after that is the caller's change, as for a dense module."""
+    model = NNModel(module=_lazy(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    model.predict(torch.randn(3, 4))
+    materialized = model.params.net
+    assert materialized == RuntimeModule.of(model.net)
+    model.net[1].p = 0.5  # a layer hyperparameter edited after materialization
+    assert model.params.net == materialized != RuntimeModule.of(model.net)
+
+
+def test_a_net_of_another_class_put_in_while_lazy_keeps_the_wrap_time_descriptor():
+    class Other(nn.Sequential):
+        pass
+
+    model = NNModel(module=_lazy(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    wrap_time = model.params.net
+    model.net = Other(nn.Linear(4, 8), nn.Dropout(0.0), nn.ReLU(), nn.Linear(8, 2))  # the same state keys
+    assert model.params.net == wrap_time
 
 
 def test_a_lazy_module_whose_state_keys_change_before_it_materializes_keeps_the_wrap_time_descriptor():
