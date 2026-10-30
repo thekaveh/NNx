@@ -233,6 +233,13 @@ a signal to lock onto. The other classification fields stay zero.
     component state existed resumes with a fresh target copy and a
     warning.
 
+    The component's state also records `ema_momentum`. Build the resumed
+    step with the same value: a resume with another momentum fails before
+    anything is restored. The `ComponentRestoreError` names
+    `jepa.target_encoder` and both values, as `jepa_objective` refuses a
+    changed momentum (§5). A saved state without the momentum is reported
+    in the same error.
+
 ## 5. Objective mode
 
 `jepa_objective(target_encoder, predictor, mask_fn, ema_momentum=...)`
