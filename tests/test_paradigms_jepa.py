@@ -526,9 +526,9 @@ def _misplaced_target(model: NNModel, predictor: JEPAPredictor, layout: str) -> 
     return target
 
 
-_PLACEMENT = {
-    "inside": "must not be part of model.net",
-    "is_net": "must not be part of model.net",
+_PLACEMENT = {  # each names where the target sits and what that placement would cost
+    "inside": r"must not be part of model\.net \(it is model\.net\._jepa_target\).*the optimizer would train it",
+    "is_net": r"must not be part of model\.net \(it is model\.net itself\).*freezing it would freeze the online",
     "shares": "shares parameters with model.net",
 }
 

@@ -86,11 +86,14 @@ def _check_target_placement(net: nn.Module, target_encoder: nn.Module) -> None:
     train mode; a target sharing the net's parameters would freeze them."""
     path = _submodule_path(net, target_encoder)
     if path is not None:
-        where = "model.net itself" if path == "" else f"model.net.{path}"
+        if path == "":  # the online network itself, which the optimizer already trains
+            where, cost = "model.net itself", "freezing it would freeze the online network"
+        else:  # a copy registered under the net, so among the optimizer's parameters
+            where, cost = f"model.net.{path}", "the optimizer would train it once unfrozen"
         raise ValueError(
             f"the JEPA target encoder must not be part of model.net (it is {where}): model.net.train() would put "
-            "its dropout and BatchNorm in train mode, and the optimizer would train it once unfrozen; keep the "
-            "build_target_encoder(model.net) copy outside the net"
+            f"its dropout and BatchNorm in train mode, and {cost}; pass a build_target_encoder(model.net) copy "
+            "kept outside the net"
         )
     online = {id(p) for p in net.parameters()}
     shared = [n for n, p in target_encoder.named_parameters() if id(p) in online]
