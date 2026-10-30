@@ -120,7 +120,8 @@ class TaskSpec:
             is decoded as positive (default ``0.5``, i.e. ``logit >= 0``).
         labels: optional ordered names, one per output: unique, non-empty
             strings in a sequence, NumPy array or pandas ``Index`` (stored
-            as a tuple of ``str``). A string, mapping or set is refused.
+            as a tuple of ``str``). A string, mapping, set or iterator (a
+            generator) is refused.
 
     Serializes with :meth:`state` / :meth:`from_state` as a versioned
     mapping (``version`` = :data:`TASK_SPEC_VERSION`).

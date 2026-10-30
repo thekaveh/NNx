@@ -577,10 +577,15 @@ def test_an_unknown_taskless_loss_is_refused_with_the_fix(loss_fn):
 # ------------------------------------------- FIX-082 (#550): FixedHeadProvider labels follow the shared rule
 
 
-@pytest.mark.parametrize("labels", [{"cat", "dog", "fox"}, {"cat": 0, "dog": 1, "fox": 2}], ids=["set", "dict"])
+@pytest.mark.parametrize(
+    "labels",
+    [{"cat", "dog", "fox"}, {"cat": 0, "dog": 1, "fox": 2}, (label for label in LABELS)],
+    ids=["set", "dict", "generator"],
+)
 def test_fixed_head_refuses_set_and_mapping_labels(labels):
     """A set's order, the label-to-column binding, followed PYTHONHASHSEED,
-    and a dict bound its keys."""
+    and a dict bound its keys; a generator is refused by name, not consumed
+    by one check and then reported as an empty label space."""
     with pytest.raises(InvalidDecisionRequest, match="labels must be an ordered sequence of class names"):
         FixedHeadProvider(_classifier(3), labels=labels)
 

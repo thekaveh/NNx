@@ -1319,7 +1319,7 @@ Args:
     labels: optional ordered class / output names, one per entry
         along ``class_axis``; unique, non-empty strings, in a sequence,
         NumPy array or pandas ``Index`` (stored as a tuple of ``str``).
-        A string, mapping or set is refused.
+        A string, mapping, set or iterator (a generator) is refused.
 
 Serializes with :meth:`state` / :meth:`from_state` (plain YAML-safe
 types, label order preserved).
@@ -1700,7 +1700,8 @@ Args:
         is decoded as positive (default ``0.5``, i.e. ``logit >= 0``).
     labels: optional ordered names, one per output: unique, non-empty
         strings in a sequence, NumPy array or pandas ``Index`` (stored
-        as a tuple of ``str``). A string, mapping or set is refused.
+        as a tuple of ``str``). A string, mapping, set or iterator (a
+        generator) is refused.
 
 Serializes with :meth:`state` / :meth:`from_state` as a versioned
 mapping (``version`` = :data:`TASK_SPEC_VERSION`).
@@ -3341,8 +3342,9 @@ Args:
     model: the trained :class:`~nnx.NNModel`.
     labels: one name per output class, in column order (unique,
         non-empty strings in a sequence, NumPy array or pandas
-        ``Index``; a string, mapping or set is refused); defaults to the
-        model's ``TaskSpec`` labels, and must equal them when both exist.
+        ``Index``; a string, mapping, set or iterator, such as a
+        generator, is refused); defaults to the model's ``TaskSpec``
+        labels, and must equal them when both exist.
     option_map: request option id → head label (a bijection);
         categorical heads only.
     ordinal: whether the class order is meaningful (enables Score);
@@ -5438,10 +5440,11 @@ wraps them in two more — always reads back.
 Args:
     task: the task declaration (e.g. ``TaskSpec.state()``).
     labels: the ordered output labels: unique, non-empty strings in a
-        sequence, NumPy array, pandas ``Index`` or one-shot iterator. A
-        string, mapping or set is refused (``TypeError``), and so is an
-        iterator over a set or a dict's keys; a generator over a set
-        keeps that set's order, which can change between processes.
+        sequence, NumPy array, pandas ``Index`` or one-shot iterator (a
+        generator, read once). A string, mapping or set is refused
+        (``TypeError``), and so is an iterator over a set or a dict (its
+        keys, values or items, ``reversed`` or not); a generator over a
+        set keeps that set's order, which can change between processes.
     model: the model descriptor (e.g. ``NNModelParams.state()``).
     data: named data identities (:class:`IdentityRef`, a declared id
         string, or ``None`` for unknown).
@@ -7879,9 +7882,9 @@ Args:
         metric's input must be one these semantics provide.
     labels: optional ordered class / output names (unique, non-empty
         strings in a sequence, NumPy array or pandas ``Index``, stored as
-        a tuple of ``str``; a string, mapping or set is refused); a
-        categorical ``probabilities`` width must match them. Part of
-        the merge schema.
+        a tuple of ``str``; a string, mapping, set or iterator, such as
+        a generator, is refused); a categorical ``probabilities`` width
+        must match them. Part of the merge schema.
     threshold: the bernoulli decision threshold for labels derived from
         probabilities (default 0.5).
     materialize: store every score of a metric that has no bounded form

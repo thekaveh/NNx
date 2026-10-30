@@ -346,9 +346,9 @@ class StreamingMetrics:
             metric's input must be one these semantics provide.
         labels: optional ordered class / output names (unique, non-empty
             strings in a sequence, NumPy array or pandas ``Index``, stored as
-            a tuple of ``str``; a string, mapping or set is refused); a
-            categorical ``probabilities`` width must match them. Part of
-            the merge schema.
+            a tuple of ``str``; a string, mapping, set or iterator, such as
+            a generator, is refused); a categorical ``probabilities`` width
+            must match them. Part of the merge schema.
         threshold: the bernoulli decision threshold for labels derived from
             probabilities (default 0.5).
         materialize: store every score of a metric that has no bounded form

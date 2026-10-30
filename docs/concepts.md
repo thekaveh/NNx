@@ -264,7 +264,7 @@ A `ProbabilitySpec(kind, class_axis, labels)` *declares* the task rather than in
 - `"categorical"`: softmax over `class_axis`, rows sum to 1, argmax decoding.
 - `"bernoulli"`: independent element-wise sigmoid, rows not normalized, `logit >= 0` indicators.
 
-`labels` names the classes in order: unique, non-empty strings in a list, tuple, NumPy array or pandas `Index` (such as `LabelEncoder().classes_`), stored as a tuple of `str`. A string, mapping or set is refused, because a set's order can change between processes. `TaskSpec`, `StreamingMetrics`, calibration, abstention, `ExperimentManifest` and `FixedHeadProvider` read `labels=` by the same rule, each raising its own error.
+`labels` names the classes in order: unique, non-empty strings in a list, tuple, NumPy array or pandas `Index` (such as `LabelEncoder().classes_`), stored as a tuple of `str`. A string, mapping, set or generator is refused: a string is one name, not its letters, and a set's order can change between processes. `TaskSpec`, `StreamingMetrics`, calibration, abstention, `ExperimentManifest` and `FixedHeadProvider` read `labels=` by the same rule, each raising its own error. The one difference: `ExperimentManifest` also reads a generator or other one-shot iterator, once, though not an iterator over a set or a dict.
 
 The returned `PredictionResult` carries the same raw `logits` as `predict()`, `probabilities`, `decoded` values and the spec (class axis and ordered labels). It also carries `sample_ids`:
 
