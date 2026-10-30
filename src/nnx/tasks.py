@@ -52,7 +52,6 @@ from __future__ import annotations
 
 import math
 import numbers
-from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Optional
@@ -61,12 +60,19 @@ import numpy as np
 import torch
 
 from ._confusion import ConfusionCounts, average_scores, record_scores
+from ._probability import class_labels, read_array, row_ids
 from ._validation import checked, plain_str, require_finite_real, shown
 from .monitors import _not_ignored
 from .nn.enum.losses import Losses
 from .nn.enum.nets import Nets
 from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
-from .prediction import PredictionResult, ProbabilitySpec, _check_spec_fits, prediction_from_logits
+from .prediction import (
+    PredictionResult,
+    PredictionValidationError,
+    ProbabilitySpec,
+    _check_spec_fits,
+    prediction_from_logits,
+)
 
 __all__ = [
     "TASK_SPEC_VERSION",
@@ -112,7 +118,10 @@ class TaskSpec:
             the loss and every metric (e.g. ``-100`` for padding).
         threshold: multilabel only — probability at or above which a label
             is decoded as positive (default ``0.5``, i.e. ``logit >= 0``).
-        labels: optional ordered names, one per output.
+        labels: optional ordered names, one per output: unique, non-empty
+            strings in a sequence, NumPy array or pandas ``Index`` (stored
+            as a tuple of ``str``). A string, mapping, set or iterator (a
+            generator) is refused.
 
     Serializes with :meth:`state` / :meth:`from_state` as a versioned
     mapping (``version`` = :data:`TASK_SPEC_VERSION`).
@@ -152,23 +161,14 @@ class TaskSpec:
         object.__setattr__(self, "threshold", threshold)
         if self.labels is None:
             return
-        if isinstance(self.labels, (str, bytes)) or not isinstance(self.labels, Sequence):
-            raise TaskValidationError(
-                f"TaskSpec labels must be a sequence of strings, got {type(self.labels).__name__}"
-            )
-        labels = tuple(self.labels)
-        bad = [label for label in labels if not isinstance(label, str) or not label]
-        if bad:
-            raise TaskValidationError(f"TaskSpec labels must be non-empty strings, got {bad!r}")
-        duplicates = sorted(label for label, count in Counter(labels).items() if count > 1)
-        if duplicates:
-            raise TaskValidationError(f"TaskSpec labels must be unique, duplicated: {duplicates}")
+        # The shared rule (NumPy arrays and pandas indexes accepted; a string,
+        # mapping or set refused), stored as plain str: numpy.str_ is not YAML-safe.
+        labels = class_labels(self.labels, error=TaskValidationError, minimum=0, what="TaskSpec labels")
         if len(labels) < minimum:
             raise TaskValidationError(f"a {self.kind} TaskSpec needs at least {minimum} label(s), got {len(labels)}")
         if self.num_outputs is not None and len(labels) != self.num_outputs:
             raise TaskValidationError(f"TaskSpec has {len(labels)} label(s) but num_outputs={self.num_outputs}")
-        # NumPy strings pass isinstance(str) but are not YAML-safe: store plain str.
-        object.__setattr__(self, "labels", tuple(str(label) for label in labels))
+        object.__setattr__(self, "labels", labels)
         if self.num_outputs is None:
             object.__setattr__(self, "num_outputs", len(labels))
 
@@ -848,8 +848,12 @@ class _RegressionAdapter(TaskAdapter):
         return _RegressionAccumulator(self, keep_arrays=keep_arrays, bounded=bounded)
 
     def prediction(self, logits, sample_ids):
-        values = np.asarray(logits)
-        ids = np.asarray(sample_ids, dtype=np.int64)
+        # The categorical and multilabel adapters' rules (prediction_from_logits):
+        # one integer id per row, else PredictionValidationError, never a silent cast.
+        values = read_array(logits, copy=False, error=PredictionValidationError)
+        if values.ndim < 1:
+            raise PredictionValidationError(f"regression outputs need a sample axis, got shape {values.shape}")
+        ids = row_ids(sample_ids, values.shape[0], error=PredictionValidationError)
         return PredictionResult(logits=values, probabilities=None, decoded=values.copy(), sample_ids=ids, spec=None)
 
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import math
 import socket
+from collections import OrderedDict
 
 import numpy as np
 import pandas as pd
@@ -483,3 +484,69 @@ def test_provenance_files_still_load_and_keep_their_documented_errors(tmp_path):
     (run / MANIFEST_FILE).write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(KeyError):
         load_provenance("a" * 32, root=str(tmp_path))
+
+
+# --- FIX-082 (#550): manifest labels follow the shared rule ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("labels", "match"),
+    [
+        ({"neg", "mid", "pos"}, "an ordered sequence of class names"),
+        (frozenset({"neg", "pos"}), "an ordered sequence of class names"),
+        ({"neg": 0, "pos": 1}, "an ordered sequence of class names"),
+        ({"neg": 0, "pos": 1}.keys(), "an ordered sequence of class names"),
+        (iter({"neg", "mid", "pos"}), "an ordered sequence of class names"),
+        (iter({"neg": 0, "pos": 1}), "an ordered sequence of class names"),
+        (reversed({"neg": 0, "pos": 1}), "an ordered sequence of class names"),
+        (iter(OrderedDict(neg=0, pos=1)), "an ordered sequence of class names"),
+        (iter({0: "neg", 1: "pos"}.values()), "an ordered sequence of class names"),
+        ("neg", "an ordered sequence of class names"),
+        (["neg", "neg"], "unique"),
+        (["", "pos"], "non-empty strings"),
+    ],
+    ids=[
+        "set",
+        "frozenset",
+        "dict",
+        "dict-keys",
+        "set-iterator",
+        "dict-iterator",
+        "reversed-dict",
+        "ordered-dict-iterator",
+        "dict-values-iterator",
+        "str",
+        "duplicate",
+        "empty-string",
+    ],
+)
+def test_manifest_labels_refuse_sets_mappings_and_strings(labels, match):
+    """A set's order, and with it ``labels`` and the fingerprint, followed
+    PYTHONHASHSEED, also through ``iter(set)``, which the manifest's
+    one-shot iterator support read; a dict recorded its keys, also through
+    ``reversed(dict)`` or an ``OrderedDict``'s iterator (one type for its
+    keys and values, so a dict's values are refused as its ``.values()``
+    view is); duplicate and empty labels were kept. NumPy and pandas labels
+    (and a generator) stay."""
+    with pytest.raises(TypeError, match=f"labels must be {match}"):
+        ExperimentManifest(labels=labels)
+    manifest = ExperimentManifest(labels=pd.Index(["neg", "mid", "pos"]))
+    assert manifest.labels == ("neg", "mid", "pos") and all(type(label) is str for label in manifest.labels)
+    assert manifest.fingerprint() == ExperimentManifest(labels=np.array(["neg", "mid", "pos"])).fingerprint()
+    assert ExperimentManifest(labels=(label for label in ["neg", "mid", "pos"])) == manifest
+
+
+@pytest.mark.parametrize("labels", [["neg", "neg"], ["", "pos"]], ids=["duplicate", "empty-string"])
+def test_a_stored_manifest_with_duplicate_or_empty_labels_no_longer_loads(tmp_path, labels):
+    """The previous release wrote such labels (with a matching fingerprint);
+    ``from_state`` goes through the constructor, so loading now refuses them."""
+    from nnx.provenance import MANIFEST_FILE, load_provenance
+
+    state = {**BASE.state(), "labels": labels}
+    document = {"format": FORMAT, "manifest": state}
+    document["fingerprint"] = hash_bytes(canonical_bytes(document)).value  # what that release stored
+    run = tmp_path / "runs" / ("b" * 32)
+    run.mkdir(parents=True)
+    (run / MANIFEST_FILE).write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(TypeError, match="labels must be (unique|non-empty strings)"):
+        load_provenance("b" * 32, root=str(tmp_path))

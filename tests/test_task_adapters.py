@@ -1259,3 +1259,46 @@ def test_a_marked_step_refuses_a_task_kind_it_does_not_train():
     teacher = _model(None, loss=Losses.CROSS_ENTROPY, output_dim=3)
     with pytest.raises(TaskValidationError, match=r"this model declares a regression task \(TaskSpec\.regression\)"):
         _check_step_task(kd_train_step_factory(teacher), TaskSpec.regression())
+
+
+# ------------------------------------------- FIX-082 (#550): one labels= rule, checked ids on every adapter
+
+
+def test_task_spec_labels_follow_the_shared_rule():
+    """NumPy and pandas labels are accepted (stored as plain ``str``), as
+    calibration accepts them; a string, a mapping, a set and a generator are
+    refused."""
+    import pandas as pd
+
+    for labels in (np.array(["cat", "dog", "fox"]), pd.Index(["cat", "dog", "fox"])):
+        spec = TaskSpec.categorical(labels=labels)
+        assert spec.labels == ("cat", "dog", "fox") and all(type(label) is str for label in spec.labels)
+        assert spec.num_outputs == 3 and TaskSpec.from_state(spec.state()) == spec
+        assert spec.probability_spec() == ProbabilitySpec("categorical", class_axis=1, labels=("cat", "dog", "fox"))
+    for labels in ("ab", {"a": 0, "b": 1}, {"a", "b"}, (label for label in ("a", "b"))):
+        with pytest.raises(TaskValidationError, match="TaskSpec labels must be an ordered sequence of class names"):
+            TaskSpec.categorical(labels=labels)
+
+
+@pytest.mark.parametrize("spec", [TaskSpec.categorical(2), TaskSpec.multilabel(2), TaskSpec.regression(2)], ids=str)
+@pytest.mark.parametrize("ids", [[0, 1], [0.5, 1.5, 2.5], [[0, 1], [2], [3]]], ids=["short", "float", "ragged"])
+def test_every_adapter_prediction_refuses_ids_that_are_not_one_integer_per_row(spec, ids):
+    """``TaskAdapter.prediction`` is public: the regression adapter kept two
+    ids for three rows and truncated float ids to int64."""
+    from nnx import PredictionValidationError
+
+    logits = np.zeros((3, 2), dtype=np.float32)
+    with pytest.raises(PredictionValidationError):
+        task_adapter(spec).prediction(logits, ids)
+    assert task_adapter(spec).prediction(logits, np.array([7, 3, 5])).sample_ids.tolist() == [7, 3, 5]
+
+
+@pytest.mark.parametrize("spec", [TaskSpec.categorical(2), TaskSpec.multilabel(2), TaskSpec.regression()], ids=str)
+def test_every_adapter_prediction_refuses_outputs_without_a_sample_axis(spec):
+    """A 0-d output has no rows to bind ids to: the regression adapter
+    returned a result for it, and reading its row count would be a raw
+    ``IndexError``."""
+    from nnx import PredictionValidationError
+
+    with pytest.raises(PredictionValidationError, match="need a sample axis"):
+        task_adapter(spec).prediction(np.float32(0.5), [0])
