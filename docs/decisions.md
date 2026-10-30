@@ -115,7 +115,7 @@ what it can answer:
 | Head | Answers |
 |---|---|
 | categorical (softmax over `C` classes) | `Choice`; also `Score` with `ordinal=True`, whose levels must follow the head's class order |
-| one Bernoulli logit (`BCEWithLogitsLoss`, or a one-output multilabel task) | the one `Boolean` it was trained for (`question=`) |
+| one Bernoulli logit (`BCEWithLogitsLoss` or another logistic loss without a task, or a one-output multilabel task) | the one `Boolean` it was trained for (`question=`) |
 | regression | nothing — rejected at construction |
 | multi-output multilabel | nothing — rejected at construction when the head's width is known (a task's count or a built-in net's `output_dim`). Otherwise it is refused on the first call, after the model ran. |
 | any other task-less loss, and `BCELoss` | nothing — rejected at construction (see "Heads without a task" below) |
