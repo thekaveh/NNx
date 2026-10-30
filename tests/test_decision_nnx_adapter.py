@@ -292,7 +292,7 @@ def test_non_finite_logits_are_a_provider_failure():
 def test_fixed_head_labels_and_output_shapes_are_decision_errors():
     from torch import nn
 
-    with pytest.raises(InvalidDecisionRequest, match="not the string"):
+    with pytest.raises(InvalidDecisionRequest, match="ordered sequence of class names, got 'ab'"):
         FixedHeadProvider(NNModel(module=nn.Linear(2, 2), params=NNModelParams(loss=Losses.CROSS_ENTROPY)), labels="ab")
     bce = NNModel(module=nn.Linear(2, 1), params=NNModelParams(loss=Losses.BINARY_CROSS_ENTROPY))
     with pytest.raises(InvalidDecisionRequest, match="non-empty strings"):
@@ -316,7 +316,7 @@ def test_a_bernoulli_head_refuses_categorical_settings_and_labels_must_be_iterab
     for extra in ({"ordinal": True}, {"option_map": {"x": "y"}}):
         with pytest.raises(InvalidDecisionRequest, match="categorical head, not a Bernoulli"):
             FixedHeadProvider(bce, question=Boolean("Is it a cat?"), **extra)
-    with pytest.raises(InvalidDecisionRequest, match="sequence of strings, got int"):
+    with pytest.raises(InvalidDecisionRequest, match="ordered sequence of class names, got 3"):
         FixedHeadProvider(_classifier(3, Losses.CROSS_ENTROPY), labels=3)
 
 
@@ -572,3 +572,26 @@ def test_an_unknown_taskless_loss_is_refused_with_the_fix(loss_fn):
     declared = _classifier(task=TaskSpec.categorical(3, labels=LABELS))
     declared.loss_fn = loss_fn  # a declared task names the head's kind for decisions; its training refuses this loss
     assert len(FixedHeadProvider(declared).decide(_animals("cat", "dog", "fox"), X)) == 3
+
+
+# ------------------------------------------- FIX-082 (#550): FixedHeadProvider labels follow the shared rule
+
+
+@pytest.mark.parametrize("labels", [{"cat", "dog", "fox"}, {"cat": 0, "dog": 1, "fox": 2}], ids=["set", "dict"])
+def test_fixed_head_refuses_set_and_mapping_labels(labels):
+    """A set's order, the label-to-column binding, followed PYTHONHASHSEED,
+    and a dict bound its keys."""
+    with pytest.raises(InvalidDecisionRequest, match="labels must be an ordered sequence of class names"):
+        FixedHeadProvider(_classifier(3), labels=labels)
+
+
+def test_fixed_head_takes_numpy_and_pandas_labels_as_plain_str():
+    import pandas as pd
+
+    declared = _classifier(task=TaskSpec.categorical(3, labels=LABELS))
+    for labels in (np.array(LABELS), pd.Index(LABELS)):
+        for model in (_classifier(3), declared):
+            provider = FixedHeadProvider(model, labels=labels)
+            assert provider.labels == LABELS and all(type(label) is str for label in provider.labels)
+            assert provider.capabilities().labels == LABELS
+            assert [r.top for r in provider.decide(_animals("cat", "dog", "fox"), X)] == ["cat", "dog", "cat"]

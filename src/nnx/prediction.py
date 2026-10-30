@@ -28,14 +28,13 @@ The legacy ``PredictResult`` and ``predict()`` are unchanged.
 from __future__ import annotations
 
 import numbers
-from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
 
-from ._probability import softmax_, to_numpy
+from ._probability import class_labels, read_array, row_ids, softmax_
 
 __all__ = [
     "PredictionResult",
@@ -74,7 +73,9 @@ class ProbabilitySpec:
             ``(N, C, H, W)`` need ``class_axis=1``. Axis 0 is always the
             sample axis and cannot be the class axis.
         labels: optional ordered class / output names, one per entry
-            along ``class_axis``; unique, non-empty strings.
+            along ``class_axis``; unique, non-empty strings, in a sequence,
+            NumPy array or pandas ``Index`` (stored as a tuple of ``str``).
+            A string, mapping or set is refused.
 
     Serializes with :meth:`state` / :meth:`from_state` (plain YAML-safe
     types, label order preserved).
@@ -97,24 +98,15 @@ class ProbabilitySpec:
         object.__setattr__(self, "class_axis", int(axis))
         if self.labels is None:
             return
-        if isinstance(self.labels, (str, bytes)) or not isinstance(self.labels, Sequence):
-            raise PredictionValidationError(
-                f"ProbabilitySpec labels must be a sequence of strings, got {type(self.labels).__name__}"
-            )
-        labels = tuple(self.labels)
-        bad = [label for label in labels if not isinstance(label, str) or not label]
-        if bad:
-            raise PredictionValidationError(f"ProbabilitySpec labels must be non-empty strings, got {bad!r}")
-        duplicates = sorted(label for label, count in Counter(labels).items() if count > 1)
-        if duplicates:
-            raise PredictionValidationError(f"ProbabilitySpec labels must be unique, duplicated: {duplicates}")
+        # The shared rule (NumPy arrays and pandas indexes accepted; a string,
+        # mapping or set refused), stored as plain str: numpy.str_ is not YAML-safe.
+        labels = class_labels(self.labels, error=PredictionValidationError, minimum=0, what="ProbabilitySpec labels")
         minimum = 2 if self.kind == "categorical" else 1
         if len(labels) < minimum:
             raise PredictionValidationError(
                 f"a {self.kind} ProbabilitySpec needs at least {minimum} label(s), got {len(labels)}"
             )
-        # NumPy strings pass isinstance(str) but are not YAML-safe: store plain str.
-        object.__setattr__(self, "labels", tuple(str(label) for label in labels))
+        object.__setattr__(self, "labels", labels)
 
     def resolve_class_axis(self, ndim: int) -> int:
         """Return ``class_axis`` as a non-negative axis of an ``ndim``-D
@@ -214,7 +206,7 @@ class PredictionResult:
 
 
 def _as_array(logits: Any) -> np.ndarray:
-    array = to_numpy(logits, copy=False)  # shared with nnx.calibration
+    array = read_array(logits, copy=False, error=PredictionValidationError)  # shared with nnx.calibration
     if array.dtype.kind not in "fiu":
         raise PredictionValidationError(f"logits must be a real numeric array, got dtype {array.dtype}")
     return array
@@ -250,14 +242,15 @@ def prediction_from_logits(
 
     ``logits`` is an array or tensor whose axis 0 indexes samples and whose
     ``spec.class_axis`` indexes classes / outputs. Raises
-    :class:`PredictionValidationError` when the class axis is invalid, the
-    label count differs from the class-axis size, any logit is NaN or
-    ±inf (masked logits must use a large finite negative value), or
-    ``sample_ids`` is not one id per sample. Probabilities are computed
-    stably (max-shifted softmax, ``exp(-|x|)`` sigmoid) in the logits'
-    float precision and returned in their dtype — float16 is computed in
-    float32 and returned as float16, bfloat16 tensors are upcast to
-    float32, integer logits give float64.
+    :class:`PredictionValidationError` when the logits are no numeric array
+    (a ragged list, say), the class axis is invalid, the label count
+    differs from the class-axis size, any logit is NaN or ±inf (masked
+    logits must use a large finite negative value), or ``sample_ids`` is
+    not one integer id per sample (ragged ids included). Probabilities are
+    computed stably (max-shifted softmax, ``exp(-|x|)`` sigmoid) in the
+    logits' float precision and returned in their dtype — float16 is
+    computed in float32 and returned as float16, bfloat16 tensors are
+    upcast to float32, integer logits give float64.
     """
     if not isinstance(spec, ProbabilitySpec):
         raise TypeError(f"spec must be a ProbabilitySpec, got {type(spec).__name__}")
@@ -292,19 +285,6 @@ def prediction_from_logits(
     out_dtype = array.dtype if array.dtype.kind == "f" else np.dtype(np.float64)
     probabilities = work if work.dtype == out_dtype else work.astype(out_dtype)
 
-    n_samples = array.shape[0]
-    if sample_ids is None:
-        ids = np.arange(n_samples, dtype=np.int64)
-    else:
-        ids = to_numpy(sample_ids, copy=False)
-        if ids.ndim == 1 and ids.size == 0:
-            ids = ids.astype(np.int64)  # an empty list is float64 in NumPy
-        if ids.ndim != 1 or ids.shape[0] != n_samples or ids.dtype.kind not in "iu":
-            raise PredictionValidationError(
-                f"sample_ids must be one integer id per sample ({n_samples}), got shape {ids.shape} "
-                f"and dtype {ids.dtype}"
-            )
-        if ids.dtype.kind == "u" and ids.size and int(ids.max()) > np.iinfo(np.int64).max:
-            raise PredictionValidationError("sample_ids above 2**63 - 1 do not fit int64 ids")  # never wrapped
-        ids = ids.astype(np.int64)
+    # 0..N-1 by default; ragged, misaligned, non-integer and over-int64 ids are refused, never wrapped.
+    ids = row_ids(sample_ids, array.shape[0], error=PredictionValidationError)
     return PredictionResult(logits=array, probabilities=probabilities, decoded=decoded, sample_ids=ids, spec=spec)

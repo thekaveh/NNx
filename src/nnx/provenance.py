@@ -43,7 +43,7 @@ import math
 import numbers
 import os
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional, Union
@@ -53,6 +53,7 @@ import numpy as np
 from ._artifacts import check_keys
 from ._config import _canonical_json
 from ._json_depth import MAX_JSON_DEPTH, too_deep
+from ._probability import class_labels
 from ._validation import require_count
 
 if TYPE_CHECKING:
@@ -312,7 +313,9 @@ class ExperimentManifest:
 
     Args:
         task: the task declaration (e.g. ``TaskSpec.state()``).
-        labels: the ordered output labels.
+        labels: the ordered output labels: unique, non-empty strings in a
+            sequence, NumPy array, pandas ``Index`` or one-shot iterator. A
+            string, mapping or set is refused (``TypeError``).
         model: the model descriptor (e.g. ``NNModelParams.state()``).
         data: named data identities (:class:`IdentityRef`, a declared id
             string, or ``None`` for unknown).
@@ -337,12 +340,12 @@ class ExperimentManifest:
         object.__setattr__(self, "data", _FrozenConfig(_refs(self.data, owner="data")))
         object.__setattr__(self, "splits", _FrozenConfig(_refs(self.splits, owner="splits")))
         if self.labels is not None:
-            if isinstance(self.labels, (str, bytes)):
-                raise TypeError(f"labels must be a sequence of strings, got {self.labels!r}")
-            labels = tuple(self.labels)  # once: a one-shot iterable would be consumed by the check
-            if not all(isinstance(label, str) for label in labels):
-                raise TypeError(f"labels must be a sequence of strings, got {self.labels!r}")
-            object.__setattr__(self, "labels", tuple(str(label) for label in labels))
+            labels = self.labels
+            if isinstance(labels, Iterator):  # a one-shot iterable (a generator) is read once, in its order
+                labels = tuple(labels)
+            # The shared rule, as plain str: a set's order — and with it the
+            # fingerprint — can change between processes, so it is refused.
+            object.__setattr__(self, "labels", class_labels(labels, error=TypeError, minimum=0))
         # Validate (rejecting anything not JSON-like, by path) and copy into
         # immutable form: the caller's dicts can no longer change the plan.
         if self.config is None:  # from_state reads a missing config as {}: one fingerprint for both

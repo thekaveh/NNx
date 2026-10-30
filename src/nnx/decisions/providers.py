@@ -6,13 +6,14 @@ from __future__ import annotations
 import asyncio
 import functools
 import numbers
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Protocol, Union, runtime_checkable
 
 import numpy as np
 
+from .._probability import class_labels
 from .schema import (
     Boolean,
     Choice,
@@ -280,7 +281,9 @@ class FixedHeadProvider:
 
     Args:
         model: the trained :class:`~nnx.NNModel`.
-        labels: one name per output class, in column order; defaults to the
+        labels: one name per output class, in column order (unique,
+            non-empty strings in a sequence, NumPy array or pandas
+            ``Index``; a string, mapping or set is refused); defaults to the
             model's ``TaskSpec`` labels, and must equal them when both exist.
         option_map: request option id → head label (a bijection);
             categorical heads only.
@@ -327,21 +330,17 @@ class FixedHeadProvider:
             # a softmax of its outputs is no probability distribution.
             raise UnsupportedCapability("a regression head justifies no decision primitive")
         task_labels = getattr(spec, "labels", None)
-        if isinstance(self.labels, Iterable) and task_labels is not None and tuple(self.labels) != tuple(task_labels):
-            raise InvalidDecisionRequest(
-                f"labels {tuple(self.labels)} disagree with the model's task labels {tuple(task_labels)}"
-            )
-        labels = self.labels if self.labels is not None else task_labels
-        if isinstance(labels, (str, bytes)):  # one value, not a set of its characters
-            raise InvalidDecisionRequest(f"labels must be a sequence of strings, not the string {labels!r}")
-        if labels is not None and not isinstance(labels, Iterable):
-            raise InvalidDecisionRequest(f"labels must be a sequence of strings, got {type(labels).__name__}")
-        if labels is not None and not all(isinstance(x, str) and x for x in tuple(labels)):
-            raise InvalidDecisionRequest(f"labels must be non-empty strings, got {tuple(labels)!r}")
+        # The shared rule: a string is one name, not its characters, and a
+        # set's order — the label-to-column binding — can change between processes.
+        labels = None if self.labels is None else class_labels(self.labels, error=InvalidDecisionRequest, minimum=0)
+        if labels is not None and task_labels is not None and labels != tuple(task_labels):
+            raise InvalidDecisionRequest(f"labels {labels} disagree with the model's task labels {tuple(task_labels)}")
+        if labels is None and task_labels is not None:
+            labels = tuple(task_labels)
         width = _head_width(self.model, spec)
         bernoulli = kind == "multilabel" or isinstance(self.model.loss_fn, torch.nn.BCEWithLogitsLoss)
         if bernoulli:
-            if width not in (None, 1) or (labels is not None and len(tuple(labels)) != 1):
+            if width not in (None, 1) or (labels is not None and len(labels) != 1):
                 raise UnsupportedCapability(
                     "a multi-output Bernoulli head justifies no single decision; use a one-output head for Boolean"
                 )
@@ -357,7 +356,7 @@ class FixedHeadProvider:
                     "ordinal= and option_map= apply to a categorical head, not a Bernoulli one"
                 )
             self._head = "bernoulli"
-            self.labels = tuple(labels) if labels is not None else None
+            self.labels = labels
             return
         self._head = "categorical"
         if self.question is not None:
@@ -370,8 +369,7 @@ class FixedHeadProvider:
                 "a categorical head needs its label space: pass labels=(...) (one per output class) or declare "
                 "TaskSpec.categorical(..., labels=...)"
             )
-        labels = tuple(labels)
-        if len(labels) < 2 or len(set(labels)) != len(labels) or not all(isinstance(x, str) and x for x in labels):
+        if len(labels) < 2:
             raise InvalidDecisionRequest(f"labels must be 2+ unique non-empty strings, got {labels!r}")
         if width is not None and width != len(labels):
             raise InvalidDecisionRequest(f"{len(labels)} labels for a head with {width} output classes")

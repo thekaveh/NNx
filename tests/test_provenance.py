@@ -483,3 +483,21 @@ def test_provenance_files_still_load_and_keep_their_documented_errors(tmp_path):
     (run / MANIFEST_FILE).write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(KeyError):
         load_provenance("a" * 32, root=str(tmp_path))
+
+
+# --- FIX-082 (#550): manifest labels follow the shared rule ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [{"neg", "mid", "pos"}, frozenset({"neg", "pos"}), {"neg": 0, "pos": 1}, "neg"],
+    ids=["set", "frozenset", "dict", "str"],
+)
+def test_manifest_labels_refuse_sets_mappings_and_strings(labels):
+    """A set's order, and with it ``labels`` and the fingerprint, followed
+    PYTHONHASHSEED; a dict recorded its keys. NumPy and pandas labels stay."""
+    with pytest.raises(TypeError, match="labels must be an ordered sequence of class names"):
+        ExperimentManifest(labels=labels)
+    manifest = ExperimentManifest(labels=pd.Index(["neg", "mid", "pos"]))
+    assert manifest.labels == ("neg", "mid", "pos") and all(type(label) is str for label in manifest.labels)
+    assert manifest.fingerprint() == ExperimentManifest(labels=np.array(["neg", "mid", "pos"])).fingerprint()
