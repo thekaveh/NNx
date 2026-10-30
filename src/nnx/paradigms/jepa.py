@@ -382,6 +382,9 @@ def jepa_train_step_factory(
         A ``TrainStepFn`` for ``NNModel.train(..., train_step_fn=...)``.
 
     Raises:
+        TypeError: when ``target_encoder`` or ``predictor`` is not an
+            ``nn.Module``, as :func:`~nnx.paradigms.jepa_objective` refuses
+            it.
         ValueError: when ``ema_momentum`` is not a real in ``[0, 1)`` (a
             ``bool`` included); at the first step, before any freeze, mode
             change or update, when the target encoder is part of
@@ -390,6 +393,8 @@ def jepa_train_step_factory(
             check and wording; at the first step, when the predictor is
             not a submodule of ``model.net`` (it would never be updated).
     """
+    if not isinstance(target_encoder, nn.Module) or not isinstance(predictor, nn.Module):
+        raise TypeError("target_encoder and predictor must be torch.nn.Module instances")
     require_finite_real(
         ema_momentum, "ema_momentum", owner="jepa_train_step_factory", minimum=0, maximum=1, exclusive_max=True
     )
