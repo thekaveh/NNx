@@ -129,9 +129,9 @@ def test_logits_that_do_not_fit_the_spec_raise(logits, spec, match):
 
 def test_sample_ids_must_align_with_rows():
     spec = ProbabilitySpec(kind="categorical")
-    with pytest.raises(PredictionValidationError, match="one integer id per sample"):
+    with pytest.raises(PredictionValidationError, match=r"one integer id per row \(3\)"):
         prediction_from_logits(np.zeros((3, 2)), spec, sample_ids=[0, 1])
-    with pytest.raises(PredictionValidationError, match="one integer id per sample"):
+    with pytest.raises(PredictionValidationError, match=r"one integer id per row \(2\)"):
         prediction_from_logits(np.zeros((2, 2)), spec, sample_ids=[0.5, 1.5])
     assert prediction_from_logits(np.zeros((2, 2)), spec, sample_ids=torch.tensor([7, 3])).sample_ids.tolist() == [7, 3]
 
@@ -253,9 +253,9 @@ def test_best_reconstructed_model_round_trip_keeps_parameters_and_run_id(tmp_pat
 
 
 def test_from_state_validates_labels_instead_of_splitting_strings():
-    with pytest.raises(PredictionValidationError, match="sequence of strings"):
+    with pytest.raises(PredictionValidationError, match="ordered sequence of class names, got 'abc'"):
         ProbabilitySpec.from_state({"kind": "categorical", "class_axis": 1, "labels": "abc"})
-    with pytest.raises(PredictionValidationError, match="sequence of strings"):
+    with pytest.raises(PredictionValidationError, match="ordered sequence of class names"):
         ProbabilitySpec.from_state({"kind": "categorical", "labels": {"a": 0, "b": 1}})
 
 
@@ -311,3 +311,45 @@ def test_zero_rows_with_an_empty_sample_id_list():
 
     result = prediction_from_logits(np.zeros((0, 3)), ProbabilitySpec("categorical"), sample_ids=[])
     assert result.sample_ids.shape == (0,) and result.sample_ids.dtype == np.int64
+
+
+# ------------------------------------------- FIX-082 (#550): one labels= rule, shared id and logit readers
+
+
+@pytest.mark.parametrize("unordered", [{"neg", "pos"}, frozenset({"neg", "pos"})], ids=["set", "frozenset"])
+def test_class_labels_refuses_unordered_containers(unordered):
+    """A set iterates in an order that follows PYTHONHASHSEED, so its labels
+    would name other columns in another process; the refusal says why."""
+    from nnx._probability import class_labels
+
+    with pytest.raises(ValueError, match=r"got a (set|frozenset): unordered containers"):
+        class_labels(unordered, error=ValueError)
+    assert class_labels(["neg", "pos"], error=ValueError) == ("neg", "pos")
+
+
+@pytest.mark.parametrize("kind", ["categorical", "bernoulli"])
+def test_probability_spec_labels_follow_the_shared_rule(kind):
+    """NumPy and pandas labels (``LabelEncoder().classes_``, a categorical's
+    ``.cat.categories``) are accepted as calibration accepts them, stored as
+    plain ``str``; a string, a mapping and a set are refused."""
+    import pandas as pd
+
+    for labels in (np.array(["cat", "dog", "fox"]), pd.Index(["cat", "dog", "fox"])):
+        spec = ProbabilitySpec(kind, labels=labels)
+        assert spec.labels == ("cat", "dog", "fox") and all(type(label) is str for label in spec.labels)
+        assert ProbabilitySpec.from_state(yaml.safe_load(yaml.safe_dump(spec.state()))) == spec
+    for labels in ("ab", {"a": 0, "b": 1}, {"a", "b"}):
+        with pytest.raises(PredictionValidationError, match="ProbabilitySpec labels must be an ordered sequence"):
+            ProbabilitySpec(kind, labels=labels)
+
+
+def test_ragged_sample_ids_and_logits_raise_the_prediction_error():
+    """NumPy's own ``ValueError`` escaped ``except PredictionValidationError``."""
+    spec = ProbabilitySpec("categorical", class_axis=1)
+    with pytest.raises(PredictionValidationError, match="cannot read list as a numeric array"):
+        prediction_from_logits(np.zeros((3, 2)), spec, sample_ids=[[0, 1], [2], [3]])
+    with pytest.raises(PredictionValidationError, match="cannot read list as a numeric array"):
+        prediction_from_logits([[0.1, 0.2], [0.3]], spec)
+    with pytest.raises(PredictionValidationError, match=r"one integer id per row \(3\), got shape \(3, 1\)"):
+        prediction_from_logits(np.zeros((3, 2)), spec, sample_ids=[[0], [1], [2]])
+    assert prediction_from_logits([[0.1, 0.2], [0.3, 0.4]], spec, sample_ids=[9, 4]).sample_ids.tolist() == [9, 4]

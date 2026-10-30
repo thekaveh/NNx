@@ -23,8 +23,12 @@ apart:
   calibration (duck-typed: torch is never imported here).
 - ``categorical_probabilities`` / ``class_targets`` / ``row_ids`` — the
   validation of categorical ``(N, C)`` probabilities, integer class targets
-  and per-row sample ids shared by calibration and abstention, raising the
+  and per-row sample ids shared by calibration and abstention (``row_ids``
+  and ``read_array`` also by predictions and task adapters), raising the
   caller's own error type.
+- ``class_labels`` — the one ``labels=`` rule of tasks, probability specs,
+  streaming metrics, calibration, abstention, provenance manifests and the
+  fixed-head decision provider, raising the caller's own error type.
 """
 
 from __future__ import annotations
@@ -247,19 +251,27 @@ def same_ids(given: Any, own: Any, *, error: type[Exception]) -> bool:
     return given is None or np.array_equal(row_ids(given, None, error=error), row_ids(own, None, error=error))
 
 
-def class_labels(value: Any, *, error: type[Exception], minimum: int = 1) -> tuple[str, ...]:
+def class_labels(value: Any, *, error: type[Exception], minimum: int = 1, what: str = "labels") -> tuple[str, ...]:
     """Ordered, unique, non-empty class names (NumPy arrays and pandas
-    indexes accepted) — at least ``minimum`` of them — or ``error``."""
+    indexes accepted) — at least ``minimum`` of them — or ``error``. A
+    string, bytes, a mapping or a set is refused: a string is one name, not
+    its characters, and a set's order can change between processes.
+    ``what`` names the value in messages (``"TaskSpec labels"``, say)."""
+    if isinstance(value, (set, frozenset)):
+        raise error(
+            f"{what} must be an ordered sequence of class names, got a {type(value).__name__}: unordered containers "
+            "(set, frozenset) iterate in an order that can change between processes, and each label's position with it"
+        )
     if not isinstance(value, (str, bytes, Mapping)) and hasattr(value, "tolist"):
         value = value.tolist()  # NumPy arrays, pandas Index / Series
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
-        raise error(f"labels must be an ordered sequence of class names, got {value!r}")
+        raise error(f"{what} must be an ordered sequence of class names, got {value!r}")
     bad = [label for label in value if not isinstance(label, str) or not label]
     if bad:
-        raise error(f"labels must be non-empty strings, got {bad!r}")
+        raise error(f"{what} must be non-empty strings, got {bad!r}")
     out = tuple(str(label) for label in value)  # NumPy str_ -> str
     if len(set(out)) != len(out):
-        raise error(f"labels must be unique, got {list(out)}")
+        raise error(f"{what} must be unique, got {list(out)}")
     if len(out) < minimum:
         raise error(
             f"a categorical schema needs at least {minimum} label{'' if minimum == 1 else 's'}, got {list(out)}"
