@@ -115,9 +115,30 @@ what it can answer:
 | Head | Answers |
 |---|---|
 | categorical (softmax over `C` classes) | `Choice`; also `Score` with `ordinal=True`, whose levels must follow the head's class order |
-| one Bernoulli logit (`BCEWithLogitsLoss`, or a one-output multilabel task) | the one `Boolean` it was trained for (`question=`) |
+| one Bernoulli logit (`BCEWithLogitsLoss` or another logistic loss without a task, or a one-output multilabel task) | the one `Boolean` it was trained for (`question=`) |
 | regression | nothing — rejected at construction |
 | multi-output multilabel | nothing — rejected at construction when the head's width is known (a task's count or a built-in net's `output_dim`). Otherwise it is refused on the first call, after the model ran. |
+| any other task-less loss, and `BCELoss` | nothing — rejected at construction (see "Heads without a task" below) |
+
+**Heads without a task.** The model's `TaskSpec` names the head's kind.
+Without one, `model.loss_fn` names it, and only for the losses NNx knows:
+
+| Task-less `loss_fn` | Head |
+|---|---|
+| `CrossEntropyLoss`, `NLLLoss` | categorical |
+| `BCEWithLogitsLoss`, `MultiLabelSoftMarginLoss`, `SoftMarginLoss` (one logistic objective) | Bernoulli (multilabel) |
+| `MSELoss`, `L1Loss`, `SmoothL1Loss`, `HuberLoss`, `PoissonNLLLoss`, `GaussianNLLLoss` | regression |
+
+Any other task-less loss raises `UnsupportedCapability` at construction,
+before the model runs, instead of being served as a softmax. That covers the
+hinges `MultiMarginLoss` and `MultiLabelMarginLoss` (whose margin scores are
+no probabilities) and custom losses. For logits trained with a custom loss (a
+focal loss, say), set `model.loss_fn` to the matching `CrossEntropyLoss`,
+`NLLLoss` or `BCEWithLogitsLoss`. A declared `TaskSpec` also names the head's
+kind, but that task's `train()` and `evaluate()` accept only its own losses. A
+`BCELoss` head outputs probabilities, not logits, so it is refused with or
+without a task: wrap the net without its final sigmoid and set a
+`BCEWithLogitsLoss` loss.
 
 - **Label space.** `labels` names the head's columns in order. It defaults to
   the model's `TaskSpec` labels and must equal them when both are given.

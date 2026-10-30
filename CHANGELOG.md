@@ -100,7 +100,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - `NNOptimParams` with an integer `momentum` (`momentum=0`) or betas trains; NumPy integers keep the Python-int run id.
     - `NNTrainParams` / `NNTrainerParams` flags must be bools.
     - `lr_finder` sweeps a negative loss and refuses non-finite arguments.
-    - `FixedHeadProvider` refuses a regression loss without a task.
+    - `FixedHeadProvider` refuses a regression loss without a task, `PoissonNLLLoss` and `GaussianNLLLoss` included. Without a task it reads `MultiLabelSoftMarginLoss` and `SoftMarginLoss` heads as Bernoulli, like `BCEWithLogitsLoss`, and refuses `BCELoss` (also with a task), the hinges `MultiMarginLoss` and `MultiLabelMarginLoss`, and any loss it does not know, instead of serving a softmax of their outputs as a `Choice`.
     - `LogitsChainBuilder` refuses custom processors after `temperature(0.0)`, which would corrupt the greedy choice.
     - `link_metrics` refuses probabilities outside `[0, 1]` (pass logits with `from_logits=True`).
     - A fully masked task batch with infinite outputs no longer turns the evaluated loss into NaN.

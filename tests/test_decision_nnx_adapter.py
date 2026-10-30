@@ -419,3 +419,156 @@ def test_a_policy_tuned_on_any_producer_decides_alike_on_every_path(kind, dtype,
     records = collect(provider, samples, provider_id="head", budget=Budget(max_calls=20)).records
     report = evaluate(samples, records, split="test", policy=policy, model_id="m")
     assert report.slices["in_family"].metrics["selective_coverage"].value == reference.mean()
+
+
+# ------------------------------------------- FIX-063 (#530): a task-less head's kind from its loss
+
+
+def _taskless(loss_fn: torch.nn.Module, output_dim: int = 3) -> tuple[NNModel, list[int]]:
+    """A no-task built-in head (its width is known) with a runtime ``loss_fn``,
+    and the list its forward pre-hook appends to: empty while the model never ran."""
+    model = _classifier(output_dim)
+    model.loss_fn = loss_fn
+    calls: list[int] = []
+    model.net.register_forward_pre_hook(lambda module, args: calls.append(1))
+    return model, calls
+
+
+class _FocalLoss(torch.nn.Module):
+    """A custom categorical loss NNx cannot recognize."""
+
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        p = torch.softmax(logits, dim=1).gather(1, target.unsqueeze(1)).squeeze(1)
+        return (-((1 - p) ** 2) * torch.log(p)).mean()
+
+
+def _name(loss_fn: torch.nn.Module) -> str:
+    return type(loss_fn).__name__
+
+
+@pytest.mark.parametrize("output_dim", [1, 2])
+@pytest.mark.parametrize(
+    "loss_fn",
+    [
+        torch.nn.MSELoss(),
+        torch.nn.L1Loss(),
+        torch.nn.SmoothL1Loss(),
+        torch.nn.HuberLoss(),
+        torch.nn.PoissonNLLLoss(),
+        torch.nn.GaussianNLLLoss(),
+    ],
+    ids=_name,
+)
+def test_a_taskless_regression_loss_is_refused_before_the_model_runs(loss_fn, output_dim):
+    """A count (Poisson) or Gaussian likelihood head is a regression head like
+    an MSELoss one: a softmax of its outputs is no distribution it was
+    trained to give."""
+    model, calls = _taskless(loss_fn, output_dim)
+    with pytest.raises(UnsupportedCapability, match="a regression head justifies no decision primitive"):
+        FixedHeadProvider(model, labels=LABELS[:output_dim])
+    assert calls == []  # refused at construction, before any forward pass
+
+
+@pytest.mark.parametrize(
+    ("loss_fn", "output_dim", "match"),
+    [
+        pytest.param(loss_fn, width, match, id=f"{_name(loss_fn)}-{width}")
+        for loss_fn, width, match in [
+            (torch.nn.BCEWithLogitsLoss(), 2, "multi-output Bernoulli"),
+            (torch.nn.MultiLabelSoftMarginLoss(), 2, "multi-output Bernoulli"),
+            (torch.nn.MultiLabelSoftMarginLoss(), 3, "multi-output Bernoulli"),
+            (torch.nn.SoftMarginLoss(), 2, "multi-output Bernoulli"),
+            (torch.nn.SoftMarginLoss(), 3, "multi-output Bernoulli"),
+            (torch.nn.MultiLabelMarginLoss(), 2, "MultiLabelMarginLoss head is a multilabel hinge"),
+            (torch.nn.MultiLabelMarginLoss(), 3, "MultiLabelMarginLoss head is a multilabel hinge"),
+            (torch.nn.MultiLabelMarginLoss(), 1, "MultiLabelMarginLoss head is a multilabel hinge"),
+        ]
+    ],
+)
+def test_a_taskless_multilabel_loss_is_refused_like_a_multi_output_bce_head(loss_fn, output_dim, match):
+    """The logistic margin losses train BCEWithLogitsLoss's objective, so a
+    multi-output head is refused like a multi-output BCEWithLogitsLoss one;
+    a multilabel hinge's margin scores justify no probability at any width."""
+    model, calls = _taskless(loss_fn, output_dim)
+    for settings in ({"labels": LABELS[:output_dim]}, {"question": Boolean("Is it a cat?")}):
+        with pytest.raises(UnsupportedCapability, match=match):
+            FixedHeadProvider(model, **settings)
+    assert calls == []
+
+
+@pytest.mark.parametrize("loss_fn", [torch.nn.MultiLabelSoftMarginLoss(), torch.nn.SoftMarginLoss()], ids=_name)
+def test_a_one_output_logistic_margin_head_answers_its_boolean_by_sigmoid(loss_fn):
+    """Like a one-output BCEWithLogitsLoss head (its objective): the sigmoid
+    of its one logit is the probability it was trained to give."""
+    model, _ = _taskless(loss_fn, 1)
+    binary = FixedHeadProvider(model, question=Boolean("Is it a cat?"))
+    assert binary.capabilities().primitives == {"boolean"}
+    results = binary.decide(Boolean("Is it a cat?"), X)
+    np.testing.assert_allclose([r.p_true for r in results], 1 / (1 + np.exp(-2.0 * X[:, 0].numpy())), rtol=1e-6)
+
+
+def _sigmoid_head() -> NNModel:
+    from torch import nn
+
+    return NNModel(module=nn.Sequential(nn.Linear(2, 2), nn.Sigmoid()), params=NNModelParams())
+
+
+@pytest.mark.parametrize(
+    ("build", "settings"),
+    [
+        pytest.param(lambda: _classifier(1), {"question": Boolean("Is it a cat?")}, id="one-output"),
+        pytest.param(lambda: _classifier(2), {"labels": ("cat", "dog")}, id="two-output"),
+        pytest.param(_sigmoid_head, {"labels": ("cat", "dog")}, id="width-unknown"),
+        pytest.param(
+            lambda: _classifier(1, Losses.BINARY_CROSS_ENTROPY, task=TaskSpec.multilabel(1)),
+            {"question": Boolean("Is it a cat?")},
+            id="multilabel-task",
+        ),
+        pytest.param(lambda: _classifier(task=TaskSpec.categorical(3, labels=LABELS)), {}, id="categorical-task"),
+    ],
+)
+def test_a_bce_loss_head_is_never_served_from_its_outputs(build, settings):
+    """A BCELoss head outputs probabilities, not logits: a softmax or sigmoid
+    of them is no probability the head gives (with or without a task, whose
+    own loss check refuses BCELoss)."""
+    model = build()
+    model.loss_fn = torch.nn.BCELoss()
+    calls: list[int] = []
+    model.net.register_forward_pre_hook(lambda module, args: calls.append(1))
+    with pytest.raises(UnsupportedCapability, match="BCELoss head outputs probabilities.*BCEWithLogitsLoss"):
+        FixedHeadProvider(model, **settings)
+    assert calls == []
+
+
+@pytest.mark.parametrize("output_dim", [2, 3])
+@pytest.mark.parametrize(
+    ("loss_fn", "hinge"),
+    [(torch.nn.MultiMarginLoss(), "multi-class"), (torch.nn.MultiLabelMarginLoss(), "multilabel")],
+    ids=["MultiMarginLoss", "MultiLabelMarginLoss"],
+)
+def test_a_taskless_hinge_loss_is_refused_without_a_remedy(loss_fn, hinge, output_dim):
+    """A hinge head's outputs are margin scores, not logits: no loss_fn or
+    TaskSpec makes a softmax of them a probability, so none is offered."""
+    model, calls = _taskless(loss_fn, output_dim)
+    with pytest.raises(UnsupportedCapability, match=f"a {_name(loss_fn)} head is a {hinge} hinge") as caught:
+        FixedHeadProvider(model, labels=LABELS[:output_dim])
+    assert "TaskSpec" not in str(caught.value) and "loss_fn" not in str(caught.value)
+    assert calls == []
+
+
+@pytest.mark.parametrize("loss_fn", [_FocalLoss(), torch.nn.KLDivLoss(reduction="batchmean")], ids=_name)
+def test_an_unknown_taskless_loss_is_refused_with_the_fix(loss_fn):
+    """Without a task only the losses NNx knows name a head's kind; any other
+    is refused, not served as a softmax, and the refusal names both fixes for
+    a head of logits (a hinge's margin scores are none: see above)."""
+    model, calls = _taskless(loss_fn)
+    with pytest.raises(UnsupportedCapability, match=re.escape(_name(loss_fn))) as caught:
+        FixedHeadProvider(model, labels=LABELS)
+    assert "set model.loss_fn to the matching CrossEntropyLoss, NLLLoss or BCEWithLogitsLoss" in str(caught.value)
+    assert "that task's train() and evaluate() accept only its own losses" in str(caught.value)
+    assert calls == []
+    model.loss_fn = torch.nn.CrossEntropyLoss()  # the fix: the loss whose logits the head gives
+    assert len(FixedHeadProvider(model, labels=LABELS).decide(_animals("cat", "dog", "fox"), X)) == 3
+    declared = _classifier(task=TaskSpec.categorical(3, labels=LABELS))
+    declared.loss_fn = loss_fn  # a declared task names the head's kind for decisions; its training refuses this loss
+    assert len(FixedHeadProvider(declared).decide(_animals("cat", "dog", "fox"), X)) == 3

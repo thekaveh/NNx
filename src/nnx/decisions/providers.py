@@ -186,6 +186,42 @@ def _batch(inputs: Any) -> tuple[str, int]:
     )
 
 
+def _taskless_head_kind(loss_fn: Any) -> str:
+    """The head kind a loss trains when the model declares no task —
+    ``"categorical"``, ``"multilabel"`` or ``"regression"``, as a task's kind.
+    Only the losses below name one: any other raises
+    :class:`UnsupportedCapability` (#530), since nothing says what its
+    outputs mean and a softmax of them is no distribution the head gives."""
+    import torch
+
+    nn = torch.nn
+    if isinstance(loss_fn, (nn.CrossEntropyLoss, nn.NLLLoss)):
+        return "categorical"
+    # Logistic losses (BCEWithLogitsLoss's objective): the sigmoid of each
+    # output is the probability the head was trained to give.
+    if isinstance(loss_fn, (nn.BCEWithLogitsLoss, nn.MultiLabelSoftMarginLoss, nn.SoftMarginLoss)):
+        return "multilabel"
+    regression = (nn.MSELoss, nn.L1Loss, nn.SmoothL1Loss, nn.HuberLoss, nn.PoissonNLLLoss, nn.GaussianNLLLoss)
+    if isinstance(loss_fn, regression):
+        return "regression"
+    # Hinges: no loss_fn or TaskSpec turns a margin score into a probability,
+    # so the refusal names no remedy.
+    if isinstance(loss_fn, (nn.MultiLabelMarginLoss, nn.MultiMarginLoss)):
+        hinge = "multilabel" if isinstance(loss_fn, nn.MultiLabelMarginLoss) else "multi-class"
+        raise UnsupportedCapability(
+            f"a {type(loss_fn).__name__} head is a {hinge} hinge: its outputs are margin scores, not logits, so no "
+            "softmax or sigmoid of them is a probability and it justifies no decision primitive"
+        )
+    raise UnsupportedCapability(
+        f"without a task, a {type(loss_fn).__name__} head's outputs have no known meaning: FixedHeadProvider reads "
+        "softmax logits from a CrossEntropyLoss or NLLLoss head and sigmoid logits from a BCEWithLogitsLoss, "
+        "MultiLabelSoftMarginLoss or SoftMarginLoss one. For logits trained with another loss (a focal loss, say), "
+        "set model.loss_fn to the matching CrossEntropyLoss, NLLLoss or BCEWithLogitsLoss before wrapping it. A "
+        "declared TaskSpec also names the head's kind, but that task's train() and evaluate() accept only its own "
+        "losses"
+    )
+
+
 def _head_width(model: Any, spec: Any) -> Optional[int]:
     """The head's output width when it is known without running the model
     (a task's count, else a built-in net's ``output_dim``)."""
@@ -203,11 +239,31 @@ class FixedHeadProvider:
     categorical head (softmax over its classes) answers :class:`Choice` —
     and :class:`Score` when constructed with ``ordinal=True``, whose levels
     must then follow the head's class order — and a single-logit Bernoulli
-    head (``BCEWithLogitsLoss``, or a one-output multilabel task) answers
-    one :class:`Boolean`: ``question``, the one it was trained for. Its
-    single probability is bound to no prompt, so any other Boolean (another
-    digest) raises :class:`UnsupportedCapability` before :attr:`model_calls`
-    advances. Probabilities come from the model's ``predict_proba``,
+    head (``BCEWithLogitsLoss`` or another logistic loss without a task, or
+    a one-output multilabel task) answers one :class:`Boolean`:
+    ``question``, the one it was trained for. Its single probability is
+    bound to no prompt, so any other Boolean (another digest) raises
+    :class:`UnsupportedCapability` before :attr:`model_calls` advances. A
+    regression head justifies no primitive.
+
+    The model's ``TaskSpec`` names the head's kind. Without one,
+    ``model.loss_fn`` does, and only for the losses NNx knows:
+    ``CrossEntropyLoss`` and ``NLLLoss`` train a categorical head;
+    ``BCEWithLogitsLoss``, ``MultiLabelSoftMarginLoss`` and
+    ``SoftMarginLoss`` (one logistic objective) a Bernoulli one;
+    ``MSELoss``, ``L1Loss``, ``SmoothL1Loss``, ``HuberLoss``,
+    ``PoissonNLLLoss`` and ``GaussianNLLLoss`` a regression one. Any other
+    task-less loss raises :class:`UnsupportedCapability` at construction
+    instead of being served as a softmax. That covers the hinges
+    ``MultiMarginLoss`` and ``MultiLabelMarginLoss`` (whose margin scores are
+    no probabilities) and custom losses. For logits trained with a custom loss
+    (a focal loss, say), set ``model.loss_fn`` to the matching
+    ``CrossEntropyLoss``, ``NLLLoss`` or ``BCEWithLogitsLoss``. A declared
+    ``TaskSpec`` also names the head's kind, but that task's ``train()`` and
+    ``evaluate()`` accept only its own losses. A ``BCELoss`` head outputs
+    probabilities, not logits, and is refused with or without a task.
+
+    Probabilities come from the model's ``predict_proba``,
     which evaluates in eval mode and restores every submodule's
     training mode; they are computed in float64 from the returned logits,
     so half-precision models meet the ``1e-6`` tolerance.
@@ -257,10 +313,16 @@ class FixedHeadProvider:
         adapter = getattr(self.model, "task_adapter", None)
         spec = getattr(adapter, "spec", None)
         kind = getattr(spec, "kind", None)
-        regression_loss = isinstance(
-            self.model.loss_fn, (torch.nn.MSELoss, torch.nn.L1Loss, torch.nn.SmoothL1Loss, torch.nn.HuberLoss)
-        )
-        if kind == "regression" or (kind is None and regression_loss):
+        if isinstance(self.model.loss_fn, torch.nn.BCELoss):
+            # With or without a task (every task's loss check refuses it): the
+            # head emits probabilities, which this provider would squash again.
+            raise UnsupportedCapability(
+                "a BCELoss head outputs probabilities, not logits, so no softmax or sigmoid of them is a probability "
+                "it gives: wrap the net without its final sigmoid and set a BCEWithLogitsLoss loss_fn"
+            )
+        if kind is None:
+            kind = _taskless_head_kind(self.model.loss_fn)
+        if kind == "regression":
             # A regression loss without a task still trains a regression head:
             # a softmax of its outputs is no probability distribution.
             raise UnsupportedCapability("a regression head justifies no decision primitive")
