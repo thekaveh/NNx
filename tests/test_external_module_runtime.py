@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import random
 import types
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -729,14 +730,14 @@ def test_lazy_weights_loaded_after_the_wrap_materialize_as_a_dry_run_and_reload_
         assert repr(model.net[0]) == repr(source[0]) and isinstance(model.net[1], LazyModuleMixin)  # part-loaded
         for layer, weights in list(zip(model.net, source, strict=True))[1:]:
             layer.load_state_dict(weights.state_dict())
-    # materialized at the load as by the dry run: torch's own forward on loaded weights would leave the
-    # conv's in_channels and the norm's num_features at 0 (and fail an affine instance norm's forward)
-    assert repr(model.net) == repr(source)
     run = model.train(params=_params(_ImageLoader.of(shape), epochs=1))
+    # materialized at the first forward as by the dry run: torch's own forward on loaded weights would leave
+    # the conv's in_channels and the norm's num_features at 0 (and fail an affine instance norm's forward)
+    assert repr(model.net) == repr(source)
     checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
     assert checkpoint is not None
     assert checkpoint.model_params.net == model.params.net == RuntimeModule.of(model.net) == RuntimeModule.of(source)
-    assert not any(layer._load_state_dict_post_hooks for layer in model.net.modules())  # the wrap's hooks are gone
+    assert not model.net._forward_pre_hooks and not model.net._forward_hooks  # the wrap's hooks are gone
     fresh = build()
     reloaded = NNModel.from_checkpoint(checkpoint, module=fresh)
     X = torch.randn(3, *shape)
@@ -887,6 +888,93 @@ def test_a_pending_lazy_layer_replaced_before_the_first_forward_still_refreshes_
     assert checkpoint is not None
     assert NNModel.from_checkpoint(checkpoint, module=model.net).net is model.net
     assert NNModel(module=model.net, params=model.params).net is model.net
+
+
+def test_a_replaced_lazy_conv_loaded_after_the_wrap_materializes_as_a_dry_run():
+    """The wrap's hooks sit on the module, not on the lazy layers it held:
+    a layer put in after the wrap and loaded there is finished at the first
+    forward as a dry run would finish it, so the run reloads into fresh
+    instances (#562)."""
+
+    def build() -> nn.Module:
+        return nn.Sequential(nn.LazyConv1d(4, 3), nn.Flatten(), nn.LazyLinear(2))
+
+    source = _dry_run(build(), 2, 6)
+    model = NNModel(module=build(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    assert model.params.net is not None
+    model.net[0] = nn.LazyConv1d(4, 3)  # a re-created layer: the same state keys
+    model.net.load_state_dict(source.state_dict())
+    run = model.train(params=_params(_ImageLoader.of((2, 6)), epochs=1))
+    assert repr(model.net) == repr(source)  # torch's own forward would leave in_channels at 0
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None and checkpoint.model_params.net == RuntimeModule.of(source)
+    NNModel.from_checkpoint(checkpoint, module=build())
+
+
+def test_the_wraps_hooks_leave_the_module_at_its_first_forward_or_with_the_model():
+    """Nothing of NNx stays on a caller's module: a pickle of it loads
+    without nnx (#562)."""
+    import gc
+
+    net = _lazy()
+    model = NNModel(module=net, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    assert net._forward_pre_hooks and net._forward_hooks  # while a lazy layer is pending
+    net(torch.zeros(1, 4))  # a direct forward, with no params read after it
+    assert not net._forward_pre_hooks and not net._forward_hooks
+    assert model.params.net == RuntimeModule.of(net)
+    pending = _lazy()
+    dropped = NNModel(module=pending, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    assert pending._forward_pre_hooks
+    del dropped
+    gc.collect()
+    assert not pending._forward_pre_hooks and not pending._forward_hooks
+
+
+def test_an_nnmodel_pickled_before_params_was_a_property_still_loads():
+    """Before #562, params lived in the instance dict; such a pickle keeps it there."""
+    import pickle
+
+    model = NNModel(module=Classifier(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    expected = model.params
+    legacy = pickle.loads(pickle.dumps(model))
+    legacy.__dict__["params"] = legacy.__dict__.pop("_params")  # the older pickle's layout
+    assert legacy.params == expected
+    assert legacy.predict(torch.zeros(2, 4)).classes.shape == (2,)
+    legacy.params = replace(expected, mixed_precision=True)  # the setter retires the legacy entry
+    assert "params" not in legacy.__dict__ and legacy.params.mixed_precision
+
+
+def test_mock_patch_object_restores_params():
+    from unittest import mock
+
+    model = NNModel(module=Classifier(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    original = model.params
+    with mock.patch.object(model, "params", replace(original, mixed_precision=True)):
+        assert model.params.mixed_precision
+    assert model.params == original
+    del model.params
+    with pytest.raises(AttributeError):
+        _ = model.params
+
+
+class _WithHead(NNModel):
+    """A subclass that adapts the module it is given before NNModel wraps it."""
+
+    def __init__(self, *, params: NNModelParams, module: nn.Module, **kwargs) -> None:
+        super().__init__(params=params, module=nn.Sequential(module, nn.ReLU(), nn.Linear(8, 2)), **kwargs)
+
+
+@pytest.mark.parametrize("backbone", [lambda: nn.Linear(4, 8), lambda: nn.LazyLinear(8)], ids=["dense", "lazy"])
+def test_a_subclass_that_adapts_its_module_reloads_through_from_checkpoint(backbone):
+    """from_checkpoint checks the module the constructor wraps, not the one
+    the caller passed: a subclass that adapts it reloads as before #562."""
+    model = _WithHead(params=NNModelParams(loss=Losses.CROSS_ENTROPY), module=backbone())
+    run = model.train(params=_params(_loader(), epochs=1))
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    reloaded = _WithHead.from_checkpoint(checkpoint, module=backbone())
+    X = torch.randn(5, 4)
+    np.testing.assert_array_equal(reloaded.predict(X).logits, model.predict(X).logits)
 
 
 def test_a_lazy_norm_layer_without_tensors_materializes_at_the_first_forward():

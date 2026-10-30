@@ -46,6 +46,7 @@ from typing import Any, Optional, cast
 import torch
 from torch import nn
 from torch.nn.modules.lazy import LazyModuleMixin
+from torch.utils.hooks import RemovableHandle
 
 from ._config import _SLUG, _freeze_config, _thaw_config
 from ._validation import plain_str, require_count
@@ -504,14 +505,28 @@ def _finish_lazy_layer(layer: nn.Module, tensors: Mapping[str, torch.Tensor]) ->
             sub.__class__ = final
 
 
-def _complete_loaded_lazy_layer(layer: nn.Module, _incompatible_keys: Any) -> None:
-    """``load_state_dict`` post-hook that ``NNModel`` registers on each
-    pending lazy layer of a wrapped module (#562): weights loaded after the
-    wrap, through the module or the layer, finish the layer's
-    materialization at that load, as the wrap does for weights loaded
-    before it (torch's own forward on them would leave its
-    ``in_channels`` / ``num_features`` at 0)."""
-    _complete_lazy_materialization(layer)
+def _finish_loaded_lazy_layers(module: nn.Module, _args: Any) -> None:
+    """Forward pre-hook that ``NNModel`` puts on a wrapped module while any
+    of its lazy layers is pending (#562): weights loaded after the wrap,
+    through the module or into one of its layers (also a layer put in after
+    the wrap), finish their layer's materialization before torch's own
+    forward on them, as the wrap does for weights loaded before it (torch's
+    forward on loaded weights would leave ``in_channels`` /
+    ``num_features`` at 0)."""
+    _complete_lazy_materialization(module)
+
+
+def _drop_lazy_hooks(handles: list[RemovableHandle], module: nn.Module, _args: Any, _output: Any) -> None:
+    """Forward hook paired with :func:`_finish_loaded_lazy_layers`: once no
+    lazy layer is pending, both hooks go, so the caller's module keeps no
+    NNx hook once it has materialized."""
+    if not _has_pending_lazy(module):
+        _remove_hooks(handles)
+
+
+def _remove_hooks(handles: list[RemovableHandle]) -> None:
+    for handle in handles:
+        handle.remove()
 
 
 def _shape(value: torch.Tensor) -> Optional[tuple[int, ...]]:
