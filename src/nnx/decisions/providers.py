@@ -238,11 +238,12 @@ class FixedHeadProvider:
     categorical head (softmax over its classes) answers :class:`Choice` —
     and :class:`Score` when constructed with ``ordinal=True``, whose levels
     must then follow the head's class order — and a single-logit Bernoulli
-    head (``BCEWithLogitsLoss``, or a one-output multilabel task) answers
-    one :class:`Boolean`: ``question``, the one it was trained for. Its
-    single probability is bound to no prompt, so any other Boolean (another
-    digest) raises :class:`UnsupportedCapability` before :attr:`model_calls`
-    advances. A regression head justifies no primitive.
+    head (``BCEWithLogitsLoss`` or another logistic loss without a task, or
+    a one-output multilabel task) answers one :class:`Boolean`:
+    ``question``, the one it was trained for. Its single probability is
+    bound to no prompt, so any other Boolean (another digest) raises
+    :class:`UnsupportedCapability` before :attr:`model_calls` advances. A
+    regression head justifies no primitive.
 
     The model's ``TaskSpec`` names the head's kind. Without one,
     ``model.loss_fn`` does, and only for the losses NNx knows:
