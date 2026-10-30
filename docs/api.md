@@ -297,9 +297,8 @@ layers still to materialize (``nn.LazyLinear`` before its first
 forward) also matches a descriptor taken after materialization: its
 parameter names and shapes are checked against the saved weights,
 and the topology they materialize against the descriptor, before
-any weight loads; the weights then materialize it in the form the
-descriptor records (each lazy layer as a dry-run forward leaves it,
-or as torch's own forward leaves a loaded one). A checkpoint with
+any weight loads; the weights then materialize it, as a dry-run
+forward would have. A checkpoint with
 recorded transforms (a QAT
 run, say) holds the transformed module's weights, which give no
 shapes to check: pass a dry-run (materialized) instance for it.
@@ -2745,18 +2744,18 @@ or a direct call), ``NNModel`` takes its descriptor afresh at the next
 read of its ``params``, so checkpoints and later runs use the
 materialized descriptor. A lazy layer the forward never reaches keeps
 the module at its wrap-time descriptor, so keep every lazy layer on the
-forward path. NNx never changes the module at the wrap and puts no hook
-on it. Torch's own first forward on weights loaded before it leaves
-``in_channels`` / ``num_features`` of lazy conv and norm layers at 0
-(and ``in_features`` of ``nn.LazyLinear`` on older torch), where a dry
-run sets them; a reload accepts either form, layer by layer. A module
-whose lazy layers hold loaded weights does not match a descriptor taken
-before materialization; a fresh, unmaterialized instance does. A reload
-checks an uninitialized lazy module against a materialized descriptor
-with the saved weights (their names and shapes first, then the topology
-they materialize), and nothing loads on a refusal. A module holding a
-lazy layer torch does not ship keeps its wrap-time descriptor: only a
-forward reveals what such a layer infers.
+forward path. NNx puts no hook on the module. Torch's own first forward
+on weights loaded before it leaves ``in_channels`` / ``num_features`` of
+lazy conv and norm layers at 0 (and ``in_features`` of ``nn.LazyLinear``
+on older torch); when ``NNModel`` takes the descriptor afresh it sets
+them as a dry run does, so the module is described in its dry-run form.
+A module whose lazy layers hold loaded weights does not match a
+descriptor taken before materialization; a fresh, unmaterialized
+instance does. A reload checks an uninitialized lazy module against a
+materialized descriptor with the saved weights (their names and shapes
+first, then the topology they materialize), and nothing loads on a
+refusal. A module holding a lazy layer torch does not ship keeps its
+wrap-time descriptor: only a forward reveals what such a layer infers.
 ```
 
 ##### `nnx.models.RuntimeModule.of`

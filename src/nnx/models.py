@@ -39,7 +39,6 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import hashlib
-import itertools
 import json
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any, Optional, cast
@@ -203,18 +202,18 @@ class RuntimeModule:
     read of its ``params``, so checkpoints and later runs use the
     materialized descriptor. A lazy layer the forward never reaches keeps
     the module at its wrap-time descriptor, so keep every lazy layer on the
-    forward path. NNx never changes the module at the wrap and puts no hook
-    on it. Torch's own first forward on weights loaded before it leaves
-    ``in_channels`` / ``num_features`` of lazy conv and norm layers at 0
-    (and ``in_features`` of ``nn.LazyLinear`` on older torch), where a dry
-    run sets them; a reload accepts either form, layer by layer. A module
-    whose lazy layers hold loaded weights does not match a descriptor taken
-    before materialization; a fresh, unmaterialized instance does. A reload
-    checks an uninitialized lazy module against a materialized descriptor
-    with the saved weights (their names and shapes first, then the topology
-    they materialize), and nothing loads on a refusal. A module holding a
-    lazy layer torch does not ship keeps its wrap-time descriptor: only a
-    forward reveals what such a layer infers.
+    forward path. NNx puts no hook on the module. Torch's own first forward
+    on weights loaded before it leaves ``in_channels`` / ``num_features`` of
+    lazy conv and norm layers at 0 (and ``in_features`` of ``nn.LazyLinear``
+    on older torch); when ``NNModel`` takes the descriptor afresh it sets
+    them as a dry run does, so the module is described in its dry-run form.
+    A module whose lazy layers hold loaded weights does not match a
+    descriptor taken before materialization; a fresh, unmaterialized
+    instance does. A reload checks an uninitialized lazy module against a
+    materialized descriptor with the saved weights (their names and shapes
+    first, then the topology they materialize), and nothing loads on a
+    refusal. A module holding a lazy layer torch does not ship keeps its
+    wrap-time descriptor: only a forward reveals what such a layer infers.
     """
 
     __slots__ = ("module", "topology")
@@ -412,47 +411,40 @@ def _materialized_topology(module: nn.Module, state: Mapping[str, Any]) -> Optio
     return _fingerprint(loaded[0], loaded[1], text)
 
 
-# Past this many lazy layers whose two forms differ, only the uniform
-# assignments are tried: every layer as by a dry run, or every one as torch
-# leaves a loaded layer.
-_MAX_MIXED_FORMS = 10
+# The layer families torch's lazy layers become, whose attributes a dry run
+# infers from the input (private torch bases: absent ones are skipped).
+_CONV: Optional[type] = getattr(nn.modules.conv, "_ConvNd", None)
+_NORM: Optional[type] = getattr(nn.modules.batchnorm, "_NormBase", None)
 
 
-def _match_materialization(module: nn.Module, state: Mapping[str, Any], topology: str) -> Optional[_Plan]:
-    """The materialization of ``module``'s pending lazy layers, once
-    ``state`` is loaded, that gives ``topology``, computed without changing
-    ``module``; ``None`` when none does or it cannot be told. Each layer
-    materializes in one of two forms: as a dry-run forward leaves it, or as
-    torch's own first forward leaves a layer whose weights were loaded before
-    it (``in_channels`` / ``num_features`` of conv and norm layers at 0, and
-    ``in_features`` of ``nn.LazyLinear`` on older torch). A run's descriptor
-    may hold either, per layer (#562)."""
-    loaded = _shapes_once_loaded(module, state)
-    plan = None if loaded is None else _materialization_plan(module, loaded[1])
-    if loaded is None or plan is None:
-        return None
-    tensors, shapes = loaded
-    # The layers whose two forms differ: the others take the dry-run form.
-    choices = [
-        index
-        for index, (sub, inferred, _) in enumerate(plan)
-        if any(getattr(sub, key) != value for key, value in inferred.items())
-    ]
-    if len(choices) <= _MAX_MIXED_FORMS:
-        assignments: Iterator[tuple[bool, ...]] = itertools.product((True, False), repeat=len(choices))
-    else:
-        assignments = iter([(True,) * len(choices), (False,) * len(choices)])
-    for dry_runs in assignments:
-        candidate = list(plan)
-        for index, dry_run in zip(choices, dry_runs, strict=True):
-            if not dry_run:
-                sub, inferred, final = plan[index]
-                candidate[index] = (sub, {key: getattr(sub, key) for key in inferred}, final)
-        with _materialized_view(candidate):
-            text = repr(module)
-        if _fingerprint(tensors, shapes, text) == topology:
-            return candidate
-    return None
+def _left_by_a_loaded_forward(layer: nn.Module) -> dict[str, int]:
+    """The attributes torch's own first forward left at 0 on a lazy layer
+    whose weights were loaded before it (``in_channels`` / ``num_features``
+    of conv and norm layers, ``in_features`` of ``nn.Linear`` on older
+    torch), with the value a dry run sets, read from the layer's tensors.
+    Only a lazy layer leaves such a 0: no layer is built with it."""
+    weight = getattr(layer, "weight", None)
+    shape = tuple(weight.shape) if isinstance(weight, torch.Tensor) and not nn.parameter.is_lazy(weight) else None
+    inferred: dict[str, int] = {}
+    if isinstance(layer, nn.Linear) and shape is not None:
+        inferred = {"in_features": shape[-1]}
+    elif _CONV is not None and isinstance(layer, _CONV) and shape is not None:
+        inferred = {"in_channels": shape[0] if layer.transposed else shape[1] * cast(int, layer.groups)}
+    elif _NORM is not None and isinstance(layer, _NORM):
+        stats = getattr(layer, "running_mean", None)
+        held = shape or (tuple(stats.shape) if isinstance(stats, torch.Tensor) and stats.dim() == 1 else None)
+        inferred = {} if not held else {"num_features": held[0]}
+    return {key: value for key, value in inferred.items() if getattr(layer, key, None) == 0 and value != 0}
+
+
+def _settle_loaded_lazy_layers(module: nn.Module) -> None:
+    """Set on each materialized lazy layer of ``module`` what torch's own
+    forward on loaded weights left at 0 and a dry run sets (#562), so the
+    module is described as a dry-run one: these attributes only shape the
+    ``repr``, never the forward."""
+    for _, layer in module.named_modules():
+        for key, value in _left_by_a_loaded_forward(layer).items():
+            setattr(layer, key, value)
 
 
 def _unmaterialized_topology(module: nn.Module) -> Optional[str]:
