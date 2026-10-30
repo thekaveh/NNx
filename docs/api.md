@@ -3297,7 +3297,23 @@ head (``BCEWithLogitsLoss``, or a one-output multilabel task) answers
 one :class:`Boolean`: ``question``, the one it was trained for. Its
 single probability is bound to no prompt, so any other Boolean (another
 digest) raises :class:`UnsupportedCapability` before :attr:`model_calls`
-advances. Probabilities come from the model's ``predict_proba``,
+advances. A regression head justifies no primitive.
+
+The model's ``TaskSpec`` names the head's kind. Without one,
+``model.loss_fn`` does, and only for the losses NNx knows:
+``CrossEntropyLoss`` and ``NLLLoss`` train a categorical head;
+``BCEWithLogitsLoss``, ``MultiLabelSoftMarginLoss`` and
+``SoftMarginLoss`` (one logistic objective) a Bernoulli one;
+``MSELoss``, ``L1Loss``, ``SmoothL1Loss``, ``HuberLoss``,
+``PoissonNLLLoss`` and ``GaussianNLLLoss`` a regression one. Any other
+task-less loss (``MultiLabelMarginLoss``, a custom loss such as a focal
+loss) raises :class:`UnsupportedCapability` at construction instead of
+being served as a softmax: declare the model's ``TaskSpec``, or set
+``model.loss_fn`` to the matching ``CrossEntropyLoss``, ``NLLLoss`` or
+``BCEWithLogitsLoss``. A ``BCELoss`` head outputs probabilities, not
+logits, and is refused with or without a task.
+
+Probabilities come from the model's ``predict_proba``,
 which evaluates in eval mode and restores every submodule's
 training mode; they are computed in float64 from the returned logits,
 so half-precision models meet the ``1e-6`` tolerance.
