@@ -1,7 +1,7 @@
 """Tests for nnx.paradigms.jepa — I-JEPA (Joint Embedding Predictive
 Architecture).
 
-Covers four contracts:
+Covers five contracts:
 
   1. :func:`build_target_encoder` deep-copies, freezes, eval-mode.
   2. :func:`update_ema` is the convex combination it advertises and
@@ -13,9 +13,15 @@ Covers four contracts:
      encoder is EMA-tracked (changed from init) but never receives
      gradients (every target param has ``requires_grad=False`` and
      ``.grad is None`` after the run).
+  5. Target placement: the step refuses a target inside ``model.net``
+     or sharing its parameters (with the objective's check and wording),
+     never freezes the online net on construction, and runs every target
+     forward in eval mode, across a stateful resume too.
 """
 
 from __future__ import annotations
+
+import copy
 
 import pytest
 import torch
@@ -23,6 +29,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
     Activations,
+    Callback,
     Devices,
     JEPAPredictor,
     Losses,
@@ -31,12 +38,14 @@ from nnx import (
     NNModelParams,
     NNOptimParams,
     NNParams,
+    NNRun,
     NNSchedulerParams,
     NNTrainParams,
     Optims,
     ViTBlock,
     ViTNN,
     build_target_encoder,
+    jepa_objective,
     jepa_train_step_factory,
     random_block_mask,
     set_seed,
@@ -160,7 +169,7 @@ def test_random_block_mask_rejects_mismatched_grid():
 # -------------------------------------------------------------------------
 
 
-def _build_tiny_vit_model() -> NNModel:
+def _build_tiny_vit_model(resid_dropout: float = 0.0) -> NNModel:
     """Build an NNModel whose net is a small ViTNN. The base NNParams
     is a placeholder — the real net is swapped onto ``model.net``.
     """
@@ -186,6 +195,7 @@ def _build_tiny_vit_model() -> NNModel:
         d_model=32,
         n_layers=2,
         n_heads=4,
+        resid_dropout=resid_dropout,
     ).to(model.device)
     return model
 
@@ -483,3 +493,138 @@ def test_a_predictor_outside_the_net_is_refused(tmp_path, monkeypatch):
             ),
             train_step_fn=step_fn,
         )
+
+
+# -------------------------------------------------------------------------
+# Target placement and mode (FIX-064, #531)
+# -------------------------------------------------------------------------
+
+
+def _sgd_params(**fields) -> NNTrainParams:
+    return NNTrainParams(
+        n_epochs=1,
+        train_loader=_image_loader(),
+        optim=NNOptimParams(name=Optims.SGD, max_lr=0.05, momentum=0.0, weight_decay=0.0),
+        **fields,
+    )
+
+
+def _misplaced_target(model: NNModel, predictor: JEPAPredictor, layout: str) -> torch.nn.Module:
+    """A target the step must refuse, with the predictor attached: under
+    model.net, model.net itself, or an EMA copy tied to one online parameter."""
+    if layout == "is_net":
+        _attach_predictor_for_optim(model, predictor)
+        return model.net
+    target = build_target_encoder(model.net)
+    _attach_predictor_for_optim(model, predictor)
+    if layout == "inside":  # e.g. so .to() / .double() / checkpoints carry it
+        model.net.add_module("_jepa_target", target)
+    else:  # "shares"
+        target.cls_token = model.net.cls_token
+    return target
+
+
+_PLACEMENT = {
+    "inside": "must not be part of model.net",
+    "is_net": "must not be part of model.net",
+    "shares": "shares parameters with model.net",
+}
+
+
+@pytest.mark.parametrize("layout", sorted(_PLACEMENT))
+def test_a_misplaced_target_is_refused_alike_on_both_paths_before_any_change(tmp_path, monkeypatch, layout):
+    """Each step's model.net.train() put a target under model.net in train
+    mode, so its dropout changed the targets; the imperative step now refuses
+    the placement at its first step (before any target forward, freeze, mode
+    change or update) with the objective's check and wording."""
+    monkeypatch.chdir(tmp_path)
+    messages = []
+    forwards: list[bool] = []
+    for path in ("imperative", "objective"):
+        set_seed(0)
+        model = _build_tiny_vit_model(resid_dropout=0.5)
+        predictor = _build_predictor(model)
+        target = _misplaced_target(model, predictor, layout)
+        model.net.eval()  # so a mode change before the refusal shows
+        target.register_forward_hook(lambda module, inputs, output: forwards.append(module.training))
+        mask_fn = _fixed_mask_fn(model_n_patches=model.net.n_patches, model_grid=32 // 8)
+        trainable = [n for n, p in model.net.named_parameters() if p.requires_grad]
+        before = copy.deepcopy(model.net.state_dict())
+        if path == "imperative":
+            kwargs = {"train_step_fn": jepa_train_step_factory(target, predictor, mask_fn)}
+        else:
+            kwargs = {"objective": jepa_objective(target, predictor, mask_fn)}
+        with pytest.raises(ValueError, match=_PLACEMENT[layout]) as raised:
+            model.train(params=_sgd_params(overwrite_existing=True), **kwargs)
+        messages.append(str(raised.value))
+        assert forwards == []
+        assert not any(module.training for module in model.net.modules())
+        assert [n for n, p in model.net.named_parameters() if p.requires_grad] == trainable
+        assert all(torch.equal(model.net.state_dict()[k], v) for k, v in before.items())
+    assert messages[0] == messages[1]
+
+
+@pytest.mark.parametrize("layout", ["is_net", "shares"])
+def test_building_the_step_on_an_online_target_leaves_the_net_alone(tmp_path, monkeypatch, layout):
+    """The factory froze and eval()'d its target on construction: model.net
+    as the target froze the online network, and train() then failed with a
+    misleading freeze('*') hint instead of naming the placement."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    model = _build_tiny_vit_model()
+    predictor = _build_predictor(model)
+    target = _misplaced_target(model, predictor, layout)
+    modes = {name: module.training for name, module in model.net.named_modules()}
+    step_fn = jepa_train_step_factory(
+        target, predictor, _fixed_mask_fn(model_n_patches=model.net.n_patches, model_grid=32 // 8)
+    )
+    assert all(p.requires_grad for p in model.net.parameters())
+    assert {name: module.training for name, module in model.net.named_modules()} == modes
+    with pytest.raises(ValueError, match=_PLACEMENT[layout]) as raised:
+        model.train(params=_sgd_params(), train_step_fn=step_fn)
+    assert "freeze('*')" not in str(raised.value)
+    assert all(p.requires_grad for p in model.net.parameters())
+
+
+class _TargetToTrainMode(Callback):
+    """Code outside the step that switches the target to train mode."""
+
+    def __init__(self, target: torch.nn.Module) -> None:
+        self.target = target
+
+    def on_epoch_begin(self, ctx) -> None:
+        self.target.train()
+
+
+@pytest.mark.parametrize("layout", ["built", "by_hand"])
+def test_every_target_forward_runs_in_eval_mode_across_a_stateful_resume(tmp_path, monkeypatch, layout):
+    """The factory pinned eval() once, at construction: a target switched to
+    train mode afterwards ran its dropout on the targets. The step now re-pins
+    it before each target forward, in every accepted layout (a
+    build_target_encoder copy, or a hand-made trainable copy in train mode
+    that the step freezes) and after a stateful resume restores it."""
+    monkeypatch.chdir(tmp_path)
+    modes: list[bool] = []
+
+    def session(**resume) -> NNRun:
+        set_seed(0)
+        model = _build_tiny_vit_model(resid_dropout=0.5)
+        target = build_target_encoder(model.net) if layout == "built" else copy.deepcopy(model.net)
+        predictor = _build_predictor(model)
+        _attach_predictor_for_optim(model, predictor)
+        target.register_forward_hook(lambda module, inputs, output: modes.append(module.training))
+        step_fn = jepa_train_step_factory(
+            target,
+            predictor,
+            _fixed_mask_fn(model_n_patches=model.net.n_patches, model_grid=32 // 8),
+            ema_momentum=0.5,
+        )
+        run = model.train(params=_sgd_params(**resume), train_step_fn=step_fn, callbacks=[_TargetToTrainMode(target)])
+        assert all(not p.requires_grad and p.grad is None for p in target.parameters())
+        return run
+
+    first = session()
+    second = session(resume_from_run_id=first.id)
+    assert second.resume_status is not None and second.resume_status.mode == "stateful"
+    assert "jepa.target_encoder" in second.resume_status.restored_components
+    assert modes == [False] * 4  # two steps per session
