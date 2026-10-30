@@ -113,6 +113,9 @@ def quantize_int8(model: _M) -> _M:
     # exact subtype — GenerativeNNModel's generate / tokenizer, user
     # overrides and custom attributes — and shares every other attribute
     # so loss_fn / device / params line up with the original (FIX-017).
+    # Reading params first takes a materialized lazy module's descriptor
+    # afresh on the original, so both share that one (#562).
+    _ = model.params
     m = copy(model)
     m.net = quantized_net
     return m
