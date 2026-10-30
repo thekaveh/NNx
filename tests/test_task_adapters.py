@@ -1290,3 +1290,14 @@ def test_every_adapter_prediction_refuses_ids_that_are_not_one_integer_per_row(s
     with pytest.raises(PredictionValidationError):
         task_adapter(spec).prediction(logits, ids)
     assert task_adapter(spec).prediction(logits, np.array([7, 3, 5])).sample_ids.tolist() == [7, 3, 5]
+
+
+@pytest.mark.parametrize("spec", [TaskSpec.categorical(2), TaskSpec.multilabel(2), TaskSpec.regression()], ids=str)
+def test_every_adapter_prediction_refuses_outputs_without_a_sample_axis(spec):
+    """A 0-d output has no rows to bind ids to: the regression adapter
+    returned a result for it, and reading its row count would be a raw
+    ``IndexError``."""
+    from nnx import PredictionValidationError
+
+    with pytest.raises(PredictionValidationError, match="need a sample axis"):
+        task_adapter(spec).prediction(np.float32(0.5), [0])

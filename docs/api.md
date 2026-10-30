@@ -5439,7 +5439,9 @@ Args:
     task: the task declaration (e.g. ``TaskSpec.state()``).
     labels: the ordered output labels: unique, non-empty strings in a
         sequence, NumPy array, pandas ``Index`` or one-shot iterator. A
-        string, mapping or set is refused (``TypeError``).
+        string, mapping or set is refused (``TypeError``), and so is an
+        iterator over a set or a dict's keys; a generator over a set
+        keeps that set's order, which can change between processes.
     model: the model descriptor (e.g. ``NNModelParams.state()``).
     data: named data identities (:class:`IdentityRef`, a declared id
         string, or ``None`` for unknown).

@@ -42,6 +42,10 @@ import numpy as np
 NLL_EPSILON = 1e-12
 SUM_TOLERANCE = 1e-6
 """Smallest row-sum tolerance of :func:`categorical_probabilities`."""
+UNORDERED_ITERATORS = (type(iter(set())), type(iter({})))
+"""The built-in iterators over a set (or frozenset) and over a dict's keys.
+:func:`class_labels` refuses them as it does the containers, so a caller that
+reads other iterators (a generator) passes these on unread."""
 
 
 def is_tensor(value: Any) -> bool:
@@ -257,7 +261,7 @@ def class_labels(value: Any, *, error: type[Exception], minimum: int = 1, what: 
     string, bytes, a mapping or a set is refused: a string is one name, not
     its characters, and a set's order can change between processes.
     ``what`` names the value in messages (``"TaskSpec labels"``, say)."""
-    if isinstance(value, (set, frozenset)):
+    if isinstance(value, (set, frozenset, UNORDERED_ITERATORS[0])):
         raise error(
             f"{what} must be an ordered sequence of class names, got a {type(value).__name__}: unordered containers "
             "(set, frozenset) iterate in an order that can change between processes, and each label's position with it"
