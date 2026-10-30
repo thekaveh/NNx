@@ -3327,7 +3327,7 @@ def _resolve_net_descriptor(
 
 _LAZY_RULE = (
     "a lazy layer (nn.LazyLinear and the like) changes the topology when it materializes at its first forward, "
-    "so a module wrapped before vs after materialization gives different run ids"
+    "so a run started before vs after materialization gets a different run id"
 )
 
 
@@ -3411,6 +3411,14 @@ def _match_lazy_module(
         dry_run = "materialize it with a dry-run forward (module(example_input)) before passing it as module="
         if not _lazy_layers_emulable(module):
             remedy = f"Lazy layers torch does not ship infer their attributes only at a forward, so {dry_run}"
+        elif reloading and state is not None:
+            # The run's module never fully materialized: its descriptor is the
+            # wrap-time one, which a fresh instance matches.
+            remedy = (
+                "The saved weights hold uninitialized tensors for its lazy layers (a lazy layer the forward never "
+                "reached during that run), so reload into a fresh, unmaterialized instance, and keep every lazy "
+                "layer on the forward path"
+            )
         elif reloading:
             # from_checkpoint gives no weights to check once the checkpoint
             # recorded transforms: they fit only the transformed topology.
@@ -3422,7 +3430,8 @@ def _match_lazy_module(
             remedy = (
                 "Materialize it with a dry-run forward (module(example_input)) before wrapping it, or reload a "
                 "checkpoint into it with NNModel.from_checkpoint(checkpoint, module=...), which materializes it "
-                "from the saved weights"
+                "from the saved weights. A lazy layer the forward never reaches stays unmaterialized: keep every "
+                "lazy layer on the forward path"
             )
         raise ValueError(
             f"module {descriptor.module} has lazy layers that are not materialized yet, so it cannot be compared "
@@ -3602,8 +3611,8 @@ class NNModel(_HubMixinBase):
         """The model's :class:`NNModelParams`. A wrapped lazy module is
         described as materialized from the first read after it
         materialized: at its first forward, wherever that ran (``train``,
-        ``predict``, ``evaluate`` or a direct call of ``net``), or at a load
-        of its weights (#562)."""
+        ``predict``, ``evaluate`` or a direct call of ``net``), or at
+        ``from_checkpoint``'s load of its saved weights (#562)."""
         if getattr(self, "_lazy_wrap_keys", None) is not None:
             self._refresh_lazy_descriptor()
         state = self.__dict__
@@ -3628,9 +3637,10 @@ class NNModel(_HubMixinBase):
 
     def _refresh_lazy_descriptor(self) -> None:
         """Take a wrapped lazy module's :class:`RuntimeModule` descriptor
-        afresh once it has materialized (its first forward, or a load of its
-        weights), so ``params``, checkpoints and later runs describe the
-        module as it now is (#562), and drop the wrap's load hooks. A run
+        afresh once it has materialized (its first forward, or
+        ``from_checkpoint``'s load of its weights), so ``params``, checkpoints
+        and later runs describe the module as it now is (#562), and drop the
+        wrap's forward hooks. A run
         already reserved keeps its id; nothing changes for any other module,
         or when anything but materialization changed the module's state
         keys."""
@@ -3999,7 +4009,9 @@ class NNModel(_HubMixinBase):
         parameter names and shapes are checked against the saved weights,
         and the topology they materialize against the descriptor, before
         any weight loads; the weights then materialize it, as a dry-run
-        forward would have.
+        forward would have. A checkpoint with recorded transforms (a QAT
+        run, say) holds the transformed module's weights, which give no
+        shapes to check: pass a dry-run (materialized) instance for it.
 
         The precision policy is re-resolved on the destination
         device (the constructor resolves it) — never read from the

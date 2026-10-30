@@ -193,8 +193,8 @@ class RuntimeModule:
 
     Lazy layers (``nn.LazyLinear`` and the like) change the topology when
     they materialize at their first forward, so a lazy module wrapped before
-    vs after materialization gives different run ids (the run reserved at
-    wrap time keeps its id). An uninitialized lazy layer records no shape:
+    vs after materialization gives different run ids (a run's id comes from
+    the descriptor when ``train()`` starts). An uninitialized lazy layer records no shape:
     uninitialized lazy nets that will see different input widths share a
     descriptor and a run id, so give them distinct ``data_id`` / ``salt``
     values (or dry-run them first). Once the wrapped module has materialized
@@ -205,8 +205,9 @@ class RuntimeModule:
     descriptor until it materializes, so keep every lazy layer on the
     forward path. A lazy layer whose weights are loaded before its first
     forward is materialized the way a dry-run forward would materialize it:
-    at the wrap, or at the load when they are loaded after the wrap
-    (``model.net.load_state_dict``, or into one of its layers); ``params``
+    at the wrap, or, for weights loaded after the wrap
+    (``model.net.load_state_dict``, or into one of its layers), at the next
+    forward; ``params``
     describes the module as the wrap leaves it, also when only some of its
     lazy layers were loaded. Until a part-loaded module's first forward,
     those ``params`` match only that module: a re-wrap after a partial load

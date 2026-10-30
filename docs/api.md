@@ -207,7 +207,7 @@ no other NNModel functionality is affected.
 property nnx.nn.nn_model.NNModel.params
 ```
 
-The model's `NNModelParams`. A wrapped lazy module is described as materialized from the first read after it materialized: at its first forward, wherever that ran (``train``, ``predict``, ``evaluate`` or a direct call of ``net``), or at a load of its weights (#562).
+The model's `NNModelParams`. A wrapped lazy module is described as materialized from the first read after it materialized: at its first forward, wherever that ran (``train``, ``predict``, ``evaluate`` or a direct call of ``net``), or at ``from_checkpoint``'s load of its saved weights (#562).
 
 ##### `nnx.nn.nn_model.NNModel.task_adapter`
 
@@ -298,7 +298,9 @@ forward) also matches a descriptor taken after materialization: its
 parameter names and shapes are checked against the saved weights,
 and the topology they materialize against the descriptor, before
 any weight loads; the weights then materialize it, as a dry-run
-forward would have.
+forward would have. A checkpoint with recorded transforms (a QAT
+run, say) holds the transformed module's weights, which give no
+shapes to check: pass a dry-run (materialized) instance for it.
 
 The precision policy is re-resolved on the destination
 device (the constructor resolves it) — never read from the
@@ -2731,8 +2733,8 @@ can only be loaded back into a module the caller supplies again.
 
 Lazy layers (``nn.LazyLinear`` and the like) change the topology when
 they materialize at their first forward, so a lazy module wrapped before
-vs after materialization gives different run ids (the run reserved at
-wrap time keeps its id). An uninitialized lazy layer records no shape:
+vs after materialization gives different run ids (a run's id comes from
+the descriptor when ``train()`` starts). An uninitialized lazy layer records no shape:
 uninitialized lazy nets that will see different input widths share a
 descriptor and a run id, so give them distinct ``data_id`` / ``salt``
 values (or dry-run them first). Once the wrapped module has materialized
@@ -2743,8 +2745,9 @@ layer the forward never reaches keeps the module at its wrap-time
 descriptor until it materializes, so keep every lazy layer on the
 forward path. A lazy layer whose weights are loaded before its first
 forward is materialized the way a dry-run forward would materialize it:
-at the wrap, or at the load when they are loaded after the wrap
-(``model.net.load_state_dict``, or into one of its layers); ``params``
+at the wrap, or, for weights loaded after the wrap
+(``model.net.load_state_dict``, or into one of its layers), at the next
+forward; ``params``
 describes the module as the wrap leaves it, also when only some of its
 lazy layers were loaded. Until a part-loaded module's first forward,
 those ``params`` match only that module: a re-wrap after a partial load
