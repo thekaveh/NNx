@@ -57,10 +57,10 @@ from ..models import (
     _finish_materialization,
     _has_pending_lazy,
     _lazy_layers_emulable,
-    _match_materialization,
     _materialized_class_name,
     _materialized_topology,
     _same_class_once_materialized,
+    _settle_loaded_lazy_layers,
     _unmaterialized_topology,
     _UnpackBatch,
     build_module,
@@ -3362,9 +3362,13 @@ def _descriptor_mismatch(
         )
     if after_load is not None:
         return (
-            f"{message}, even once its lazy layers materialize from {after_load}, each as a dry run or as "
-            "torch's own forward on loaded weights would materialize it: the layer hyperparameters, shapes or "
-            "dtypes differ"
+            f"{message}, even once its lazy layers materialize from {after_load} as a dry run would: the layer "
+            "hyperparameters, shapes or dtypes differ, or the descriptor's module was not described as "
+            "materialized by NNx: it had weights loaded and then ran a forward before it was wrapped (torch's "
+            "forward on loaded weights leaves the in_channels / num_features of lazy conv and norm layers at 0), "
+            "or it holds a lazy layer its forward never reached. For those, prepare this module the same way: "
+            "load the run's weights into it (load_state_dict), and for the former run one forward, before passing "
+            "it"
         )
     return (
         f"{message}. If the net has lazy layers: {_LAZY_RULE}. Reload a checkpoint whose descriptor was taken "
@@ -3386,8 +3390,8 @@ def _match_lazy_module(
     only when it is the same class once materialized, with lazy layers still
     to materialize, and materializing them from ``state`` (or from the
     weights they already hold) — checked against the module first — gives
-    exactly ``net``, each layer as a dry run leaves it or as torch's own
-    forward leaves a loaded one. Anything else is refused; ``explain_state``
+    exactly ``net``, as a dry run would (NNx describes a materialized lazy
+    module in that form). Anything else is refused; ``explain_state``
     explains only the refusal of that check. Only checks: the caller loads
     the weights and finishes the materialization (#562)."""
     if not _same_class_once_materialized(descriptor.module, net.module) or not _has_pending_lazy(module):
@@ -3432,9 +3436,10 @@ def _match_lazy_module(
             )
         else:
             remedy = (
-                "Materialize it with a dry-run forward (module(example_input)) before wrapping it, or reload a "
-                "checkpoint into it with NNModel.from_checkpoint(checkpoint, module=...), which materializes it "
-                "from the saved weights. A lazy layer the forward never reaches stays unmaterialized, and so does "
+                "Materialize it with a dry-run forward (module(example_input)) or load the run's weights into it "
+                "(load_state_dict) before wrapping it, or reload a checkpoint into it with "
+                "NNModel.from_checkpoint(checkpoint, module=...), which materializes it from the saved weights. A "
+                "lazy layer the forward never reaches stays unmaterialized, and so does "
                 "the descriptor of a run with one: pass a fresh, unmaterialized instance for it, and keep every lazy "
                 "layer on the forward path"
             )
@@ -3442,7 +3447,7 @@ def _match_lazy_module(
             f"module {descriptor.module} has lazy layers that are not materialized yet, so it cannot be compared "
             f"with the descriptor {net.module} (topology {net.topology}): {_LAZY_RULE}. {remedy}"
         )
-    if _match_materialization(module, state or {}, net.topology) is None:
+    if topology != net.topology:
         if _unmaterialized_topology(module) == net.topology:
             # A fresh instance of this module matches: the descriptor was taken
             # before materialization, and these lazy layers hold loaded weights.
@@ -3500,8 +3505,8 @@ class _LazyReload:
     their check's refusal, for the module= check of the constructor it calls
     (#562): that check runs on the module the constructor is given, which a
     subclass may have adapted from the caller's. Only a constructor given
-    ``net``, the checkpoint's descriptor, takes them: a model a subclass
-    builds on the way is none of from_checkpoint's business."""
+    ``net``, the checkpoint's descriptor, uses them: another model a
+    subclass builds on the way is none of from_checkpoint's business."""
 
     net: RuntimeModule
     state: Optional[Mapping[str, Any]]
@@ -3557,12 +3562,11 @@ class NNModel(_HubMixinBase):
         # want is config-attribute initialization which we handle below.
         if params is None:
             raise ValueError("params must not be None")
-        # #562: from_checkpoint's saved weights check the module= of the
-        # constructor given its descriptor, never that of another model.
+        # #562: from_checkpoint's saved weights check the module= of every
+        # constructor it runs that is given its descriptor (a subclass may
+        # build a shadow of the model), never that of another model.
         reload = _LAZY_RELOAD.get()
-        if reload is not None and module is not None and params.net == reload.net:
-            _LAZY_RELOAD.set(None)
-        else:
+        if reload is None or module is None or params.net != reload.net:
             reload = None
         # A pending lazy module accepted for a descriptor it does not match
         # exactly is materialized to that descriptor once every check passed.
@@ -3616,9 +3620,9 @@ class NNModel(_HubMixinBase):
             if inexact and reload is None and self._lazy_wrap_keys is not None:
                 # The module's own loaded weights checked out against a
                 # descriptor taken after materialization (_match_lazy_module):
-                # finish the form that gives it. from_checkpoint finishes its
-                # own load after its checks.
-                plan = _match_materialization(module, {}, cast(RuntimeModule, net).topology)
+                # materialize it as that dry run did. from_checkpoint finishes
+                # its own load after its checks.
+                plan = _dry_run_materialization(module)
                 if plan is not None:
                     _finish_materialization(plan)
             # Module.to moves in place and returns the same object.
@@ -3650,27 +3654,26 @@ class NNModel(_HubMixinBase):
         at its first forward, wherever that ran (``train``, ``predict``,
         ``evaluate`` or a direct call of ``net``), or at
         ``from_checkpoint``'s load of its saved weights (#562)."""
+        # Kept in the instance dict under its own name, as before it was a
+        # property, so pickles load across nnx versions in both directions.
         if getattr(self, "_lazy_wrap_keys", None) is not None:
             self._refresh_lazy_descriptor()
-        state = self.__dict__
-        if "_params" in state:
-            return state["_params"]
-        if "params" in state:  # an NNModel pickled before params was a property
-            return state["params"]
-        raise AttributeError(f"{type(self).__name__!r} object has no attribute 'params'")
+        try:
+            return self.__dict__["params"]
+        except KeyError:
+            raise AttributeError(f"{type(self).__name__!r} object has no attribute 'params'") from None
 
     @params.setter
     def params(self, value: NNModelParams) -> None:
-        self.__dict__.pop("params", None)
-        self._params = value
+        self.__dict__["params"] = value
 
     @params.deleter
     def params(self) -> None:
         # unittest.mock.patch.object restores an attribute by deleting it.
-        if "_params" not in self.__dict__ and "params" not in self.__dict__:
-            raise AttributeError("params")
-        self.__dict__.pop("_params", None)
-        self.__dict__.pop("params", None)
+        try:
+            del self.__dict__["params"]
+        except KeyError:
+            raise AttributeError("params") from None
 
     def _refresh_lazy_descriptor(self) -> None:
         """Take a wrapped lazy module's :class:`RuntimeModule` descriptor
@@ -3684,11 +3687,12 @@ class NNModel(_HubMixinBase):
         if keys is None or module is None or _has_pending_lazy(module):
             return
         self._lazy_wrap_keys = None
-        net = self._params.net
+        net = self.__dict__["params"].net
         if isinstance(net, RuntimeModule) and _tensor_keys(module.state_dict()) == keys:
+            _settle_loaded_lazy_layers(module)
             descriptor = RuntimeModule.of(module)
             if _same_class_once_materialized(descriptor.module, net.module):
-                self._params = replace(self._params, net=descriptor)
+                self.__dict__["params"] = replace(self.__dict__["params"], net=descriptor)
 
     @property
     def task_adapter(self) -> Optional[TaskAdapter]:
@@ -4042,9 +4046,8 @@ class NNModel(_HubMixinBase):
         forward) also matches a descriptor taken after materialization: its
         parameter names and shapes are checked against the saved weights,
         and the topology they materialize against the descriptor, before
-        any weight loads; the weights then materialize it in the form the
-        descriptor records (each lazy layer as a dry-run forward leaves it,
-        or as torch's own forward leaves a loaded one). A checkpoint with
+        any weight loads; the weights then materialize it, as a dry-run
+        forward would have. A checkpoint with
         recorded transforms (a QAT
         run, say) holds the transformed module's weights, which give no
         shapes to check: pass a dry-run (materialized) instance for it.
@@ -4155,19 +4158,13 @@ class NNModel(_HubMixinBase):
             if explained is not None:
                 raise explained from error
             raise
-        # #562: the loaded weights finish a lazy module's materialization, in
-        # the form that gives the descriptor _match_lazy_module checked it
-        # against; for a descriptor taken before materialization (an older
-        # checkpoint), as a dry run would, and the module is described as it
-        # now is. A lazy layer the saved weights leave uninitialized stays.
+        # #562: the loaded weights finish a lazy module's materialization as a
+        # dry run would: the form _match_lazy_module checked it in. For a
+        # descriptor taken before materialization (an older checkpoint) the
+        # module is then described as it now is. A lazy layer the saved
+        # weights leave uninitialized stays.
         if getattr(model, "_lazy_wrap_keys", None) is not None:
-            described = model.params.net
-            plan = (
-                _match_materialization(model.net, {}, described.topology)
-                if isinstance(described, RuntimeModule)
-                else None
-            )
-            plan = plan if plan is not None else _dry_run_materialization(model.net)
+            plan = _dry_run_materialization(model.net)
             if plan is not None:
                 _finish_materialization(plan)
                 model._refresh_lazy_descriptor()

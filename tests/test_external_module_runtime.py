@@ -737,9 +737,9 @@ def test_lazy_conv_and_norm_layers_reload_into_fresh_instances(build, shape):
 @pytest.mark.parametrize("load", ["module", "layers"])
 def test_lazy_weights_loaded_after_the_wrap_reload_into_fresh_instances(build, shape, load):
     """Torch's own first forward on loaded weights leaves a lazy conv's
-    in_channels and a norm's num_features at 0; the module= rule accepts that
-    form, so such a run reloads into fresh instances (#562). The wrap leaves
-    the module as given."""
+    in_channels and a norm's num_features at 0; NNx sets them as a dry run
+    does when it describes the module afresh, so such a run reloads into
+    fresh instances (#562). The wrap leaves the module as given."""
     source = build()
     source(torch.zeros(2, *shape))  # a dry run
     module = build()
@@ -755,10 +755,10 @@ def test_lazy_weights_loaded_after_the_wrap_reload_into_fresh_instances(build, s
         for layer, weights in list(zip(model.net, source, strict=True))[1:]:
             layer.load_state_dict(weights.state_dict())
     run = model.train(params=_params(_ImageLoader.of(shape), epochs=1))
-    assert model.net[0].in_channels == 0  # as torch leaves a loaded lazy conv
+    assert repr(model.net) == repr(source)  # described as the dry run
     checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
     assert checkpoint is not None
-    assert checkpoint.model_params.net == model.params.net == RuntimeModule.of(model.net)
+    assert checkpoint.model_params.net == model.params.net == RuntimeModule.of(model.net) == RuntimeModule.of(source)
     X = torch.randn(3, *shape)
     for module in (build(), model.net):
         reloaded = NNModel.from_checkpoint(checkpoint, module=module)
@@ -1018,18 +1018,16 @@ def test_the_wrap_adds_no_hook_to_a_lazy_module():
     torch.jit.script(net)  # no NNx hook to trip it
 
 
-def test_an_nnmodel_pickled_before_params_was_a_property_still_loads():
-    """Before #562, params lived in the instance dict; such a pickle keeps it there."""
+def test_params_stays_in_the_instance_dict_for_pickles_across_versions():
+    """params became a property in #562 but keeps its instance-dict entry, so
+    pickles load in older and newer nnx alike."""
     import pickle
 
     model = NNModel(module=Classifier(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
-    expected = model.params
-    legacy = pickle.loads(pickle.dumps(model))
-    legacy.__dict__["params"] = legacy.__dict__.pop("_params")  # the older pickle's layout
-    assert legacy.params == expected
-    assert legacy.predict(torch.zeros(2, 4)).classes.shape == (2,)
-    legacy.params = replace(expected, mixed_precision=True)  # the setter retires the legacy entry
-    assert "params" not in legacy.__dict__ and legacy.params.mixed_precision
+    assert model.__dict__["params"] is model.params and "_params" not in model.__dict__
+    loaded = pickle.loads(pickle.dumps(model))
+    assert loaded.params == model.params
+    assert loaded.predict(torch.zeros(2, 4)).classes.shape == (2,)
 
 
 def test_mock_patch_object_restores_params():
@@ -1114,6 +1112,65 @@ def test_a_reload_refused_for_a_dtype_names_it():
     NNModel.from_checkpoint(checkpoint, module=_lazy().double())
 
 
+def _deep_lazy(n_conv: int = 12) -> nn.Module:
+    layers: list[nn.Module] = [layer for _ in range(n_conv) for layer in (nn.LazyConv1d(3, 1), nn.ReLU())]
+    return nn.Sequential(*layers, nn.Flatten(), nn.LazyLinear(2))
+
+
+@pytest.mark.parametrize("load", ["before-wrap", "after-wrap", "partly"])
+def test_a_deep_lazy_net_with_loaded_weights_reloads_into_fresh_instances(load):
+    """More than ten lazy layers, a conv stack torch leaves at in_channels 0
+    once loaded and a LazyLinear head it fills in: NNx describes the whole
+    module in its dry-run form, so any layer mix reloads (#562)."""
+    source = _dry_run(_deep_lazy(), 2, 6)
+    module = _deep_lazy()
+    if load == "before-wrap":
+        module.load_state_dict(source.state_dict())
+    model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    if load == "after-wrap":
+        model.net.load_state_dict(source.state_dict())
+    if load == "partly":  # half the convs loaded, the rest and the head left to the first forward
+        for index in range(0, 12, 2):
+            model.net[index].load_state_dict(source[index].state_dict())
+    run = model.train(params=_params(_ImageLoader.of((2, 6)), epochs=1))
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None and checkpoint.model_params.net == RuntimeModule.of(source)
+    X = torch.randn(3, 2, 6)
+    for target in (_deep_lazy(), model.net):
+        reloaded = NNModel.from_checkpoint(checkpoint, module=target)
+        np.testing.assert_allclose(reloaded.predict(X).logits, model.predict(X).logits, rtol=1e-6, atol=1e-6)
+    assert NNModel(module=model.net, params=model.params).params == model.params
+
+
+class _WithShadow(NNModel):
+    """A subclass that keeps a same-descriptor shadow of its model (an EMA copy, say)."""
+
+    def __init__(self, *, params: NNModelParams, module: nn.Module, shadow_first: bool = True, **kwargs) -> None:
+        import copy
+
+        if shadow_first:
+            self.shadow = NNModel(module=copy.deepcopy(module), params=params)
+        super().__init__(params=params, module=module, **kwargs)
+        if not shadow_first:
+            self.shadow = NNModel(module=copy.deepcopy(self.net), params=params)
+
+
+@pytest.mark.parametrize("shadow_first", [True, False], ids=["before-super", "after-super"])
+def test_a_subclass_with_a_shadow_model_reloads_into_a_fresh_lazy_instance(shadow_first):
+    model = _WithShadow(params=NNModelParams(loss=Losses.CROSS_ENTROPY), module=_lazy(), shadow_first=shadow_first)
+    run = model.train(params=_params(_loader(), epochs=1))
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+
+    class Reload(_WithShadow):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(shadow_first=shadow_first, **kwargs)
+
+    reloaded = Reload.from_checkpoint(checkpoint, module=_lazy())
+    X = torch.randn(5, 4)
+    np.testing.assert_array_equal(reloaded.predict(X).logits, model.predict(X).logits)
+
+
 def test_a_lazy_norm_layer_without_tensors_materializes_at_the_first_forward():
     def build() -> nn.Module:
         return nn.Sequential(
@@ -1133,7 +1190,7 @@ def test_a_lazy_norm_layer_without_tensors_materializes_at_the_first_forward():
     assert model.params.net == RuntimeModule.of(module) == RuntimeModule.of(_dry_run(build(), 2, 6))
 
 
-def test_a_run_loaded_and_forwarded_before_the_wrap_reloads_into_fresh_instances():
+def test_a_run_loaded_and_forwarded_before_the_wrap_reloads_into_a_module_prepared_the_same_way():
     def build() -> nn.Module:
         return nn.Sequential(nn.LazyConv1d(4, 3), nn.LazyBatchNorm1d(), nn.Flatten(), nn.LazyLinear(2))
 
@@ -1150,11 +1207,15 @@ def test_a_run_loaded_and_forwarded_before_the_wrap_reloads_into_fresh_instances
     run = model.train(params=_params(_ImageLoader.of((2, 6)), epochs=1))
     checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
     assert checkpoint is not None
+    # NNx never described that module as materialized: torch left its in_channels / num_features at 0
+    fresh = build()
+    with pytest.raises(ValueError, match="prepare this module the same way") as refused:
+        NNModel.from_checkpoint(checkpoint, module=fresh)
+    assert "loaded and then ran a forward before it was wrapped" in str(refused.value)
+    assert _is_uninitialized(fresh)
+    reloaded = NNModel.from_checkpoint(checkpoint, module=prepared())  # the remedy named
     X = torch.randn(3, 2, 6)
-    for module in (build(), prepared()):
-        reloaded = NNModel.from_checkpoint(checkpoint, module=module)
-        assert RuntimeModule.of(module) == checkpoint.model_params.net
-        np.testing.assert_allclose(reloaded.predict(X).logits, model.predict(X).logits, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(reloaded.predict(X).logits, model.predict(X).logits, rtol=1e-6, atol=1e-6)
 
 
 def test_a_lazy_module_with_loaded_weights_is_wrapped_as_given():
