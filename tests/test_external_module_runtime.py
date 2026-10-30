@@ -924,13 +924,22 @@ def test_a_run_with_a_lazy_layer_the_forward_never_reached_names_the_fresh_insta
         NNModel(module=model.net, params=model.params)
     assert "fresh, unmaterialized instance" in str(refused.value)
     other = _Unreached()
-    other.body = nn.LazyLinear(3)  # a fresh instance that really differs: the plain refusal
-    with pytest.raises(ValueError, match="does not match the descriptor") as refused:
+    other.body = nn.LazyLinear(3)  # a fresh instance that really differs: the refusal says so too
+    with pytest.raises(ValueError, match="hyperparameters or shapes differ"):
         NNModel.from_checkpoint(checkpoint, module=other)
-    assert "never reached" not in str(refused.value)
     reloaded = NNModel.from_checkpoint(checkpoint, module=_Unreached())  # the remedy
     X = torch.randn(5, 4)
     np.testing.assert_array_equal(reloaded.predict(X).logits, model.predict(X).logits)
+
+
+def test_a_dry_run_wrapped_run_with_a_lazy_layer_the_forward_never_reached_names_the_dry_run_remedy():
+    model, checkpoint, _ = _train_lazy(_dry_run(_Unreached()))
+    with pytest.raises(ValueError, match="dry-run the same way"):
+        NNModel.from_checkpoint(checkpoint, module=_Unreached())
+    X = torch.randn(5, 4)
+    for module in (_dry_run(_Unreached()), model.net):
+        reloaded = NNModel.from_checkpoint(checkpoint, module=module)
+        np.testing.assert_array_equal(reloaded.predict(X).logits, model.predict(X).logits)
 
 
 def test_a_materialized_lazy_modules_descriptor_stays_fixed_after_it_is_taken():
@@ -1169,6 +1178,63 @@ def test_a_subclass_with_a_shadow_model_reloads_into_a_fresh_lazy_instance(shado
     reloaded = Reload.from_checkpoint(checkpoint, module=_lazy())
     X = torch.randn(5, 4)
     np.testing.assert_array_equal(reloaded.predict(X).logits, model.predict(X).logits)
+
+
+def test_describing_a_lazy_module_never_runs_a_parametrization():
+    """A spectral-norm layer's weight read runs a power iteration in training
+    mode: describing the module must not read it (#562)."""
+    from torch.nn.utils import parametrizations
+
+    def build() -> nn.Module:
+        return nn.Sequential(nn.LazyLinear(8), nn.ReLU(), parametrizations.spectral_norm(nn.Linear(8, 2)))
+
+    torch.manual_seed(0)
+    model = NNModel(module=build(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    model.net(torch.randn(3, 4))
+    u = model.net[2].parametrizations.weight[0]._u.clone()
+    assert model.params.net == RuntimeModule.of(model.net)
+    assert torch.equal(model.net[2].parametrizations.weight[0]._u, u)
+    run = model.train(params=_params(_loader(), epochs=1))
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    reloaded = NNModel.from_checkpoint(checkpoint, module=build())
+    saved = checkpoint.net_state["2.parametrizations.weight.0._u"]
+    assert torch.equal(reloaded.net[2].parametrizations.weight[0]._u, saved)
+
+
+def test_only_lazy_layers_nnx_saw_pending_are_settled():
+    """A layer that was never lazy (a Linear(0, n) placeholder given its
+    weight later), or a lazy layer torch materialized before the wrap, keeps
+    its attributes (#562)."""
+    torch.manual_seed(0)
+    side = nn.Linear(0, 8)
+    side.weight = nn.Parameter(torch.zeros(8, 4))
+    early = nn.LazyConv1d(3, 1)
+    early.load_state_dict({"weight": torch.zeros(3, 2, 1), "bias": torch.zeros(3)})
+    early(torch.zeros(1, 2, 6))  # torch's form: in_channels 0
+    module = nn.ModuleDict({"side": side, "early": early, "lazy": nn.LazyLinear(2)})
+    model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    module["lazy"](torch.zeros(1, 4))
+    assert model.params.net == RuntimeModule.of(module)  # taken afresh
+    assert side.in_features == 0 and early.in_channels == 0  # left as they were
+    assert module["lazy"].in_features == 4
+
+
+def test_a_runtime_checkpoint_without_module_still_names_the_missing_module_first():
+    _, checkpoint, _ = _train_lazy(_dry_run(_lazy()))
+    with pytest.raises(MissingModelFactoryError):
+        NNModel.from_checkpoint(checkpoint, exclude_submodules=("bogus",))
+
+
+def test_a_shallower_lazy_module_gets_the_plain_refusal_not_the_exclude_hint():
+    def build(depth: int) -> nn.Module:
+        layers: list[nn.Module] = [layer for _ in range(depth) for layer in (nn.LazyLinear(4), nn.ReLU())]
+        return nn.Sequential(*layers, nn.LazyLinear(2))
+
+    _, checkpoint, _ = _train_lazy(build(3))
+    with pytest.raises(ValueError, match="does not match the descriptor") as refused:
+        NNModel.from_checkpoint(checkpoint, module=build(2))
+    assert "exclude_submodules" not in str(refused.value)
 
 
 def test_a_lazy_norm_layer_without_tensors_materializes_at_the_first_forward():
