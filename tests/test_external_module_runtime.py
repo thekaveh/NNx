@@ -872,6 +872,23 @@ def test_a_lazy_module_whose_state_keys_change_before_it_materializes_keeps_the_
     assert model.params.net == wrap_time
 
 
+def test_a_pending_lazy_layer_replaced_before_the_first_forward_still_refreshes_the_descriptor():
+    """A lazy layer re-created after the wrap (same state keys) is the one the
+    forward materializes, so params describe the trained module (#562)."""
+    model = NNModel(
+        module=nn.Sequential(nn.LazyLinear(8), nn.ReLU(), nn.LazyLinear(2)),
+        params=NNModelParams(loss=Losses.CROSS_ENTROPY),
+    )
+    assert model.params.net is not None  # a read while every lazy layer is pending
+    model.net[2] = nn.LazyLinear(2)  # a re-created head: the same state keys
+    run = model.train(params=_params(_loader(), epochs=1))
+    assert model.params.net == RuntimeModule.of(model.net)
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    assert NNModel.from_checkpoint(checkpoint, module=model.net).net is model.net
+    assert NNModel(module=model.net, params=model.params).net is model.net
+
+
 def test_a_lazy_norm_layer_without_tensors_materializes_at_the_first_forward():
     def build() -> nn.Module:
         return nn.Sequential(

@@ -207,18 +207,22 @@ class RuntimeModule:
     at the wrap, or at the load when they are loaded after the wrap
     (``model.net.load_state_dict``, or into one of its layers); ``params``
     describes the module as the wrap leaves it, also when only some of its
-    lazy layers were loaded. Torch's own forward on loaded weights is not a
-    dry run: it leaves ``in_channels`` / ``num_features`` of lazy conv and
-    norm layers at 0. So load before or after the wrap, or dry-run before
-    loading, but do not load and forward before the wrap: such a run reloads
-    only into a module prepared the same way. A module whose lazy layers
-    hold loaded weights counts as materialized, so it does not match a
-    descriptor taken before materialization; a fresh, unmaterialized
-    instance does. A reload compares an uninitialized lazy module with a
-    materialized descriptor after the saved weights materialize it (their
-    names and shapes are checked first, and nothing loads on a refusal). A
-    module holding a lazy layer torch does not ship keeps its wrap-time
-    descriptor: only a forward reveals what such a layer infers.
+    lazy layers were loaded. Until a part-loaded module's first forward,
+    those ``params`` match only that module: a re-wrap after a partial load
+    made after the wrap, or of a second module prepared the same way, is
+    refused until a forward has materialized each module. Torch's own
+    forward on loaded weights is not a dry run: it leaves ``in_channels`` /
+    ``num_features`` of lazy conv and norm layers at 0. So load before or
+    after the wrap, or dry-run before loading, but do not load and forward
+    before the wrap: such a run reloads only into a module prepared the same
+    way. A module whose lazy layers hold loaded weights counts as
+    materialized, so it does not match a descriptor taken before
+    materialization; a fresh, unmaterialized instance does. A reload
+    compares an uninitialized lazy module with a materialized descriptor
+    after the saved weights materialize it (their names and shapes are
+    checked first, and nothing loads on a refusal). A module holding a lazy
+    layer torch does not ship keeps its wrap-time descriptor: only a forward
+    reveals what such a layer infers.
     """
 
     __slots__ = ("module", "topology")
