@@ -39,6 +39,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import hashlib
+import itertools
 import json
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any, Optional, cast
@@ -46,7 +47,6 @@ from typing import Any, Optional, cast
 import torch
 from torch import nn
 from torch.nn.modules.lazy import LazyModuleMixin
-from torch.utils.hooks import RemovableHandle
 
 from ._config import _SLUG, _freeze_config, _thaw_config
 from ._validation import plain_str, require_count
@@ -192,39 +192,29 @@ class RuntimeModule:
     can only be loaded back into a module the caller supplies again.
 
     Lazy layers (``nn.LazyLinear`` and the like) change the topology when
-    they materialize at their first forward, so a lazy module wrapped before
-    vs after materialization gives different run ids (a run's id comes from
-    the descriptor when ``train()`` starts). An uninitialized lazy layer records no shape:
-    uninitialized lazy nets that will see different input widths share a
-    descriptor and a run id, so give them distinct ``data_id`` / ``salt``
-    values (or dry-run them first). Once the wrapped module has materialized
-    (its first forward, in training, ``predict``, ``evaluate`` or a direct
-    call), ``NNModel`` takes its descriptor afresh, so ``params``,
-    checkpoints and its later runs use the materialized descriptor. A lazy
-    layer the forward never reaches keeps the module at its wrap-time
-    descriptor until it materializes, so keep every lazy layer on the
-    forward path. A lazy layer whose weights are loaded before its first
-    forward is materialized the way a dry-run forward would materialize it:
-    at the wrap, or, for weights loaded after the wrap
-    (``model.net.load_state_dict``, or into one of its layers), at the next
-    forward; ``params``
-    describes the module as the wrap leaves it, also when only some of its
-    lazy layers were loaded. Until a part-loaded module's first forward,
-    those ``params`` match only that module: a re-wrap after a partial load
-    made after the wrap, or of a second module prepared the same way, is
-    refused until a forward has materialized each module. Torch's own
-    forward on loaded weights is not a dry run: it leaves ``in_channels`` /
-    ``num_features`` of lazy conv and norm layers at 0. So load before or
-    after the wrap, or dry-run before loading, but do not load and forward
-    before the wrap: such a run reloads only into a module prepared the same
-    way. A module whose lazy layers hold loaded weights counts as
-    materialized, so it does not match a descriptor taken before
-    materialization; a fresh, unmaterialized instance does. A reload
-    compares an uninitialized lazy module with a materialized descriptor
-    after the saved weights materialize it (their names and shapes are
-    checked first, and nothing loads on a refusal). A module holding a lazy
-    layer torch does not ship keeps its wrap-time descriptor: only a forward
-    reveals what such a layer infers.
+    they materialize at their first forward, so a lazy module gets one
+    descriptor before and another after (a run's id comes from the
+    descriptor when ``train()`` starts). An uninitialized lazy layer records
+    no shape: uninitialized lazy nets that will see different input widths
+    share a descriptor and a run id, so give them distinct ``data_id`` /
+    ``salt`` values (or dry-run them first). Once the wrapped module has
+    materialized (its first forward, in training, ``predict``, ``evaluate``
+    or a direct call), ``NNModel`` takes its descriptor afresh at the next
+    read of its ``params``, so checkpoints and later runs use the
+    materialized descriptor. A lazy layer the forward never reaches keeps
+    the module at its wrap-time descriptor, so keep every lazy layer on the
+    forward path. NNx never changes the module at the wrap and puts no hook
+    on it. Torch's own first forward on weights loaded before it leaves
+    ``in_channels`` / ``num_features`` of lazy conv and norm layers at 0
+    (and ``in_features`` of ``nn.LazyLinear`` on older torch), where a dry
+    run sets them; a reload accepts either form, layer by layer. A module
+    whose lazy layers hold loaded weights does not match a descriptor taken
+    before materialization; a fresh, unmaterialized instance does. A reload
+    checks an uninitialized lazy module against a materialized descriptor
+    with the saved weights (their names and shapes first, then the topology
+    they materialize), and nothing loads on a refusal. A module holding a
+    lazy layer torch does not ship keeps its wrap-time descriptor: only a
+    forward reveals what such a layer infers.
     """
 
     __slots__ = ("module", "topology")
@@ -388,15 +378,14 @@ def _inferred_attributes(sub: nn.Module, shapes: Mapping[str, Optional[tuple[int
     return None
 
 
-def _materialized_topology(module: nn.Module, state: Mapping[str, Any]) -> Optional[str]:
-    """The :func:`module_topology` that ``module`` would have once ``state``
-    (saved weights, matching it under :func:`check_state_schema`) is loaded
-    and its lazy layers are materialized as by a dry-run forward — computed
-    without changing ``module``. ``None`` when that cannot be told: a lazy
-    parameter the state does not give a shape for, or a lazy layer torch
-    does not ship (only a forward reveals what it infers)."""
+def _shapes_once_loaded(
+    module: nn.Module, state: Mapping[str, Any]
+) -> Optional[tuple[dict[str, torch.Tensor], dict[str, tuple[int, ...]]]]:
+    """``module``'s tensors and the shapes they have once ``state`` (saved
+    weights, matching it under :func:`check_state_schema`) is loaded:
+    ``None`` when a lazy parameter's shape is given by neither."""
     tensors = {name: value for name, value in module.state_dict().items() if isinstance(value, torch.Tensor)}
-    shapes: dict[str, Optional[tuple[int, ...]]] = {}
+    shapes: dict[str, tuple[int, ...]] = {}
     for name, value in tensors.items():
         shape = _shape(value)
         if shape is None:
@@ -405,12 +394,65 @@ def _materialized_topology(module: nn.Module, state: Mapping[str, Any]) -> Optio
             if shape is None:
                 return None
         shapes[name] = shape
-    plan = _materialization_plan(module, shapes)
-    if plan is None:
+    return tensors, shapes
+
+
+def _materialized_topology(module: nn.Module, state: Mapping[str, Any]) -> Optional[str]:
+    """The :func:`module_topology` that ``module`` would have once ``state``
+    is loaded and its lazy layers are materialized as by a dry-run forward,
+    computed without changing ``module``. ``None`` when that cannot be told:
+    a lazy parameter the state does not give a shape for, or a lazy layer
+    torch does not ship (only a forward reveals what it infers)."""
+    loaded = _shapes_once_loaded(module, state)
+    plan = None if loaded is None else _materialization_plan(module, loaded[1])
+    if loaded is None or plan is None:
         return None
     with _materialized_view(plan):
         text = repr(module)
-    return _fingerprint(tensors, shapes, text)
+    return _fingerprint(loaded[0], loaded[1], text)
+
+
+# Past this many lazy layers whose two forms differ, only the uniform
+# assignments are tried: every layer as by a dry run, or every one as torch
+# leaves a loaded layer.
+_MAX_MIXED_FORMS = 10
+
+
+def _match_materialization(module: nn.Module, state: Mapping[str, Any], topology: str) -> Optional[_Plan]:
+    """The materialization of ``module``'s pending lazy layers, once
+    ``state`` is loaded, that gives ``topology``, computed without changing
+    ``module``; ``None`` when none does or it cannot be told. Each layer
+    materializes in one of two forms: as a dry-run forward leaves it, or as
+    torch's own first forward leaves a layer whose weights were loaded before
+    it (``in_channels`` / ``num_features`` of conv and norm layers at 0, and
+    ``in_features`` of ``nn.LazyLinear`` on older torch). A run's descriptor
+    may hold either, per layer (#562)."""
+    loaded = _shapes_once_loaded(module, state)
+    plan = None if loaded is None else _materialization_plan(module, loaded[1])
+    if loaded is None or plan is None:
+        return None
+    tensors, shapes = loaded
+    # The layers whose two forms differ: the others take the dry-run form.
+    choices = [
+        index
+        for index, (sub, inferred, _) in enumerate(plan)
+        if any(getattr(sub, key) != value for key, value in inferred.items())
+    ]
+    if len(choices) <= _MAX_MIXED_FORMS:
+        assignments: Iterator[tuple[bool, ...]] = itertools.product((True, False), repeat=len(choices))
+    else:
+        assignments = iter([(True,) * len(choices), (False,) * len(choices)])
+    for dry_runs in assignments:
+        candidate = list(plan)
+        for index, dry_run in zip(choices, dry_runs, strict=True):
+            if not dry_run:
+                sub, inferred, final = plan[index]
+                candidate[index] = (sub, {key: getattr(sub, key) for key in inferred}, final)
+        with _materialized_view(candidate):
+            text = repr(module)
+        if _fingerprint(tensors, shapes, text) == topology:
+            return candidate
+    return None
 
 
 def _unmaterialized_topology(module: nn.Module) -> Optional[str]:
@@ -468,66 +510,27 @@ def _materialized_view(plan: _Plan) -> Iterator[None]:
                 setattr(sub, key, value)
 
 
-def _complete_lazy_materialization(module: nn.Module) -> bool:
-    """Finish materializing each of ``module``'s pending lazy layers whose
-    tensors are all loaded, as a dry-run forward would have: set what that
-    forward infers (torch's own forward on loaded weights leaves the
-    ``in_channels`` / ``num_features`` of lazy conv and norm layers at 0),
-    drop torch's lazy hooks and switch to the final class. Uninitialized
-    layers, and lazy layers torch does not ship, are left to their first
-    forward, and so is a layer without tensors (a norm layer without affine
-    weights or running statistics) while any other is: it has nothing to
-    load, and switching its class first would change the module's
-    descriptor before the rest materializes. Returns whether no lazy layer
-    is left pending."""
-    tensorless: list[nn.Module] = []
-    for _, layer in _pending_lazy_modules(module):
-        tensors = {name: value for name, value in layer.state_dict().items() if isinstance(value, torch.Tensor)}
-        if not tensors:
-            tensorless.append(layer)
-        elif not any(nn.parameter.is_lazy(value) for value in tensors.values()):
-            _finish_lazy_layer(layer, tensors)
-    if tensorless and len(_pending_lazy_modules(module)) == len(tensorless):
-        for layer in tensorless:
-            _finish_lazy_layer(layer, {})
-    return not _has_pending_lazy(module)
+def _dry_run_materialization(module: nn.Module) -> Optional[_Plan]:
+    """How a dry-run forward would materialize ``module``'s pending lazy
+    layers from the weights they hold: ``None`` while one is uninitialized
+    or is a lazy layer torch does not ship."""
+    loaded = _shapes_once_loaded(module, {})
+    return None if loaded is None else _materialization_plan(module, loaded[1])
 
 
-def _finish_lazy_layer(layer: nn.Module, tensors: Mapping[str, torch.Tensor]) -> None:
-    plan = _materialization_plan(layer, {name: _shape(value) for name, value in tensors.items()})
-    for sub, inferred, final in plan or ():
+def _finish_materialization(plan: _Plan) -> None:
+    """Materialize the planned lazy layers for good, as their first forward
+    would: set the planned attributes, drop torch's lazy hooks and switch to
+    the final class (what torch's ``_infer_parameters`` does once a layer is
+    initialized). Only after every check, on weights already loaded."""
+    for sub, inferred, final in plan:
         for key, value in inferred.items():
             setattr(sub, key, value)
-        # What torch's _infer_parameters does once a layer is initialized.
         for hook in ("_initialize_hook", "_load_hook"):
             getattr(sub, hook).remove()
             delattr(sub, hook)
         if final is not None:
             sub.__class__ = final
-
-
-def _finish_loaded_lazy_layers(module: nn.Module, _args: Any) -> None:
-    """Forward pre-hook that ``NNModel`` puts on a wrapped module while any
-    of its lazy layers is pending (#562): weights loaded after the wrap,
-    through the module or into one of its layers (also a layer put in after
-    the wrap), finish their layer's materialization before torch's own
-    forward on them, as the wrap does for weights loaded before it (torch's
-    forward on loaded weights would leave ``in_channels`` /
-    ``num_features`` at 0)."""
-    _complete_lazy_materialization(module)
-
-
-def _drop_lazy_hooks(handles: list[RemovableHandle], module: nn.Module, _args: Any, _output: Any) -> None:
-    """Forward hook paired with :func:`_finish_loaded_lazy_layers`: once no
-    lazy layer is pending, both hooks go, so the caller's module keeps no
-    NNx hook once it has materialized."""
-    if not _has_pending_lazy(module):
-        _remove_hooks(handles)
-
-
-def _remove_hooks(handles: list[RemovableHandle]) -> None:
-    for handle in handles:
-        handle.remove()
 
 
 def _shape(value: torch.Tensor) -> Optional[tuple[int, ...]]:
