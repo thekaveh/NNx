@@ -198,9 +198,12 @@ a signal to lock onto. The other classification fields stay zero.
   train mode: its dropout and BatchNorm would change the targets. The first
   step therefore raises `ValueError` for a target that is part of
   `model.net` (`model.net` itself included) or shares its parameters, before
-  any freeze, mode change or update. A resumed run's first step does too: the
-  restore loads the target's weights without freezing it (next item).
-  `jepa_objective` runs the same check, with the same wording, before any run
+  any freeze, mode change or update. A resumed run fails too: at its first
+  step with the same message, or earlier in the restore when the misplaced
+  layout no longer matches the checkpoint (a parameter-topology `ValueError`,
+  or a `load_state_dict` `RuntimeError` for `model.net` itself). The restore
+  loads the target's weights without freezing it (next item), so the online
+  network stays trainable either way. `jepa_objective` runs the same check, with the same wording, before any run
   is reserved (§5).
 
     The factory leaves its target alone, so `jepa_train_step_factory(model.net, ...)`
