@@ -203,8 +203,8 @@ a signal to lock onto. The other classification fields stay zero.
   layout no longer matches the checkpoint (a parameter-topology `ValueError`,
   or a `load_state_dict` `RuntimeError` for `model.net` itself). The restore
   loads the target's weights without freezing it (next item), so the online
-  network stays trainable either way. `jepa_objective` runs the same check, with the same wording, before any run
-  is reserved (§5).
+  network stays trainable either way. `jepa_objective` runs the same check,
+  with the same wording, before any run is reserved (§5).
 
     The factory leaves its target alone, so `jepa_train_step_factory(model.net, ...)`
     keeps the online network trainable and the first step names the
