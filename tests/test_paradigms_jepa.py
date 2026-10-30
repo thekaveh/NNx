@@ -679,3 +679,14 @@ def test_a_resumed_misplaced_target_is_refused_before_freezing_the_net(tmp_path,
     assert [n for n, p in model.net.named_parameters() if p.requires_grad] == trainable
     assert not any(module.training for module in model.net.modules())
     assert all(torch.equal(model.net.state_dict()[k], v) for k, v in before.items())
+
+
+@pytest.mark.parametrize("which", ["target_encoder", "predictor"])
+def test_the_factory_refuses_a_non_module_target_or_predictor_when_built(which):
+    """It no longer touches the target when built (#531), but still refuses a
+    non-Module up front, as jepa_objective does, before any run is reserved."""
+    net = torch.nn.Linear(4, 4)
+    parts = {"target_encoder": torch.nn.Linear(4, 4), "predictor": torch.nn.Linear(4, 4)}
+    parts[which] = net.state_dict()  # a state_dict passed by mistake
+    with pytest.raises(TypeError, match="target_encoder and predictor must be torch.nn.Module instances"):
+        jepa_train_step_factory(parts["target_encoder"], parts["predictor"], lambda n, device: (None, None))

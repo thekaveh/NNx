@@ -206,9 +206,9 @@ a signal to lock onto. The other classification fields stay zero.
   network stays trainable either way. `jepa_objective` runs the same check,
   with the same wording, before any run is reserved (§5).
 
-    The factory leaves its target alone, so `jepa_train_step_factory(model.net, ...)`
-    keeps the online network trainable and the first step names the
-    placement. Each step freezes the target and pins it to `eval()` before
+    The factory leaves its target alone, so
+    `jepa_train_step_factory(model.net, ...)` keeps the online network
+    trainable and the first step names the placement. Each step freezes the target and pins it to `eval()` before
     its forward. A hand-made copy, or one that other code switched to train
     mode, still gives eval-mode targets. Move the target with the net
     (`target.to(...)`, `target.double()`) instead of registering it under the
