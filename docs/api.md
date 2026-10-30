@@ -16285,7 +16285,10 @@ Args:
         batch. The bundled :func:`random_block_mask` helper is the
         common choice; passing a fixed mask is fine for tests.
     ema_momentum: EMA decay used by :func:`update_ema`. Default
-        0.996 (reference I-JEPA).
+        0.996 (reference I-JEPA). Checkpoints record it (as a
+        ``float``); a stateful resume needs the same value, or
+        ``train()`` raises :class:`~nnx.ComponentRestoreError` before
+        anything is restored (see :class:`JEPATrainStep`).
 
 Returns:
     A ``TrainStepFn`` for ``NNModel.train(..., train_step_fn=...)``.
@@ -16324,6 +16327,12 @@ have. The component is required — resuming from a stateful checkpoint
 that records component state but not this component fails before
 anything is restored, while a checkpoint with no component state at all
 resumes with a fresh target copy and a warning.
+
+The state also records ``ema_momentum``, and the resumed step must be
+built with the same one. A resume with another momentum fails before
+anything is restored, with a :class:`~nnx.ComponentRestoreError` naming
+both values, as :func:`~nnx.paradigms.jepa_objective` refuses it; a state
+without the momentum is reported in the same error.
 ```
 
 ##### `nnx.paradigms.jepa.JEPATrainStep.component_spec`
@@ -16341,6 +16350,14 @@ nnx.paradigms.jepa.JEPATrainStep.component_state(self) -> 'dict[str, Any]'
 ```
 
 No public description is currently available.
+
+##### `nnx.paradigms.jepa.JEPATrainStep.check_component_state`
+
+```python
+nnx.paradigms.jepa.JEPATrainStep.check_component_state(self, state: 'Mapping[str, Any]', *, version: 'int') -> 'list[str]'
+```
+
+Reject, before anything is restored, a target trained with another EMA momentum: this step would carry it on with its own, and the run would no longer match an uninterrupted one.
 
 ##### `nnx.paradigms.jepa.JEPATrainStep.load_component_state`
 

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import copy
 import math
+import numbers
 from collections.abc import Callable, Mapping
 from typing import Any, Optional, cast
 
@@ -376,7 +377,10 @@ def jepa_train_step_factory(
             batch. The bundled :func:`random_block_mask` helper is the
             common choice; passing a fixed mask is fine for tests.
         ema_momentum: EMA decay used by :func:`update_ema`. Default
-            0.996 (reference I-JEPA).
+            0.996 (reference I-JEPA). Checkpoints record it (as a
+            ``float``); a stateful resume needs the same value, or
+            ``train()`` raises :class:`~nnx.ComponentRestoreError` before
+            anything is restored (see :class:`JEPATrainStep`).
 
     Returns:
         A ``TrainStepFn`` for ``NNModel.train(..., train_step_fn=...)``.
@@ -395,7 +399,9 @@ def jepa_train_step_factory(
     """
     if not isinstance(target_encoder, nn.Module) or not isinstance(predictor, nn.Module):
         raise TypeError("target_encoder and predictor must be torch.nn.Module instances")
-    require_finite_real(
+    # A plain float, as jepa_objective keeps it: checkpoints record it, and a
+    # NumPy scalar would not load with torch.load(weights_only=True).
+    ema_momentum = require_finite_real(
         ema_momentum, "ema_momentum", owner="jepa_train_step_factory", minimum=0, maximum=1, exclusive_max=True
     )
     # The target is left alone here: until a step has checked its placement,
@@ -499,6 +505,12 @@ class JEPATrainStep:
     that records component state but not this component fails before
     anything is restored, while a checkpoint with no component state at all
     resumes with a fresh target copy and a warning.
+
+    The state also records ``ema_momentum``, and the resumed step must be
+    built with the same one. A resume with another momentum fails before
+    anything is restored, with a :class:`~nnx.ComponentRestoreError` naming
+    both values, as :func:`~nnx.paradigms.jepa_objective` refuses it; a state
+    without the momentum is reported in the same error.
     """
 
     def __init__(self, step: TrainStepFn, target_encoder: nn.Module, ema_momentum: float) -> None:
@@ -518,6 +530,22 @@ class JEPATrainStep:
         # Detached live tensors, not copies: checkpoints serialize them at
         # once, and a restore snapshots them with its own deep copy.
         return {"target_encoder": dict(self.target_encoder.state_dict()), "ema_momentum": self.ema_momentum}
+
+    def check_component_state(self, state: Mapping[str, Any], *, version: int) -> list[str]:
+        """Reject, before anything is restored, a target trained with
+        another EMA momentum: this step would carry it on with its own, and
+        the run would no longer match an uninterrupted one."""
+        if "ema_momentum" not in state:
+            return ["the checkpoint's JEPA target-encoder state records no ema_momentum"]
+        saved = state["ema_momentum"]
+        if isinstance(saved, bool) or not isinstance(saved, numbers.Real) or saved < 0 or not saved < 1:
+            return [f"malformed JEPA EMA momentum {saved!r}"]
+        if saved != self.ema_momentum:
+            return [
+                f"the checkpoint's JEPA EMA momentum {saved!r} does not match this step's {self.ema_momentum!r}: "
+                f"resume with ema_momentum={saved!r}"
+            ]
+        return []
 
     def load_component_state(self, state: Mapping[str, Any], *, version: int) -> None:
         # The weights only: the resumed step checks the target's placement,
