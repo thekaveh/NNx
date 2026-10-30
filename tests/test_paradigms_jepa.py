@@ -638,19 +638,28 @@ def test_every_target_forward_runs_in_eval_mode_across_a_stateful_resume(tmp_pat
     assert modes == [False] * 4  # two steps per session
 
 
-def test_a_resumed_step_refuses_a_target_sharing_the_net_before_freezing_it(tmp_path, monkeypatch):
+_RESUME_REFUSAL = {
+    "inside": (ValueError, "parameter topology does not match the checkpoint"),
+    "is_net": (RuntimeError, "Missing key"),
+    "shares": (ValueError, _PLACEMENT["shares"]),
+}
+
+
+@pytest.mark.parametrize("layout", sorted(_RESUME_REFUSAL))
+def test_a_resumed_misplaced_target_is_refused_before_freezing_the_net(tmp_path, monkeypatch, layout):
     """A stateful resume restored the target and froze it before the first
     step's placement check, so a target sharing an online parameter froze it
     and the refusal left model.net partly frozen. The restore now loads the
-    weights only (the resume window puts the net's back on the refusal), so
-    the resumed step refuses with the net as it was."""
+    weights only (the resume window puts the net's back on a failure), so a
+    resumed misplaced target is refused with the net as it was: at the first
+    step, or in the restore when the layout no longer matches the checkpoint."""
     monkeypatch.chdir(tmp_path)
 
     def session(layout: str) -> tuple[NNModel, TrainStepFn]:
         set_seed(0)
         model = _build_tiny_vit_model()
         predictor = _build_predictor(model)
-        if layout == "shares":
+        if layout in _RESUME_REFUSAL:
             target = _misplaced_target(model, predictor, layout)
         else:
             target = build_target_encoder(model.net)
@@ -660,11 +669,13 @@ def test_a_resumed_step_refuses_a_target_sharing_the_net_before_freezing_it(tmp_
 
     model, step_fn = session("built")
     first = model.train(params=_sgd_params(), train_step_fn=step_fn)
-    model, step_fn = session("shares")
+    model, step_fn = session(layout)
     model.net.eval()  # so a mode change before the refusal shows
+    trainable = [n for n, p in model.net.named_parameters() if p.requires_grad]
     before = copy.deepcopy(model.net.state_dict())
-    with pytest.raises(ValueError, match=_PLACEMENT["shares"]):
+    error, match = _RESUME_REFUSAL[layout]
+    with pytest.raises(error, match=match):
         model.train(params=_sgd_params(resume_from_run_id=first.id), train_step_fn=step_fn)
-    assert all(p.requires_grad for p in model.net.parameters())
+    assert [n for n, p in model.net.named_parameters() if p.requires_grad] == trainable
     assert not any(module.training for module in model.net.modules())
     assert all(torch.equal(model.net.state_dict()[k], v) for k, v in before.items())
