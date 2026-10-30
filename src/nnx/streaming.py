@@ -59,7 +59,7 @@ import numpy as np
 import torch
 
 from ._confusion import integers
-from ._probability import to_numpy
+from ._probability import class_labels, to_numpy
 from ._validation import require_finite_real, shown
 from .monitors import (
     MetricAccumulator,
@@ -344,8 +344,11 @@ class StreamingMetrics:
             labels), ``"bernoulli"`` (independent per-output probabilities,
             labels at ``threshold``) or ``"continuous"`` (values). Every
             metric's input must be one these semantics provide.
-        labels: optional ordered class / output names; a categorical
-            ``probabilities`` width must match them. Part of the merge schema.
+        labels: optional ordered class / output names (unique, non-empty
+            strings in a sequence, NumPy array or pandas ``Index``, stored as
+            a tuple of ``str``; a string, mapping, set or iterator, such as
+            a generator, is refused); a categorical ``probabilities`` width
+            must match them. Part of the merge schema.
         threshold: the bernoulli decision threshold for labels derived from
             probabilities (default 0.5).
         materialize: store every score of a metric that has no bounded form
@@ -378,11 +381,11 @@ class StreamingMetrics:
         if semantics not in SEMANTICS:
             raise ValueError(f"semantics must be one of {', '.join(repr(s) for s in SEMANTICS)}, got {semantics!r}")
         if labels is not None:
-            labels = tuple(labels)
-            if not labels or any(not isinstance(label, str) or not label for label in labels):
-                raise ValueError(f"labels must be non-empty strings, got {labels!r}")
-            if len(set(labels)) != len(labels):
-                raise ValueError(f"labels must be unique, got {labels!r}")
+            # The shared rule: a string is one name, not its characters, and a
+            # set's order (the merge schema's) can change between processes.
+            labels = class_labels(labels, error=ValueError, minimum=0)
+            if not labels:
+                raise ValueError("labels must name at least one class / output, got none")
         # A bool, NaN, ±inf or an integer too large for a float (10**400) is refused by name.
         threshold = require_finite_real(
             threshold,
