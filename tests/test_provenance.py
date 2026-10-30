@@ -489,15 +489,40 @@ def test_provenance_files_still_load_and_keep_their_documented_errors(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "labels",
-    [{"neg", "mid", "pos"}, frozenset({"neg", "pos"}), {"neg": 0, "pos": 1}, "neg"],
-    ids=["set", "frozenset", "dict", "str"],
+    ("labels", "match"),
+    [
+        ({"neg", "mid", "pos"}, "an ordered sequence of class names"),
+        (frozenset({"neg", "pos"}), "an ordered sequence of class names"),
+        ({"neg": 0, "pos": 1}, "an ordered sequence of class names"),
+        ({"neg": 0, "pos": 1}.keys(), "an ordered sequence of class names"),
+        ("neg", "an ordered sequence of class names"),
+        (["neg", "neg"], "unique"),
+        (["", "pos"], "non-empty strings"),
+    ],
+    ids=["set", "frozenset", "dict", "dict-keys", "str", "duplicate", "empty-string"],
 )
-def test_manifest_labels_refuse_sets_mappings_and_strings(labels):
+def test_manifest_labels_refuse_sets_mappings_and_strings(labels, match):
     """A set's order, and with it ``labels`` and the fingerprint, followed
-    PYTHONHASHSEED; a dict recorded its keys. NumPy and pandas labels stay."""
-    with pytest.raises(TypeError, match="labels must be an ordered sequence of class names"):
+    PYTHONHASHSEED; a dict recorded its keys; duplicate and empty labels
+    were kept. NumPy and pandas labels stay."""
+    with pytest.raises(TypeError, match=f"labels must be {match}"):
         ExperimentManifest(labels=labels)
     manifest = ExperimentManifest(labels=pd.Index(["neg", "mid", "pos"]))
     assert manifest.labels == ("neg", "mid", "pos") and all(type(label) is str for label in manifest.labels)
     assert manifest.fingerprint() == ExperimentManifest(labels=np.array(["neg", "mid", "pos"])).fingerprint()
+
+
+@pytest.mark.parametrize("labels", [["neg", "neg"], ["", "pos"]], ids=["duplicate", "empty-string"])
+def test_a_stored_manifest_with_duplicate_or_empty_labels_no_longer_loads(tmp_path, labels):
+    """The previous release wrote such labels (with a matching fingerprint);
+    ``from_state`` goes through the constructor, so loading now refuses them."""
+    from nnx.provenance import MANIFEST_FILE, load_provenance
+
+    state = {**BASE.state(), "labels": labels}
+    document = {"format": FORMAT, "manifest": state}
+    document["fingerprint"] = hash_bytes(canonical_bytes(document)).value  # what that release stored
+    run = tmp_path / "runs" / ("b" * 32)
+    run.mkdir(parents=True)
+    (run / MANIFEST_FILE).write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(TypeError, match="labels must be (unique|non-empty strings)"):
+        load_provenance("b" * 32, root=str(tmp_path))
