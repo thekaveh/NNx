@@ -2748,14 +2748,15 @@ forward path. NNx puts no hook on the module. Torch's own first forward
 on weights loaded before it leaves ``in_channels`` / ``num_features`` of
 lazy conv and norm layers at 0 (and ``in_features`` of ``nn.LazyLinear``
 on older torch); when ``NNModel`` takes the descriptor afresh it sets
-them as a dry run does, so the module is described in its dry-run form.
-A module whose lazy layers hold loaded weights does not match a
-descriptor taken before materialization; a fresh, unmaterialized
-instance does. A reload checks an uninitialized lazy module against a
-materialized descriptor with the saved weights (their names and shapes
-first, then the topology they materialize), and nothing loads on a
-refusal. A module holding a lazy layer torch does not ship keeps its
-wrap-time descriptor: only a forward reveals what such a layer infers.
+them as a dry run does, on the lazy layers it saw pending, so the module
+is described in its dry-run form. A module whose lazy layers hold loaded
+weights does not match a descriptor taken before materialization; a
+fresh, unmaterialized instance does. A reload checks an uninitialized
+lazy module against a materialized descriptor with the saved weights
+(their names and shapes first, then the topology they materialize), and
+nothing loads on a refusal. A module holding a lazy layer torch does not
+ship keeps its wrap-time descriptor: only a forward reveals what such a
+layer infers.
 ```
 
 ##### `nnx.models.RuntimeModule.of`
