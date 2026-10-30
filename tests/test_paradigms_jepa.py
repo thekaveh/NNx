@@ -15,8 +15,9 @@ Covers five contracts:
      ``.grad is None`` after the run).
   5. Target placement: the step refuses a target inside ``model.net``
      or sharing its parameters (with the objective's check and wording),
-     never freezes the online net on construction, and runs every target
-     forward in eval mode, across a stateful resume too.
+     never freezes the online net on construction or on a resume's
+     restore, and runs every target forward in eval mode, across a
+     stateful resume too.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from nnx import (
     NNSchedulerParams,
     NNTrainParams,
     Optims,
+    TrainStepFn,
     ViTBlock,
     ViTNN,
     build_target_encoder,
@@ -602,9 +604,15 @@ def test_every_target_forward_runs_in_eval_mode_across_a_stateful_resume(tmp_pat
     train mode afterwards ran its dropout on the targets. The step now re-pins
     it before each target forward, in every accepted layout (a
     build_target_encoder copy, or a hand-made trainable copy in train mode
-    that the step freezes) and after a stateful resume restores it."""
+    that the step freezes) and after a stateful resume restores it. The
+    target is back in train mode at every forward's start (a callback at each
+    epoch, the hook after each forward), so each step must re-pin it."""
     monkeypatch.chdir(tmp_path)
     modes: list[bool] = []
+
+    def record(module: torch.nn.Module, inputs: object, output: object) -> None:
+        modes.append(module.training)
+        module.train()  # as other code might between steps
 
     def session(**resume) -> NNRun:
         set_seed(0)
@@ -612,7 +620,7 @@ def test_every_target_forward_runs_in_eval_mode_across_a_stateful_resume(tmp_pat
         target = build_target_encoder(model.net) if layout == "built" else copy.deepcopy(model.net)
         predictor = _build_predictor(model)
         _attach_predictor_for_optim(model, predictor)
-        target.register_forward_hook(lambda module, inputs, output: modes.append(module.training))
+        target.register_forward_hook(record)
         step_fn = jepa_train_step_factory(
             target,
             predictor,
@@ -628,3 +636,35 @@ def test_every_target_forward_runs_in_eval_mode_across_a_stateful_resume(tmp_pat
     assert second.resume_status is not None and second.resume_status.mode == "stateful"
     assert "jepa.target_encoder" in second.resume_status.restored_components
     assert modes == [False] * 4  # two steps per session
+
+
+def test_a_resumed_step_refuses_a_target_sharing_the_net_before_freezing_it(tmp_path, monkeypatch):
+    """A stateful resume restored the target and froze it before the first
+    step's placement check, so a target sharing an online parameter froze it
+    and the refusal left model.net partly frozen. The restore now loads the
+    weights only (the resume window puts the net's back on the refusal), so
+    the resumed step refuses with the net as it was."""
+    monkeypatch.chdir(tmp_path)
+
+    def session(layout: str) -> tuple[NNModel, TrainStepFn]:
+        set_seed(0)
+        model = _build_tiny_vit_model()
+        predictor = _build_predictor(model)
+        if layout == "shares":
+            target = _misplaced_target(model, predictor, layout)
+        else:
+            target = build_target_encoder(model.net)
+            _attach_predictor_for_optim(model, predictor)
+        mask_fn = _fixed_mask_fn(model_n_patches=model.net.n_patches, model_grid=32 // 8)
+        return model, jepa_train_step_factory(target, predictor, mask_fn, ema_momentum=0.5)
+
+    model, step_fn = session("built")
+    first = model.train(params=_sgd_params(), train_step_fn=step_fn)
+    model, step_fn = session("shares")
+    model.net.eval()  # so a mode change before the refusal shows
+    before = copy.deepcopy(model.net.state_dict())
+    with pytest.raises(ValueError, match=_PLACEMENT["shares"]):
+        model.train(params=_sgd_params(resume_from_run_id=first.id), train_step_fn=step_fn)
+    assert all(p.requires_grad for p in model.net.parameters())
+    assert not any(module.training for module in model.net.modules())
+    assert all(torch.equal(model.net.state_dict()[k], v) for k, v in before.items())

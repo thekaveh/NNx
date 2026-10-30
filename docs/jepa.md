@@ -198,8 +198,10 @@ a signal to lock onto. The other classification fields stay zero.
   train mode: its dropout and BatchNorm would change the targets. The first
   step therefore raises `ValueError` for a target that is part of
   `model.net` (`model.net` itself included) or shares its parameters, before
-  any freeze, mode change or update. `jepa_objective` runs the same check,
-  with the same wording, before any run is reserved (§5).
+  any freeze, mode change or update. A resumed run's first step does too: the
+  restore loads the target's weights without freezing it (next item).
+  `jepa_objective` runs the same check, with the same wording, before any run
+  is reserved (§5).
 
     The factory leaves its target alone, so `jepa_train_step_factory(model.net, ...)`
     keeps the online network trainable and the first step names the
@@ -214,7 +216,8 @@ a signal to lock onto. The other classification fields stay zero.
   checkpointable component named `jepa.target_encoder`
   ([Concepts §14.1](concepts.md#141-component-state)). Every
   checkpoint's training state carries the target encoder's weights.
-  A stateful warm resume puts them back, frozen and in eval mode.
+  A stateful warm resume puts them back. The resumed step then checks the
+  target's placement, freezes it and pins it to `eval()`, as every step does.
 
     Four epochs and a 2 + 2 split with `resume_from_run_id`
     end with identical encoder, predictor, target encoder, optimizer

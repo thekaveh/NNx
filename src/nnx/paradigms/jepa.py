@@ -515,8 +515,8 @@ class JEPATrainStep:
         return {"target_encoder": dict(self.target_encoder.state_dict()), "ema_momentum": self.ema_momentum}
 
     def load_component_state(self, state: Mapping[str, Any], *, version: int) -> None:
+        # The weights only: the resumed step checks the target's placement,
+        # then freezes it and pins eval() before its forward, as every step
+        # does. Freezing here would freeze the model.net parameters a
+        # misplaced target shares before that step refuses it.
         self.target_encoder.load_state_dict(state["target_encoder"])
-        # The EMA copy stays frozen and in eval mode after a restore.
-        self.target_encoder.eval()
-        for p in self.target_encoder.parameters():
-            p.requires_grad = False
