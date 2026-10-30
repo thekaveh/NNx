@@ -564,11 +564,11 @@ def test_an_unknown_taskless_loss_is_refused_with_the_fix(loss_fn):
     model, calls = _taskless(loss_fn)
     with pytest.raises(UnsupportedCapability, match=re.escape(_name(loss_fn))) as caught:
         FixedHeadProvider(model, labels=LABELS)
-    assert "declare the model's TaskSpec" in str(caught.value)
     assert "set model.loss_fn to the matching CrossEntropyLoss, NLLLoss or BCEWithLogitsLoss" in str(caught.value)
+    assert "that task's train() and evaluate() accept only its own losses" in str(caught.value)
     assert calls == []
-    model.loss_fn = torch.nn.CrossEntropyLoss()  # one fix: the loss whose logits the head gives
+    model.loss_fn = torch.nn.CrossEntropyLoss()  # the fix: the loss whose logits the head gives
     assert len(FixedHeadProvider(model, labels=LABELS).decide(_animals("cat", "dog", "fox"), X)) == 3
     declared = _classifier(task=TaskSpec.categorical(3, labels=LABELS))
-    declared.loss_fn = loss_fn  # the other: a declared task names the head's kind
+    declared.loss_fn = loss_fn  # a declared task names the head's kind for decisions; its training refuses this loss
     assert len(FixedHeadProvider(declared).decide(_animals("cat", "dog", "fox"), X)) == 3

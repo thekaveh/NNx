@@ -216,8 +216,9 @@ def _taskless_head_kind(loss_fn: Any) -> str:
         f"without a task, a {type(loss_fn).__name__} head's outputs have no known meaning: FixedHeadProvider reads "
         "softmax logits from a CrossEntropyLoss or NLLLoss head and sigmoid logits from a BCEWithLogitsLoss, "
         "MultiLabelSoftMarginLoss or SoftMarginLoss one. For logits trained with another loss (a focal loss, say), "
-        "declare the model's TaskSpec or set model.loss_fn to the matching CrossEntropyLoss, NLLLoss or "
-        "BCEWithLogitsLoss before wrapping it"
+        "set model.loss_fn to the matching CrossEntropyLoss, NLLLoss or BCEWithLogitsLoss before wrapping it. A "
+        "declared TaskSpec also names the head's kind, but that task's train() and evaluate() accept only its own "
+        "losses"
     )
 
 
@@ -256,10 +257,11 @@ class FixedHeadProvider:
     instead of being served as a softmax. That covers the hinges
     ``MultiMarginLoss`` and ``MultiLabelMarginLoss`` (whose margin scores are
     no probabilities) and custom losses. For logits trained with a custom loss
-    (a focal loss, say), declare the model's ``TaskSpec``, or set
-    ``model.loss_fn`` to the matching ``CrossEntropyLoss``, ``NLLLoss`` or
-    ``BCEWithLogitsLoss``. A ``BCELoss`` head outputs probabilities, not
-    logits, and is refused with or without a task.
+    (a focal loss, say), set ``model.loss_fn`` to the matching
+    ``CrossEntropyLoss``, ``NLLLoss`` or ``BCEWithLogitsLoss``. A declared
+    ``TaskSpec`` also names the head's kind, but that task's ``train()`` and
+    ``evaluate()`` accept only its own losses. A ``BCELoss`` head outputs
+    probabilities, not logits, and is refused with or without a task.
 
     Probabilities come from the model's ``predict_proba``,
     which evaluates in eval mode and restores every submodule's

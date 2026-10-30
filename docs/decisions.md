@@ -133,8 +133,9 @@ Any other task-less loss raises `UnsupportedCapability` at construction,
 before the model runs, instead of being served as a softmax. That covers the
 hinges `MultiMarginLoss` and `MultiLabelMarginLoss` (whose margin scores are
 no probabilities) and custom losses. For logits trained with a custom loss (a
-focal loss, say), declare the model's `TaskSpec`, or set `model.loss_fn` to
-the matching `CrossEntropyLoss`, `NLLLoss` or `BCEWithLogitsLoss`. A
+focal loss, say), set `model.loss_fn` to the matching `CrossEntropyLoss`,
+`NLLLoss` or `BCEWithLogitsLoss`. A declared `TaskSpec` also names the head's
+kind, but that task's `train()` and `evaluate()` accept only its own losses. A
 `BCELoss` head outputs probabilities, not logits, so it is refused with or
 without a task: wrap the net without its final sigmoid and set a
 `BCEWithLogitsLoss` loss.
