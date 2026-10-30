@@ -10,6 +10,7 @@ import math
 import os
 import re
 import uuid
+import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass, field, replace
@@ -54,12 +55,14 @@ from ..models import (
     RuntimeModule,
     _as_inputs,
     _complete_lazy_materialization,
-    _complete_loaded_lazy_layer,
+    _drop_lazy_hooks,
+    _finish_loaded_lazy_layers,
     _has_pending_lazy,
     _lazy_layers_emulable,
     _materialized_class_name,
     _materialized_topology,
     _pending_lazy_modules,
+    _remove_hooks,
     _same_class_once_materialized,
     _unmaterialized_topology,
     _UnpackBatch,
@@ -3276,7 +3279,7 @@ def _resolve_net_descriptor(
     *,
     state: Optional[Mapping[str, Any]] = None,
     reloading: bool = False,
-    explain_state: Optional[Callable[[ValueError], Optional[Exception]]] = None,
+    explain_state: Optional[Callable[[ValueError, torch.nn.Module], Optional[Exception]]] = None,
 ) -> NNModelParams:
     """Check how a model's network is described (FEAT-006) and return the
     params to keep — with a wrapped module's :class:`RuntimeModule`
@@ -3296,7 +3299,7 @@ def _resolve_net_descriptor(
         if net is None:
             return replace(params, net=descriptor)
         if isinstance(net, RuntimeModule):
-            if net != descriptor and not _checked_lazy_reload(module, net):
+            if net != descriptor:
                 _match_lazy_module(net, descriptor, module, state, reloading=reloading, explain_state=explain_state)
             return params
         raise ValueError(
@@ -3382,7 +3385,7 @@ def _match_lazy_module(
     state: Optional[Mapping[str, Any]],
     *,
     reloading: bool,
-    explain_state: Optional[Callable[[ValueError], Optional[Exception]]] = None,
+    explain_state: Optional[Callable[[ValueError, torch.nn.Module], Optional[Exception]]] = None,
 ) -> None:
     """Accept ``module`` for the descriptor ``net`` it does not match exactly
     only when it is the same class once materialized, with lazy layers still
@@ -3399,7 +3402,7 @@ def _match_lazy_module(
         try:
             check_state_schema(module, state, what=f"checkpoint of {net}")
         except ValueError as error:
-            explained = explain_state(error) if explain_state is not None else None
+            explained = explain_state(error, module) if explain_state is not None else None
             if explained is not None:
                 raise explained from error
             raise
@@ -3443,17 +3446,19 @@ def _fits_state(module: torch.nn.Module, state: Mapping[str, Any]) -> bool:
     return True
 
 
-# #562: the module= that from_checkpoint has checked against the saved
-# weights it then loads, with its descriptor; the constructor it calls
-# accepts that pairing as is.
-_CHECKED_LAZY_RELOAD: contextvars.ContextVar[Optional[tuple[torch.nn.Module, RuntimeModule]]] = contextvars.ContextVar(
-    "nnx_checked_lazy_reload", default=None
-)
+@dataclass(frozen=True)
+class _LazyReload:
+    """``from_checkpoint``'s saved weights (``None`` once transforms were
+    recorded: they fit only the transformed topology) and the explanation of
+    their check's refusal, for the module= check of the constructor it calls
+    (#562): that check runs on the module the constructor is given, which a
+    subclass may have adapted from the caller's."""
+
+    state: Optional[Mapping[str, Any]]
+    explain_state: Callable[[ValueError, torch.nn.Module], Optional[Exception]]
 
 
-def _checked_lazy_reload(module: torch.nn.Module, net: RuntimeModule) -> bool:
-    checked = _CHECKED_LAZY_RELOAD.get()
-    return checked is not None and checked[0] is module and checked[1] == net
+_LAZY_RELOAD: contextvars.ContextVar[Optional[_LazyReload]] = contextvars.ContextVar("nnx_lazy_reload", default=None)
 
 
 class NNModel(_HubMixinBase):
@@ -3502,7 +3507,18 @@ class NNModel(_HubMixinBase):
         # want is config-attribute initialization which we handle below.
         if params is None:
             raise ValueError("params must not be None")
-        params = _resolve_net_descriptor(net_params, params, module)
+        # #562: from_checkpoint's saved weights check this constructor's
+        # module= only, never that of a model it builds.
+        reload = _LAZY_RELOAD.get()
+        _LAZY_RELOAD.set(None)
+        params = _resolve_net_descriptor(
+            net_params,
+            params,
+            module,
+            state=None if reload is None else reload.state,
+            reloading=reload is not None,
+            explain_state=None if reload is None else reload.explain_state,
+        )
         if batch_adapter is not None and not isinstance(batch_adapter, BatchAdapter):
             raise TypeError(f"batch_adapter must be an nnx.models.BatchAdapter, got {type(batch_adapter).__name__}")
 
@@ -3536,8 +3552,8 @@ class NNModel(_HubMixinBase):
                 if _has_pending_lazy(module) and _lazy_layers_emulable(module)
                 else None
             )
-            self._lazy_load_hooks: list[torch.utils.hooks.RemovableHandle] = []
-            if self._lazy_wrap_keys is not None and not _checked_lazy_reload(module, cast(RuntimeModule, net)):
+            self._lazy_hooks: list[torch.utils.hooks.RemovableHandle] = []
+            if self._lazy_wrap_keys is not None and reload is None:
                 # Lazy layers whose weights are loaded (load_state_dict, or
                 # matched as the module they become by _match_lazy_module):
                 # finish that materialization as a dry-run forward would have,
@@ -3550,14 +3566,15 @@ class NNModel(_HubMixinBase):
                     # match it until the rest materializes.
                     self._params = replace(self._params, net=RuntimeModule.of(module))
                 # Weights loaded after the wrap (model.net.load_state_dict, or
-                # into one of its layers) finish each lazy layer at that load
-                # the same way, before torch's own forward on them could; the
-                # hooks go once nothing is pending (_refresh_lazy_descriptor).
-                # from_checkpoint finishes its own load after its checks.
-                self._lazy_load_hooks = [
-                    layer.register_load_state_dict_post_hook(_complete_loaded_lazy_layer)
-                    for _, layer in _pending_lazy_modules(module)
-                ]
+                # into one of its layers) finish their lazy layer the same way
+                # at the next forward, before torch's own forward on them. The
+                # hooks go at the first forward that leaves nothing pending, or
+                # with this model. from_checkpoint finishes its own load.
+                if _has_pending_lazy(module):
+                    handles = self._lazy_hooks
+                    handles.append(module.register_forward_pre_hook(_finish_loaded_lazy_layers))
+                    handles.append(module.register_forward_hook(functools.partial(_drop_lazy_hooks, handles)))
+                    weakref.finalize(self, _remove_hooks, handles)
             # Module.to moves in place and returns the same object.
             self.net = module.to(self.device)
             self._refresh_lazy_descriptor()
@@ -3589,11 +3606,25 @@ class NNModel(_HubMixinBase):
         of its weights (#562)."""
         if getattr(self, "_lazy_wrap_keys", None) is not None:
             self._refresh_lazy_descriptor()
-        return self._params
+        state = self.__dict__
+        if "_params" in state:
+            return state["_params"]
+        if "params" in state:  # an NNModel pickled before params was a property
+            return state["params"]
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute 'params'")
 
     @params.setter
     def params(self, value: NNModelParams) -> None:
+        self.__dict__.pop("params", None)
         self._params = value
+
+    @params.deleter
+    def params(self) -> None:
+        # unittest.mock.patch.object restores an attribute by deleting it.
+        if "_params" not in self.__dict__ and "params" not in self.__dict__:
+            raise AttributeError("params")
+        self.__dict__.pop("_params", None)
+        self.__dict__.pop("params", None)
 
     def _refresh_lazy_descriptor(self) -> None:
         """Take a wrapped lazy module's :class:`RuntimeModule` descriptor
@@ -3608,8 +3639,7 @@ class NNModel(_HubMixinBase):
         if keys is None or module is None or _has_pending_lazy(module):
             return
         self._lazy_wrap_keys = None
-        for handle in self._lazy_load_hooks:
-            handle.remove()
+        _remove_hooks(getattr(self, "_lazy_hooks", []))
         net = self._params.net
         if isinstance(net, RuntimeModule) and _tensor_keys(module.state_dict()) == keys:
             descriptor = RuntimeModule.of(module)
@@ -4031,24 +4061,21 @@ class NNModel(_HubMixinBase):
                     f"factory can rebuild it — pass module= (a {net.module} with the same topology)"
                 )
             # #562: the module= rule of NNModel(...), given the saved weights:
-            # a lazy module still to materialize is checked against them (a
-            # recorded transform's weights fit only the transformed topology)
-            # and materialized from them once they load, after every check.
-            _resolve_net_descriptor(
-                None,
-                model_params,
-                module,
-                state=None if transforms else net_state,
-                reloading=True,
-                explain_state=lambda error: _attached_submodules_error(
-                    error, module, net_state, rebuild_call, excluded
-                ),
+            # the constructor checks a lazy module still to materialize
+            # against them (a recorded transform's weights fit only the
+            # transformed topology), and they materialize it once they load.
+            reload = _LAZY_RELOAD.set(
+                _LazyReload(
+                    state=None if transforms else net_state,
+                    explain_state=lambda error, checked: _attached_submodules_error(
+                        error, checked, net_state, rebuild_call, excluded
+                    ),
+                )
             )
-            checked = _CHECKED_LAZY_RELOAD.set((module, net))
             try:
                 model = cls(params=model_params, module=module, **model_kwargs)
             finally:
-                _CHECKED_LAZY_RELOAD.reset(checked)
+                _LAZY_RELOAD.reset(reload)
         elif isinstance(net, ModelSpec):
             model = cls(params=model_params, **model_kwargs)
         else:
