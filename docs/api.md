@@ -16253,9 +16253,10 @@ Per step:
   2. Forward each input image through ``model.net`` with the
      context mask, producing ``(B, T_ctx + 1, d_model)`` context
      embeddings (CLS at index 0).
-  3. Forward the full image (no mask) through ``target_encoder``
-     under ``no_grad`` to produce target embeddings. Slice out
-     the positions in ``target_mask`` only.
+  3. Forward the full image (no mask) through ``target_encoder``,
+     frozen and in ``eval()`` mode, under ``no_grad`` to produce
+     target embeddings. Slice out the positions in ``target_mask``
+     only.
   4. Predict ``(B, T_tgt, d_model)`` from context via
      ``predictor``.
   5. MSE loss against the target embeddings.
@@ -16265,8 +16266,13 @@ Per step:
 
 Args:
     target_encoder: an EMA copy of ``model.net``. Build via
-        :func:`build_target_encoder`. The factory **freezes** it
-        again on call and pins to ``eval()`` mode.
+        :func:`build_target_encoder`. It must stay outside
+        ``model.net`` and share none of its parameters (each step's
+        ``model.net.train()`` would put a target under the net in
+        train mode). The factory leaves it untouched; each step checks
+        that placement first, then **freezes** the target and pins it
+        to ``eval()`` mode before its forward, so a hand-made copy, or
+        one switched to train mode since, still gives eval-mode targets.
     predictor: a :class:`JEPAPredictor` (or any module with the
         same ``forward(context_embeds, context_positions,
         target_positions)`` contract). It must be a submodule of
@@ -16285,10 +16291,16 @@ Returns:
     A ``TrainStepFn`` for ``NNModel.train(..., train_step_fn=...)``.
 
 Raises:
+    TypeError: when ``target_encoder`` or ``predictor`` is not an
+        ``nn.Module``, as :func:`~nnx.paradigms.jepa_objective` refuses
+        it.
     ValueError: when ``ema_momentum`` is not a real in ``[0, 1)`` (a
-        ``bool`` included); at the
-        first step, when the predictor is not a submodule of
-        ``model.net`` (it would never be updated).
+        ``bool`` included); at the first step, before any freeze, mode
+        change or update, when the target encoder is part of
+        ``model.net`` (``model.net`` itself included) or shares its
+        parameters, with :func:`~nnx.paradigms.jepa_objective`'s
+        check and wording; at the first step, when the predictor is
+        not a submodule of ``model.net`` (it would never be updated).
 ```
 
 

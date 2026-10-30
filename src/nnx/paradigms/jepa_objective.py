@@ -78,6 +78,32 @@ def _check_masks(context: torch.Tensor, target: torch.Tensor, n_patches: int) ->
         raise ValueError("the context mask is empty: there is nothing to predict from (every patch is a target)")
 
 
+def _check_target_placement(net: nn.Module, target_encoder: nn.Module) -> None:
+    """The EMA target's placement, shared by the imperative step and the
+    objective and checked before either freezes the target or changes a mode:
+    outside ``net`` (``model.net``) and sharing none of its parameters. Under
+    the net, ``net.train()`` would put the target's dropout and BatchNorm in
+    train mode; a target sharing the net's parameters would freeze them."""
+    path = _submodule_path(net, target_encoder)
+    if path is not None:
+        if path == "":  # the online network itself, which the optimizer already trains
+            where, cost = "model.net itself", "freezing it would freeze the online network"
+        else:  # a copy registered under the net, so among the optimizer's parameters
+            where, cost = f"model.net.{path}", "the optimizer would train it once unfrozen"
+        raise ValueError(
+            f"the JEPA target encoder must not be part of model.net (it is {where}): model.net.train() would put "
+            f"its dropout and BatchNorm in train mode, and {cost}; pass a build_target_encoder(model.net) copy "
+            "kept outside the net"
+        )
+    online = {id(p) for p in net.parameters()}
+    shared = [n for n, p in target_encoder.named_parameters() if id(p) in online]
+    if shared:
+        raise ValueError(
+            f"the JEPA target encoder shares parameters with model.net (e.g. {shared[0]}), so freezing it would "
+            "freeze the online network; build it with build_target_encoder(model.net)"
+        )
+
+
 class JEPAObjective(Objective):
     """I-JEPA latent prediction as an objective — see the module docstring.
 
@@ -171,13 +197,7 @@ class JEPAObjective(Objective):
                 "the JEPA predictor must be a submodule of model.net (e.g. model.net.add_module('_jepa_predictor', "
                 "predictor)) so the run's optimizer owns its parameters and checkpoints save them once, with the net"
             )
-        if _submodule_path(net, self.target_encoder) is not None:
-            raise ValueError("the JEPA target encoder must not be part of model.net: the optimizer would train it")
-        online = {id(p) for p in net.parameters()}
-        if any(id(p) in online for p in self.target_encoder.parameters()):
-            raise ValueError(
-                "the JEPA target encoder shares parameters with model.net; build it with build_target_encoder"
-            )
+        _check_target_placement(net, self.target_encoder)
         owned: dict[int, int] = {}
         for optimizer in optimizers.values():
             for group in optimizer.param_groups:
