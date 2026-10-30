@@ -204,9 +204,12 @@ def _taskless_head_kind(loss_fn: Any) -> str:
     regression = (nn.MSELoss, nn.L1Loss, nn.SmoothL1Loss, nn.HuberLoss, nn.PoissonNLLLoss, nn.GaussianNLLLoss)
     if isinstance(loss_fn, regression):
         return "regression"
-    if isinstance(loss_fn, nn.MultiLabelMarginLoss):
+    # Hinges: no loss_fn or TaskSpec turns a margin score into a probability,
+    # so the refusal names no remedy.
+    if isinstance(loss_fn, (nn.MultiLabelMarginLoss, nn.MultiMarginLoss)):
+        hinge = "multilabel" if isinstance(loss_fn, nn.MultiLabelMarginLoss) else "multi-class"
         raise UnsupportedCapability(
-            "a MultiLabelMarginLoss head is a multilabel hinge: its outputs are margin scores, not logits, so no "
+            f"a {type(loss_fn).__name__} head is a {hinge} hinge: its outputs are margin scores, not logits, so no "
             "softmax or sigmoid of them is a probability and it justifies no decision primitive"
         )
     raise UnsupportedCapability(
@@ -249,9 +252,9 @@ class FixedHeadProvider:
     ``MSELoss``, ``L1Loss``, ``SmoothL1Loss``, ``HuberLoss``,
     ``PoissonNLLLoss`` and ``GaussianNLLLoss`` a regression one. Any other
     task-less loss raises :class:`UnsupportedCapability` at construction
-    instead of being served as a softmax. That covers
-    ``MultiLabelMarginLoss`` (a multilabel hinge, whose margin scores are no
-    probabilities) and custom losses. For logits trained with a custom loss
+    instead of being served as a softmax. That covers the hinges
+    ``MultiMarginLoss`` and ``MultiLabelMarginLoss`` (whose margin scores are
+    no probabilities) and custom losses. For logits trained with a custom loss
     (a focal loss, say), declare the model's ``TaskSpec``, or set
     ``model.loss_fn`` to the matching ``CrossEntropyLoss``, ``NLLLoss`` or
     ``BCEWithLogitsLoss``. A ``BCELoss`` head outputs probabilities, not

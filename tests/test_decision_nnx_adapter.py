@@ -540,12 +540,27 @@ def test_a_bce_loss_head_is_never_served_from_its_outputs(build, settings):
     assert calls == []
 
 
+@pytest.mark.parametrize("output_dim", [2, 3])
 @pytest.mark.parametrize(
-    "loss_fn", [_FocalLoss(), torch.nn.MultiMarginLoss(), torch.nn.KLDivLoss(reduction="batchmean")], ids=_name
+    ("loss_fn", "hinge"),
+    [(torch.nn.MultiMarginLoss(), "multi-class"), (torch.nn.MultiLabelMarginLoss(), "multilabel")],
+    ids=["MultiMarginLoss", "MultiLabelMarginLoss"],
 )
+def test_a_taskless_hinge_loss_is_refused_without_a_remedy(loss_fn, hinge, output_dim):
+    """A hinge head's outputs are margin scores, not logits: no loss_fn or
+    TaskSpec makes a softmax of them a probability, so none is offered."""
+    model, calls = _taskless(loss_fn, output_dim)
+    with pytest.raises(UnsupportedCapability, match=f"a {_name(loss_fn)} head is a {hinge} hinge") as caught:
+        FixedHeadProvider(model, labels=LABELS[:output_dim])
+    assert "TaskSpec" not in str(caught.value) and "loss_fn" not in str(caught.value)
+    assert calls == []
+
+
+@pytest.mark.parametrize("loss_fn", [_FocalLoss(), torch.nn.KLDivLoss(reduction="batchmean")], ids=_name)
 def test_an_unknown_taskless_loss_is_refused_with_the_fix(loss_fn):
     """Without a task only the losses NNx knows name a head's kind; any other
-    is refused, not served as a softmax, and the refusal names both fixes."""
+    is refused, not served as a softmax, and the refusal names both fixes for
+    a head of logits (a hinge's margin scores are none: see above)."""
     model, calls = _taskless(loss_fn)
     with pytest.raises(UnsupportedCapability, match=re.escape(_name(loss_fn))) as caught:
         FixedHeadProvider(model, labels=LABELS)
