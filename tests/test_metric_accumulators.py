@@ -713,6 +713,15 @@ def test_streaming_labels_refuse_strings_mappings_and_sets(labels):
     assert "unique" not in str(caught.value)
 
 
+@pytest.mark.parametrize("labels", [(), [], np.array([], dtype=str)], ids=["tuple", "list", "ndarray"])
+@pytest.mark.parametrize("semantics", ["categorical", "bernoulli"])
+def test_streaming_refuses_empty_labels(labels, semantics):
+    """The shared rule runs with ``minimum=0``, so StreamingMetrics' own check
+    refuses an empty label space instead of a stream of zero outputs."""
+    with pytest.raises(ValueError, match="labels must name at least one class / output, got none"):
+        StreamingMetrics([MetricSpec("accuracy")], semantics, labels=labels)
+
+
 def test_streaming_numpy_labels_are_stored_as_plain_str():
     acc = StreamingMetrics([MetricSpec("accuracy")], "categorical", labels=np.array(["a", "b"]))
     assert acc.labels == ("a", "b") and all(type(label) is str for label in acc.labels) and acc.num_outputs == 2
