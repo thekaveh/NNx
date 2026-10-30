@@ -1237,6 +1237,51 @@ def test_a_shallower_lazy_module_gets_the_plain_refusal_not_the_exclude_hint():
     assert "exclude_submodules" not in str(refused.value)
 
 
+class _OwnParams(NNModel):
+    """A subclass that keeps params behind its own property."""
+
+    @property
+    def params(self) -> NNModelParams:
+        return self._own
+
+    @params.setter
+    def params(self, value: NNModelParams) -> None:
+        self._own = value
+
+
+def test_a_subclass_with_its_own_params_property_trains_and_reloads_a_lazy_run():
+    model = _OwnParams(params=NNModelParams(loss=Losses.CROSS_ENTROPY), module=_lazy())
+    run = model.train(params=_params(_loader(), epochs=1))
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    reloaded = _OwnParams.from_checkpoint(checkpoint, module=_lazy())
+    X = torch.randn(5, 4)
+    np.testing.assert_array_equal(reloaded.predict(X).logits, model.predict(X).logits)
+
+
+def test_a_copy_given_another_net_keeps_the_shared_params():
+    """quantize_int8 shares params with a copy whose net it replaces: the copy
+    does not describe its own net afresh (#562)."""
+    import copy
+
+    model = NNModel(module=_lazy(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    model.net(torch.zeros(1, 4))  # materialized, params not read yet
+    sibling = copy.copy(model)
+    sibling.net = _dry_run(_lazy(width=6))
+    assert sibling.params is model.__dict__["params"]
+    assert model.params.net == RuntimeModule.of(model.net)  # the original still takes its own afresh
+
+
+def test_a_reloads_module_refusals_come_before_its_exclude_submodules_refusal():
+    _, checkpoint, _ = _train_lazy(_dry_run(_lazy()))
+    with pytest.raises(ValueError, match="does not match the descriptor"):
+        NNModel.from_checkpoint(checkpoint, module=_dry_run(_lazy(width=6)), exclude_submodules=("bogus",))
+    with pytest.raises(TypeError, match="module must be a torch.nn.Module"):
+        NNModel.from_checkpoint(checkpoint, module="not a module", exclude_submodules=("bogus",))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="exclude_submodules names"):
+        NNModel.from_checkpoint(checkpoint, module=_lazy(), exclude_submodules=("bogus",))
+
+
 def test_a_lazy_norm_layer_without_tensors_materializes_at_the_first_forward():
     def build() -> nn.Module:
         return nn.Sequential(

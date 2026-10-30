@@ -200,14 +200,18 @@ class RuntimeModule:
     materialized (its first forward, in training, ``predict``, ``evaluate``
     or a direct call), ``NNModel`` takes its descriptor afresh at the next
     read of its ``params``, so checkpoints and later runs use the
-    materialized descriptor. A lazy layer the forward never reaches keeps
-    the module at its wrap-time descriptor, so keep every lazy layer on the
-    forward path. NNx puts no hook on the module. Torch's own first forward
-    on weights loaded before it leaves ``in_channels`` / ``num_features`` of
-    lazy conv and norm layers at 0 (and ``in_features`` of ``nn.LazyLinear``
-    on older torch); when ``NNModel`` takes the descriptor afresh it sets
-    them as a dry run does, on the lazy layers it saw pending, so the module
-    is described in its dry-run form. A module whose lazy layers hold loaded
+    materialized descriptor. That descriptor is the module's ``repr`` at
+    that read, other state a custom ``repr`` shows included. A lazy layer
+    the forward never reaches keeps the module at its wrap-time descriptor,
+    so keep every lazy layer on the forward path, and so do state keys
+    changed after the wrap (a submodule or tensor attached before the first
+    forward): dry-run the module before wrapping it to avoid this. NNx puts
+    no hook on the module. Torch's own first forward on weights loaded
+    before it leaves ``in_channels`` / ``num_features`` of lazy conv and
+    norm layers at 0 (and ``in_features`` of ``nn.LazyLinear`` on older
+    torch); when ``NNModel`` takes the descriptor afresh it sets them as a
+    dry run does, on the lazy layers it saw pending, so the module is
+    described in its dry-run form. A module whose lazy layers hold loaded
     weights does not match a descriptor taken before materialization; a
     fresh, unmaterialized instance does. A reload checks an uninitialized
     lazy module against a materialized descriptor with the saved weights
@@ -465,8 +469,9 @@ def _settle_loaded_lazy_layers(layers: Iterable[nn.Module]) -> None:
     """Set on each of ``layers`` (lazy layers NNx saw pending, now
     materialized) what torch's own forward on loaded weights left at 0 and a
     dry run sets (#562), so the module is described as a dry-run one: these
-    attributes only shape the ``repr``, never the forward. Layers that were
-    never lazy, or had materialized before NNx saw them, are not touched."""
+    attributes change no output (only the ``repr``, and InstanceNorm's
+    input-width check, which then passes). Layers that were never lazy, or
+    had materialized before NNx saw them, are not touched."""
     for layer in layers:
         for key, value in _left_by_a_loaded_forward(layer).items():
             setattr(layer, key, value)
