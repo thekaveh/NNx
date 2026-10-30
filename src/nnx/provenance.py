@@ -53,7 +53,7 @@ import numpy as np
 from ._artifacts import check_keys
 from ._config import _canonical_json
 from ._json_depth import MAX_JSON_DEPTH, too_deep
-from ._probability import UNORDERED_ITERATORS, class_labels
+from ._probability import CONTAINER_ITERATORS, class_labels
 from ._validation import require_count
 
 if TYPE_CHECKING:
@@ -314,10 +314,11 @@ class ExperimentManifest:
     Args:
         task: the task declaration (e.g. ``TaskSpec.state()``).
         labels: the ordered output labels: unique, non-empty strings in a
-            sequence, NumPy array, pandas ``Index`` or one-shot iterator. A
-            string, mapping or set is refused (``TypeError``), and so is an
-            iterator over a set or a dict's keys; a generator over a set
-            keeps that set's order, which can change between processes.
+            sequence, NumPy array, pandas ``Index`` or one-shot iterator (a
+            generator, read once). A string, mapping or set is refused
+            (``TypeError``), and so is an iterator over a set or a dict (its
+            keys, values or items, ``reversed`` or not); a generator over a
+            set keeps that set's order, which can change between processes.
         model: the model descriptor (e.g. ``NNModelParams.state()``).
         data: named data identities (:class:`IdentityRef`, a declared id
             string, or ``None`` for unknown).
@@ -344,8 +345,8 @@ class ExperimentManifest:
         if self.labels is not None:
             labels = self.labels
             # A one-shot iterable (a generator) is read once, in its order; an
-            # iterator over a set or a dict's keys goes on unread, refused like the container.
-            if isinstance(labels, Iterator) and not isinstance(labels, UNORDERED_ITERATORS):
+            # iterator over a set or a dict goes on unread, refused like the container.
+            if isinstance(labels, Iterator) and not isinstance(labels, CONTAINER_ITERATORS):
                 labels = tuple(labels)
             # The shared rule, as plain str: a set's order — and with it the
             # fingerprint — can change between processes, so it is refused.

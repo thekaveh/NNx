@@ -283,8 +283,9 @@ class FixedHeadProvider:
         model: the trained :class:`~nnx.NNModel`.
         labels: one name per output class, in column order (unique,
             non-empty strings in a sequence, NumPy array or pandas
-            ``Index``; a string, mapping or set is refused); defaults to the
-            model's ``TaskSpec`` labels, and must equal them when both exist.
+            ``Index``; a string, mapping, set or iterator, such as a
+            generator, is refused); defaults to the model's ``TaskSpec``
+            labels, and must equal them when both exist.
         option_map: request option id → head label (a bijection);
             categorical heads only.
         ordinal: whether the class order is meaningful (enables Score);

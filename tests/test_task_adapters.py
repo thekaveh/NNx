@@ -1266,7 +1266,8 @@ def test_a_marked_step_refuses_a_task_kind_it_does_not_train():
 
 def test_task_spec_labels_follow_the_shared_rule():
     """NumPy and pandas labels are accepted (stored as plain ``str``), as
-    calibration accepts them; a string, a mapping and a set are refused."""
+    calibration accepts them; a string, a mapping, a set and a generator are
+    refused."""
     import pandas as pd
 
     for labels in (np.array(["cat", "dog", "fox"]), pd.Index(["cat", "dog", "fox"])):
@@ -1274,7 +1275,7 @@ def test_task_spec_labels_follow_the_shared_rule():
         assert spec.labels == ("cat", "dog", "fox") and all(type(label) is str for label in spec.labels)
         assert spec.num_outputs == 3 and TaskSpec.from_state(spec.state()) == spec
         assert spec.probability_spec() == ProbabilitySpec("categorical", class_axis=1, labels=("cat", "dog", "fox"))
-    for labels in ("ab", {"a": 0, "b": 1}, {"a", "b"}):
+    for labels in ("ab", {"a": 0, "b": 1}, {"a", "b"}, (label for label in ("a", "b"))):
         with pytest.raises(TaskValidationError, match="TaskSpec labels must be an ordered sequence of class names"):
             TaskSpec.categorical(labels=labels)
 

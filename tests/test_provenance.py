@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import math
 import socket
+from collections import OrderedDict
 
 import numpy as np
 import pandas as pd
@@ -497,17 +498,36 @@ def test_provenance_files_still_load_and_keep_their_documented_errors(tmp_path):
         ({"neg": 0, "pos": 1}.keys(), "an ordered sequence of class names"),
         (iter({"neg", "mid", "pos"}), "an ordered sequence of class names"),
         (iter({"neg": 0, "pos": 1}), "an ordered sequence of class names"),
+        (reversed({"neg": 0, "pos": 1}), "an ordered sequence of class names"),
+        (iter(OrderedDict(neg=0, pos=1)), "an ordered sequence of class names"),
+        (iter({0: "neg", 1: "pos"}.values()), "an ordered sequence of class names"),
         ("neg", "an ordered sequence of class names"),
         (["neg", "neg"], "unique"),
         (["", "pos"], "non-empty strings"),
     ],
-    ids=["set", "frozenset", "dict", "dict-keys", "set-iterator", "dict-iterator", "str", "duplicate", "empty-string"],
+    ids=[
+        "set",
+        "frozenset",
+        "dict",
+        "dict-keys",
+        "set-iterator",
+        "dict-iterator",
+        "reversed-dict",
+        "ordered-dict-iterator",
+        "dict-values-iterator",
+        "str",
+        "duplicate",
+        "empty-string",
+    ],
 )
 def test_manifest_labels_refuse_sets_mappings_and_strings(labels, match):
     """A set's order, and with it ``labels`` and the fingerprint, followed
     PYTHONHASHSEED, also through ``iter(set)``, which the manifest's
-    one-shot iterator support read; a dict recorded its keys; duplicate and
-    empty labels were kept. NumPy and pandas labels (and a generator) stay."""
+    one-shot iterator support read; a dict recorded its keys, also through
+    ``reversed(dict)`` or an ``OrderedDict``'s iterator (one type for its
+    keys and values, so a dict's values are refused as its ``.values()``
+    view is); duplicate and empty labels were kept. NumPy and pandas labels
+    (and a generator) stay."""
     with pytest.raises(TypeError, match=f"labels must be {match}"):
         ExperimentManifest(labels=labels)
     manifest = ExperimentManifest(labels=pd.Index(["neg", "mid", "pos"]))

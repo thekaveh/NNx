@@ -702,12 +702,15 @@ def test_update_logits_scores_a_confident_false_positive_by_its_logit(dtype):
 
 
 @pytest.mark.parametrize(
-    "labels", ["ab", {"a": 0, "b": 1}, {"a", "b"}, "positive"], ids=["str", "dict", "set", "duplicate-letters"]
+    "labels",
+    ["ab", {"a": 0, "b": 1}, {"a", "b"}, "positive", iter(["a", "b"]), (label for label in ["a", "b"])],
+    ids=["str", "dict", "set", "duplicate-letters", "iterator", "generator"],
 )
 def test_streaming_labels_refuse_strings_mappings_and_sets(labels):
     """A string declared its letters as classes (``"positive"`` then failed
     as duplicated letters), a dict its keys, and a set an order that changes
-    between processes, so shards of one stream refused to merge."""
+    between processes, so shards of one stream refused to merge. A generator
+    or other iterator, which it read, is refused as ``TaskSpec`` refuses it."""
     with pytest.raises(ValueError, match="labels must be an ordered sequence of class names") as caught:
         StreamingMetrics([MetricSpec("accuracy")], "categorical", labels=labels)
     assert "unique" not in str(caught.value)

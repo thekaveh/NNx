@@ -75,7 +75,7 @@ class ProbabilitySpec:
         labels: optional ordered class / output names, one per entry
             along ``class_axis``; unique, non-empty strings, in a sequence,
             NumPy array or pandas ``Index`` (stored as a tuple of ``str``).
-            A string, mapping or set is refused.
+            A string, mapping, set or iterator (a generator) is refused.
 
     Serializes with :meth:`state` / :meth:`from_state` (plain YAML-safe
     types, label order preserved).
