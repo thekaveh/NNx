@@ -344,9 +344,10 @@ def jepa_train_step_factory(
       2. Forward each input image through ``model.net`` with the
          context mask, producing ``(B, T_ctx + 1, d_model)`` context
          embeddings (CLS at index 0).
-      3. Forward the full image (no mask) through ``target_encoder``
-         under ``no_grad`` to produce target embeddings. Slice out
-         the positions in ``target_mask`` only.
+      3. Forward the full image (no mask) through ``target_encoder``,
+         frozen and in ``eval()`` mode, under ``no_grad`` to produce
+         target embeddings. Slice out the positions in ``target_mask``
+         only.
       4. Predict ``(B, T_tgt, d_model)`` from context via
          ``predictor``.
       5. MSE loss against the target embeddings.
@@ -356,8 +357,13 @@ def jepa_train_step_factory(
 
     Args:
         target_encoder: an EMA copy of ``model.net``. Build via
-            :func:`build_target_encoder`. The factory **freezes** it
-            again on call and pins to ``eval()`` mode.
+            :func:`build_target_encoder`. It must stay outside
+            ``model.net`` and share none of its parameters (each step's
+            ``model.net.train()`` would put a target under the net in
+            train mode). The factory leaves it untouched; each step checks
+            that placement first, then **freezes** the target and pins it
+            to ``eval()`` mode before its forward, so a hand-made copy, or
+            one switched to train mode since, still gives eval-mode targets.
         predictor: a :class:`JEPAPredictor` (or any module with the
             same ``forward(context_embeds, context_positions,
             target_positions)`` contract). It must be a submodule of
@@ -376,25 +382,38 @@ def jepa_train_step_factory(
         A ``TrainStepFn`` for ``NNModel.train(..., train_step_fn=...)``.
 
     Raises:
+        TypeError: when ``target_encoder`` or ``predictor`` is not an
+            ``nn.Module``, as :func:`~nnx.paradigms.jepa_objective` refuses
+            it.
         ValueError: when ``ema_momentum`` is not a real in ``[0, 1)`` (a
-            ``bool`` included); at the
-            first step, when the predictor is not a submodule of
-            ``model.net`` (it would never be updated).
+            ``bool`` included); at the first step, before any freeze, mode
+            change or update, when the target encoder is part of
+            ``model.net`` (``model.net`` itself included) or shares its
+            parameters, with :func:`~nnx.paradigms.jepa_objective`'s
+            check and wording; at the first step, when the predictor is
+            not a submodule of ``model.net`` (it would never be updated).
     """
+    if not isinstance(target_encoder, nn.Module) or not isinstance(predictor, nn.Module):
+        raise TypeError("target_encoder and predictor must be torch.nn.Module instances")
     require_finite_real(
         ema_momentum, "ema_momentum", owner="jepa_train_step_factory", minimum=0, maximum=1, exclusive_max=True
     )
-
-    # Defensive freeze in case the caller built the target encoder by
-    # hand without going through ``build_target_encoder``.
-    target_encoder.eval()
-    for p in target_encoder.parameters():
-        p.requires_grad = False
+    # The target is left alone here: until a step has checked its placement,
+    # freezing it could freeze (part of) model.net.
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
+        from .jepa_objective import _check_masks, _check_target_placement, _freeze
+
         m = ctx.model
+        # The objective's placement check, before any freeze or mode change: a
+        # target under model.net would be put in train mode by m.net.train().
+        _check_target_placement(m.net, target_encoder)
         m.net.train()
         predictor.train()
+        # Frozen and in eval mode at every target forward, also a hand-made
+        # copy or one switched to train mode since the last step: dropout and
+        # BatchNorm in train mode would change the targets.
+        _freeze(target_encoder)
         # The optimizer, checkpoints and clipping cover model.net only: a
         # predictor outside it would get gradients and never be updated.
         if not any(module is predictor for module in m.net.modules()):
@@ -415,8 +434,6 @@ def jepa_train_step_factory(
         # The objective's mask contract: shape, dtype, complementary, and at
         # least one context and one target patch (an empty target would give
         # a NaN loss reported as divergence).
-        from .jepa_objective import _check_masks
-
         _check_masks(context_mask_1d, target_mask_1d, n_patches)
         B = x.shape[0]
         context_mask = _broadcast_mask(context_mask_1d, B)
@@ -503,8 +520,8 @@ class JEPATrainStep:
         return {"target_encoder": dict(self.target_encoder.state_dict()), "ema_momentum": self.ema_momentum}
 
     def load_component_state(self, state: Mapping[str, Any], *, version: int) -> None:
+        # The weights only: the resumed step checks the target's placement,
+        # then freezes it and pins eval() before its forward, as every step
+        # does. Freezing here would freeze the model.net parameters a
+        # misplaced target shares before that step refuses it.
         self.target_encoder.load_state_dict(state["target_encoder"])
-        # The EMA copy stays frozen and in eval mode after a restore.
-        self.target_encoder.eval()
-        for p in self.target_encoder.parameters():
-            p.requires_grad = False

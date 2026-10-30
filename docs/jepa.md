@@ -16,10 +16,10 @@ epochs on 32x32 images. It is not a SOTA reproduction.
 | `nnx.ViTNN` | Small Vision Transformer encoder. Patch-embed conv + learned pos embeds + CLS + N pre-norm blocks (RMSNorm + bidirectional MHA + SwiGLU). `forward(x, mask=None)` accepts an optional `BoolTensor[B, n_patches]` mask (True = keep), so masked patches never enter attention. Its RMSNorms reduce in at least FP32 and keep FP64 as FP64 (see the precision note below the table). |
 | `nnx.ViTBlock` | Single pre-norm ViT block. Reused by `JEPAPredictor`. |
 | `nnx.JEPAPredictor` | Small predictor module mapping `(context_embeds, context_positions, target_positions) -> predicted_target_embeds`. Uses its own (smaller) hidden width + position embeddings + a learned mask token. Keyword-only constructor: `JEPAPredictor(*, embed_dim, n_patches, predictor_dim=None, n_layers=2, n_heads=2, ffn_mult=4)`. `predictor_dim=None` resolves to `max(8, embed_dim // 2)`. |
-| `nnx.build_target_encoder(source)` | Deep-copy `source`, freeze every param (`requires_grad=False`), pin to `eval()`. The factory function freezes again defensively. |
+| `nnx.build_target_encoder(source)` | Deep-copy `source`, freeze every param (`requires_grad=False`), pin to `eval()`. Keep the copy outside `model.net`. The JEPA step freezes it again and pins `eval()` before every target forward (§4.5). |
 | `nnx.update_ema(source, target, momentum)` | In-place EMA update: `target ← momentum · target + (1 - momentum) · source`. Name-keyed against the target's params so a source with extra submodules (the typical "predictor under model.net" idiom) is fine. `momentum` is a real in `[0, 1)` or a one-element tensor holding one. |
 | `nnx.random_block_mask(*, n_patches, grid_size, …)` | Sample one rectangular block as the prediction target. All arguments are keyword-only. Returns `(context_mask, target_mask)` 1-D BoolTensors. |
-| `nnx.jepa_train_step_factory(target_encoder, predictor, mask_fn, *, ema_momentum=0.996)` | Returns a `TrainStepFn` for `NNModel.train(..., train_step_fn=...)`. The predictor must be a submodule of `model.net`; the first step refuses it otherwise. |
+| `nnx.jepa_train_step_factory(target_encoder, predictor, mask_fn, *, ema_momentum=0.996)` | Returns a `TrainStepFn` for `NNModel.train(..., train_step_fn=...)`. The predictor must be a submodule of `model.net`. The target encoder must stay outside it and share none of its parameters. The first step refuses either layout otherwise. Building the step leaves both modules untouched. |
 | `nnx.jepa_objective(target_encoder, predictor, mask_fn, *, ema_momentum=0.996, nonfinite="fail")` | The same loss as an objective (`JEPAObjective`, §5) for `NNModel.train(..., objective=...)` / `Trainer.train(..., objective=...)`. The shared update engine owns the update, and the EMA target advances once per committed update. |
 
 **Precision.** The `ViTNN` RMSNorms, like those in the `ViTBlock`s that
@@ -72,8 +72,8 @@ model = NNModel(
     params=NNModelParams(net=Nets.VIT, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
 )
 
-# EMA target + predictor (registered under model.net so the optimizer
-# trains both encoder and predictor jointly).
+# EMA target (kept outside model.net) + predictor (registered under
+# model.net so the optimizer trains encoder and predictor jointly).
 target_encoder = build_target_encoder(model.net)
 predictor = JEPAPredictor(embed_dim=model.net.d_model,
                           n_patches=model.net.n_patches,
@@ -193,12 +193,34 @@ a signal to lock onto. The other classification fields stay zero.
   gradient accumulation. JEPA's reference recipe uses large batches
   instead. If you need accumulation (or mixed precision), train with
   `jepa_objective` (§5). Its EMA advances once per committed update.
+* **The target encoder stays outside `model.net`.** Each step calls
+  `model.net.train()`, which would put a target registered under the net in
+  train mode: its dropout and BatchNorm would change the targets. The first
+  step therefore raises `ValueError` for a target that is part of
+  `model.net` (`model.net` itself included) or shares its parameters, before
+  any freeze, mode change or update. A resumed run fails too: at its first
+  step with the same message, or earlier in the restore when the misplaced
+  layout no longer matches the checkpoint (a parameter-topology `ValueError`,
+  or a `load_state_dict` `RuntimeError` for `model.net` itself). The restore
+  loads the target's weights without freezing it (next item), so the online
+  network stays trainable either way. `jepa_objective` runs the same check,
+  with the same wording, before any run is reserved (§5).
+
+    The factory leaves its target alone, so
+    `jepa_train_step_factory(model.net, ...)` keeps the online network
+    trainable and the first step names the placement. Each step freezes the target and pins it to `eval()` before
+    its forward. A hand-made copy, or one that other code switched to train
+    mode, still gives eval-mode targets. Move the target with the net
+    (`target.to(...)`, `target.double()`) instead of registering it under the
+    net; checkpoints already carry its weights (next item).
+
 * **Resume-from-checkpoint** restores the EMA target encoder too.
   `jepa_train_step_factory` returns a `JEPATrainStep`, a
   checkpointable component named `jepa.target_encoder`
   ([Concepts §14.1](concepts.md#141-component-state)). Every
   checkpoint's training state carries the target encoder's weights.
-  A stateful warm resume puts them back, frozen and in eval mode.
+  A stateful warm resume puts them back. The resumed step then checks the
+  target's placement, freezes it and pins it to `eval()`, as every step does.
 
     Four epochs and a 2 + 2 split with `resume_from_run_id`
     end with identical encoder, predictor, target encoder, optimizer
