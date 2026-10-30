@@ -63,8 +63,6 @@ def test_multi_line_plot_returns_figure_with_traces():
 
 def test_multi_line_plot_raises_on_empty_yss():
     """The function should raise loudly rather than silently producing an empty plot."""
-    import pytest
-
     from nnx.vis_utils import VisUtils
 
     with pytest.raises(ValueError, match="at least one series"):
@@ -141,8 +139,6 @@ def test_two_dim_tsne_checkpoint_logits_collects_across_batches(monkeypatch):
 
 
 def test_two_dim_tsne_refuses_multi_output_targets_before_the_projection(monkeypatch):
-    import pytest
-
     from nnx import vis_utils
     from nnx.vis_utils import VisUtils
 
@@ -165,8 +161,6 @@ def test_two_dim_tsne_refuses_multi_output_targets_before_the_projection(monkeyp
 
 
 def test_multi_line_plot_legends_every_dash_style_and_checks_label_counts():
-    import pytest
-
     from nnx.vis_utils import VisUtils
 
     x = [0, 1, 2]
@@ -343,6 +337,33 @@ def test_two_dim_tsne_refuses_node_batches_with_fewer_than_two_seed_rows(tmp_pat
     _row_tsne(monkeypatch)
     with pytest.raises(ValueError, match="at least 2 samples"):
         VisUtils.two_dim_tsne_checkpoint_logits(checkpoint, ds, n_samples=6, renderer=None)
+
+
+@pytest.mark.parametrize(
+    ("target", "shape"), [(torch.ones(6, 2), r"\(6, 2\)"), (torch.tensor(0), r"\(\)")], ids=["2-D", "0-d"]
+)
+def test_two_dim_tsne_refuses_a_node_batch_target_before_cutting_its_seed_rows(target, shape, monkeypatch):
+    """The class-index refusal runs before the seed rows are cut: it names
+    the batch's own target shape, and a 0-d target is refused, not sliced."""
+    from nnx import vis_utils
+    from nnx.vis_utils import VisUtils
+
+    class _NeverTSNE:
+        def __init__(self, **kwargs):
+            raise AssertionError("t-SNE ran before the refusal")
+
+    class _FakeModel:  # a built-in net whose batches lead with 3 seed rows
+        net = types.SimpleNamespace(unpack_batch=lambda batch: batch, seed_count=lambda batch: 3)
+
+        @staticmethod
+        def predict(X):
+            return types.SimpleNamespace(logits=np.zeros((len(X), 2)))
+
+    monkeypatch.setattr(vis_utils, "NNModel", types.SimpleNamespace(from_checkpoint=lambda checkpoint: _FakeModel()))
+    monkeypatch.setattr(vis_utils, "TSNE", _NeverTSNE)
+    ds = types.SimpleNamespace(output_dim=2, test_loader=[(torch.randn(6, 4), target)])
+    with pytest.raises(ValueError, match=rf"the targets are {shape}, not one class index per row"):
+        VisUtils.two_dim_tsne_checkpoint_logits(checkpoint=object(), ds=ds, n_samples=6, renderer=None)
 
 
 def test_two_dim_tsne_plots_every_row_of_a_non_graph_built_in_net(tmp_path, monkeypatch):

@@ -320,11 +320,9 @@ class VisUtils:
                 batch_logits = np.asarray(model.predict(X=test_X).logits)
                 # A PyG node batch leads with its seed rows (GraphNNBase.seed_count);
                 # the trailing neighbor rows only feed message passing and can belong
-                # to any split, so they are cut as predict(loader) cuts them (#529).
+                # to any split, so they are cut below as predict(loader) cuts them (#529).
                 seed_count = getattr(model.net, "seed_count", None)
                 n_seed = seed_count(test_batch) if callable(seed_count) else None
-                if n_seed is not None:
-                    batch_logits, test_Y = batch_logits[:n_seed], test_Y[:n_seed]
             else:
                 # FEAT-006: the adapter splits the batch (positional and / or
                 # keyword inputs) inside the shared, mode-restoring predict path.
@@ -332,11 +330,14 @@ class VisUtils:
                 batch_logits, _ = model._predict_logits(
                     [test_batch], caller="two_dim_tsne_checkpoint_logits()", batches=True
                 )
+                n_seed = None  # _predict_logits returns the seed rows already
             if test_Y.ndim != 1:  # a task-less multi-output (BCE) target has no single class per row
                 raise ValueError(
                     "two_dim_tsne_checkpoint_logits colours points by class; the targets are "
                     f"{tuple(test_Y.shape)}, not one class index per row"
                 )
+            if n_seed is not None:  # after the refusal, so it names the batch's own target shape
+                batch_logits, test_Y = batch_logits[:n_seed], test_Y[:n_seed]
             take = min(remaining, len(batch_logits))
             logits_chunks.append(batch_logits[:take])
             target_chunks.append(test_Y.detach().cpu().numpy()[:take])
