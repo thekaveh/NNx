@@ -34,7 +34,10 @@ def sample(
     Args:
         model: an :class:`NNModel` whose ``.net`` is the trained
             denoising network (e.g., :class:`DiffusionMLP` or any
-            ``forward(x, t) -> ε`` module).
+            ``forward(x, t) -> ε`` module). Its return value is read
+            through the model's batch adapter's ``output()``, so a module
+            returning something else (a diffusers ``UNet2DOutput``) needs
+            an adapter that extracts ``ε``.
         schedule: the same :class:`NoiseSchedule` used during training.
             Indexed tensors are moved to ``device`` lazily.
         shape: full tensor shape to generate, e.g., ``(256, 2)`` for
@@ -69,7 +72,8 @@ def sample(
             # works whether called with B==1 or B==shape[0].
             t = torch.full((shape[0],), t_int, dtype=torch.long, device=device)
 
-            eps_pred = model.net(x, t)
+            # Through the model's batch adapter, whose output() extracts a non-tensor return.
+            eps_pred = model._net_forward((x, t), {})
 
             beta_t = sched.betas[t_int]
             alpha_t = sched.alphas[t_int]

@@ -65,6 +65,17 @@ def first_input(model: Any, batch: Any, *, who: str) -> torch.Tensor:
     return x.to(model.device)
 
 
+def adapter_output(model: Any, raw: Any) -> torch.Tensor:
+    """The output tensor of ``raw``, the return value of a module called
+    outside the model, such as the JEPA EMA target (a copy of ``model.net``):
+    the model's batch adapter's ``output(raw)`` when it has one (FEAT-006),
+    as ``NNModel._net_forward`` reads the net's own return value, else
+    ``raw`` itself (a built-in net). The default ``output()`` refuses a
+    non-tensor, naming the remedy."""
+    adapter = getattr(model, "_batch_adapter", None)
+    return raw if adapter is None else adapter.output(raw)
+
+
 def full_precision(tensor: torch.Tensor) -> torch.Tensor:
     """A mixed-precision (float16 / bfloat16) output as float32, so a loss
     sum accumulates in full precision; other dtypes unchanged."""

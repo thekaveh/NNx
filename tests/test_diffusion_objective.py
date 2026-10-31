@@ -44,6 +44,7 @@ from nnx import (
     sample,
     set_seed,
 )
+from tests._adapter_outputs import REMEDY, DictDenoiser, Extract
 
 SCHEDULE = NoiseSchedulers.LINEAR(T=50)
 _PLATEAU = NNSchedulerParams(min_lr=0.0, factor=0.5, patience=10, cooldown=0, threshold=0.0)
@@ -539,3 +540,50 @@ def test_a_bf16_denoiser_trains_in_its_own_dtype(path):
     assert all(idp.train_edp.loss is not None and math.isfinite(idp.train_edp.loss) for idp in run.idps)
     assert all(p.dtype is torch.bfloat16 for p in model.net.parameters())
     assert any(not torch.equal(p, b) for p, b in zip(model.net.parameters(), before, strict=True))
+
+
+# --- #561: the denoiser's return value through the model's batch adapter ---------------------------------------
+
+
+def test_a_dict_returning_denoiser_trains_through_the_adapters_output():
+    """The objective called model.net(x_t, t) raw, so a denoiser returning a
+    mapping (diffusers' UNet2DOutput) failed on ``eps_pred.shape`` (#561).
+    Read through Extract("sample"), it trains exactly as the same weights
+    returning a tensor do, with the default adapter or none at all."""
+    from nnx import NNModelParams as Params
+
+    model = _model()  # a built-in model with a swapped DiffusionMLP: no batch adapter
+    wrapped = NNModel(module=copy.deepcopy(model.net), params=Params(loss=Losses.MEAN_SQUARED_ERROR))
+    extract = Extract("sample")
+    mapped = NNModel(
+        module=DictDenoiser(copy.deepcopy(model.net)),
+        params=Params(loss=Losses.MEAN_SQUARED_ERROR),
+        batch_adapter=extract,
+    )
+    loader = [(_points(4), torch.zeros(4)), (_points(3, seed=2), torch.zeros(3))]
+    losses = []
+    for each in (model, wrapped, mapped):
+        run = each.train(_params(loader, n_epochs=2, seed=1), objective=diffusion_objective(SCHEDULE, seed=3))
+        losses.append([idp.train_edp.loss for idp in run.idps])
+
+    assert all(loss is not None and math.isfinite(loss) for loss in losses[2])
+    assert losses[0] == losses[1] == losses[2]
+    reference = model.net.state_dict()
+    for state in (wrapped.net.state_dict(), mapped.net.inner.state_dict()):
+        assert state.keys() == reference.keys()
+        assert all(torch.equal(state[k], reference[k]) for k in reference)
+    assert extract.grad_modes == [True] * 4  # one denoiser forward per microbatch: 2 epochs x 2 batches
+
+
+def test_a_non_tensor_denoiser_output_names_the_adapter_remedy():
+    """With the default adapter, a mapping return raises BatchAdapter.output()'s
+    TypeError, naming the remedy, not an AttributeError on ``.shape``."""
+    from nnx import NNModelParams as Params
+
+    set_seed(0)
+    model = NNModel(
+        module=DictDenoiser(DiffusionMLP(input_dim=2, hidden_dims=[16], time_embed_dim=8)),
+        params=Params(loss=Losses.MEAN_SQUARED_ERROR),
+    )
+    with pytest.raises(TypeError, match=REMEDY):
+        model.train(_params([(_points(4), torch.zeros(4))]), objective=diffusion_objective(SCHEDULE, seed=3))

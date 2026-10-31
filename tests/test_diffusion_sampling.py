@@ -7,6 +7,9 @@ distribution than random noise.
 
 from __future__ import annotations
 
+import copy
+
+import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -28,6 +31,7 @@ from nnx import (
     sample,
     set_seed,
 )
+from tests._adapter_outputs import REMEDY, DictDenoiser, Extract
 
 
 def _trained_diffusion(tmp_path, monkeypatch):
@@ -130,3 +134,61 @@ def test_sample_closer_to_data_than_pure_noise(tmp_path, monkeypatch):
         f"trained samples are no closer to the modes than pure noise: "
         f"trained {trained_dist:.3f} vs noise {noise_dist:.3f}"
     )
+
+
+# --- #561: the denoiser's return value through the model's batch adapter ---------------------------------------
+
+
+def _three_denoisers():
+    """One DiffusionMLP's weights three ways: swapped onto a built-in model
+    (no batch adapter), wrapped with its default adapter, and inside a
+    mapping-returning module read through ``Extract("sample")``."""
+    set_seed(0)
+    mlp = DiffusionMLP(input_dim=2, hidden_dims=[16], time_embed_dim=8)
+    swapped = NNModel(
+        net_params=NNParams(input_dim=2, output_dim=2, hidden_dims=[16], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    swapped.net = copy.deepcopy(mlp)
+    wrapped = NNModel(module=copy.deepcopy(mlp), params=NNModelParams(loss=Losses.MEAN_SQUARED_ERROR))
+    extract = Extract("sample")
+    mapped = NNModel(
+        module=DictDenoiser(copy.deepcopy(mlp)),
+        params=NNModelParams(loss=Losses.MEAN_SQUARED_ERROR),
+        batch_adapter=extract,
+    )
+    return (swapped, wrapped, mapped), extract
+
+
+def test_a_dict_returning_denoiser_samples_through_the_adapters_output():
+    """The sampler fed the raw model.net(x, t) into its posterior mean, so a
+    denoiser returning a mapping (diffusers' UNet2DOutput) failed there
+    (#561). Read through Extract("sample"), it draws exactly the samples the
+    same weights returning a tensor draw, with the default adapter or none."""
+    schedule = NoiseSchedulers.LINEAR(T=20)
+    models, extract = _three_denoisers()
+    seeded = [sample(m, schedule, shape=(5, 2), generator=torch.Generator().manual_seed(9)) for m in models]
+    drawn = []
+    for model in models:  # the global RNG when no generator is given
+        set_seed(2)
+        drawn.append(sample(model, schedule, shape=(5, 2)))
+
+    assert seeded[2].shape == (5, 2) and torch.isfinite(seeded[2]).all()
+    assert torch.equal(seeded[0], seeded[1]) and torch.equal(seeded[0], seeded[2])
+    assert torch.equal(drawn[0], drawn[1]) and torch.equal(drawn[0], drawn[2])
+    assert extract.grad_modes == [False] * (2 * schedule.T)  # one no-grad forward per reverse step
+
+
+def test_a_non_tensor_denoiser_output_names_the_adapter_remedy():
+    """With the default adapter, a mapping return raises BatchAdapter.output()'s
+    TypeError, naming the remedy, not a TypeError from the posterior-mean
+    arithmetic; the sampler still restores the net's mode."""
+    set_seed(0)
+    model = NNModel(
+        module=DictDenoiser(DiffusionMLP(input_dim=2, hidden_dims=[16], time_embed_dim=8)),
+        params=NNModelParams(loss=Losses.MEAN_SQUARED_ERROR),
+    )
+    model.net.train()
+    with pytest.raises(TypeError, match=REMEDY):
+        sample(model, NoiseSchedulers.LINEAR(T=20), shape=(5, 2))
+    assert all(module.training for module in model.net.modules())
