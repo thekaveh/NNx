@@ -213,9 +213,9 @@ def test_a_changed_ema_momentum_is_refused_before_anything_is_restored(tmp_path,
 )
 def test_a_target_state_without_its_ema_momentum_joins_the_pre_restore_report(tmp_path, monkeypatch, saved, problem):
     """#560: nothing read the saved momentum back. A target state without one
-    (or with a non-number) is now a problem in the one ComponentRestoreError
-    that lists the other components' problems too, before anything is
-    restored."""
+    (or with a malformed one: a non-number or a value outside [0, 1)) is now
+    a problem in the one ComponentRestoreError that lists the other
+    components' problems too, before anything is restored."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
     model, _, step = _jepa_parts()
