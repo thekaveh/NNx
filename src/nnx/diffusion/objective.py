@@ -176,7 +176,8 @@ class DiffusionObjective(Objective):
         sqrt_a = _extract(schedule.sqrt_alphas_cumprod, t, x_0.shape, x_0.dtype)
         sqrt_1ma = _extract(schedule.sqrt_one_minus_alphas_cumprod, t, x_0.shape, x_0.dtype)
         x_t = sqrt_a * x_0 + sqrt_1ma * eps
-        eps_pred = model.net(x_t, t)
+        # Through the model's batch adapter, whose output() extracts a non-tensor return.
+        eps_pred = model._net_forward((x_t, t), {})
         if eps_pred.shape != eps.shape:  # a broadcast would train on a wrong loss silently
             raise ValueError(
                 f"the denoiser must predict noise of the input's shape {tuple(eps.shape)}, got {tuple(eps_pred.shape)}"

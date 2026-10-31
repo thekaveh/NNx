@@ -15302,7 +15302,9 @@ Each call to the returned step fn:
   1. Samples a random per-sample timestep ``t ~ Uniform[0, T)``.
   2. Samples Gaussian noise ``ε ~ N(0, I)`` matching x_0's shape.
   3. Computes ``x_t = √ᾱ_t · x_0 + √(1 - ᾱ_t) · ε`` (forward diffusion).
-  4. Calls ``model.net(x_t, t)`` to predict ``ε_pred``.
+  4. Calls ``model.net(x_t, t)`` to predict ``ε_pred``, read through
+     the model's batch adapter's ``output()`` (a module returning,
+     say, a diffusers ``UNet2DOutput`` needs one that extracts it).
   5. Backprops the MSE between ``ε_pred`` and ``ε``, steps the optimizer.
 
 Loss is reported as both ``.loss`` and ``.error`` on the returned
@@ -15483,7 +15485,10 @@ Run T reverse-diffusion steps and return samples drawn from the distribution the
 Args:
     model: an :class:`NNModel` whose ``.net`` is the trained
         denoising network (e.g., :class:`DiffusionMLP` or any
-        ``forward(x, t) -> ε`` module).
+        ``forward(x, t) -> ε`` module). Its return value is read
+        through the model's batch adapter's ``output()``, so a module
+        returning something else (a diffusers ``UNet2DOutput``) needs
+        an adapter that extracts ``ε``.
     schedule: the same :class:`NoiseSchedule` used during training.
         Indexed tensors are moved to ``device`` lazily.
     shape: full tensor shape to generate, e.g., ``(256, 2)`` for
@@ -16256,7 +16261,9 @@ Per step:
   3. Forward the full image (no mask) through ``target_encoder``,
      frozen and in ``eval()`` mode, under ``no_grad`` to produce
      target embeddings. Slice out the positions in ``target_mask``
-     only.
+     only. Both encoders' return values are read through the model's
+     batch adapter's ``output()``, so a net returning a non-tensor
+     needs an adapter that extracts the embeddings.
   4. Predict ``(B, T_tgt, d_model)`` from context via
      ``predictor``.
   5. MSE loss against the target embeddings.

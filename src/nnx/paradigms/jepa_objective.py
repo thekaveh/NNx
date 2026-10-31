@@ -32,7 +32,7 @@ from typing import Any, Optional, cast
 import torch
 from torch import nn
 
-from .._step_helpers import first_input, full_precision
+from .._step_helpers import adapter_output, first_input, full_precision
 from ..components import ComponentSpec
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult, UpdateEvent
@@ -258,14 +258,16 @@ class JEPAObjective(Objective):
         model.net.train()  # the predictor is a submodule: it trains too
         self.target_encoder.eval()
 
-        context_embeds = model.net(x, mask=_broadcast_mask(context_1d, x.shape[0]))
+        # Both encoders through the model's batch adapter, whose output()
+        # extracts a non-tensor return; the target is a copy called outside it.
+        context_embeds = model._net_forward((x,), {"mask": _broadcast_mask(context_1d, x.shape[0])})
         positions = net.patch_positions()
         context_positions = torch.cat(
             [torch.zeros(1, dtype=torch.long, device=positions.device), positions[context_1d]]
         )
         target_positions = positions[target_1d]
         with torch.no_grad():
-            target_embeds = self.target_encoder(x)[:, target_positions, :]
+            target_embeds = adapter_output(model, self.target_encoder(x))[:, target_positions, :]
         predicted = self.predictor(context_embeds, context_positions, target_positions)
         if predicted.shape != target_embeds.shape:  # a broadcast would train on a wrong loss silently
             raise ValueError(

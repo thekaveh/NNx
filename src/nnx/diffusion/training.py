@@ -58,7 +58,9 @@ def diffusion_train_step_factory(schedule: NoiseSchedule) -> TrainStepFn:
       1. Samples a random per-sample timestep ``t ~ Uniform[0, T)``.
       2. Samples Gaussian noise ``ε ~ N(0, I)`` matching x_0's shape.
       3. Computes ``x_t = √ᾱ_t · x_0 + √(1 - ᾱ_t) · ε`` (forward diffusion).
-      4. Calls ``model.net(x_t, t)`` to predict ``ε_pred``.
+      4. Calls ``model.net(x_t, t)`` to predict ``ε_pred``, read through
+         the model's batch adapter's ``output()`` (a module returning,
+         say, a diffusers ``UNet2DOutput`` needs one that extracts it).
       5. Backprops the MSE between ``ε_pred`` and ``ε``, steps the optimizer.
 
     Loss is reported as both ``.loss`` and ``.error`` on the returned
@@ -102,7 +104,9 @@ def diffusion_train_step_factory(schedule: NoiseSchedule) -> TrainStepFn:
         sqrt_1ma = _extract(schedule.sqrt_one_minus_alphas_cumprod, t, x_0.shape, x_0.dtype)
         x_t = sqrt_a * x_0 + sqrt_1ma * eps
 
-        eps_pred = m.net(x_t, t)
+        # Through the model's batch adapter, as the supervised step: its output()
+        # extracts the noise from a non-tensor return (diffusers' UNet2DOutput).
+        eps_pred = m._net_forward((x_t, t), {})
         if eps_pred.shape != eps.shape:  # mse_loss would broadcast (a warning) and train on a wrong loss
             raise ValueError(
                 f"the denoiser must predict noise of the input's shape {tuple(eps.shape)}, got {tuple(eps_pred.shape)}"

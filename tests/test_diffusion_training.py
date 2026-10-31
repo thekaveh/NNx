@@ -8,6 +8,10 @@ test doesn't pollute the repo.
 
 from __future__ import annotations
 
+import copy
+import math
+
+import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -28,6 +32,7 @@ from nnx import (
     diffusion_train_step_factory,
     set_seed,
 )
+from tests._adapter_outputs import REMEDY, DictDenoiser, Extract
 
 
 def _make_model() -> NNModel:
@@ -306,3 +311,66 @@ def test_the_step_factory_refuses_a_schedule_enum_member_before_training():
 
     with pytest.raises(TypeError, match="NoiseSchedule"):
         diffusion_train_step_factory(NoiseSchedulers.COSINE)  # type: ignore[arg-type]
+
+
+# --- #561: the denoiser's return value through the model's batch adapter ---------------------------------------
+
+
+def _adapter_params(*, seed: int = 1) -> NNTrainParams:
+    """Two epochs of two uneven batches of 2-D points (labels unused)."""
+    generator = torch.Generator().manual_seed(5)
+    loader = [(torch.randn(n, 2, generator=generator), torch.zeros(n)) for n in (6, 4)]
+    return NNTrainParams(
+        n_epochs=2,
+        train_loader=loader,
+        optim=NNOptimParams(name=Optims.ADAM, max_lr=1e-2, momentum=(0.9, 0.999), weight_decay=0.0),
+        scheduler=NNSchedulerParams(min_lr=0.0, factor=0.5, patience=10, cooldown=0, threshold=0.0),
+        seed=seed,
+        save_phase_checkpoints=False,
+        overwrite_existing=True,
+    )
+
+
+def test_a_dict_returning_denoiser_trains_through_the_adapters_output(tmp_path, monkeypatch):
+    """The step called model.net(x_t, t) raw, so a denoiser returning a
+    mapping (diffusers' UNet2DOutput) failed on ``eps_pred.shape`` (#561).
+    Read through Extract("sample"), it trains exactly as the same weights
+    returning a tensor do, with the default adapter or none at all."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    mlp = DiffusionMLP(input_dim=2, hidden_dims=[16], time_embed_dim=8)
+    swapped = _make_model()  # a built-in model: no batch adapter
+    swapped.net = copy.deepcopy(mlp)
+    wrapped = NNModel(module=copy.deepcopy(mlp), params=NNModelParams(loss=Losses.MEAN_SQUARED_ERROR))
+    extract = Extract("sample")
+    mapped = NNModel(
+        module=DictDenoiser(copy.deepcopy(mlp)),
+        params=NNModelParams(loss=Losses.MEAN_SQUARED_ERROR),
+        batch_adapter=extract,
+    )
+    schedule = NoiseSchedulers.LINEAR(T=20)
+    losses = []
+    for model in (swapped, wrapped, mapped):
+        run = model.train(params=_adapter_params(), train_step_fn=diffusion_train_step_factory(schedule))
+        losses.append([idp.train_edp.loss for idp in run.idps])
+
+    assert all(loss is not None and math.isfinite(loss) for loss in losses[2])
+    assert losses[0] == losses[1] == losses[2]
+    reference = swapped.net.state_dict()
+    for state in (wrapped.net.state_dict(), mapped.net.inner.state_dict()):
+        assert state.keys() == reference.keys()
+        assert all(torch.equal(state[k], reference[k]) for k in reference)
+    assert extract.grad_modes == [True] * 4  # one denoiser forward per step: 2 epochs x 2 batches
+
+
+def test_a_non_tensor_denoiser_output_names_the_adapter_remedy(tmp_path, monkeypatch):
+    """With the default adapter, a mapping return raises BatchAdapter.output()'s
+    TypeError, naming the remedy, not an AttributeError on ``.shape``."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    model = NNModel(
+        module=DictDenoiser(DiffusionMLP(input_dim=2, hidden_dims=[16], time_embed_dim=8)),
+        params=NNModelParams(loss=Losses.MEAN_SQUARED_ERROR),
+    )
+    with pytest.raises(TypeError, match=REMEDY):
+        model.train(params=_adapter_params(), train_step_fn=diffusion_train_step_factory(NoiseSchedulers.LINEAR(T=20)))

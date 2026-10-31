@@ -38,7 +38,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .._step_helpers import finalize_step, first_input, imperative_step, require_real_or_scalar_tensor
+from .._step_helpers import adapter_output, finalize_step, first_input, imperative_step, require_real_or_scalar_tensor
 from .._validation import require_finite_real
 from ..components import ComponentSpec
 from ..nn.nn_model import TrainStepContext, TrainStepFn
@@ -348,7 +348,9 @@ def jepa_train_step_factory(
       3. Forward the full image (no mask) through ``target_encoder``,
          frozen and in ``eval()`` mode, under ``no_grad`` to produce
          target embeddings. Slice out the positions in ``target_mask``
-         only.
+         only. Both encoders' return values are read through the model's
+         batch adapter's ``output()``, so a net returning a non-tensor
+         needs an adapter that extracts the embeddings.
       4. Predict ``(B, T_tgt, d_model)`` from context via
          ``predictor``.
       5. MSE loss against the target embeddings.
@@ -444,8 +446,9 @@ def jepa_train_step_factory(
         B = x.shape[0]
         context_mask = _broadcast_mask(context_mask_1d, B)
 
-        # Forward context through trainable encoder.
-        context_embeds = m.net(x, mask=context_mask)  # (B, T_ctx + 1, d_model)
+        # Forward context through trainable encoder, read through the model's
+        # batch adapter (its output() extracts a non-tensor return).
+        context_embeds = m._net_forward((x,), {"mask": context_mask})  # (B, T_ctx + 1, d_model)
 
         # Build position indices the predictor needs. CLS is position 0;
         # ViTNN.patch_positions() owns the 1..n_patches CLS shift, so
@@ -457,8 +460,10 @@ def jepa_train_step_factory(
 
         # Forward FULL image through EMA target (no grad), then slice
         # out the target-position embeddings only. Skip CLS at index 0.
+        # The target is a copy of model.net called outside the model: its
+        # return value goes through the same adapter output().
         with torch.no_grad():
-            target_full = target_encoder(x)  # (B, n_patches + 1, d_model)
+            target_full = adapter_output(m, target_encoder(x))  # (B, n_patches + 1, d_model)
             # target_positions are in the [1, n_patches] range.
             target_embeds = target_full[:, target_positions, :]
 
