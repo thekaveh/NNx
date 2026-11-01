@@ -528,8 +528,9 @@ class TaskAdapter:
         return accumulator.result(loss=loss, extra_metrics=extra_metrics)
 
     def check_logits(self, logits: np.ndarray) -> None:
-        """Shape check for raw prediction logits (a loader's first batch),
-        so a mismatched net fails before the rest of inference runs."""
+        """Shape check for raw prediction logits (a loader's first batch,
+        or an in-memory input's whole output), so a mismatched net fails
+        before the rest of inference runs or any result is built."""
         if np.ndim(logits) < 2:
             raise TaskValidationError(
                 f"{self.kind} task needs outputs with a sample axis and axis 1, got shape {np.shape(logits)}"
