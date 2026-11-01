@@ -20,6 +20,7 @@ for large expert counts.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -27,6 +28,7 @@ from torch import nn
 
 from ..moe import MoELinear
 from ..params.nn_moe_params import NNMoEParams
+from ._pickling import restore_params_property
 
 
 class FeedFwdMoENN(nn.Module):
@@ -82,6 +84,11 @@ class FeedFwdMoENN(nn.Module):
         self.__dict__["_hidden"] = tuple(
             (params.activation_for(i)(), params.dropout_for(i)) for i in range(len(params.dims) - 2)
         )
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        # A whole-module pickle from 0.3.x or 0.4.x stored params as a plain
+        # attribute and no cached fields: set it through the property (FIX-065).
+        restore_params_property(self, state)
 
     def unpack_batch(self, batch):
         if isinstance(batch, (list, tuple)):

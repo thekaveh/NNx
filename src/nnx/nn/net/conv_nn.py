@@ -16,13 +16,14 @@ v1 scope: LeNet-style only; no ResNet/skip connections.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 from ..params.nn_conv_params import NNConvParams
+from ._pickling import restore_params_property
 
 
 class ConvNN(nn.Module):
@@ -86,6 +87,12 @@ class ConvNN(nn.Module):
         self.__dict__["_conv_activation"] = params.activation() if params.activation is not None else None
         n_hidden = len(params.hidden_dims) if params.hidden_dims is not None else 0
         self.__dict__["_hidden"] = tuple((params.activation_for(i)(), params.dropout_for(i)) for i in range(n_hidden))
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        # A whole-module pickle from 0.3.x or 0.4.x stored params as a plain
+        # attribute, and 0.3.x no cached fields: set it through the property
+        # (FIX-065).
+        restore_params_property(self, state)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         X = X.reshape(X.size(0), self._in_channels, self._side, self._side)  # channels_last too
