@@ -43,7 +43,7 @@ class DecisionError(Exception):
 
 class InvalidDecisionRequest(DecisionError, ValueError):
     """A malformed question: too few options, duplicate or empty ids, empty
-    text."""
+    text, or text without a UTF-8 encoding (a lone surrogate)."""
 
 
 class InvalidDecisionResponse(DecisionError, ValueError):
@@ -66,6 +66,20 @@ class ProviderFailure(DecisionError, RuntimeError):
 # --- questions ------------------------------------------------------------------------
 
 
+def _encodable(text: str, what: str) -> None:
+    """Refuse text without a UTF-8 encoding: a lone surrogate (half an emoji
+    a JavaScript client cut, a ``surrogateescape`` decode) would build a
+    question whose :meth:`Question.digest` raises — after the provider call
+    that validates its answer."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise InvalidDecisionRequest(
+            f"{what} has no UTF-8 encoding: it holds the lone surrogate {text[error.start]!r} at index "
+            f"{error.start}, got {text!r}"
+        ) from error
+
+
 @dataclass(frozen=True)
 class Option:
     """One answer of a :class:`Choice` or one level of a :class:`Score`.
@@ -84,6 +98,8 @@ class Option:
             )
         if not isinstance(self.description, str) or not self.description.strip():
             raise InvalidDecisionRequest(f"option {self.id!r} needs a non-empty description, got {self.description!r}")
+        _encodable(self.id, "an option id")
+        _encodable(self.description, f"option {self.id!r}'s description")
 
 
 def _option(value: Any, *, owner: str) -> Option:
@@ -121,6 +137,7 @@ class Question:
     def _check_prompt(self) -> None:
         if not isinstance(self.prompt, str) or not self.prompt.strip():
             raise InvalidDecisionRequest(f"{type(self).__name__} needs a non-empty prompt, got {self.prompt!r}")
+        _encodable(self.prompt, f"{type(self).__name__}'s prompt")
 
     def state(self) -> dict[str, Any]:
         raise NotImplementedError  # pragma: no cover - abstract

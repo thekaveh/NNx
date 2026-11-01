@@ -3761,7 +3761,7 @@ A request the provider cannot serve — a primitive, modality, batch size or lab
 class nnx.decisions.InvalidDecisionRequest
 ```
 
-A malformed question: too few options, duplicate or empty ids, empty text.
+A malformed question: too few options, duplicate or empty ids, empty text, or text without a UTF-8 encoding (a lone surrogate).
 
 
 #### `nnx.decisions.InvalidDecisionResponse`
@@ -3871,8 +3871,12 @@ questions over the same state are batched into the fewest calls —
 provider's ``max_questions`` (a provider answering one question per call,
 such as :class:`~nnx.decisions.FixedHeadProvider`, has cap 1) bounded by
 ``Limits.max_questions``. Duplicate question ids, questions the provider
-cannot serve and a token cap the provider cannot enforce are rejected
-before any call.
+cannot serve, a token cap the provider cannot enforce and ``limits`` that
+are not a :class:`Limits` (or ``None``) are rejected before any call.
+Without its own ``check(question, inputs)``, a provider is checked against
+its declared ``capabilities()`` when NNx can tell the state's modality — a
+list of texts (or the first part of a tuple of several inputs) is text, a
+tensor or array is a tensor; any other state is the provider's to judge.
 
 **Answers are checked.** Each call's answers must hold one result list per
 question, one result per input row, each a result of that question (its
@@ -4008,11 +4012,19 @@ Attributes:
     max_depth: the most nested continuations (``then``).
     max_requests: the most provider calls in the run (``None``:
         unbounded).
-    timeout: seconds for the whole run (``None``: none). ``run`` checks
-        it between calls and provider hooks; ``arun`` also cancels
-        in-flight asynchronous calls (a synchronous provider's call in
-        its worker thread is waited for).
+    timeout: seconds for the whole run (``None``: none): a positive
+        number that converts to a float (``float("inf")`` never
+        expires; an integer too large for a float, ``10**400``, is
+        refused). ``run`` checks it between calls and provider hooks;
+        ``arun`` also cancels in-flight asynchronous calls (a
+        synchronous provider's call in its worker thread is waited
+        for).
     max_concurrency: ``arun``'s concurrent provider calls.
+
+Every field is checked when the ``Limits`` is built (:class:`InvalidJob`).
+``run`` / ``arun`` take a ``Limits`` or ``None`` (the defaults); anything
+else — a mapping, ``{}`` or ``0`` included — is an :class:`InvalidJob`
+before any call.
 ```
 
 
@@ -4720,8 +4732,9 @@ Build a typed decision question from plain data.
 ``(id, description)`` pairs (a Choice's options, a Score's levels, none
 for a Boolean). The question objects are built inside the boundary, so a
 malformed request — duplicate or empty ids, too few options, an empty
-prompt, an unknown kind — is ``Err(BoundaryError(code=
-"invalid_decision_request"))`` and nothing is ever sent to a provider.
+prompt, text without a UTF-8 encoding (a lone surrogate), an unknown
+kind — is ``Err(BoundaryError(code="invalid_decision_request"))`` and
+nothing is ever sent to a provider.
 Only :class:`~nnx.decisions.InvalidDecisionRequest` is converted.
 ```
 
