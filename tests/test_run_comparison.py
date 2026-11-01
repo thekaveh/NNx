@@ -1365,3 +1365,306 @@ def test_a_csv_run_is_read_with_round_trip_floats(tmp_path, monkeypatch):
     frame.to_csv(csv_path, index=False)
     (found,) = observations_from_runs([run.id], metric=LOSS)
     assert found.value == float(exact)
+
+
+# --- #534: extra metrics read by their own names; means rounded once ---------------------------------------------
+
+
+def _within_half(y_true, y_pred):  # a regressor's "accuracy"
+    return float(np.mean(np.abs(np.ravel(y_true) - np.ravel(y_pred)) < 0.5))
+
+
+def _binary_f1(y_true, y_pred):
+    from sklearn.metrics import f1_score
+
+    return float(f1_score(y_true, y_pred, average="binary"))
+
+
+def _named_fit(loss, task, target, width, *, extra_metrics=None, metrics=(), history=None, data_id):
+    """The toy fits of #534: 64 rows, 2 epochs of 3 training batches."""
+    X = torch.randn(64, 4, generator=torch.Generator().manual_seed(0))
+    y = target(X)
+    torch.manual_seed(0)
+    model = NNModel(
+        net_params=NNParams(
+            input_dim=4, output_dim=width, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU
+        ),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=loss, task=task),
+    )
+    params = NNTrainParams(
+        n_epochs=2,
+        seed=0,
+        data_id=data_id,
+        save_phase_checkpoints=False,
+        extra_metrics=extra_metrics,
+        metrics=tuple(metrics),
+        optim=NNOptimParams.builder().sgd(max_lr=0.05).build(),
+        train_loader=DataLoader(TensorDataset(X[:48], y[:48]), batch_size=16),
+        val_loader=DataLoader(TensorDataset(X[48:], y[48:]), batch_size=16),
+    )
+    manifest = ExperimentManifest(data={"train": hash_bytes(b"toy")})
+    return model.train(params=params, provenance=manifest, history=history)
+
+
+def _read(run, name):
+    (item,) = observations_from_runs([run.id], metric=Metric(name, "maximize"))
+    return item
+
+
+@pytest.mark.parametrize("journal", [False, True], ids=["idps.csv", "history journal"])
+def test_extra_and_declared_metrics_are_read_by_their_namespaced_names(journal, tmp_path, monkeypatch):
+    """``extra/<name>`` reads an extra metric and ``metrics/<name>`` a
+    declared or task metric, from either history source; a bare name that a
+    record holds both as an extra metric and as a field or a declared
+    metric is refused, naming ``extra/<name>``."""
+    from nnx import MetricSpec, TaskSpec
+    from nnx.history import HistoryJournal
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def history():
+        return HistoryJournal(retention=2, chunk_size=2) if journal else None
+
+    source = "history journal" if journal else "idps.csv"
+    regression = _named_fit(
+        Losses.MEAN_SQUARED_ERROR,
+        TaskSpec.regression(1),
+        lambda X: X[:, :1] * 0.5,
+        1,
+        extra_metrics={"accuracy": _within_half, "within_half": _within_half, "mse": lambda t, p: 0.25},
+        history=history(),
+        data_id="reg",
+    )
+    categorical = _named_fit(
+        Losses.CROSS_ENTROPY,
+        None,
+        lambda X: (X[:, 0] > 0.3).long(),
+        2,
+        extra_metrics={"f1": _binary_f1, "loss": lambda t, p: 9.0},
+        history=history(),
+        data_id="cls",
+    )
+    multilabel = _named_fit(
+        Losses.BINARY_CROSS_ENTROPY,
+        TaskSpec.multilabel(2),
+        lambda X: torch.stack([X[:, 0] > 0, X[:, 1] > 0.5], 1).float(),
+        2,
+        metrics=[MetricSpec("accuracy")],
+        history=history(),
+        data_id="ml",
+    )
+    runs = (regression, categorical, multilabel)
+    assert all(os.path.exists(os.path.join("runs", run.id, "idps.csv")) != journal for run in runs)
+    reg, cls, ml = (run.idps[-1].val_edp for run in runs)
+
+    # The ticket's runs: every recorded extra is readable under extra/<name>.
+    assert (reg.extra["accuracy"], cls.extra["f1"], reg.accuracy) == (0.625, 0.0, None)
+    for run, name, expected in (
+        (regression, "extra/accuracy", 0.625),
+        (regression, "extra/mse", 0.25),
+        (regression, "extra/within_half", 0.625),
+        (categorical, "extra/f1", 0.0),
+        (categorical, "extra/loss", 9.0),
+        (regression, "metrics/mse", reg.metrics["mse"]),  # the task's own mse, not the extra
+        (multilabel, "metrics/accuracy", ml.metrics["accuracy"]),  # declared, named like a field
+        (multilabel, "metrics/subset_accuracy", ml.metrics["subset_accuracy"]),
+    ):
+        item = _read(run, name)
+        assert (item.value, item.evaluation.split(";")[0]) == (expected, f"epoch 1 validation record ({source})")
+    # A namespaced name the record does not hold is unknown, never another value.
+    for run, name in ((categorical, "extra/accuracy"), (categorical, "metrics/f1"), (regression, "extra/")):
+        item = _read(run, name)
+        assert item.value is None and f"has no {name!r} value" in item.evaluation
+
+    # A bare name the record holds twice is refused, naming both readings.
+    for run, name, other in (
+        (regression, "accuracy", "'accuracy' names both its own field and an extra metric"),
+        (categorical, "f1", "'f1' names both its own field and an extra metric"),
+        (categorical, "loss", "'loss' names both its own field and an extra metric"),
+        (regression, "mse", "read them as 'metrics/mse' and 'extra/mse'"),
+    ):
+        with pytest.raises(ComparisonError, match=f"'extra/{name}'") as caught:
+            _read(run, name)
+        assert run.id in str(caught.value) and other in str(caught.value)
+
+    # Bare names without a collision read as before.
+    assert _read(regression, "within_half").value == 0.625  # an extra no field or metric shares
+    assert _read(regression, "loss").value == reg.loss and _read(categorical, "accuracy").value == cls.accuracy
+    assert _read(multilabel, "subset_accuracy").value == ml.metrics["subset_accuracy"]
+    # A declared metric named like a field: the bare name reads the declared
+    # value, as the run's monitor does, and the evaluation says so.
+    item = _read(multilabel, "accuracy")
+    assert item.value == ml.metrics["accuracy"] != ml.accuracy
+    assert item.evaluation.split(";")[0] == (
+        f"epoch 1 validation record ({source}): the declared metric 'accuracy' (metrics/accuracy), "
+        "not the record's own 'accuracy' field"
+    )
+
+
+def test_a_bare_name_of_a_declared_metric_named_like_a_field_reads_the_declared_value(tmp_path, monkeypatch):
+    """The documented bare-name meaning on a multilabel record whose
+    ``accuracy`` field is 0.5 and whose declared ``accuracy`` is 0.8."""
+    from nnx import MetricSpec, TaskSpec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    run = _named_fit(
+        Losses.BINARY_CROSS_ENTROPY,
+        TaskSpec.multilabel(2),
+        lambda X: torch.stack([X[:, 0] > 0, X[:, 1] > 0.5], 1).float(),
+        2,
+        metrics=[MetricSpec("accuracy")],
+        data_id="ml",
+    )
+    csv_path = os.path.join("runs", run.id, "idps.csv")
+    frame = pd.read_csv(csv_path)
+    frame["val_edp.accuracy"], frame["val_edp.metrics.accuracy"] = 0.5, 0.8
+    frame.to_csv(csv_path, index=False)
+    bare, declared = _read(run, "accuracy"), _read(run, "metrics/accuracy")
+    assert (bare.value, declared.value) == (0.8, 0.8)
+    assert "the declared metric 'accuracy' (metrics/accuracy), not the record's own 'accuracy' field" in bare.evaluation
+    assert "declared" not in declared.evaluation
+
+
+def test_a_namespaced_name_that_is_also_a_literal_extra_name_is_refused(tmp_path, monkeypatch):
+    """An extra metric named ``extra/x`` was read by that bare name; the
+    name now means extra ``x``, so a record holding the literal name refuses
+    it rather than read another value, naming ``extra/extra/x``."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    run = _named_fit(
+        Losses.CROSS_ENTROPY,
+        None,
+        lambda X: (X[:, 0] > 0.3).long(),
+        2,
+        extra_metrics={"extra/x": lambda t, p: 0.5},
+        data_id="cls",
+    )
+    with pytest.raises(ComparisonError, match="'extra/extra/x'"):
+        _read(run, "extra/x")
+    assert _read(run, "extra/extra/x").value == 0.5
+
+
+def _part2(values, config):
+    return [
+        Observation(
+            run_id=f"{config}-{i}",
+            attempt_id=f"att-{config}-{i}",
+            metric=ACC,
+            value=v,
+            status="completed",
+            split="validation",
+            selection="last",
+            config=config,
+            replicate=f"seed={i}",
+        )
+        for i, v in enumerate(values)
+    ]
+
+
+def test_identical_values_have_their_own_mean_and_no_spread():
+    """The ticket's Part 2: three seeds at 7/10, and B ahead of A by exactly
+    0.1 on every seed."""
+    group = summarize(_part2([0.7, 0.7, 0.7], "cfg-a")).pooled()
+    assert (group.mean, group.std) == (0.7, 0.0)
+    assert (group.mean, group.std) == (statistics.mean([0.7] * 3), statistics.stdev([0.7] * 3))
+    a, b = _part2([0.0, 0.0, 0.0], "cfg-a"), _part2([0.1, 0.1, 0.1], "cfg-b")
+    result = compare(a, b, pairing="same seed", bootstrap=Bootstrap(seed=0, resamples=200))
+    assert [pair.delta for pair in result.pairs] == [0.1, 0.1, 0.1]
+    assert (result.mean, result.std, result.interval) == (0.1, 0.0, (0.1, 0.1))
+    report = ComparisonReport.build([*a, *b], [(a, b, "same seed")], bootstrap=Bootstrap(seed=0, resamples=200))
+    text = report.text()
+    assert text.splitlines()[-1].startswith("    n=3 mean delta=+0.1 sd(n-1)=+0;")
+    assert [line.split("sd(n-1)=")[1].split()[0].rstrip(";") for line in text.splitlines() if "sd(n-1)=" in line] == [
+        "+0"
+    ] * 3  # both groups and the comparison
+    state = json.loads(report.to_json())
+    assert state["comparisons"][0]["std"] == 0.0 and state["comparisons"][0]["interval"] == [0.1, 0.1]
+    assert [group["std"] for group in state["summary"]["groups"]] == [0.0, 0.0]
+
+
+def test_group_summary_paired_comparison_and_bootstrap_round_once_and_still_never_overflow():
+    from nnx.comparison import GroupSummary, PairedComparison
+
+    def side(values, config):
+        return GroupSummary(ACC, "validation", "last", config, None, None, tuple(_part2(values, config)))
+
+    group = side([0.7, 0.7, 0.7], "cfg-a")
+    assert (group.mean, group.std) == (0.7, 0.0)
+    result = PairedComparison(
+        side([0.0, 0.0, 0.0], "cfg-a"), side([0.1, 0.1, 0.1], "cfg-b"), "same seed", Bootstrap(seed=0, resamples=200)
+    )
+    assert (result.mean, result.std, result.interval) == (0.1, 0.0, (0.1, 0.1))
+    assert Bootstrap(seed=0, resamples=200).interval([0.1, 0.1, 0.1]) == (0.1, 0.1)
+    # A resample of identical draws averages to that value: the interval of
+    # mostly-0.1 deltas starts at 0.1 exactly, never above every possible mean.
+    assert Bootstrap(seed=0, resamples=200).interval([0.1, 0.1, 0.2])[0] == 0.1
+    # The overflow cases still hold.
+    huge = side([1e308, 1e308], "cfg-a")
+    assert (huge.mean, huge.std) == (1e308, 0.0)
+    assert side([1e308] * 3, "cfg-a").mean == 1e308
+    assert Bootstrap(seed=0, resamples=50).interval([1e308] * 3) == (1e308, 1e308)
+    spread = side([1e200, -1e200, 1e200], "cfg-a")
+    assert spread.std == pytest.approx(statistics.stdev([1.0, -1.0, 1.0]) * 1e200) and math.isfinite(spread.std)
+    assert spread.mean == 1e200 / 3
+    a, b = replicates([-1e308, 0.0], config="cfg-a"), replicates([1e308, 1.0], config="cfg-b")
+    report = ComparisonReport.build([*a, *b], [(a, b, "same seed")])
+    assert report.comparisons[0].pairs[0].delta == math.inf and report.comparisons[0].n == 1
+    assert (report.comparisons[0].mean, report.comparisons[0].std) == (1.0, None)
+
+
+def test_identical_groups_of_k_over_n_accuracies_have_no_spread():
+    """Every identical group of ``k/N`` accuracies has its value as the mean
+    and a zero deviation (n = 3 and more were affected; n = 2 never)."""
+    from nnx.comparison import _mean_std
+
+    for N in (10, 50, 100, 1000):
+        for k in range(N + 1):
+            value = k / N
+            for n in (2, 3, 5, 10):
+                assert _mean_std([value] * n) == (value, 0.0), (k, N, n)
+    for k in range(11):  # through the public types, on the N = 10 grid
+        for n in (2, 3, 5, 10):
+            values = [k / 10] * n
+            group = summarize(_part2(values, "cfg-a")).pooled()
+            result = compare(
+                _part2([0.0] * n, "cfg-z"), _part2(values, "cfg-a"), pairing="same seed", bootstrap=Bootstrap(seed=k)
+            )
+            assert (group.mean, group.std) == (k / 10, 0.0), (k, n)
+            assert (result.mean, result.std, result.interval) == (k / 10, 0.0, (k / 10, k / 10)), (k, n)
+
+
+def test_a_report_saved_with_twice_rounded_means_still_loads(tmp_path):
+    """A report saved before means were rounded once holds the statistics
+    of ``fsum(values) / n``: it is neither edited nor corrupt, so it loads,
+    re-derived exactly; any other change to its results is still refused."""
+    g, a, b = _part2([0.7] * 3, "cfg-g"), _part2([0.0] * 3, "cfg-a"), _part2([0.1] * 3, "cfg-b")
+    report = ComparisonReport.build([*g, *a, *b], [(a, b, "same seed")], bootstrap=Bootstrap(seed=0, resamples=200))
+    state = json.loads(report.to_json())
+    groups = {group["config"]: group for group in state["summary"]["groups"]}
+    assert (groups["cfg-g"]["mean"], groups["cfg-b"]["mean"], state["comparisons"][0]["interval"]) == (
+        0.7,
+        0.1,
+        [0.1, 0.1],
+    )
+    # What NNx 0.4.1 saved for these observations.
+    groups["cfg-g"]["mean"], groups["cfg-g"]["std"] = 0.6999999999999998, 1.3597399555105182e-16
+    groups["cfg-b"]["mean"], groups["cfg-b"]["std"] = 0.10000000000000002, 1.6996749443881478e-17
+    legacy = state["comparisons"][0]
+    legacy["mean"], legacy["std"] = 0.10000000000000002, 1.6996749443881478e-17
+    legacy["interval"] = [0.10000000000000002, 0.10000000000000002]
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    loaded = ComparisonReport.load(path)
+    assert loaded.to_json() == report.to_json()  # the exact statistics, re-derived
+    for edit in (
+        lambda s: s["summary"]["groups"][2].update(std=1e-3),
+        lambda s: s["comparisons"][0].update(interval=[0.0, 0.2]),
+        lambda s: s["comparisons"][0].update(mean=0.1),  # an exact mean beside twice-rounded rest: not one derivation
+    ):
+        edited = json.loads(json.dumps(state))
+        edit(edited)
+        path.write_text(json.dumps(edited), encoding="utf-8")
+        with pytest.raises(ComparisonError, match="do not match"):
+            ComparisonReport.load(path)

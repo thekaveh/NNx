@@ -47,10 +47,11 @@ import math
 import numbers
 import os
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from fractions import Fraction
 from typing import Any, Optional, Union, cast
 
 from ._artifacts import atomic_write, check_keys, parse_json, read_text
@@ -291,16 +292,34 @@ def _checked(observations: Iterable[Observation], what: str = "observations") ->
 # --- statistics ------------------------------------------------------------------------------------
 
 
-def _mean_std(values: Sequence[float]) -> tuple[Optional[float], Optional[float]]:
-    """Mean and sample standard deviation (denominator ``n - 1``)."""
+def _mean(values: Sequence[float]) -> float:
+    """The mean of finite ``values``, rounded once: their exact sum over
+    ``n``. ``fsum(values) / n`` rounds twice, so three 0.7s averaged
+    0.6999999999999998, with a non-zero spread. The exact mean of finite
+    values is finite, however large their sum."""
+    return float(sum(map(Fraction, values), Fraction(0)) / len(values))
+
+
+def _mean_rounded_twice(values: Sequence[float]) -> float:
+    """The mean NNx 0.4.1 and earlier computed, ``fsum(values) / n``: kept
+    only to recognise the reports those versions saved."""
     n = len(values)
-    if n == 0:
-        return None, None
     try:
         total = math.fsum(values)
     except OverflowError:  # fsum raises on an intermediate overflow
         total = math.inf
-    mean = total / n if math.isfinite(total) else math.fsum(v / n for v in values)  # no overflow in the sum
+    return total / n if math.isfinite(total) else math.fsum(v / n for v in values)  # no overflow in the sum
+
+
+def _mean_std(
+    values: Sequence[float], mean_of: Callable[[Sequence[float]], float] = _mean
+) -> tuple[Optional[float], Optional[float]]:
+    """Mean and sample standard deviation (denominator ``n - 1``) of finite
+    ``values``."""
+    n = len(values)
+    if n == 0:
+        return None, None
+    mean = mean_of(values)
     if n == 1:
         return mean, None
     deviations = [v - mean for v in values]
@@ -326,8 +345,10 @@ class GroupSummary:
     ``n_failed`` those not completed (failed, cancelled, running or of
     unknown status) and ``n_nonfinite`` completed ones without a finite
     value. ``std`` is the sample standard deviation (``n - 1``): ``None``
-    when ``n < 2``; ``mean`` is ``None`` when ``n == 0``. ``unknown`` names
-    the identity fields that are not known."""
+    when ``n < 2``; ``mean`` is ``None`` when ``n == 0``. The mean is the
+    exact sum over ``n``, rounded once, so identical values have their own
+    value as the mean and a ``std`` of 0. ``unknown`` names the identity
+    fields that are not known."""
 
     metric: Metric
     split: str
@@ -535,6 +556,14 @@ class Bootstrap:
         }
 
     def interval(self, deltas: Sequence[float]) -> Optional[tuple[float, float]]:
+        """The ``level`` percentile interval of the resampled means of
+        ``deltas`` (``None`` for fewer than two). Each resample's mean is
+        kept within its draws, so equal deltas ``d`` give ``(d, d)``."""
+        return self._interval(deltas)
+
+    def _interval(self, deltas: Sequence[float], *, within_draws: bool = True) -> Optional[tuple[float, float]]:
+        """:meth:`interval`; ``within_draws=False`` gives NNx 0.4.1's
+        interval, whose means could round past their draws."""
         if len(deltas) < 2:
             return None
         import numpy as np
@@ -547,10 +576,16 @@ class Bootstrap:
         for start in range(0, self.resamples, chunk):
             stop = min(start + chunk, self.resamples)
             drawn = rng.integers(0, n, size=(stop - start, n))
+            sample = values[drawn]
             with np.errstate(over="ignore", invalid="ignore"):
-                block = values[drawn].mean(axis=1)
+                block = sample.mean(axis=1)
             if not np.isfinite(block).all():  # a sum overflowed: divide first (cannot overflow)
                 block = (values / n)[drawn].sum(axis=1)
+            if within_draws:
+                # A mean lies within its draws. The rounded sum and division
+                # can leave it a ULP outside: three 0.1s averaged
+                # 0.10000000000000002, an interval excluding their mean.
+                block = np.clip(block, sample.min(axis=1), sample.max(axis=1))
             means[start:stop] = block
         tail = (1.0 - float(self.level)) / 2.0
         low, high = np.quantile(means, [tail, 1.0 - tail])
@@ -579,7 +614,8 @@ class PairedComparison:
     flipped: for a metric to minimize, a negative delta means B is lower);
     ``unmatched_a`` / ``unmatched_b`` list the replicate keys found on one
     side only, with their attempt ids. ``n``, ``mean`` and ``std`` (``n - 1``)
-    summarize the finite deltas; ``n_nonfinite`` counts the pairs of two
+    summarize the finite deltas (the mean rounded once, as
+    :class:`GroupSummary`'s); ``n_nonfinite`` counts the pairs of two
     finite values whose delta overflows a float (excluded from ``n`` and
     reported); ``interval`` is the bootstrap's, when one was requested and
     ``n >= 2``."""
@@ -905,7 +941,10 @@ class ComparisonReport:
             stored = json.loads(json.dumps(dict(state), sort_keys=True))
         except (TypeError, ValueError, RecursionError) as error:
             raise ComparisonError(f"malformed comparison report: {type(error).__name__}: {error}") from error
-        if json.loads(json.dumps(rebuilt.state(), sort_keys=True)) != stored:
+        # This version's results or, for a report saved by NNx 0.4.1 or
+        # earlier, the twice-rounded ones it derived: either way re-derived exactly.
+        derived = (rebuilt.state, lambda: _state_rounded_twice(rebuilt))
+        if all(json.loads(json.dumps(results(), sort_keys=True)) != stored for results in derived):
             raise ComparisonError("the report's stored results do not match its observations (edited or corrupt)")
         return rebuilt
 
@@ -913,6 +952,25 @@ class ComparisonReport:
     def load(path: Union[str, os.PathLike[str]]) -> ComparisonReport:
         text = read_text(path, "comparison report", ComparisonError)
         return ComparisonReport.from_state(parse_json(text, "comparison report", ComparisonError))
+
+
+def _state_rounded_twice(report: ComparisonReport) -> dict[str, Any]:
+    """``report.state()`` with the statistics NNx 0.4.1 and earlier derived
+    (:func:`_mean_rounded_twice` and the deviations from it, and bootstrap
+    means that could round past their draws), which the reports those
+    versions saved hold: such a report is neither edited nor corrupt."""
+    state = report.state()
+    for group, saved in zip(report.summary.groups, state["summary"]["groups"], strict=True):
+        values = [_value_of(item.value) for item in group.observations if item.finite]
+        mean, std = _mean_std(values, _mean_rounded_twice)
+        saved.update(mean=_encode(mean), std=_encode(std))
+    for result, saved in zip(report.comparisons, state["comparisons"], strict=True):
+        deltas = [pair.delta for pair in result.pairs if pair.delta is not None and math.isfinite(pair.delta)]
+        mean, std = _mean_std(deltas, _mean_rounded_twice)
+        saved.update(mean=_encode(mean), std=_encode(std))
+        interval = None if result.bootstrap is None else result.bootstrap._interval(deltas, within_draws=False)
+        saved["interval"] = None if interval is None else [_encode(v) for v in interval]
+    return state
 
 
 def _bootstrap_from_state(state: Optional[Mapping[str, Any]]) -> Optional[Bootstrap]:
@@ -924,6 +982,7 @@ def _bootstrap_from_state(state: Optional[Mapping[str, Any]]) -> Optional[Bootst
 # --- reading saved runs ---------------------------------------------------------------------------
 
 _SCALARS = ("loss", "error", "accuracy", "f1", "recall", "precision")
+_NAMESPACES = ("extra/", "metrics/")  # namespaced metric names, as the loggers write them
 
 
 def _canonical_text(value: Any) -> str:
@@ -1224,24 +1283,57 @@ def _identities(refs: Mapping[str, Any]) -> Optional[str]:
     )
 
 
-def _metric_value(edp: Any, name: str) -> Optional[float]:
+def _metric_value(edp: Any, name: str, where: str) -> tuple[Optional[float], Optional[str]]:
+    """The record's value of metric ``name`` and, when a bare name read one
+    of two same-named values, a note naming the one read; ``where`` names
+    the record in a refusal."""
     try:
-        return _raw_metric_value(edp, name)
+        return _raw_metric_value(edp, name, where)
+    except ComparisonError:
+        raise
     except (TypeError, ValueError) as error:
         raise ComparisonError(f"the record's {name!r} is not a number: {error}") from error
 
 
-def _raw_metric_value(edp: Any, name: str) -> Optional[float]:
+def _raw_metric_value(edp: Any, name: str, where: str) -> tuple[Optional[float], Optional[str]]:
+    """The loggers' names: ``extra/<name>`` reads an extra metric and
+    ``metrics/<name>`` a declared or task metric. A bare name reads a
+    declared or task metric (as a monitor does, even one named like a
+    field), else a field, else an extra metric — and is refused when the
+    record holds it both as an extra metric and as a field or a declared or
+    task metric, rather than read one of them in place of the other."""
     if edp is None:
-        return None
+        return None, None
+    namespace, _, key = name.partition("/")
+    if name.startswith(_NAMESPACES):
+        # An extra metric itself named "extra/x" (the old bare reading) is "extra/extra/x".
+        literal = "extra" if name in edp.extra else "metrics" if name in edp.metrics else None
+        if literal is not None:
+            raise ComparisonError(
+                f"{where} holds a metric itself named {name!r}, but {name!r} reads its {namespace} metric "
+                f"{key!r}: read the first as '{literal}/{name}'"
+            )
+        values = edp.extra if namespace == "extra" else edp.metrics
+        return (float(values[key]) if key in values else None), None
+    if name in edp.extra and (name in edp.metrics or name in _SCALARS):
+        if name in edp.metrics:
+            both, remedy = "a declared or task metric", f"read them as 'metrics/{name}' and 'extra/{name}'"
+        else:
+            both, remedy = "its own field", f"read the extra metric as 'extra/{name}'"
+        raise ComparisonError(
+            f"{where}: {name!r} names both {both} and an extra metric; a bare name never picks one: {remedy}"
+        )
     if name in edp.metrics:
-        return float(edp.metrics[name])
+        note = None
+        if name in _SCALARS:
+            note = f"the declared metric {name!r} (metrics/{name}), not the record's own {name!r} field"
+        return float(edp.metrics[name]), note
     if name in _SCALARS:
         value = getattr(edp, name)
-        return None if value is None else float(value)
+        return (None if value is None else float(value)), None
     if name in edp.extra:
-        return float(edp.extra[name])
-    return None
+        return float(edp.extra[name]), None
+    return None, None
 
 
 def _cached_state(files: dict[Any, Any], run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], str]:
@@ -1359,9 +1451,19 @@ def observations_from_runs(
 
     Args:
         run_ids: the runs (under ``root``'s ``runs/``).
-        metric: the metric to read — a named metric (``train.metrics``), a
-            built-in field (``loss``, ``error``, ``accuracy``, ``f1``,
-            ``recall``, ``precision``) or an ``extra_metrics`` name.
+        metric: the metric to read: ``extra/<name>`` for an
+            ``extra_metrics`` value and ``metrics/<name>`` for a declared
+            (``train.metrics``) or task metric (``mse``,
+            ``subset_accuracy``), as the loggers name them. A bare name
+            reads a declared or task metric, else a built-in field
+            (``loss``, ``error``, ``accuracy``, ``f1``, ``recall``,
+            ``precision``), else an extra metric. A declared metric named
+            like a field (``accuracy`` on a multilabel task) is read as the
+            run's monitor reads it, and the evaluation names it. A bare
+            name that the record holds both as an extra metric and as a
+            field or a declared or task metric is refused with a
+            :class:`ComparisonError` naming ``extra/<name>``, never read
+            as one of them.
         split: ``"validation"`` (the epoch's validation record) or
             ``"train"`` (its whole-epoch training summary — recorded only by
             runs that declare metrics or a monitor; never a last batch).
@@ -1457,8 +1559,8 @@ def observations_from_runs(
                 edp = chosen.val_edp
             else:  # the whole-epoch summary only: a last batch is not an epoch's value
                 edp = chosen.train_summary
-            value = _metric_value(edp, metric.name)
-            evaluation = f"epoch {chosen.epoch_idx} {split} record ({source})"
+            value, note = _metric_value(edp, metric.name, f"run {run_id}'s epoch {chosen.epoch_idx} {split} record")
+            evaluation = f"epoch {chosen.epoch_idx} {split} record ({source})" + ("" if note is None else f": {note}")
             if edp is None:
                 evaluation = (
                     "unknown: no whole-epoch training summary (declare metrics or a monitor)"

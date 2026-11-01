@@ -3033,7 +3033,9 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   split or rule separately.
 - **Statistics.** `n` counts completed attempts with a finite value. The
   standard deviation uses `n - 1`. It is unavailable for `n = 1`, and mean
-  and deviation are both unavailable for `n = 0`. Failed and non-finite
+  and deviation are both unavailable for `n = 0`. The mean is the exact sum
+  over `n`, rounded once, so identical values (three seeds at 0.7) have that
+  value as their mean and a deviation of exactly 0. Failed and non-finite
   attempts stay listed and counted (`n_failed`, `n_nonfinite`), never
   silently dropped. A duplicate attempt (per metric) is refused.
 - **Pairing.** Each side must be one poolable group with a unique replicate
@@ -3044,12 +3046,16 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
 - **Intervals.** A `Bootstrap(seed=...)` resamples the replicate pairs (its
   unit) and records its seed, method and resamples. Its interval describes
   seed variability over these replicates; it is not a significance claim.
+  A resample's mean is kept within its draws, so equal deltas `d` give the
+  interval `(d, d)`.
 - **Reports.** `table()` gives one plain-JSON row per group, observation,
   pair and unmatched replicate. It adds one `comparison` row per comparison
   with its `n`, mean, standard deviation and interval. `text()` gives a concise view with every run
   and attempt id, status, selection rule and signed delta. Input order never
   changes either. `save` writes strict JSON. `load` re-derives the results
   from the stored observations and refuses a file whose results disagree.
+  A report saved by NNx 0.4.1 or earlier, whose means were rounded twice,
+  still loads, with its statistics re-derived exactly.
 - **Text view counts.** The text view counts attempts that did not complete
   as `not_completed`. A matched pair whose delta overflows a float is
   counted (`n_nonfinite`) rather than averaged.
@@ -3080,6 +3086,22 @@ uncommitted tail is therefore never read.
 The record is the validation record or the whole-epoch training summary.
 Only runs that declare metrics or a monitor record that summary; a last
 batch is never used.
+
+**Metric names.** The `Metric` name says which recorded value is read:
+
+- `extra/<name>` reads an `extra_metrics` value, and `metrics/<name>` a
+  declared (`train.metrics`) or task metric (`mse`, `subset_accuracy`), as
+  the loggers name them.
+- A bare name reads a declared or task metric, else a record field (`loss`,
+  `error`, `accuracy`, `f1`, `recall`, `precision`), else an extra metric.
+- A bare name of a declared metric named like a field (`accuracy` on a
+  multilabel task) reads the declared metric, as the run's monitor does. The
+  observation's `evaluation` then says the declared metric was read, not the
+  record's own field.
+- A bare name that the record holds both as an extra metric and as a field
+  or a declared or task metric is refused with a `ComparisonError` naming
+  `extra/<name>`. For an extra metric named `f1`, `"f1"` is refused and
+  `"extra/f1"` reads it; it never reads the macro `f1` field in its place.
 
 **Configuration identity.** The configuration identity is a digest of the
 run's configuration without its salt, seeds and device. The seeds are the
