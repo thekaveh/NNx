@@ -3877,6 +3877,8 @@ Without its own ``check(question, inputs)``, a provider is checked against
 its declared ``capabilities()`` when NNx can tell the state's modality — a
 list of texts (or the first part of a tuple of several inputs) is text, a
 tensor or array is a tensor; any other state is the provider's to judge.
+One value is no batch and is refused: one str, or a 0-d tensor or array
+(alone or as a tuple's first part).
 
 **Answers are checked.** Each call's answers must hold one result list per
 question, one result per input row, each a result of that question (its

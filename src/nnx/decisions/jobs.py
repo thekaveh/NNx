@@ -40,6 +40,8 @@ Without its own ``check(question, inputs)``, a provider is checked against
 its declared ``capabilities()`` when NNx can tell the state's modality — a
 list of texts (or the first part of a tuple of several inputs) is text, a
 tensor or array is a tensor; any other state is the provider's to judge.
+One value is no batch and is refused: one str, or a 0-d tensor or array
+(alone or as a tuple's first part).
 
 **Answers are checked.** Each call's answers must hold one result list per
 question, one result per input row, each a result of that question (its
@@ -585,6 +587,25 @@ def _modality(state: Any) -> Optional[tuple[str, int]]:
     return None
 
 
+def _one_value(state: Any) -> Optional[str]:
+    """Why ``state`` is one value, not a batch of input rows — one str, or a
+    0-d tensor / array (alone or as the first part of a tuple of several
+    inputs) — else ``None``. NNx can tell its modality but it has no rows,
+    so a provider without ``check()`` is refused it, never left to judge it."""
+    import numpy as np
+    import torch
+
+    if isinstance(state, str):  # each character would be read as a row
+        return "a job's state is a batch of inputs (a list of texts), not one str"
+    first = state[0] if isinstance(state, tuple) and state and not isinstance(state[0], str) else state
+    if isinstance(first, (torch.Tensor, np.ndarray)) and first.ndim == 0:
+        return (
+            "a job's state is a batch of inputs (a tensor / array with a batch dimension), "
+            f"not a 0-d {type(first).__name__}"
+        )
+    return None
+
+
 def _check_results(question: Any, results: Any, rows: Optional[int], label: str) -> tuple[DecisionResult, ...]:
     """``results`` checked as ``question``'s answers: a sequence of decision
     results, one per input row (when ``rows`` is known), each carrying the
@@ -704,8 +725,9 @@ class _Runner:
             if callable(check):
                 check(ask.question, state)
             else:
-                if isinstance(state, str):  # one text is no batch: each character would be read as a row
-                    raise UnsupportedCapability("a job's state is a batch of inputs (a list of texts), not one str")
+                one = _one_value(state)
+                if one is not None:  # one value is no batch of rows: never the provider's to judge
+                    raise UnsupportedCapability(one)
                 known = _modality(state)
                 if known is not None:  # a modality NNx cannot tell is the provider's to judge
                     self.provider.capabilities().check(ask.question, modality=known[0], batch_size=known[1])

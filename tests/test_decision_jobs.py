@@ -1190,6 +1190,47 @@ def test_a_provider_without_check_is_refused_a_modality_nnx_can_tell_it_does_not
     assert text_provider.calls == []
 
 
+def test_a_provider_without_check_is_refused_one_0d_tensor_or_array():
+    """A 0-d tensor or array is a tensor NNx can tell, but, like one str, one value has no rows: refused before
+    any call, alone or as a tuple's first part, even by a provider that reads tensors."""
+
+    class TensorProvider(ImageProvider):
+        def capabilities(self) -> Capabilities:
+            return Capabilities(primitives={"choice"}, modalities={"tensor"}, dynamic_labels=True)
+
+    scalars = (torch.tensor(1.0), np.array(1.0), (torch.tensor(1.0), ["a"]), (np.array(1.0), ["a"]))
+    for state in scalars:
+        name = type(state[0] if isinstance(state, tuple) else state).__name__
+        for provider in (ImageProvider(), TensorProvider()):
+            for runner in ("run", "arun"):
+                job = Job.ask(TOPIC, id="k")
+                with pytest.raises(InvalidJob, match=f"with a batch dimension\\), not a 0-d {name}$"):
+                    if runner == "run":
+                        job.run(provider, state=state)
+                    else:
+                        asyncio.run(job.arun(provider, state=state))
+            assert provider.calls == 0  # refused before any call
+    provider = TensorProvider()
+    job = Job.ask(TOPIC, id="first").then(lambda _: Follow(Job.ask(TOPIC, id="next"), state=torch.tensor(1.0)))
+    with pytest.raises(InvalidJob, match="question 'next' cannot be served: .* not a 0-d Tensor"):
+        job.run(provider, state=torch.zeros(2))
+    assert provider.calls == 1  # the continuation's question was never sent
+    for result in _both(Job.ask(TOPIC, id="k"), TensorProvider(), state=torch.zeros(2)):  # a batch of two rows
+        assert result.outcomes["k"].kind == "answered" and len(result.value) == 2
+
+    class Checked(TensorProvider):  # a provider's own check() still judges any state itself
+        def check(self, question, inputs):
+            pass
+
+        def decide(self, question, inputs):
+            self.calls += 1
+            return [validate_response(question, {"t-sport": 0.7, "t-econ": 0.3})]
+
+    checked = Checked()
+    assert Job.ask(TOPIC, id="k").run(checked, state=torch.tensor(1.0)).outcomes["k"].kind == "answered"
+    assert checked.calls == 1
+
+
 def test_a_timeout_too_large_for_a_float_is_refused_and_an_infinite_one_never_expires():
     from fractions import Fraction
 
