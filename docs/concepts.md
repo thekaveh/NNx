@@ -3033,7 +3033,9 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
   split or rule separately.
 - **Statistics.** `n` counts completed attempts with a finite value. The
   standard deviation uses `n - 1`. It is unavailable for `n = 1`, and mean
-  and deviation are both unavailable for `n = 0`. Failed and non-finite
+  and deviation are both unavailable for `n = 0`. The mean is the exact sum
+  over `n`, rounded once, so identical values (three seeds at 0.7) have that
+  value as their mean and a deviation of exactly 0. Failed and non-finite
   attempts stay listed and counted (`n_failed`, `n_nonfinite`), never
   silently dropped. A duplicate attempt (per metric) is refused.
 - **Pairing.** Each side must be one poolable group with a unique replicate
@@ -3044,12 +3046,16 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
 - **Intervals.** A `Bootstrap(seed=...)` resamples the replicate pairs (its
   unit) and records its seed, method and resamples. Its interval describes
   seed variability over these replicates; it is not a significance claim.
+  A resample's mean is kept within its draws, so equal deltas `d` give the
+  interval `(d, d)`.
 - **Reports.** `table()` gives one plain-JSON row per group, observation,
   pair and unmatched replicate. It adds one `comparison` row per comparison
   with its `n`, mean, standard deviation and interval. `text()` gives a concise view with every run
   and attempt id, status, selection rule and signed delta. Input order never
   changes either. `save` writes strict JSON. `load` re-derives the results
   from the stored observations and refuses a file whose results disagree.
+  A report saved by NNx 0.4.1 or earlier, whose means were rounded twice,
+  still loads, with its statistics re-derived exactly.
 - **Text view counts.** The text view counts attempts that did not complete
   as `not_completed`. A matched pair whose delta overflows a float is
   counted (`n_nonfinite`) rather than averaged.
@@ -3080,6 +3086,33 @@ uncommitted tail is therefore never read.
 The record is the validation record or the whole-epoch training summary.
 Only runs that declare metrics or a monitor record that summary; a last
 batch is never used.
+
+**Metric names.** The `Metric` name says which recorded value is read:
+
+- `extra/<name>` reads an `extra_metrics` value, as the loggers tag it.
+- `metrics/<name>` reads any declared (`train.metrics`) or task metric
+  (`mse`, `subset_accuracy`). The loggers use this form only for a declared
+  or task metric named like a field and tag the others bare.
+- `field/<name>` reads one of the record's own fields (`loss`, `error`,
+  `accuracy`, `f1`, `recall`, `precision`). Any other name after `field/`
+  is refused before a run is read.
+- A bare name reads a declared or task metric, else a record field, else an
+  extra metric.
+- A bare name of a declared or task metric named like a field (a declared
+  `accuracy` on a multilabel task, or a link task's own `accuracy`) reads
+  that metric, as the run's monitor does. The observation's `evaluation`
+  then says the declared or task metric was read, not the record's own
+  field, which `field/accuracy` reads.
+- A bare name that the run records both as an extra metric and as a field
+  or a declared or task metric is refused with a `ComparisonError` naming
+  `extra/<name>` and the other reading. For an extra metric named `f1`,
+  `"f1"` is refused, `"extra/f1"` reads the extra metric and `"field/f1"`
+  the macro `f1` field. The rule holds when the epoch's value is NaN, which
+  `idps.csv` reads back as missing: its column still names the value, so
+  both history sources refuse the same names.
+- An extra metric itself named with one of these prefixes (`extra/x`) is
+  read as `extra/extra/x`. Its own name is refused, since it now means
+  another value; earlier versions read it by that name.
 
 **Configuration identity.** The configuration identity is a digest of the
 run's configuration without its salt, seeds and device. The seeds are the
