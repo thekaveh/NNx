@@ -71,7 +71,7 @@ import math
 import os
 import tempfile
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 from ._json_depth import MAX_JSON_DEPTH, too_deep
@@ -166,6 +166,18 @@ def _scalar(value: Any) -> Any:
 def _record_line(record: NNIterationDataPoint) -> bytes:
     text = json.dumps(record.state(), separators=(",", ":"), allow_nan=True, default=_scalar)
     return text.encode("utf-8") + b"\n"
+
+
+def _pending_line(record: NNIterationDataPoint) -> Optional[bytes]:
+    """``record``'s line as it waits for its chunk, or ``None`` for a tensor
+    learning rate (#541): that line is encoded with its chunk, whose rates
+    are read back together, so a batch takes no host sync for it. The rest
+    of the record is checked now: a value the journal cannot store still
+    fails on its first batch."""
+    if isinstance(record.lr, (int, float)):
+        return _record_line(record)
+    _record_line(replace(record, lr=0.0))
+    return None
 
 
 def _loads(data: Union[str, bytes], what: str) -> Any:
@@ -401,7 +413,7 @@ class _JournalWriter:
         self.chunks = 0  # chunk files written, named by sequence number
         self._synced = 0  # chunks already flushed to disk
         self._pending: list[NNIterationDataPoint] = []
-        self._lines: list[bytes] = []  # the pending records, encoded as they arrive
+        self._lines: list[Optional[bytes]] = []  # the pending records, encoded as they arrive (_pending_line)
         self._stats = _EpochStats()
         self._published: Optional[str] = None
         self._previous: Optional[str] = None
@@ -419,7 +431,7 @@ class _JournalWriter:
 
     def append(self, record: NNIterationDataPoint, line: Optional[bytes] = None) -> None:
         if line is None:
-            line = _record_line(record)  # a value the journal cannot store fails on its first batch
+            line = _pending_line(record)  # a value the journal cannot store fails on its first batch
         self._pending.append(record)
         self._lines.append(line)
         self._stats.add(record)
@@ -427,8 +439,15 @@ class _JournalWriter:
             self._flush(self.chunk_size)
 
     def replace_last(self, record: NNIterationDataPoint) -> None:
-        self._lines[-1] = _record_line(record)
+        self._lines[-1] = _pending_line(record)
         self._pending[-1] = record
+
+    def settle_pending(self, settled: Sequence[NNIterationDataPoint]) -> None:
+        """Take the waiting records from ``settled``, the epoch's newest with
+        float learning rates (#541), so their chunk encodes them without
+        reading the rates back again."""
+        if self._pending:
+            self._pending[:] = settled[len(settled) - len(self._pending) :]
 
     def discard_epoch(self) -> None:
         """Forget the epoch in progress (FEAT-033): its unwritten records,
@@ -450,7 +469,13 @@ class _JournalWriter:
         self._synced = min(self._synced, self.chunks)
 
     def _flush(self, count: int) -> None:
-        self._write_chunk(self._pending[:count], self._lines[:count])
+        records, lines = self._pending[:count], self._lines[:count]
+        if any(line is None for line in lines):
+            from ._scheduler_clock import settled_lrs
+
+            records = settled_lrs(records) or records  # the chunk's tensor learning rates, read back together
+        encoded = [_record_line(record) if line is None else line for record, line in zip(records, lines, strict=True)]
+        self._write_chunk(records, encoded)
         del self._pending[:count]
         del self._lines[:count]
 
@@ -761,6 +786,15 @@ class _EagerHistory:
     def replace_last(self, record: NNIterationDataPoint) -> None:
         self.records[-1] = record
 
+    def settle_lrs(self) -> None:
+        """The epoch's tensor learning rates as floats (#541), before its
+        callbacks and commit read the records."""
+        from ._scheduler_clock import settled_lrs
+
+        settled = settled_lrs(self.records[self._epoch_start :])
+        if settled is not None:
+            self.records[self._epoch_start :] = settled
+
     def discard_epoch(self) -> None:
         """Drop the epoch in progress (a stop at an update boundary, FEAT-033)."""
         del self.records[self._epoch_start :]
@@ -858,6 +892,21 @@ class _JournalHistory:
     def replace_last(self, record: NNIterationDataPoint) -> None:
         self._writer.replace_last(record)
         self._window[-1] = record
+
+    def settle_lrs(self) -> None:
+        """The epoch's tensor learning rates as floats (#541), in the window
+        and among the records waiting for a chunk (always the window's
+        newest: ``chunk_size <= retention``)."""
+        from ._scheduler_clock import settled_lrs
+
+        held = min(self._epoch_records, len(self._window))
+        settled = settled_lrs(list(itertools.islice(reversed(self._window), held))[::-1])
+        if settled is None:
+            return
+        for _ in range(held):
+            self._window.pop()
+        self._window.extend(settled)
+        self._writer.settle_pending(settled)
 
     def __bool__(self) -> bool:
         return bool(self._window)
