@@ -9078,18 +9078,20 @@ Observations of ``metric`` read from saved runs, without loading a model or a ch
 Args:
     run_ids: the runs (under ``root``'s ``runs/``).
     metric: the metric to read: ``extra/<name>`` for an
-        ``extra_metrics`` value and ``metrics/<name>`` for a declared
-        (``train.metrics``) or task metric (``mse``,
-        ``subset_accuracy``), as the loggers name them. A bare name
-        reads a declared or task metric, else a built-in field
-        (``loss``, ``error``, ``accuracy``, ``f1``, ``recall``,
-        ``precision``), else an extra metric. A declared metric named
+        ``extra_metrics`` value (the loggers' tag), ``metrics/<name>``
+        for any declared (``train.metrics``) or task metric (``mse``,
+        ``subset_accuracy``; the loggers use this form for one named
+        like a field) and ``field/<name>`` for one of the record's own
+        fields (``loss``, ``error``, ``accuracy``, ``f1``, ``recall``,
+        ``precision``). A bare name reads a declared or task metric,
+        else a field, else an extra metric. A declared metric named
         like a field (``accuracy`` on a multilabel task) is read as the
         run's monitor reads it, and the evaluation names it. A bare
-        name that the record holds both as an extra metric and as a
+        name that the run records both as an extra metric and as a
         field or a declared or task metric is refused with a
-        :class:`ComparisonError` naming ``extra/<name>``, never read
-        as one of them.
+        :class:`ComparisonError` naming ``extra/<name>`` and the other
+        reading, never read as one of them — even where the epoch's
+        value is NaN, which ``idps.csv`` reads back as missing.
     split: ``"validation"`` (the epoch's validation record) or
         ``"train"`` (its whole-epoch training summary — recorded only by
         runs that declare metrics or a monitor; never a last batch).

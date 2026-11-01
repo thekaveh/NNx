@@ -1469,24 +1469,36 @@ def test_extra_and_declared_metrics_are_read_by_their_namespaced_names(journal, 
         (regression, "metrics/mse", reg.metrics["mse"]),  # the task's own mse, not the extra
         (multilabel, "metrics/accuracy", ml.metrics["accuracy"]),  # declared, named like a field
         (multilabel, "metrics/subset_accuracy", ml.metrics["subset_accuracy"]),
+        (categorical, "field/f1", cls.f1),  # the macro f1 field, beside the extra f1
+        (categorical, "field/loss", cls.loss),
+        (multilabel, "field/accuracy", ml.accuracy),  # the field, beside the declared accuracy
     ):
         item = _read(run, name)
         assert (item.value, item.evaluation.split(";")[0]) == (expected, f"epoch 1 validation record ({source})")
     # A namespaced name the record does not hold is unknown, never another value.
-    for run, name in ((categorical, "extra/accuracy"), (categorical, "metrics/f1"), (regression, "extra/")):
+    for run, name in (
+        (categorical, "extra/accuracy"),
+        (categorical, "metrics/f1"),
+        (regression, "extra/"),
+        (regression, "field/accuracy"),  # a regression record has no accuracy field
+    ):
         item = _read(run, name)
         assert item.value is None and f"has no {name!r} value" in item.evaluation
 
     # A bare name the record holds twice is refused, naming both readings.
     for run, name, other in (
-        (regression, "accuracy", "'accuracy' names both its own field and an extra metric"),
-        (categorical, "f1", "'f1' names both its own field and an extra metric"),
-        (categorical, "loss", "'loss' names both its own field and an extra metric"),
-        (regression, "mse", "read them as 'metrics/mse' and 'extra/mse'"),
+        (regression, "accuracy", "an extra metric and its own field"),
+        (categorical, "f1", "an extra metric and its own field"),
+        (categorical, "loss", "an extra metric and its own field"),
+        (regression, "mse", "an extra metric and a declared or task metric"),
     ):
+        reads = f"read the extra metric as 'extra/{name}' and the " + (
+            "declared or task metric as 'metrics/mse'" if name == "mse" else f"field as 'field/{name}'"
+        )
         with pytest.raises(ComparisonError, match=f"'extra/{name}'") as caught:
             _read(run, name)
-        assert run.id in str(caught.value) and other in str(caught.value)
+        message = str(caught.value)
+        assert run.id in message and f"{name!r} names {other};" in message and message.endswith(reads)
 
     # Bare names without a collision read as before.
     assert _read(regression, "within_half").value == 0.625  # an extra no field or metric shares
@@ -1498,7 +1510,7 @@ def test_extra_and_declared_metrics_are_read_by_their_namespaced_names(journal, 
     assert item.value == ml.metrics["accuracy"] != ml.accuracy
     assert item.evaluation.split(";")[0] == (
         f"epoch 1 validation record ({source}): the declared metric 'accuracy' (metrics/accuracy), "
-        "not the record's own 'accuracy' field"
+        "not the record's own 'accuracy' field (field/accuracy)"
     )
 
 
@@ -1521,16 +1533,20 @@ def test_a_bare_name_of_a_declared_metric_named_like_a_field_reads_the_declared_
     frame = pd.read_csv(csv_path)
     frame["val_edp.accuracy"], frame["val_edp.metrics.accuracy"] = 0.5, 0.8
     frame.to_csv(csv_path, index=False)
-    bare, declared = _read(run, "accuracy"), _read(run, "metrics/accuracy")
-    assert (bare.value, declared.value) == (0.8, 0.8)
-    assert "the declared metric 'accuracy' (metrics/accuracy), not the record's own 'accuracy' field" in bare.evaluation
-    assert "declared" not in declared.evaluation
+    bare, declared, own = _read(run, "accuracy"), _read(run, "metrics/accuracy"), _read(run, "field/accuracy")
+    assert (bare.value, declared.value, own.value) == (0.8, 0.8, 0.5)
+    assert (
+        "the declared metric 'accuracy' (metrics/accuracy), not the record's own 'accuracy' field (field/accuracy)"
+        in bare.evaluation
+    )
+    assert "declared" not in declared.evaluation and "declared" not in own.evaluation
 
 
 def test_a_namespaced_name_that_is_also_a_literal_extra_name_is_refused(tmp_path, monkeypatch):
     """An extra metric named ``extra/x`` was read by that bare name; the
     name now means extra ``x``, so a record holding the literal name refuses
-    it rather than read another value, naming ``extra/extra/x``."""
+    it rather than read another value, naming ``extra/extra/x``. So does one
+    named ``field/f1``, which now reads the macro f1 field."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
     run = _named_fit(
@@ -1538,12 +1554,113 @@ def test_a_namespaced_name_that_is_also_a_literal_extra_name_is_refused(tmp_path
         None,
         lambda X: (X[:, 0] > 0.3).long(),
         2,
-        extra_metrics={"extra/x": lambda t, p: 0.5},
+        extra_metrics={"extra/x": lambda t, p: 0.5, "field/f1": lambda t, p: 0.75},
         data_id="cls",
     )
     with pytest.raises(ComparisonError, match="'extra/extra/x'"):
         _read(run, "extra/x")
-    assert _read(run, "extra/extra/x").value == 0.5
+    with pytest.raises(ComparisonError, match="reads its field 'f1': read the first as 'extra/field/f1'"):
+        _read(run, "field/f1")
+    assert (_read(run, "extra/extra/x").value, _read(run, "extra/field/f1").value) == (0.5, 0.75)
+
+
+def test_a_field_name_that_names_no_field_is_refused_before_any_run_is_read():
+    """``field/<name>`` reads one of the six record fields; any other name
+    is a mistake on every run, refused before a run is read."""
+    for name in ("field/mse", "field/", "field/extra/f1"):
+        with pytest.raises(ComparisonError, match=f"metric {name!r} names no record field: the fields are loss, "):
+            observations_from_runs(["no-such-run"], metric=Metric(name, "maximize"))
+
+
+class _NaNMetric:
+    """A declared metric whose every value is NaN."""
+
+    def update(self, target, prediction):
+        pass
+
+    def result(self):
+        return math.nan
+
+
+def _nan_metric(y_true, y_pred):
+    return math.nan
+
+
+@pytest.mark.parametrize("journal", [False, True], ids=["idps.csv", "history journal"])
+def test_a_nan_value_still_holds_its_name_in_either_history_source(journal, tmp_path, monkeypatch):
+    """``idps.csv`` reads a NaN back as missing and the history journal as
+    NaN, but the run recorded the name either way: a bare name colliding
+    with a NaN extra metric is refused, and one naming a NaN declared metric
+    named like a field reads that metric, never the field or a task metric."""
+    from nnx import MetricSpec, TaskSpec
+    from nnx.history import HistoryJournal
+    from nnx.monitors import register_metric, unregister_metric
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def history():
+        return HistoryJournal(retention=2, chunk_size=2) if journal else None
+
+    regression = _named_fit(
+        Losses.MEAN_SQUARED_ERROR,
+        TaskSpec.regression(1),
+        lambda X: X[:, :1] * 0.5,
+        1,
+        extra_metrics={"mse": _nan_metric},
+        history=history(),
+        data_id="reg",
+    )
+    categorical = _named_fit(
+        Losses.CROSS_ENTROPY,
+        None,
+        lambda X: (X[:, 0] > 0.3).long(),
+        2,
+        extra_metrics={"f1": _nan_metric},
+        history=history(),
+        data_id="cls",
+    )
+    register_metric("tests.nan534", 1, lambda config: _NaNMetric(), input="probabilities", mode="max")
+    try:
+        multilabel = _named_fit(
+            Losses.BINARY_CROSS_ENTROPY,
+            TaskSpec.multilabel(2),
+            lambda X: torch.stack([X[:, 0] > 0, X[:, 1] > 0.5], 1).float(),
+            2,
+            metrics=[MetricSpec("tests.nan534", name="accuracy")],
+            history=history(),
+            data_id="ml",
+        )
+    finally:
+        unregister_metric("tests.nan534", 1)
+    runs = (regression, categorical, multilabel)
+    assert all(os.path.exists(os.path.join("runs", run.id, "idps.csv")) != journal for run in runs)
+    reg, cls, ml = (run.idps[-1].val_edp for run in runs)
+    assert all(math.isnan(v) for v in (reg.extra["mse"], cls.extra["f1"], ml.metrics["accuracy"]))
+    assert all(math.isfinite(v) for v in (reg.metrics["mse"], cls.f1, ml.accuracy))
+
+    def nan_read(value):  # what each source reads back for a NaN
+        return math.isnan(value) if journal else value is None
+
+    for run, name, reads in (
+        (categorical, "f1", "read the extra metric as 'extra/f1' and the field as 'field/f1'"),
+        (regression, "mse", "read the extra metric as 'extra/mse' and the declared or task metric as 'metrics/mse'"),
+    ):
+        with pytest.raises(ComparisonError, match=f"'extra/{name}'") as caught:
+            _read(run, name)
+        assert run.id in str(caught.value) and str(caught.value).endswith(reads)
+    assert nan_read(_read(categorical, "extra/f1").value) and nan_read(_read(regression, "extra/mse").value)
+    assert (_read(categorical, "field/f1").value, _read(regression, "metrics/mse").value) == (
+        cls.f1,
+        reg.metrics["mse"],
+    )
+
+    # A NaN declared accuracy: the bare name reads it, on either split, and names it.
+    note = "the declared metric 'accuracy' (metrics/accuracy), not the record's own 'accuracy' field (field/accuracy)"
+    for split in ("validation", "train"):
+        (item,) = observations_from_runs([multilabel.id], metric=Metric("accuracy", "maximize"), split=split)
+        assert nan_read(item.value) and note in item.evaluation, split
+    assert _read(multilabel, "field/accuracy").value == ml.accuracy
 
 
 def _part2(values, config):
