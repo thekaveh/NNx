@@ -103,6 +103,23 @@ def test_finalize_is_read_only_repeatable_and_snapshots_are_unaliased():
     assert merged.finalize().values == first.values  # the merge copied its inputs: no aliasing
 
 
+def test_snapshots_of_metrics_declared_in_another_order_hash_equal():
+    """FIX-095 (#563): a snapshot's values compare equal whatever order the
+    metrics were declared in, so the snapshots hash equal too, while each
+    keeps its declaration order."""
+
+    def snapshot(names):
+        acc = StreamingMetrics([MetricSpec(name) for name in names], "categorical")
+        acc.update(TARGETS, probabilities=PROBABILITIES)
+        return acc.finalize()
+
+    first, second = snapshot(["nll", "brier"]), snapshot(["brier", "nll"])
+    assert first == second
+    assert hash(first) == hash(second)
+    assert len({first, second}) == 1
+    assert list(first.values) == ["nll", "brier"] and list(second.values) == ["brier", "nll"]
+
+
 def test_empty_merge_is_the_identity():
     acc = _probability_metrics()
     acc.update(TARGETS, probabilities=PROBABILITIES)

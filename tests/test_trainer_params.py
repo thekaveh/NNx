@@ -344,3 +344,72 @@ def test_trainer_params_from_state_keeps_a_saved_non_string_lineage():
     with pytest.raises(ValueError, match="NNTrainerParams.parent_run_id"):
         NNTrainerParamsBuilder.from_params(p).build()
     assert NNTrainerParamsBuilder.from_params(replace(p, parent_run_id=None)).build().parent_run_id is None
+
+
+# --- FIX-095 (#563): equal configurations hash equal whatever their mapping order ------------------
+
+
+def _hashable_optim(max_lr: float) -> NNOptimParams:
+    """No `param_groups`: unlike `_g_optim()`, this one is hashable."""
+    return NNOptimParams(name=Optims.ADAM, max_lr=max_lr, momentum=(0.9, 0.999), weight_decay=0.0)
+
+
+def _metric_other(y, y_hat):
+    return 0.25
+
+
+@pytest.mark.parametrize("mapping", ["optims", "schedulers", "extra_metrics"])
+def test_trainer_params_hash_ignores_mapping_insertion_order(mapping):
+    """Equality ignores the insertion order of `optims`, `schedulers` and
+    `extra_metrics`, so the hash must too: two configurations differing only
+    in that order are one set member and find each other as dict keys, and
+    each keeps its own iteration order."""
+    entries = {
+        "optims": {"G": _hashable_optim(1e-3), "D": _hashable_optim(1e-2)},
+        "schedulers": {
+            "G": _sched(),
+            "D": NNSchedulerParams(min_lr=1e-6, factor=0.1, patience=5, cooldown=0, threshold=1e-4),
+        },
+        "extra_metrics": {"acc": _metric_identity, "f1": _metric_other},
+    }[mapping]
+    common = {"n_epochs": 1, "optims": {"G": _hashable_optim(1e-3), "D": _hashable_optim(1e-2)}}
+    p1 = NNTrainerParams(**{**common, mapping: entries})
+    p2 = NNTrainerParams(**{**common, mapping: dict(reversed(list(entries.items())))})
+
+    assert p1 == p2
+    assert hash(p1) == hash(p2)
+    assert len({p1, p2}) == 1
+    assert {p1: "run"}[p2] == "run"
+    assert list(getattr(p1, mapping)) == list(entries)
+    assert list(getattr(p2, mapping)) == list(reversed(list(entries)))
+
+
+def test_trainer_params_from_state_round_trip_hashes_equal():
+    """state() sorts the names, so `from_state` (and `NNRun.load`) rebuilds
+    the mappings in sorted order; the reloaded configuration still hashes
+    equal to one built with unsorted names."""
+    p = (
+        NNTrainerParams.builder()
+        .n_epochs(1)
+        .optimizer("g", _hashable_optim(1e-3))
+        .optimizer("d", _hashable_optim(1e-2))
+        .scheduler("g", _sched())
+        .scheduler("d", _sched())
+        .build()
+    )
+    loaded = NNTrainerParams.from_state(p.state())
+    assert list(p.optims) == ["g", "d"] and list(loaded.optims) == ["d", "g"]
+    assert loaded == p
+    assert hash(loaded) == hash(p)
+    assert len({loaded, p}) == 1
+
+
+def test_frozen_mapping_hash_needs_no_orderable_keys():
+    """`plans._frozen_mapping` wraps any mapping, so the order-free hash
+    must not sort keys of mixed types."""
+    from nnx.trainer.params import _FrozenMapping
+
+    first, second = _FrozenMapping({1: "x", "a": "y"}), _FrozenMapping({"a": "y", 1: "x"})
+    assert first == second
+    assert hash(first) == hash(second)
+    assert list(first) == [1, "a"] and list(second) == ["a", 1]

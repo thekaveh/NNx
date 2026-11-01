@@ -55,6 +55,8 @@ class _FrozenMapping(Mapping[str, _V], Generic[_V]):
     Item assignment / deletion raise `TypeError` (the `Mapping` ABC
     defines neither). Runtime insertion order is preserved for
     deterministic optimizer construction; `state()` still sorts keys.
+    Equality and the hash ignore that order, so equal snapshots (a
+    `from_state` reload, which rebuilds sorted, included) hash equal.
     Shallow/deep copy and pickle rebuild an equivalent snapshot via
     `__reduce__` (pickling requires pickleable values, as before).
     """
@@ -77,7 +79,9 @@ class _FrozenMapping(Mapping[str, _V], Generic[_V]):
         return isinstance(other, Mapping) and dict(self.items()) == dict(other.items())
 
     def __hash__(self) -> int:
-        return hash(tuple(self._items.items()))
+        # Order-free, like __eq__ (#563); a frozenset needs no orderable keys,
+        # and plans._frozen_mapping wraps any mapping.
+        return hash(frozenset(self._items.items()))
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self._items!r})"
