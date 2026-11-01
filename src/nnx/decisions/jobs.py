@@ -34,8 +34,12 @@ questions over the same state are batched into the fewest calls —
 provider's ``max_questions`` (a provider answering one question per call,
 such as :class:`~nnx.decisions.FixedHeadProvider`, has cap 1) bounded by
 ``Limits.max_questions``. Duplicate question ids, questions the provider
-cannot serve and a token cap the provider cannot enforce are rejected
-before any call.
+cannot serve, a token cap the provider cannot enforce and ``limits`` that
+are not a :class:`Limits` (or ``None``) are rejected before any call.
+Without its own ``check(question, inputs)``, a provider is checked against
+its declared ``capabilities()`` when NNx can tell the state's modality — a
+list of texts (or the first part of a tuple of several inputs) is text, a
+tensor or array is a tensor; any other state is the provider's to judge.
 
 **Answers are checked.** Each call's answers must hold one result list per
 question, one result per input row, each a result of that question (its
@@ -259,11 +263,19 @@ class Limits:
         max_depth: the most nested continuations (``then``).
         max_requests: the most provider calls in the run (``None``:
             unbounded).
-        timeout: seconds for the whole run (``None``: none). ``run`` checks
-            it between calls and provider hooks; ``arun`` also cancels
-            in-flight asynchronous calls (a synchronous provider's call in
-            its worker thread is waited for).
+        timeout: seconds for the whole run (``None``: none): a positive
+            number that converts to a float (``float("inf")`` never
+            expires; an integer too large for a float, ``10**400``, is
+            refused). ``run`` checks it between calls and provider hooks;
+            ``arun`` also cancels in-flight asynchronous calls (a
+            synchronous provider's call in its worker thread is waited
+            for).
         max_concurrency: ``arun``'s concurrent provider calls.
+
+    Every field is checked when the ``Limits`` is built (:class:`InvalidJob`).
+    ``run`` / ``arun`` take a ``Limits`` or ``None`` (the defaults); anything
+    else — a mapping, ``{}`` or ``0`` included — is an :class:`InvalidJob`
+    before any call.
     """
 
     max_questions: Optional[int] = None
@@ -289,6 +301,13 @@ class Limits:
             isinstance(timeout, bool) or not isinstance(timeout, numbers.Real) or not timeout > 0
         ):
             raise InvalidJob(f"timeout must be a positive number of seconds or None, got {timeout!r}")
+        if timeout is not None:
+            try:
+                float(timeout)  # arun's deadline arithmetic is in floats
+            except OverflowError as error:  # an integer too large for a float (10**400)
+                raise InvalidJob(
+                    "timeout must be a positive number of seconds or None, got one too large for a float"
+                ) from error
 
 
 @dataclass(frozen=True)
@@ -490,7 +509,7 @@ class DecisionJob:
     def run(self, provider: Any, *, state: Any, limits: Optional[Limits] = None) -> JobResult:
         """Run the job synchronously with ``provider`` (borrowed, never
         closed) over ``state``."""
-        return _Runner(self, provider, state, limits or Limits()).run()
+        return _Runner(self, provider, state, limits).run()
 
     async def arun(
         self,
@@ -503,7 +522,7 @@ class DecisionJob:
         """Run the job on the event loop: up to ``limits.max_concurrency``
         calls at once; setting ``cancel`` stops scheduling and returns a
         cancelled result (see the module docstring)."""
-        return await _Runner(self, provider, state, limits or Limits()).arun(cancel)
+        return await _Runner(self, provider, state, limits).arun(cancel)
 
 
 def _from_state(state: Mapping[str, Any]) -> DecisionJob:
@@ -550,20 +569,20 @@ class _ProviderError(Exception):
         self.question = question  # the question whose check failed, when one did
 
 
-def _modality(state: Any) -> tuple[str, int]:
+def _modality(state: Any) -> Optional[tuple[str, int]]:
     """The modality and batch size a provider's capabilities are checked
-    against, read from the state."""
+    against, read from the state — the first part of a tuple of several
+    inputs (a tuple of texts is one batch of texts) — or ``None`` when NNx
+    cannot tell: a provider-specific input, the provider's to judge."""
     import numpy as np
     import torch
 
     first = state[0] if isinstance(state, tuple) and state and not isinstance(state[0], str) else state
     if isinstance(first, (torch.Tensor, np.ndarray)) and getattr(first, "ndim", 0) >= 1:
         return "tensor", len(first)
-    if isinstance(state, Sequence) and not isinstance(state, str) and all(isinstance(x, str) for x in state):
-        return "text", len(state)
-    raise UnsupportedCapability(
-        f"a job's state must be a batch the provider reads (texts or a tensor / array), got {type(state).__name__}"
-    )
+    if isinstance(first, Sequence) and not isinstance(first, str) and all(isinstance(x, str) for x in first):
+        return "text", len(first)
+    return None
 
 
 def _check_results(question: Any, results: Any, rows: Optional[int], label: str) -> tuple[DecisionResult, ...]:
@@ -607,11 +626,15 @@ class _Runner:
     are ready, batch them per state, call the provider, then resolve maps,
     collections and continuations (each continuation once)."""
 
-    def __init__(self, job: DecisionJob, provider: Any, state: Any, limits: Limits) -> None:
+    def __init__(self, job: DecisionJob, provider: Any, state: Any, limits: Optional[Limits]) -> None:
         if not isinstance(job, DecisionJob):
             raise InvalidJob(f"not a DecisionJob: {type(job).__name__}")
         if not callable(getattr(provider, "decide", None)) or not callable(getattr(provider, "capabilities", None)):
             raise InvalidJob("a provider needs capabilities() and decide(question, inputs)")
+        if limits is None:
+            limits = Limits()
+        elif not isinstance(limits, Limits):  # never the defaults for a falsy value, never an unchecked duck type
+            raise InvalidJob(f"limits must be a Limits or None, got {type(limits).__name__}")
         self.job = job
         self.provider = provider
         self.state = state
@@ -681,8 +704,11 @@ class _Runner:
             if callable(check):
                 check(ask.question, state)
             else:
-                modality, batch_size = _modality(state)
-                self.provider.capabilities().check(ask.question, modality=modality, batch_size=batch_size)
+                if isinstance(state, str):  # one text is no batch: each character would be read as a row
+                    raise UnsupportedCapability("a job's state is a batch of inputs (a list of texts), not one str")
+                known = _modality(state)
+                if known is not None:  # a modality NNx cannot tell is the provider's to judge
+                    self.provider.capabilities().check(ask.question, modality=known[0], batch_size=known[1])
         except (UnsupportedCapability, InvalidDecisionRequest) as error:
             raise InvalidJob(f"question {ask.id!r} cannot be served: {error}", outcomes=self._ordered()) from error
         except Exception as error:  # the provider's own check failed: a provider failure
@@ -856,10 +882,8 @@ class _Runner:
         answers = list(answered)
         if len(answers) != len(chunk):
             raise InvalidDecisionResponse(f"the provider answered {len(answers)} of {len(chunk)} questions in one call")
-        try:
-            rows: Optional[int] = _modality(chunk[0].state)[1]
-        except UnsupportedCapability:  # a provider-specific input: its row count is the provider's to check
-            rows = None
+        known = _modality(chunk[0].state)
+        rows = None if known is None else known[1]  # a provider-specific input: its row count is the provider's
         return [
             _check_results(item.ask.question, results, rows, f"question {item.ask.id!r}")
             for item, results in zip(chunk, answers, strict=True)

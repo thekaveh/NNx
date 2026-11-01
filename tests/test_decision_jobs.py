@@ -1100,3 +1100,126 @@ def test_a_job_decides_saturating_float32_logits_as_the_policy_applied_to_predic
         .rows
     )
     assert [row.kind == "answered" for row in rows] == expected.tolist()
+
+
+# --- #557: inputs NNx cannot classify, and the run's limits --------------------------------------------------
+
+
+class ImageProvider:
+    """The protocol only (capabilities() + decide()), no check(): it reads its own image rows."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(primitives={"choice"}, modalities={"image"}, dynamic_labels=True)
+
+    def decide(self, question, inputs):
+        self.calls += 1
+        return [validate_response(question, {"t-sport": 0.7, "t-econ": 0.3}) for _ in inputs]
+
+
+class PairProvider(TextProvider):
+    """Several text inputs per row (premises, hypotheses), no check(): one result per premise."""
+
+    def __init__(self):
+        super().__init__(batching=False)
+
+    def decide(self, question, inputs):
+        premises, hypotheses = inputs
+        self.calls.append(((question.prompt,), tuple(premises)))
+        return self._answer(question, [f"{p} {h}" for p, h in zip(premises, hypotheses, strict=True)])
+
+
+IMAGES = [{"pixels": [1, 2]}, {"pixels": [3, 4]}]
+PAIRS = (["the striker scored", "rates rose"], ["a goal", "at the bank"])
+
+
+def _both(job, provider, **kwargs):
+    """The run's result through ``run`` and through ``arun``."""
+    return job.run(provider, **kwargs), asyncio.run(job.arun(provider, **kwargs))
+
+
+def test_a_provider_without_check_answers_inputs_nnx_cannot_classify():
+    """#557: without check(), the job refused any state but texts or a tensor, and a tuple of text lists,
+    though collect() and decide_result serve them: a modality NNx cannot tell is the provider's to judge."""
+    for result in _both(Job.ask(TOPIC, id="kind"), ImageProvider(), state=IMAGES):
+        assert result.outcomes["kind"].kind == "answered" and len(result.value) == 2
+    provider = PairProvider()
+    for result in _both(Job.ask(TOPIC, id="nli"), provider, state=PAIRS):
+        assert result.outcomes["nli"].kind == "answered" and [r.top for r in result.value] == ["t-sport", "t-econ"]
+    assert provider.calls[0] == (("Topic?",), tuple(PAIRS[0]))
+    # A continuation's state is checked the same way.
+    follow = Job.ask(TOPIC, id="first").then(
+        lambda _: Follow(Job.ask(TOPIC, id="next"), state=[dict(r) for r in IMAGES])
+    )
+    for result in _both(follow, ImageProvider(), state=IMAGES):
+        assert [o.kind for o in result.outcomes.values()] == ["answered", "answered"] and result.calls == 2
+
+
+def test_the_rows_of_several_text_inputs_are_the_first_parts_rows():
+    class Short(PairProvider):
+        def decide(self, question, inputs):
+            return super().decide(question, inputs)[:1]
+
+    with pytest.raises(JobFailed) as caught:
+        Job.ask(TOPIC, id="nli").run(Short(), state=PAIRS)
+    assert "1 results for 2 input rows" in str(caught.value.__cause__)
+
+
+def test_a_provider_without_check_is_refused_a_modality_nnx_can_tell_it_does_not_read():
+    for state in (TEXTS, (TEXTS, ["b", "c"]), torch.zeros(2, 3)):
+        provider = ImageProvider()
+        for runner in ("run", "arun"):
+            job = Job.ask(TOPIC, id="kind")
+            with pytest.raises(InvalidJob, match="cannot be served: this provider reads \\['image'\\] inputs"):
+                if runner == "run":
+                    job.run(provider, state=state)
+                else:
+                    asyncio.run(job.arun(provider, state=state))
+        assert provider.calls == 0  # refused before any call
+    provider = ImageProvider()
+    job = Job.ask(TOPIC, id="first").then(lambda _: Follow(Job.ask(TOPIC, id="next"), state=TEXTS))
+    with pytest.raises(InvalidJob, match="question 'next' cannot be served"):
+        job.run(provider, state=IMAGES)
+    assert provider.calls == 1  # the continuation's question was never sent
+    # One text is no batch of rows (each character would be one): still refused, never the provider's to judge.
+    text_provider = TextProvider()
+    with pytest.raises(InvalidJob, match="a batch of inputs \\(a list of texts\\), not one str"):
+        Job.ask(TOPIC, id="t").run(text_provider, state=TEXTS[0])
+    assert text_provider.calls == []
+
+
+def test_a_timeout_too_large_for_a_float_is_refused_and_an_infinite_one_never_expires():
+    from fractions import Fraction
+
+    for timeout in (10**400, Fraction(10**400, 3)):
+        with pytest.raises(InvalidJob, match="timeout must be a positive number of seconds or None, got one too large"):
+            Limits(timeout=timeout)
+    # Pinned (#557): float("inf") is accepted, as before, and means no deadline in run and arun.
+    limits = Limits(timeout=float("inf"))
+    for result in _both(Job.ask(TOPIC, id="t"), TextProvider(), state=TEXTS, limits=limits):
+        assert result.outcomes["t"].kind == "answered"
+    for result in _both(Job.ask(TOPIC, id="t"), TextProvider(), state=TEXTS, limits=Limits(timeout=10**3)):
+        assert result.outcomes["t"].kind == "answered"
+
+
+@pytest.mark.parametrize("limits", [{"max_requests": 1}, {}, 0, Limits])
+def test_limits_that_are_not_a_limits_are_refused_before_any_call(limits):
+    provider = TextProvider()
+    job = Job.ask(TOPIC, id="t")
+    with pytest.raises(InvalidJob, match="limits must be a Limits or None"):
+        job.run(provider, state=TEXTS, limits=limits)
+    with pytest.raises(InvalidJob, match="limits must be a Limits or None"):
+        asyncio.run(job.arun(provider, state=TEXTS, limits=limits))
+    assert provider.calls == []
+
+
+def test_no_limits_are_the_default_limits():
+    def deeper(level):
+        return lambda _: Follow(Job.ask(TOPIC, id=f"l{level}").then(deeper(level + 1)), state=TEXTS)
+
+    for result in _both(Job.ask(TOPIC, id="t"), TextProvider(), state=TEXTS, limits=None):
+        assert result.outcomes["t"].kind == "answered"
+    with pytest.raises(JobLimitExceeded, match=f"max_depth={Limits().max_depth}"):
+        Job.ask(TOPIC, id="root").then(deeper(1)).run(TextProvider(), state=TEXTS, limits=None)

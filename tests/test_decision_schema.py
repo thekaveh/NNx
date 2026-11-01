@@ -266,3 +266,52 @@ def test_a_result_distribution_must_be_id_probability_pairs(distribution):
 
     with pytest.raises(InvalidDecisionResponse, match="pairs"):
         ChoiceResult("digest", distribution)
+
+
+# --- #557: text without a UTF-8 encoding ---------------------------------------------------------------------
+
+HALF_EMOJI = json.loads('"Is this spam? \\ud83d"')  # strict JSON: an emoji a JavaScript client cut in half
+ESCAPED = b"caf\xe9".decode("utf-8", "surrogateescape")  # os.fsdecode / sys.argv keep undecodable bytes so
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: Choice(HALF_EMOJI, (("a", "yes"), ("b", "no"))),
+        lambda: Boolean(HALF_EMOJI),
+        lambda: Score(ESCAPED, (("low", "Low"), ("high", "High"))),
+        lambda: Option(ESCAPED, "an option id"),
+        lambda: Option("a", HALF_EMOJI),
+        lambda: Choice("q?", (("a", ESCAPED), ("b", "B"))),  # an (id, description) pair
+        lambda: Score("q?", (("low", "Low"), (HALF_EMOJI.split()[-1], "High"))),
+        lambda: Boolean(chr(0xD83D) + chr(0xDE00)),  # a UTF-16 pair as two code points is no character either
+        lambda: question_from_state({"kind": "boolean", "prompt": HALF_EMOJI}),
+    ],
+    ids=[
+        "choice-prompt",
+        "boolean-prompt",
+        "score-prompt",
+        "option-id",
+        "option-description",
+        "pair-description",
+        "level-id",
+        "two-code-point-pair",
+        "from-state",
+    ],
+)
+def test_text_without_a_utf8_encoding_is_refused_when_the_question_is_built(build):
+    """#557: a lone surrogate built a question whose digest() then raised UnicodeEncodeError — after the
+    provider call that validate_response() makes it in."""
+    with pytest.raises(InvalidDecisionRequest, match="has no UTF-8 encoding: it holds the lone surrogate"):
+        build()
+
+
+def test_the_digest_of_non_ascii_text_is_unchanged():
+    """The digest hashes the canonical JSON as UTF-8 with ensure_ascii=False; these values predate #557,
+    so every recorded non-ASCII question keeps its digest."""
+    choice = Choice("Quelle catégorie ? 🙂", (("café", "Café — boissons ☕"), ("日本", "日本語のテキスト")))
+    score = Score("Ärger-Stufe?", (("niedrig", "gering"), ("hoch", "groß 🔥")))
+    assert choice.digest() == "edce153f9165dd7ea5b05a91c708acec49f03d097684c2a88375fa62d46a711d"
+    assert Boolean("Is this spam? 😀").digest() == "2987f32a79f06e32fb800b807818e88fa6ed69f9983c7541298903d49620bbf0"
+    assert score.digest() == "6615425b1cf6cbf965c0b85144ebc0f9868753f1435cd59079d9a000dcea3865"
+    assert question_from_state(json.loads(json.dumps(choice.state()))).digest() == choice.digest()
