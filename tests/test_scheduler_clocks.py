@@ -957,6 +957,32 @@ def test_epoch_clock_iteration_records_snapshot_a_tensor_learning_rate(lr_optims
     _assert_float_lrs([best.idp.lr], [0.1 * 0.5**best.idp.epoch_idx])
 
 
+@pytest.mark.parametrize("loop", ["NNModel.train", "Trainer"])
+def test_on_epoch_end_callbacks_see_a_tensor_learning_rate_as_floats(lr_optims, loop):
+    seen = []
+
+    class _Rates(Callback):
+        def on_epoch_end(self, ctx) -> None:
+            seen.append(([idp.lr for idp in ctx.idps], ctx.idp.lr))
+
+    sched = _sched(Schedulers.STEP, clock="epoch", step_size=1)
+    if loop == "NNModel.train":
+        params = NNTrainParams(n_epochs=3, train_loader=_batches(4), optim=lr_optims["tensor"], scheduler=sched)
+        _model().train(params, callbacks=[_Rates()])
+    else:
+        trainer_params = NNTrainerParams(
+            n_epochs=3, train_loader=_batches(4), optims={"main": lr_optims["tensor"]}, schedulers={"main": sched}
+        )
+        Trainer(_model()).train(trainer_params, trainer_step_fn=_plain_step, callbacks=[_Rates()])
+    every = [0.1] * 4 + [0.05] * 4 + [0.025] * 4
+    assert len(seen) == 3
+    # The epoch's rates are read back before its callbacks: they see the rate each batch trained at,
+    # not the live tensor the scheduler has already stepped.
+    for epoch, (records, latest) in enumerate(seen):
+        _assert_float_lrs(records, every[: 4 * (epoch + 1)])
+        _assert_float_lrs([latest], [every[4 * epoch]])
+
+
 def test_a_tensor_learning_rate_is_settled_in_a_history_journal(lr_optims):
     from nnx.history import HistoryJournal, iter_history
     from nnx.nn.enum.checkpoints import Checkpoints
