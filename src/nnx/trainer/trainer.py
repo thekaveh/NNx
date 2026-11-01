@@ -49,12 +49,13 @@ from .._scheduler_clock import (
     SchedulerClock,
     component_name,
     planned_updates,
+    recorded_lr,
     step_scheduler,
     uses_update_clock,
 )
 from .._update_engine import check_scaler_ownership, warn_unowned_trainables
 from ..components import ComponentRegistry
-from ..history import HistoryJournal, _check_history, _dispatch_epoch_end, _training_history, recorded_lr
+from ..history import HistoryJournal, _check_history, _dispatch_epoch_end, _training_history
 from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
 from ..nn.enum.checkpoints import Checkpoints
 from ..nn.nn_model import (
