@@ -5600,7 +5600,8 @@ class NNModel(_HubMixinBase):
         or a loader's first batch. An output without axis 1 or of a width
         other than the declared one raises :class:`~nnx.TaskValidationError`
         (a wrapped, registered or swapped net's width is unknown until it
-        runs).
+        runs), and a categorical output with fewer than 2 classes raises
+        :class:`~nnx.prediction.PredictionValidationError`.
 
         Non-destructive: ``self.net.training`` is snapshotted before
         switching to ``eval()`` and restored on exit (matches
@@ -5657,7 +5658,10 @@ class NNModel(_HubMixinBase):
         iteration positions warns (graph seed rows carry global node indices,
         graph-level rows their own graph ids). Without a spec, a model with a
         task checks the first batch's output against it, as :meth:`predict`
-        does, before yielding any batch.
+        does, before yielding any batch: :class:`~nnx.TaskValidationError`
+        for an output without axis 1 or of another width,
+        :class:`~nnx.prediction.PredictionValidationError` for a categorical
+        output with fewer than 2 classes.
         """
         from ..prediction import _check_spec_fits, prediction_from_logits
         from ..streaming import PredictionBatch, PredictionStream, _as_probability_spec, _check_stream_source
@@ -5731,9 +5735,12 @@ class NNModel(_HubMixinBase):
         For the default decoding rules, a categorical spec's ``decoded``
         equals ``predict().classes`` when the class axes agree, and a
         bernoulli spec's equals the ``BCEWithLogitsLoss`` threshold.
-        Raises :class:`~nnx.prediction.PredictionValidationError` for a
-        class axis or label count that does not fit the logits, or for
-        non-finite logits. Parameters and gradients are never touched.
+        Raises :class:`~nnx.prediction.PredictionValidationError` for an
+        explicit spec's class axis or label count that does not fit the
+        logits (a task's ``labels`` set its width, so a mismatch raises the
+        :class:`~nnx.TaskValidationError` above), for a categorical output
+        with fewer than 2 classes, or for non-finite logits. Parameters and
+        gradients are never touched.
         """
         from ..prediction import _check_spec_fits, prediction_from_logits
 

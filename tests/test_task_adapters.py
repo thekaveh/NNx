@@ -1534,3 +1534,43 @@ def test_predict_refuses_a_regression_output_without_axis_1():
     for X in (x, _loader_of(x, keyword=False, batch_size=5)):
         with pytest.raises(TaskValidationError, match=r"needs outputs with a sample axis and axis 1, got shape \(5,\)"):
             model.predict(X)
+
+
+def test_a_labels_task_refuses_a_wider_net_with_the_loader_error_on_every_input():
+    """A task's ``labels`` set its width. In-memory ``predict_proba`` refused
+    a 4-wide net with the spec's PredictionValidationError (a loader with the
+    task's TaskValidationError) and ``predict`` decoded it; both now raise
+    the loader's TaskValidationError, which is no PredictionValidationError."""
+    from nnx import PredictionValidationError
+
+    model = _wrapped(TaskSpec.categorical(labels=("a", "b", "c")), Losses.CROSS_ENTROPY, torch.nn.Linear(6, 4))
+    x = _x6()
+    expected = _loader_refusal(model, x, keyword=False)
+    assert expected == _WIDER_THAN_CATEGORICAL_3
+    for X in (x, torch.from_numpy(x), (x,), _loader_of(x, keyword=False)):
+        for predict in (model.predict_proba, model.predict):
+            with pytest.raises(TaskValidationError) as caught:
+                predict(X)
+            assert str(caught.value) == expected
+            assert not isinstance(caught.value, PredictionValidationError)
+
+
+def test_prediction_refuses_a_one_wide_categorical_output_as_predict_proba_does():
+    """A categorical task without a declared width cannot decode a 1-wide
+    output (training refuses it). ``predict_proba`` raised
+    PredictionValidationError; ``predict`` and plain ``iter_predict``
+    returned class 0 for every row."""
+    from nnx import PredictionValidationError
+
+    model = _wrapped(TaskSpec.categorical(), Losses.CROSS_ENTROPY, torch.nn.Linear(6, 1))
+    match = "categorical predictions need at least 2 classes along class_axis 1, got 1"
+    x = _x6()
+    for X in (x, torch.from_numpy(x), (x,), _CountingLoader()):
+        for predict in (model.predict_proba, model.predict):
+            with pytest.raises(PredictionValidationError, match=match):
+                predict(X)
+    loader = _CountingLoader()
+    with model.iter_predict(loader) as stream:
+        with pytest.raises(PredictionValidationError, match=match):
+            next(stream)
+    assert loader.reads == 1
