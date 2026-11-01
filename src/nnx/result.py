@@ -293,10 +293,9 @@ def decide_result(
             )
         policy._check(tuple(question.option_ids), cast(str, model_id), "probabilities", None)
     context = {"question": question.digest(), "provider": type(provider).__name__}
-    from .decisions.jobs import _check_results, _modality
+    from .decisions.jobs import _check_results, _rows
 
-    known = _modality(inputs)
-    rows = None if known is None else known[1]  # a provider-specific input: its row count is the provider's
+    rows = _rows(inputs)  # None for a provider-specific input: its row count is the provider's
     try:
         # Checked as DecisionJob checks an answer: one result of this
         # question per input row.

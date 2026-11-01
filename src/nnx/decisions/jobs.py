@@ -39,9 +39,10 @@ are not a :class:`Limits` (or ``None``) are rejected before any call.
 Without its own ``check(question, inputs)``, a provider is checked against
 its declared ``capabilities()`` when NNx can tell the state's modality — a
 list of texts (or the first part of a tuple of several inputs) is text, a
-tensor or array is a tensor; any other state is the provider's to judge.
-One value is no batch and is refused: one str, or a 0-d tensor or array
-(alone or as a tuple's first part).
+tensor or array is a tensor; any other state is the provider's to judge,
+and so is an empty list or tuple (no row to tell its modality by), which
+is answered with no results. One value is no batch and is refused: one
+str, or a 0-d tensor or array (alone or as a tuple's first part).
 
 **Answers are checked.** Each call's answers must hold one result list per
 question, one result per input row, each a result of that question (its
@@ -571,20 +572,43 @@ class _ProviderError(Exception):
         self.question = question  # the question whose check failed, when one did
 
 
+def _first(state: Any) -> Any:
+    """The part of ``state`` holding its rows: the first part of a tuple of
+    several inputs (a tuple of texts is one batch of texts), else the state."""
+    return state[0] if isinstance(state, tuple) and state and not isinstance(state[0], str) else state
+
+
 def _modality(state: Any) -> Optional[tuple[str, int]]:
     """The modality and batch size a provider's capabilities are checked
-    against, read from the state — the first part of a tuple of several
-    inputs (a tuple of texts is one batch of texts) — or ``None`` when NNx
-    cannot tell: a provider-specific input, the provider's to judge."""
+    against, read from the state's :func:`_first` part, or ``None`` when NNx
+    cannot tell: a provider-specific input or an empty batch (no row to
+    tell it by, as in ``collect``), the provider's to judge."""
     import numpy as np
     import torch
 
-    first = state[0] if isinstance(state, tuple) and state and not isinstance(state[0], str) else state
+    first = _first(state)
     if isinstance(first, (torch.Tensor, np.ndarray)) and getattr(first, "ndim", 0) >= 1:
         return "tensor", len(first)
-    if isinstance(first, Sequence) and not isinstance(first, str) and all(isinstance(x, str) for x in first):
+    if (
+        isinstance(first, Sequence)
+        and not isinstance(first, str)
+        and len(first) > 0
+        and all(isinstance(x, str) for x in first)
+    ):
         return "text", len(first)
     return None
+
+
+def _rows(state: Any) -> Optional[int]:
+    """The input rows an answer to ``state`` holds one result for: the
+    batch size of a modality NNx can tell, none for an empty batch (whatever
+    it would hold), else ``None``: a provider-specific input's row count is
+    the provider's to check."""
+    known = _modality(state)
+    if known is not None:
+        return known[1]
+    first = _first(state)
+    return 0 if isinstance(first, Sequence) and not isinstance(first, str) and len(first) == 0 else None
 
 
 def _one_value(state: Any) -> Optional[str]:
@@ -597,7 +621,7 @@ def _one_value(state: Any) -> Optional[str]:
 
     if isinstance(state, str):  # each character would be read as a row
         return "a job's state is a batch of inputs (a list of texts), not one str"
-    first = state[0] if isinstance(state, tuple) and state and not isinstance(state[0], str) else state
+    first = _first(state)
     if isinstance(first, (torch.Tensor, np.ndarray)) and first.ndim == 0:
         return (
             "a job's state is a batch of inputs (a tensor / array with a batch dimension), "
@@ -904,8 +928,7 @@ class _Runner:
         answers = list(answered)
         if len(answers) != len(chunk):
             raise InvalidDecisionResponse(f"the provider answered {len(answers)} of {len(chunk)} questions in one call")
-        known = _modality(chunk[0].state)
-        rows = None if known is None else known[1]  # a provider-specific input: its row count is the provider's
+        rows = _rows(chunk[0].state)
         return [
             _check_results(item.ask.question, results, rows, f"question {item.ask.id!r}")
             for item, results in zip(chunk, answers, strict=True)

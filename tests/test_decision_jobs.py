@@ -1157,6 +1157,41 @@ def test_a_provider_without_check_answers_inputs_nnx_cannot_classify():
         assert [o.kind for o in result.outcomes.values()] == ["answered", "answered"] and result.calls == 2
 
 
+def test_an_empty_batch_is_the_providers_to_judge_and_answered_with_no_results():
+    """An empty list or tuple holds no row to tell its modality by, as in collect(): it was refused as text to a
+    provider without check(), such as a continuation re-asking the rows that match and finding none. It has no
+    rows, though, so it is answered with no results."""
+
+    def matching(results):  # the rows answered "t-econ": none are
+        return [row for row, result in zip(IMAGES, results, strict=True) if result.top == "t-econ"]
+
+    recheck = Job.ask(TOPIC, id="first").then(lambda rs: Follow(Job.ask(TOPIC, id="recheck"), state=matching(rs)))
+    for result in _both(recheck, ImageProvider(), state=IMAGES):
+        assert [o.kind for o in result.outcomes.values()] == ["answered", "answered"] and list(result.value) == []
+
+    class ImagePairs(ImageProvider):  # several image inputs per row: one result per row of the first
+        def decide(self, question, inputs):
+            return super().decide(question, inputs[0])
+
+    for state, providers in (
+        ([], (ImageProvider(), TextProvider())),
+        ((), (ImageProvider(), TextProvider())),
+        (([], []), (ImagePairs(), PairProvider())),
+    ):
+        for provider in providers:
+            for result in _both(Job.ask(TOPIC, id="k"), provider, state=state):
+                assert result.outcomes["k"].kind == "answered" and list(result.value) == []
+
+    class Spurious(ImageProvider):  # answers a row the batch does not hold
+        def decide(self, question, inputs):
+            return [validate_response(question, {"t-sport": 0.7, "t-econ": 0.3})]
+
+    for state in ([], ([], [])):
+        with pytest.raises(JobFailed) as caught:
+            Job.ask(TOPIC, id="k").run(Spurious(), state=state)
+        assert "1 results for 0 input rows" in str(caught.value.__cause__)
+
+
 def test_the_rows_of_several_text_inputs_are_the_first_parts_rows():
     class Short(PairProvider):
         def decide(self, question, inputs):

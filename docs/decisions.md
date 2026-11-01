@@ -410,9 +410,11 @@ result.calls                                           # provider calls made
       the state's modality. A list of texts is text, and so is a tuple of
       several inputs whose first part is one; a tensor or array is a
       tensor. Any other state (images as dicts, say) is the provider's to
-      judge, as in `collect` and `decide_result`. One value is no batch
-      and is refused: one `str`, or a 0-d tensor or array (alone or as a
-      tuple's first part);
+      judge, as in `collect` and `decide_result`. So is an empty list or
+      tuple, which has no row to tell its modality by (a continuation that
+      re-asks the rows that match and finds none, say); it is answered with
+      no results. One value is no batch and is refused: one `str`, or a
+      0-d tensor or array (alone or as a tuple's first part);
     - a `limits` that is neither `None` (the default `Limits()`) nor a
       `Limits`, such as a mapping, `{}` or `0`;
     - a `Limits.max_tokens` cap the provider cannot enforce (it needs
