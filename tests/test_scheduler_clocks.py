@@ -891,6 +891,246 @@ def test_iteration_records_snapshot_a_tensor_learning_rate():
     assert [idp.lr for idp in run.idps] == pytest.approx([0.1, 0.05, 0.025])
 
 
+# --- #541: tensor learning rates on the epoch clock ----------------------------------------------------------
+
+
+def _tensor_lr(groups, config):
+    """A registered optimizer factory whose learning rate is a 0-d tensor (the scheduler updates it in place)."""
+    for group in groups:
+        group["lr"] = torch.tensor(float(group["lr"]))
+    return torch.optim.SGD(groups, foreach=False)
+
+
+@pytest.fixture
+def lr_optims():
+    """The float-lr SGD and its tensor-lr twin, through a registered factory."""
+    from nnx.optimizers import unregister_optimizer_factory
+
+    optims = {"float": NNOptimParams.builder().sgd(max_lr=0.1).build(), "tensor": _factory_optim("lr-541", _tensor_lr)}
+    yield optims
+    unregister_optimizer_factory("lr-541", 1)
+
+
+def _plain_step(ctx):
+    """A Trainer step without update reports (the epoch clock needs none)."""
+    optimizer = ctx.optimizers["main"]
+    optimizer.zero_grad()
+    x, y = ctx.batch
+    loss = ctx.model.loss_fn(ctx.model.net(x), y)
+    loss.backward()
+    optimizer.step()
+    return NNEvaluationDataPoint(loss=float(loss.detach()))
+
+
+def _assert_float_lrs(values, expected):
+    assert all(type(value) is float for value in values), values
+    assert values == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("loop", ["NNModel.train", "Trainer"])
+@pytest.mark.parametrize("lr", ["float", "tensor"])
+def test_epoch_clock_iteration_records_snapshot_a_tensor_learning_rate(lr_optims, loop, lr):
+    from nnx.nn.enum.checkpoints import Checkpoints
+    from nnx.nn.params.nn_checkpoint import NNCheckpoint
+    from nnx.nn.params.nn_run import NNRun
+
+    optim = lr_optims[lr]
+    sched = _sched(Schedulers.STEP, clock="epoch", step_size=1)
+    train, val = _batches(1, size=12), _batches(1, size=12, seed=2)
+    if loop == "NNModel.train":
+        params = NNTrainParams(n_epochs=3, train_loader=train, val_loader=val, optim=optim, scheduler=sched)
+        run = _model().train(params)
+    else:
+        trainer_params = NNTrainerParams(
+            n_epochs=3, train_loader=train, val_loader=val, optims={"main": optim}, schedulers={"main": sched}
+        )
+        run = Trainer(_model()).train(trainer_params, trainer_step_fn=_plain_step)
+    # Each epoch trains at its own rate, recorded as a float (not the live tensor, which ends at 0.0125).
+    _assert_float_lrs([idp.lr for idp in run.idps], [0.1, 0.05, 0.025])
+    _assert_float_lrs([idp.lr for idp in NNRun.load(run.id).idps], [0.1, 0.05, 0.025])  # idps.csv
+    last, first, best = (
+        NNCheckpoint.load(run=run.id, type=tag) for tag in (Checkpoints.LAST, Checkpoints.FIRST, Checkpoints.BEST)
+    )
+    # The scheduler steps before the epoch commits: each checkpoint keeps the rate its epoch trained at.
+    _assert_float_lrs([last.idp.lr], [0.025])
+    _assert_float_lrs([first.idp.lr], [0.1])  # the epoch-0 phase checkpoint
+    _assert_float_lrs([best.idp.lr], [0.1 * 0.5**best.idp.epoch_idx])
+
+
+@pytest.mark.parametrize("loop", ["NNModel.train", "Trainer"])
+def test_on_epoch_end_callbacks_see_a_tensor_learning_rate_as_floats(lr_optims, loop):
+    seen = []
+
+    class _Rates(Callback):
+        def on_epoch_end(self, ctx) -> None:
+            seen.append(([idp.lr for idp in ctx.idps], ctx.idp.lr))
+
+    sched = _sched(Schedulers.STEP, clock="epoch", step_size=1)
+    if loop == "NNModel.train":
+        params = NNTrainParams(n_epochs=3, train_loader=_batches(4), optim=lr_optims["tensor"], scheduler=sched)
+        _model().train(params, callbacks=[_Rates()])
+    else:
+        trainer_params = NNTrainerParams(
+            n_epochs=3, train_loader=_batches(4), optims={"main": lr_optims["tensor"]}, schedulers={"main": sched}
+        )
+        Trainer(_model()).train(trainer_params, trainer_step_fn=_plain_step, callbacks=[_Rates()])
+    every = [0.1] * 4 + [0.05] * 4 + [0.025] * 4
+    assert len(seen) == 3
+    # The epoch's rates are read back before its callbacks: they see the rate each batch trained at,
+    # not the live tensor the scheduler has already stepped.
+    for epoch, (records, latest) in enumerate(seen):
+        _assert_float_lrs(records, every[: 4 * (epoch + 1)])
+        _assert_float_lrs([latest], [every[4 * epoch]])
+
+
+def test_a_tensor_learning_rate_is_settled_in_a_history_journal(lr_optims):
+    from nnx.history import HistoryJournal, iter_history
+    from nnx.nn.enum.checkpoints import Checkpoints
+    from nnx.nn.params.nn_checkpoint import NNCheckpoint
+
+    seen = []
+
+    class _Full(Callback):
+        history_access = "full"
+
+        def on_epoch_end(self, ctx) -> None:
+            seen.append(list(ctx.idps))
+
+    params = NNTrainParams(
+        n_epochs=3,
+        train_loader=_batches(4),
+        optim=lr_optims["tensor"],
+        scheduler=_sched(Schedulers.STEP, clock="epoch", step_size=1),
+        save_phase_checkpoints=False,
+    )
+    # Chunks are written mid-epoch, and the window holds part of an epoch.
+    run = _model().train(params, callbacks=[_Full()], history=HistoryJournal(retention=3, chunk_size=2))
+    every = [0.1] * 4 + [0.05] * 4 + [0.025] * 4
+    # An epoch's records share a rate, so each record's place is checked too: a window or a queue of
+    # records waiting for a chunk rebuilt out of order would still hold the right rates.
+    _assert_float_lrs([idp.lr for idp in run.idps], every[-3:])
+    assert [idp.iter_idx for idp in run.idps] == [9, 10, 11]
+    journal = list(iter_history(run.id))
+    _assert_float_lrs([idp.lr for idp in journal], every)
+    assert [idp.iter_idx for idp in journal] == list(range(12))
+    assert len(seen) == 3
+    for epoch, records in enumerate(seen):  # the materialized history, records waiting for a chunk included
+        _assert_float_lrs([idp.lr for idp in records], every[: 4 * (epoch + 1)])
+        assert [idp.iter_idx for idp in records] == list(range(4 * (epoch + 1)))
+    last = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST).idp
+    _assert_float_lrs([last.lr], [0.025])
+    assert last.iter_idx == 11
+
+
+@pytest.mark.parametrize(
+    ("journal", "per_epoch"),
+    [(None, 1), ((100, None), 1), ((4, 4), 2)],
+    ids=["eager", "journal", "journal-chunk-mid-epoch"],
+)
+@pytest.mark.parametrize("loop", ["NNModel.train", "Trainer"])
+def test_a_tensor_learning_rate_is_read_back_per_epoch_not_per_batch(lr_optims, loop, journal, per_epoch):
+    """3071b44: the epoch clock adds no per-batch host sync for a tensor learning rate in either loop, a
+    journal's records included: the copies are read back once per epoch, and once per chunk a journal writes
+    mid-epoch, and no batch reads the optimizer's own rate."""
+    import os
+    import sys
+
+    from nnx.history import HistoryJournal
+
+    rates = set()  # the optimizer's own rate tensors, by address (a detached view shares it)
+
+    def tracked(groups, config):
+        optimizer = _tensor_lr(groups, config)
+        rates.update(group["lr"].data_ptr() for group in optimizer.param_groups)
+        return optimizer
+
+    optim = _factory_optim("lr-541", tracked)  # the fixture's factory id, so its teardown unregisters it
+    sched = _sched(Schedulers.STEP, clock="epoch", step_size=1)
+    spec = HistoryJournal(retention=journal[0], chunk_size=journal[1]) if journal is not None else None
+    reads, rate_reads = [], []
+    with pytest.MonkeyPatch.context() as patch:  # host reads of a tensor
+        for name in ("item", "tolist", "__float__"):
+
+            def counted(self, *args, _read=getattr(torch.Tensor, name), **kwargs):
+                caller = sys._getframe(1).f_code.co_filename
+                if caller.endswith((os.path.join("nnx", "history.py"), os.path.join("nnx", "_scheduler_clock.py"))):
+                    reads.append(caller)  # by the history and the lr helpers
+                elif self.data_ptr() in rates:
+                    rate_reads.append(caller)  # of the optimizer's own rate, by anyone else
+                return _read(self, *args, **kwargs)
+
+            patch.setattr(torch.Tensor, name, counted)
+        if loop == "NNModel.train":
+            params = NNTrainParams(
+                n_epochs=2, train_loader=_batches(8), optim=optim, scheduler=sched, save_phase_checkpoints=False
+            )
+            run = _model().train(params, history=spec)
+        else:
+            trainer_params = NNTrainerParams(
+                n_epochs=2,
+                train_loader=_batches(8),
+                optims={"main": optim},
+                schedulers={"main": sched},
+                save_phase_checkpoints=False,
+            )
+            run = Trainer(_model()).train(trainer_params, trainer_step_fn=_plain_step, history=spec)
+    assert len(reads) == 2 * per_epoch, reads  # 8 batches per epoch
+    # Never per batch: once as the scheduler is built (torch 2.4 reads its initial rate), and at most once per
+    # epoch after it (the progress bar's postfix).
+    assert len(rate_reads) <= 1 + 2, rate_reads
+    every = [0.1] * 8 + [0.05] * 8
+    _assert_float_lrs([idp.lr for idp in run.idps], every[-len(run.idps) :])
+    assert [idp.iter_idx for idp in run.idps] == list(range(16))[-len(run.idps) :]  # each record in its place
+    if spec is not None:
+        from nnx.history import iter_history
+
+        journal = list(iter_history(run.id))
+        _assert_float_lrs([idp.lr for idp in journal], every)  # the journal's chunks
+        assert [idp.iter_idx for idp in journal] == list(range(16))
+
+
+def test_a_tensor_learning_rate_record_the_journal_cannot_store_fails_on_the_first_batch(lr_optims):
+    import numpy as np
+
+    from nnx.history import HistoryJournal
+
+    steps = []
+
+    def step(ctx):
+        steps.append(None)
+        return NNEvaluationDataPoint(loss=0.5, error=0.5, extra={"per_class": np.array([0.9, 0.8])})
+
+    params = NNTrainParams(
+        n_epochs=1,
+        train_loader=_batches(3),
+        optim=lr_optims["tensor"],
+        scheduler=_sched(Schedulers.STEP, clock="epoch", step_size=1),
+        save_phase_checkpoints=False,
+    )
+    with pytest.raises(TypeError, match="cannot store as JSON"):
+        _model().train(params, train_step_fn=step, history=HistoryJournal(retention=10, chunk_size=10))
+    assert len(steps) == 1  # its line waits for the rate, but the rest of the record is checked at once
+
+
+@pytest.mark.parametrize("lr", ["float", "tensor"])
+def test_a_detached_update_clock_records_a_tensor_learning_rate_as_floats(lr_optims, lr):
+    def stepping(ctx):
+        result = _plain_step(ctx)
+        ctx.schedulers["main"].step()  # the step function owns the schedule; records read the rate after it
+        return result
+
+    params = NNTrainerParams(
+        n_epochs=2,
+        train_loader=_batches(3),
+        optims={"main": lr_optims[lr]},
+        schedulers={"main": _sched(Schedulers.STEP, step_size=1)},
+        auto_step_schedulers=False,
+        save_phase_checkpoints=False,
+    )
+    run = Trainer(_model()).train(params, trainer_step_fn=stepping)
+    _assert_float_lrs([idp.lr for idp in run.idps], [0.1 * 0.5**k for k in range(1, 7)])
+
+
 # --- review round 7 ----------------------------------------------------------------------------------------
 
 

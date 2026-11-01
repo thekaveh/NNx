@@ -576,7 +576,8 @@ class LRMonitor(Callback):
         self._epoch_updates: list[int] = []  # `.update_history` entries per retained epoch
 
     def on_epoch_end(self, ctx: _CallbackContext) -> None:
-        lr = ctx.optimizer.param_groups[0]["lr"]
+        # A float, never a tensor learning rate the scheduler updates in place (#541).
+        lr = float(ctx.optimizer.param_groups[0]["lr"])
         self.history.append(lr)
         updates = tuple(getattr(ctx, "update_lrs", ()))
         self.update_history.extend(updates)

@@ -178,6 +178,73 @@ def test_lr_monitor_records_history():
     assert mon.history == [1e-3, 5e-4, 1e-4]
 
 
+def test_lr_monitor_records_a_tensor_lr_as_floats():
+    import torch
+
+    mon = LRMonitor()
+    lr = torch.tensor(1e-3)  # a tensor learning rate, which a scheduler updates in place
+    ctx = _make_ctx(lr=lr)
+    for value in (1e-3, 5e-4, 1e-4):
+        lr.fill_(value)
+        mon.on_epoch_end(ctx)
+    assert all(type(value) is float for value in mon.history), mon.history
+    assert mon.history == pytest.approx([1e-3, 5e-4, 1e-4])
+
+
+@pytest.mark.parametrize("clock", ["epoch", "optimizer_update"])
+def test_lr_monitor_history_holds_floats_for_a_tensor_lr_on_either_clock(tmp_path, monkeypatch, clock):
+    import torch
+
+    from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNParams, NNTrainParams
+    from nnx.nn.enum.schedulers import Schedulers
+    from nnx.nn.params.nn_scheduler_params import NNSchedulerParams
+    from nnx.optimizers import (
+        NNOptimFactoryParams,
+        OptimizerFactorySpec,
+        register_optimizer_factory,
+        unregister_optimizer_factory,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+
+    def tensor_lr(groups, config):  # noqa: ARG001
+        for group in groups:
+            group["lr"] = torch.tensor(float(group["lr"]))
+        return torch.optim.SGD(groups, foreach=False)
+
+    generator = torch.Generator().manual_seed(0)
+    loader = [(torch.randn(12, 4, generator=generator), torch.randint(0, 2, (12,), generator=generator))]
+    torch.manual_seed(0)
+    model = NNModel(
+        net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+    scheduler = NNSchedulerParams(
+        kind=Schedulers.STEP, clock=clock, step_size=1, factor=0.5, min_lr=0.0, patience=0, cooldown=0, threshold=0.0
+    )
+    register_optimizer_factory("callbacks-tensor-lr", 1, tensor_lr, replace=True)
+    try:
+        mon = LRMonitor()
+        model.train(
+            NNTrainParams(
+                n_epochs=3,
+                train_loader=loader,
+                optim=NNOptimFactoryParams(
+                    factory=OptimizerFactorySpec(id="callbacks-tensor-lr", version=1), max_lr=0.1
+                ),
+                scheduler=scheduler,
+                save_phase_checkpoints=False,
+            ),
+            callbacks=[mon],
+        )
+    finally:
+        unregister_optimizer_factory("callbacks-tensor-lr", 1)
+    # One update per epoch: each entry is the rate after its epoch's scheduler step, not the final live tensor.
+    assert all(type(value) is float for value in mon.history), mon.history
+    assert mon.history == pytest.approx([0.05, 0.025, 0.0125])
+
+
 def test_legacy_callable_adapter_fires_on_epoch_end():
     seen = []
     legacy = _LegacyCallback(lambda idps: seen.append(len(idps)))

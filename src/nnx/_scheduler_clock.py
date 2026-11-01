@@ -22,6 +22,10 @@ detaches it: the step function then owns every scheduler step). Its position
 is the scheduler's own step count, restored with the scheduler's state; its
 owner, clock and budget are checkpointed component state, so a stateful
 resume refuses a mismatched configuration before anything steps.
+
+The learning rate each batch's record keeps is read here too (#541): a
+tensor rate is copied on its device per batch (:func:`recorded_lr`) and the
+copies are read back as floats together (:func:`settled_lrs`).
 """
 
 from __future__ import annotations
@@ -30,9 +34,11 @@ import hashlib
 import math
 import re
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any, Optional
 
+import torch
 from torch.optim import lr_scheduler
 
 CLOCK = "optimizer_update"
@@ -90,6 +96,30 @@ def listens(report_update: Any) -> bool:
     if isinstance(report_update, _NoUpdateListener):
         return False
     return bool(getattr(report_update, "listening", True))
+
+
+def recorded_lr(optimizer: Any) -> Any:
+    """The learning rate of ``optimizer``'s first group that a batch's
+    record keeps (#541). A tensor rate (a registered optimizer factory's),
+    which the scheduler updates in place, is copied on its device, so the
+    batch takes no host sync for it; :func:`settled_lrs` reads the copies
+    back together."""
+    lr = optimizer.param_groups[0]["lr"]
+    return lr.detach().clone() if isinstance(lr, torch.Tensor) else lr
+
+
+def settled_lrs(records: Sequence[Any]) -> Optional[list[Any]]:
+    """Iteration ``records`` with each tensor learning rate
+    (:func:`recorded_lr`) as the float it holds, read back in one host
+    sync; ``None`` when every rate is a float already."""
+    held = [(index, record.lr) for index, record in enumerate(records) if isinstance(record.lr, torch.Tensor)]
+    if not held:
+        return None
+    values = torch.stack([lr.reshape(()) for _, lr in held]).tolist()
+    settled = list(records)
+    for (index, _), value in zip(held, values, strict=True):
+        settled[index] = replace(records[index], lr=float(value))
+    return settled
 
 
 def uses_update_clock(scheduler_params: Any) -> bool:
