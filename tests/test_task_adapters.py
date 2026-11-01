@@ -1302,3 +1302,235 @@ def test_every_adapter_prediction_refuses_outputs_without_a_sample_axis(spec):
 
     with pytest.raises(PredictionValidationError, match="need a sample axis"):
         task_adapter(spec).prediction(np.float32(0.5), [0])
+
+
+# ------------------------------------------- FIX-066 (#533): the task's output check on every prediction input
+
+# (task, its loss) for a 4-wide net: each declares fewer outputs than the net has.
+_NARROW_TASKS = [
+    pytest.param(TaskSpec.categorical(3), Losses.CROSS_ENTROPY, id="categorical"),
+    pytest.param(TaskSpec.multilabel(3), Losses.BINARY_CROSS_ENTROPY, id="multilabel"),
+    pytest.param(TaskSpec.regression(2), Losses.MEAN_SQUARED_ERROR, id="regression"),
+]
+
+
+class _KeywordLinear(torch.nn.Module):
+    """A keyword-input module: ``forward(features=...)``."""
+
+    def __init__(self, width: int) -> None:
+        super().__init__()
+        self.linear = torch.nn.Linear(6, width)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        return self.linear(features)
+
+
+class _FlatRegressor(torch.nn.Module):
+    """One regression value per row as an ``(N,)`` output: no axis 1."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.linear = torch.nn.Linear(6, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.linear(x).squeeze(1)
+
+
+def _wrapped(task: TaskSpec, loss: Losses, module: torch.nn.Module, *, keyword: bool = False) -> NNModel:
+    from nnx import KeywordInputs
+
+    return NNModel(
+        module=module,
+        params=NNModelParams(device=Devices.CPU, loss=loss, task=task),
+        batch_adapter=KeywordInputs(("features",)) if keyword else None,
+    )
+
+
+def _x6(n: int = 5) -> np.ndarray:
+    return np.random.default_rng(0).standard_normal((n, 6)).astype(np.float32)
+
+
+# Every in-memory form predict() and predict_proba() accept, built from one array.
+_IN_MEMORY = {
+    "ndarray": lambda x: x,
+    "tensor": torch.from_numpy,
+    "tuple": lambda x: (x,),
+    "mapping": lambda x: {"features": x},
+}
+
+
+def _loader_of(x: np.ndarray, *, keyword: bool, batch_size: int = 2) -> DataLoader:
+    rows = torch.from_numpy(x)
+    if keyword:
+        return DataLoader([{"features": row} for row in rows], batch_size=batch_size)
+    return DataLoader(TensorDataset(rows), batch_size=batch_size)
+
+
+def _loader_refusal(model: NNModel, x: np.ndarray, *, keyword: bool) -> str:
+    """The loader form's refusal, over one batch of all of ``x``."""
+    with pytest.raises(TaskValidationError) as caught:
+        model.predict_proba(_loader_of(x, keyword=keyword, batch_size=len(x)))
+    return str(caught.value)
+
+
+@pytest.mark.parametrize("form", list(_IN_MEMORY))
+@pytest.mark.parametrize(("task", "loss"), _NARROW_TASKS)
+def test_in_memory_predict_proba_refuses_a_net_wider_than_the_task(task, loss, form):
+    """A wrapped net's width is unknown until its first forward; the task
+    checked it on a loader's first batch only, so an array, tensor, tuple or
+    keyword mapping got wrong-width probabilities (or regression values)."""
+    keyword = form == "mapping"
+    model = _wrapped(task, loss, _KeywordLinear(4) if keyword else torch.nn.Linear(6, 4), keyword=keyword)
+    x = _x6()
+    expected = _loader_refusal(model, x, keyword=keyword)
+    assert expected == f"{task.kind} task declares {task.num_outputs} outputs but the output has 4 along axis 1"
+    with pytest.raises(TaskValidationError) as caught:
+        model.predict_proba(_IN_MEMORY[form](x))
+    assert str(caught.value) == expected
+
+
+def test_in_memory_predict_proba_refuses_a_regression_output_without_axis_1():
+    model = _wrapped(TaskSpec.regression(1), Losses.MEAN_SQUARED_ERROR, _FlatRegressor())
+    x = _x6()
+    expected = _loader_refusal(model, x, keyword=False)
+    assert expected == "regression task needs outputs with a sample axis and axis 1, got shape (5,)"
+    with pytest.raises(TaskValidationError) as caught:
+        model.predict_proba(x)
+    assert str(caught.value) == expected
+
+
+_WIDER_THAN_CATEGORICAL_3 = "categorical task declares 3 outputs but the output has 4 along axis 1"
+
+
+def test_in_memory_predict_proba_refuses_a_mismatched_factory():
+    from nnx import ModelSpec, register_model_factory, unregister_model_factory
+
+    register_model_factory("tests.task_width", 1, lambda config: torch.nn.Linear(6, int(config["out"])))
+    try:
+
+        def registered(out: int) -> NNModel:  # the factory's width is unknown until the first forward
+            spec = ModelSpec("tests.task_width", 1, {"out": out})
+            task = TaskSpec.categorical(3)
+            return NNModel(params=NNModelParams(net=spec, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, task=task))
+
+        with pytest.raises(TaskValidationError, match=_WIDER_THAN_CATEGORICAL_3):
+            registered(4).predict_proba(_x6())
+        assert registered(3).predict_proba(_x6()).probabilities.shape == (5, 3)
+    finally:
+        unregister_model_factory("tests.task_width", 1)
+
+
+def test_in_memory_predict_proba_refuses_a_mismatched_swapped_net():
+    model = _model(TaskSpec.categorical(3), loss=Losses.CROSS_ENTROPY, output_dim=3, input_dim=6)
+    assert model.predict_proba(_x6()).probabilities.shape == (5, 3)  # the built-in net fits
+    model.net = torch.nn.Linear(6, 4)
+    with pytest.raises(TaskValidationError, match=_WIDER_THAN_CATEGORICAL_3):
+        model.predict_proba(_x6())
+
+
+@pytest.mark.parametrize(
+    ("task", "loss"),
+    [
+        pytest.param(TaskSpec.categorical(4), Losses.CROSS_ENTROPY, id="categorical"),
+        pytest.param(TaskSpec.multilabel(4, threshold=0.4), Losses.BINARY_CROSS_ENTROPY, id="multilabel"),
+        pytest.param(TaskSpec.regression(4), Losses.MEAN_SQUARED_ERROR, id="regression"),
+    ],
+)
+def test_width_correct_models_keep_their_predictions_on_every_input_form(task, loss):
+    """A net of the declared width predicts as before: the module's own
+    logits, the task's probabilities and decoding, and row ids, through
+    ``predict_proba``, ``predict`` and ``iter_predict`` alike."""
+    from nnx import prediction_from_logits
+
+    set_seed(0)
+    module = _KeywordLinear(4)
+    positional = _wrapped(task, loss, module.linear)
+    keyword = _wrapped(task, loss, module, keyword=True)
+    x = _x6()
+    with torch.no_grad():
+        logits = module.linear(torch.from_numpy(x)).numpy()
+    adapter = positional.task_adapter
+    assert adapter is not None
+    spec = task.probability_spec()
+    expected = None if spec is None else prediction_from_logits(logits, spec)
+    for form, to_input in _IN_MEMORY.items():
+        model = keyword if form == "mapping" else positional
+        inputs = [to_input(x), _loader_of(x, keyword=form == "mapping")]
+        for X in inputs:
+            result = model.predict_proba(X)
+            np.testing.assert_allclose(result.logits, logits, rtol=1e-6, atol=1e-6)
+            assert result.sample_ids.tolist() == [0, 1, 2, 3, 4]
+            if expected is None:
+                assert result.probabilities is None and result.spec is None
+            else:
+                np.testing.assert_allclose(result.probabilities, expected.probabilities, rtol=1e-6, atol=1e-6)
+            np.testing.assert_array_equal(result.decoded, adapter.decode_array(result.logits))  # the task's threshold
+            legacy = model.predict(X)
+            np.testing.assert_allclose(legacy.logits, logits, rtol=1e-6, atol=1e-6)
+            np.testing.assert_array_equal(legacy.classes, adapter.decode_array(legacy.logits))
+        with model.iter_predict(inputs[1]) as stream:
+            streamed = list(stream)
+        np.testing.assert_allclose(np.concatenate([b.logits for b in streamed]), logits, rtol=1e-6, atol=1e-6)
+
+
+class _CountingLoader(DataLoader):
+    """Three batches of two rows; counts the batches read."""
+
+    def __init__(self) -> None:
+        super().__init__(dataset=[0])
+        self.reads = 0
+
+    def __iter__(self):
+        for _ in range(3):
+            self.reads += 1
+            yield [torch.from_numpy(_x6(2))]
+
+
+def _fourth_output_wins(task: TaskSpec, loss: Losses) -> NNModel:
+    model = _wrapped(task, loss, torch.nn.Linear(6, 4))
+    with torch.no_grad():
+        model.net.weight.zero_()
+        model.net.bias.copy_(torch.tensor([0.0, 0.0, 0.0, 1.0]))  # categorical: class 3, outside [0, 3)
+    return model
+
+
+@pytest.mark.parametrize("form", ["ndarray", "tensor", "tuple", "loader"])
+@pytest.mark.parametrize(("task", "loss"), _NARROW_TASKS)
+def test_predict_refuses_a_net_wider_than_the_task(task, loss, form):
+    """``predict()`` decoded a wrong-width net on every input form: for
+    categorical(3) a winning fourth output gave class 3 on every row."""
+    model = _fourth_output_wins(task, loss)
+    match = f"{task.kind} task declares {task.num_outputs} outputs but the output has 4 along axis 1"
+    X = _CountingLoader() if form == "loader" else _IN_MEMORY[form](_x6())
+    with pytest.raises(TaskValidationError, match=match):
+        model.predict(X)
+    if form == "loader":
+        assert X.reads == 1  # refused on the first batch, before the rest of the loader runs
+
+
+@pytest.mark.parametrize(("task", "loss"), _NARROW_TASKS)
+def test_plain_iter_predict_refuses_a_net_wider_than_the_task_on_the_first_batch(task, loss):
+    model = _fourth_output_wins(task, loss)
+    match = f"{task.kind} task declares {task.num_outputs} outputs but the output has 4 along axis 1"
+    loader = _CountingLoader()
+    with model.iter_predict(loader) as stream:
+        with pytest.raises(TaskValidationError, match=match):
+            next(stream)
+    assert loader.reads == 1
+
+
+def test_a_model_without_a_task_predicts_any_width_as_before():
+    model = NNModel(module=torch.nn.Linear(6, 4), params=NNModelParams(device=Devices.CPU, loss=Losses.CROSS_ENTROPY))
+    assert model.predict(_x6()).logits.shape == (5, 4)
+    with model.iter_predict(_CountingLoader()) as stream:
+        assert [batch.logits.shape for batch in stream] == [(2, 4)] * 3
+
+
+def test_predict_refuses_a_regression_output_without_axis_1():
+    """An ``(N,)`` regression output decoded as itself; training and
+    ``predict_proba`` refuse it."""
+    model = _wrapped(TaskSpec.regression(1), Losses.MEAN_SQUARED_ERROR, _FlatRegressor())
+    x = _x6()
+    for X in (x, _loader_of(x, keyword=False, batch_size=5)):
+        with pytest.raises(TaskValidationError, match=r"needs outputs with a sample axis and axis 1, got shape \(5,\)"):
+            model.predict(X)

@@ -548,6 +548,13 @@ Returns a ``PredictResult`` (a ``NamedTuple`` of (logits, classes))
 that unpacks like the original 2-tuple. For probabilities, decoded
 labels and per-row sample ids, use :meth:`predict_proba`.
 
+A model with a task checks the output before decoding it, as
+:meth:`predict_proba` does: the whole output of an in-memory input,
+or a loader's first batch. An output without axis 1 or of a width
+other than the declared one raises :class:`~nnx.TaskValidationError`
+(a wrapped, registered or swapped net's width is unknown until it
+runs).
+
 Non-destructive: ``self.net.training`` is snapshotted before
 switching to ``eval()`` and restored on exit (matches
 ``NNModel.evaluate``, ``nnx.viz.activation_map``, and
@@ -587,7 +594,9 @@ iteration, and a closed or consumed stream cannot be iterated again.
 An empty loader yields no batches (the eager calls raise instead).
 Over a shuffling ``DataLoader``, the first batch whose sample ids are
 iteration positions warns (graph seed rows carry global node indices,
-graph-level rows their own graph ids).
+graph-level rows their own graph ids). Without a spec, a model with a
+task checks the first batch's output against it, as :meth:`predict`
+does, before yielding any batch.
 ```
 
 ##### `nnx.nn.nn_model.NNModel.predict_proba`
@@ -619,7 +628,11 @@ for arrays, tensors and tuples; the position in iteration order for
 an ordinary ``DataLoader`` (the dataset index only when the loader
 does not shuffle — a shuffling loader warns); and the global node
 index for graph seed rows. A spec that does not fit the logits is
-rejected on the first loader batch.
+rejected on the first loader batch. Without a spec, the task checks
+the output as :meth:`predict` does, an in-memory input's whole output
+as a loader's first batch, and raises
+:class:`~nnx.TaskValidationError` for an output without axis 1 or of
+a width other than the declared one.
 
 The task kind is never inferred from the loss or the output shape.
 For the default decoding rules, a categorical spec's ``decoded``
@@ -1834,7 +1847,7 @@ Validate one batch and return its task record — for custom training steps that
 nnx.tasks.TaskAdapter.check_logits(self, logits: 'np.ndarray') -> 'None'
 ```
 
-Shape check for raw prediction logits (a loader's first batch), so a mismatched net fails before the rest of inference runs.
+Shape check for raw prediction logits (a loader's first batch, or an in-memory input's whole output), so a mismatched net fails before the rest of inference runs or any result is built.
 
 ##### `nnx.tasks.TaskAdapter.prediction`
 
