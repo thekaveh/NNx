@@ -357,3 +357,51 @@ def test_ragged_sample_ids_and_logits_raise_the_prediction_error():
     with pytest.raises(PredictionValidationError, match=r"one integer id per row \(3\), got shape \(3, 1\)"):
         prediction_from_logits(np.zeros((3, 2)), spec, sample_ids=[[0], [1], [2]])
     assert prediction_from_logits([[0.1, 0.2], [0.3, 0.4]], spec, sample_ids=[9, 4]).sample_ids.tolist() == [9, 4]
+
+
+# ------------------------------------------- FIX-066 (#533): a task checks in-memory logits too
+
+
+def _task_model(module: torch.nn.Module) -> NNModel:
+    from nnx import TaskSpec
+
+    return NNModel(
+        module=module, params=NNModelParams(device=Devices.CPU, loss=Losses.CROSS_ENTROPY, task=TaskSpec.categorical(3))
+    )
+
+
+def test_a_task_rejects_in_memory_logits_as_it_rejects_the_first_loader_batch():
+    """Without a spec, the task's shape check ran only on a loader's first
+    batch: an array, tensor or tuple of a 4-wide net got 4-wide
+    probabilities from a categorical(3) task. The refusal leaves every
+    submodule's training mode and every parameter as they were."""
+    from nnx import TaskValidationError
+
+    torch.manual_seed(0)
+    model = _task_model(torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.Dropout(0.25), torch.nn.Linear(8, 4)))
+    model.net.train()
+    model.net[1].eval()  # a mixed-mode tree must come back exactly as it was
+    modes = {name: module.training for name, module in model.net.named_modules()}
+    params = {name: p.detach().clone() for name, p in model.net.named_parameters()}
+    x = _x(5)
+    match = "categorical task declares 3 outputs but the output has 4 along axis 1"
+    for inp in (x, torch.from_numpy(x), (x,), DataLoader(TensorDataset(torch.from_numpy(x)), batch_size=2)):
+        with pytest.raises(TaskValidationError, match=match):
+            model.predict_proba(inp)
+        assert {name: module.training for name, module in model.net.named_modules()} == modes
+    assert all(torch.equal(p, params[name]) and p.grad is None for name, p in model.net.named_parameters())
+
+
+def test_an_explicit_spec_keeps_its_own_error_on_a_task_model():
+    """An explicit spec wins over the task: one that does not fit the logits
+    raises PredictionValidationError on every input form, never the task's
+    TaskValidationError."""
+    from nnx import TaskValidationError
+
+    model = _task_model(torch.nn.Linear(4, 4))
+    x = _x(5)
+    spec = ProbabilitySpec(kind="categorical", labels=LABELS)  # 3 labels for 4 outputs
+    for inp in (x, torch.from_numpy(x), (x,), DataLoader(TensorDataset(torch.from_numpy(x)), batch_size=2)):
+        with pytest.raises(PredictionValidationError, match="ProbabilitySpec has 3 label") as caught:
+            model.predict_proba(inp, spec)
+        assert not isinstance(caught.value, TaskValidationError)
