@@ -361,3 +361,50 @@ def test_a_wraps_wrapper_of_a_paradigm_step_keeps_the_refusal(tmp_path, monkeypa
             train_step_fn=logged,
         )
     assert not (tmp_path / "runs").exists()
+
+
+# --- #564: a bare-tensor unpack_batch result is one input ------------------------------------------------------
+
+
+class _BareInput(torch.nn.Module):
+    """A net swapped onto a built-in model whose ``unpack_batch`` returns its
+    one input as a bare tensor, as ``NNModel._split_batch`` accepts."""
+
+    def __init__(self, n_inputs: int = 1) -> None:
+        super().__init__()
+        self.linear = torch.nn.Linear(2, 2)
+        self.n_inputs = n_inputs
+
+    def forward(self, x):
+        return self.linear(x)
+
+    def unpack_batch(self, batch):
+        if self.n_inputs == 1:
+            return batch[0], None
+        return tuple(batch[: self.n_inputs]), None
+
+
+@pytest.mark.parametrize("rows", [3, 1])
+def test_first_input_reads_a_bare_tensor_unpack_batch_result_as_one_input(rows):
+    """first_input counted a bare tensor's rows as inputs: a 3-row batch was
+    refused ("gave 3") and a 1-row batch lost its batch axis, (1, 2) -> (2,),
+    where NNModel._split_batch reads the same tensor as one input (#564)."""
+    from nnx._step_helpers import first_input
+
+    m, _ = _model_and_optim()
+    m.net = _BareInput()
+    assert getattr(m, "_batch_adapter", None) is None  # the adapter-less unpack_batch branch
+    batch = (torch.randn(rows, 2),)
+    x = first_input(m, batch, who="test")
+    args, kwargs, _ = m._split_batch(batch)
+    assert x.shape == (rows, 2) == args[0].shape and not kwargs
+    assert torch.equal(x, batch[0])
+
+
+def test_first_input_still_refuses_an_unpack_batch_of_two_inputs():
+    from nnx._step_helpers import first_input
+
+    m, _ = _model_and_optim()
+    m.net = _BareInput(n_inputs=2)
+    with pytest.raises(ValueError, match="test needs batches of exactly one input; the net's unpack_batch gave 2"):
+        first_input(m, (torch.randn(3, 2), torch.randn(3, 2)), who="test")
