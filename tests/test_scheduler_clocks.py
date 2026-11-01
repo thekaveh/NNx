@@ -968,7 +968,7 @@ def test_a_tensor_learning_rate_is_settled_in_a_history_journal(lr_optims):
         history_access = "full"
 
         def on_epoch_end(self, ctx) -> None:
-            seen.append([idp.lr for idp in ctx.idps])
+            seen.append(list(ctx.idps))
 
     params = NNTrainParams(
         n_epochs=3,
@@ -980,10 +980,20 @@ def test_a_tensor_learning_rate_is_settled_in_a_history_journal(lr_optims):
     # Chunks are written mid-epoch, and the window holds part of an epoch.
     run = _model().train(params, callbacks=[_Full()], history=HistoryJournal(retention=3, chunk_size=2))
     every = [0.1] * 4 + [0.05] * 4 + [0.025] * 4
+    # An epoch's records share a rate, so each record's place is checked too: a window or a queue of
+    # records waiting for a chunk rebuilt out of order would still hold the right rates.
     _assert_float_lrs([idp.lr for idp in run.idps], every[-3:])
-    _assert_float_lrs([idp.lr for idp in iter_history(run.id)], every)
-    _assert_float_lrs(seen[-1], every)  # the materialized history, records waiting for a chunk included
-    _assert_float_lrs([NNCheckpoint.load(run=run.id, type=Checkpoints.LAST).idp.lr], [0.025])
+    assert [idp.iter_idx for idp in run.idps] == [9, 10, 11]
+    journal = list(iter_history(run.id))
+    _assert_float_lrs([idp.lr for idp in journal], every)
+    assert [idp.iter_idx for idp in journal] == list(range(12))
+    assert len(seen) == 3
+    for epoch, records in enumerate(seen):  # the materialized history, records waiting for a chunk included
+        _assert_float_lrs([idp.lr for idp in records], every[: 4 * (epoch + 1)])
+        assert [idp.iter_idx for idp in records] == list(range(4 * (epoch + 1)))
+    last = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST).idp
+    _assert_float_lrs([last.lr], [0.025])
+    assert last.iter_idx == 11
 
 
 @pytest.mark.parametrize(
@@ -1022,10 +1032,13 @@ def test_a_tensor_learning_rate_is_read_back_per_epoch_not_per_batch(lr_optims, 
     assert len(reads) == 2 * per_epoch, reads  # 8 batches per epoch
     every = [0.1] * 8 + [0.05] * 8
     _assert_float_lrs([idp.lr for idp in run.idps], every[-len(run.idps) :])
+    assert [idp.iter_idx for idp in run.idps] == list(range(16))[-len(run.idps) :]  # each record in its place
     if spec is not None:
         from nnx.history import iter_history
 
-        _assert_float_lrs([idp.lr for idp in iter_history(run.id)], every)  # the journal's chunks
+        journal = list(iter_history(run.id))
+        _assert_float_lrs([idp.lr for idp in journal], every)  # the journal's chunks
+        assert [idp.iter_idx for idp in journal] == list(range(16))
 
 
 def test_a_tensor_learning_rate_record_the_journal_cannot_store_fails_on_the_first_batch(lr_optims):
