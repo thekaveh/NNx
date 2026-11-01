@@ -594,6 +594,25 @@ def test_round_twenty_two_split_metrics_are_hashable_values():
     assert first == second and hash(first) == hash(second) and len({first, second}) == 1
 
 
+def test_plan_frozen_extra_metrics_hash_ignores_insertion_order():
+    """FIX-095 (#563): once a plan has frozen `extra_metrics`, training
+    parameters differing only in its insertion order compare equal, so they
+    hash equal too, while each keeps its own order."""
+
+    def acc(y, y_hat):
+        return 0.0
+
+    def f1(y, y_hat):
+        return 0.0
+
+    first = ExperimentPlan().with_train(NNTrainParams(n_epochs=1, extra_metrics={"acc": acc, "f1": f1})).train
+    second = ExperimentPlan().with_train(NNTrainParams(n_epochs=1, extra_metrics={"f1": f1, "acc": acc})).train
+    assert first == second
+    assert hash(first) == hash(second)
+    assert len({first, second}) == 1
+    assert list(first.extra_metrics) == ["acc", "f1"] and list(second.extra_metrics) == ["f1", "acc"]
+
+
 def test_round_twenty_four_a_list_of_callbacks_is_told_to_spread():
     report = _plan().with_callbacks([EarlyStopping(), EarlyStopping()]).validate()
     assert report.paths == ("callbacks[0]",) and "separate arguments" in report.diagnostics[0].message
