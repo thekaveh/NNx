@@ -15402,6 +15402,10 @@ state, so a stateful resume draws the timesteps and noise an
 uninterrupted run would have drawn. A resume with a different schedule
 is rejected before anything is restored.
 
+The denoiser's return value is read through the model's batch
+adapter's ``output()``, so a module returning something else (a
+diffusers ``UNet2DOutput``) needs an adapter that extracts the noise.
+
 Args:
     schedule: the :class:`NoiseSchedule` (any device; the coefficients
         are indexed on the model's device).
@@ -16439,6 +16443,10 @@ resume continues exactly where an uninterrupted run would be. A saved
 state carrying a second copy of the predictor's weights, a different
 predictor reference or a different spec is rejected before anything is
 restored.
+
+Both encoders' return values, the online net's and the EMA target's,
+are read through the model's batch adapter's ``output()``, so a net
+returning a non-tensor needs an adapter that extracts the embeddings.
 
 Before any run is reserved (:meth:`check_run`) the objective refuses:
 a net without the ViT patch contract (``n_patches``,
