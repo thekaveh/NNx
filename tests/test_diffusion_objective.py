@@ -587,3 +587,38 @@ def test_a_non_tensor_denoiser_output_names_the_adapter_remedy():
     )
     with pytest.raises(TypeError, match=REMEDY):
         model.train(_params([(_points(4), torch.zeros(4))]), objective=diffusion_objective(SCHEDULE, seed=3))
+
+
+# --- #564: a swapped net whose unpack_batch returns a bare tensor ------------------------------------------------
+
+
+class _BareDenoiser(DiffusionMLP):
+    """A DiffusionMLP whose ``unpack_batch`` returns its one input as a bare
+    tensor, as NNModel's supervised path reads it."""
+
+    def unpack_batch(self, batch):
+        return batch[0], None
+
+
+@pytest.mark.parametrize("batch_size", [8, 1])
+def test_a_swapped_net_with_a_bare_tensor_unpack_batch_trains_as_one_input(batch_size):
+    """The objective read each row of the bare tensor as an input: 8-row
+    batches were refused ("gave 8") and 1-row batches lost their batch axis
+    (#564). Swapped onto a built-in model, the net trains exactly as the same
+    weights wrapped with module= do, loss for loss."""
+    from nnx import NNModelParams as Params
+
+    swapped = _model()  # a built-in model: no batch adapter
+    swapped.net = _BareDenoiser(input_dim=2, hidden_dims=[16], time_embed_dim=8)
+    wrapped = NNModel(module=copy.deepcopy(swapped.net), params=Params(loss=Losses.MEAN_SQUARED_ERROR))
+    points = _points(16)
+    loader = [(points[start : start + batch_size],) for start in range(0, 16, batch_size)]
+    losses = []
+    for model in (swapped, wrapped):
+        run = model.train(_params(loader, seed=1), objective=diffusion_objective(SCHEDULE, seed=3))
+        losses.append([idp.train_edp.loss for idp in run.idps])
+        assert run.idps[-1].update_count == len(loader)
+
+    assert all(loss is not None and math.isfinite(loss) for loss in losses[0])
+    assert losses[0] == losses[1]
+    assert all(torch.equal(a, b) for a, b in zip(swapped.net.parameters(), wrapped.net.parameters(), strict=True))
