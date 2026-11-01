@@ -617,9 +617,9 @@ print(report.text())
 - **Variant ids.** Perturbation helpers give each variant a distinct id, or
   the `id=` you pass. The id is the original id, the kind and a digest of
   the change. The
-  digest is the same in every process for text, numeric arrays and tensors,
-  tuples of them and JSON-able values. An input with no stable digest needs
-  `id=`.
+  digest is the same in every process for text that has a UTF-8 encoding,
+  numeric arrays and tensors, tuples of them and JSON-able values. An input
+  with no stable digest, such as text holding a lone surrogate, needs `id=`.
 - **Exports.** `to_json()`, `to_csv()` and `text()` agree on units,
   eligible, failure and `extra` counts, unavailable states and notes (the
   CSV's `note` column). A non-finite
