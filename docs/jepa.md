@@ -32,14 +32,23 @@ in example 16 check this.
 
 ```
 1. mask_fn(n_patches, device) -> (ctx_mask_1d, tgt_mask_1d)
-2. context_embeds = model.net(x, mask=ctx_mask)
+2. context_embeds = output(model.net(x, mask=ctx_mask))
 3. with torch.no_grad():
-       target_embeds = target_encoder(x)[:, target_positions, :]
+       target_embeds = output(target_encoder(x))[:, target_positions, :]
 4. predicted    = predictor(context_embeds, ctx_positions, tgt_positions)
 5. loss         = MSE(predicted, target_embeds)
 6. finalize_step(loss)              # NaN guard + grad-clip + optimizer.step()
 7. update_ema(model.net, target_encoder, ema_momentum)
 ```
+
+`output()` is the model's batch adapter's `output()`
+([Concepts §3.2](concepts.md#32-arbitrary-modules-and-registered-model-factories)),
+as in the supervised step. A built-in net such as `ViTNN` has no adapter, and
+its tensor is used as is. An encoder passed as `module=` that returns a
+non-tensor needs an adapter whose `output()` extracts the embeddings. The EMA
+target, a copy of that encoder, goes through the same `output()`. The default
+adapter refuses a non-tensor with a `TypeError` that names this remedy.
+`jepa_objective` (§5) reads both encoders this way too.
 
 ## 3. Quickstart
 
