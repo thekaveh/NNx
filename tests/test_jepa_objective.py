@@ -42,6 +42,7 @@ from nnx import (
     jepa_train_step_factory,
     set_seed,
 )
+from tests._adapter_outputs import REMEDY, DictViT, Extract
 
 GRID = 4  # 16x16 images, 4x4 patches
 _PLATEAU = NNSchedulerParams(min_lr=0.0, factor=0.5, patience=10, cooldown=0, threshold=0.0)
@@ -419,3 +420,69 @@ def test_a_predictor_of_the_wrong_output_shape_is_refused_on_both_paths():
             params=_params([batch]),
             train_step_fn=jepa_train_step_factory(target, wrapped, _masks(FOUR), ema_momentum=0.5),
         )
+
+
+# --- #561: the online net's and the EMA target's return values through the model's batch adapter ----------------
+
+
+def _three_parts():
+    """The ``_parts`` ViT's and predictor's weights three ways, each with its
+    own EMA target and predictor: swapped onto a built-in model (no batch
+    adapter), wrapped with its default adapter, and inside a mapping-returning
+    module read through ``Extract("tokens")``."""
+    swapped, _, predictor = _parts(attach=False)
+    vit = copy.deepcopy(swapped.net)
+    wrapped = NNModel(module=copy.deepcopy(vit), params=NNModelParams(loss=Losses.MEAN_SQUARED_ERROR))
+    extract = Extract("tokens")
+    mapped = NNModel(
+        module=DictViT(copy.deepcopy(vit)), params=NNModelParams(loss=Losses.MEAN_SQUARED_ERROR), batch_adapter=extract
+    )
+    parts = []
+    for model in (swapped, wrapped, mapped):
+        target = build_target_encoder(model.net)
+        own = copy.deepcopy(predictor)
+        model.net.add_module("_jepa_predictor", own)
+        parts.append((model, target, own))
+    return parts, extract
+
+
+def test_a_dict_returning_net_trains_through_the_adapters_output():
+    """The objective called model.net(x, mask=...) and the EMA target raw, so
+    a net returning a mapping failed slicing it (#561). Read through
+    Extract("tokens") — the target's return value too — it trains exactly as
+    the same weights returning a tensor do, with the default adapter or none:
+    loss for loss, online and EMA-target weight for weight."""
+    parts, extract = _three_parts()
+    loader = [_batch(_images(3)), _batch(_images(2, seed=2))]
+    losses, objectives = [], []
+    for model, target, predictor in parts:
+        objective = jepa_objective(target, predictor, _masks(FOUR, TWO), ema_momentum=0.5)
+        run = model.train(params=_params(loader, n_epochs=2, seed=1), objective=objective)
+        losses.append([idp.train_edp.loss for idp in run.idps])
+        objectives.append(objective)
+
+    assert all(loss is not None and torch.isfinite(torch.tensor(loss)) for loss in losses[2])
+    assert losses[0] == losses[1] == losses[2]
+    assert [objective.ema_updates for objective in objectives] == [4, 4, 4]
+    (swapped, swapped_target, _), *others = parts
+    for model, target, _ in others:
+        for state, reference in (
+            (model.net.state_dict(), swapped.net.state_dict()),
+            (target.state_dict(), swapped_target.state_dict()),
+        ):
+            state = {k.removeprefix("vit."): v for k, v in state.items()}  # DictViT keys its ViT under vit.
+            assert state.keys() == reference.keys()
+            assert all(torch.equal(state[k], reference[k]) for k in reference)
+    # Per microbatch (2 epochs x 2 batches): the online forward, then the EMA target's under no_grad.
+    assert extract.grad_modes == [True, False] * 4
+
+
+def test_a_non_tensor_net_output_names_the_adapter_remedy():
+    """With the default adapter, a mapping return raises BatchAdapter.output()'s
+    TypeError, naming the remedy, not a KeyError from slicing it."""
+    swapped, _, predictor = _parts(attach=False)
+    model = NNModel(module=DictViT(swapped.net), params=NNModelParams(loss=Losses.MEAN_SQUARED_ERROR))
+    target = build_target_encoder(model.net)
+    model.net.add_module("_jepa_predictor", predictor)
+    with pytest.raises(TypeError, match=REMEDY):
+        model.train(params=_params([_batch(_images(3))]), objective=jepa_objective(target, predictor, _masks(FOUR)))
