@@ -1001,35 +1001,57 @@ def test_a_tensor_learning_rate_is_settled_in_a_history_journal(lr_optims):
     [(None, 1), ((100, None), 1), ((4, 4), 2)],
     ids=["eager", "journal", "journal-chunk-mid-epoch"],
 )
-def test_a_tensor_learning_rate_is_read_back_per_epoch_not_per_batch(lr_optims, journal, per_epoch):
-    """3071b44: the epoch clock adds no per-batch host sync for a tensor learning rate, a journal's records
-    included: the copies are read back once per epoch, and once per chunk a journal writes mid-epoch."""
+@pytest.mark.parametrize("loop", ["NNModel.train", "Trainer"])
+def test_a_tensor_learning_rate_is_read_back_per_epoch_not_per_batch(lr_optims, loop, journal, per_epoch):
+    """3071b44: the epoch clock adds no per-batch host sync for a tensor learning rate in either loop, a
+    journal's records included: the copies are read back once per epoch, and once per chunk a journal writes
+    mid-epoch, and no batch reads the optimizer's own rate."""
     import os
     import sys
 
     from nnx.history import HistoryJournal
 
-    params = NNTrainParams(
-        n_epochs=2,
-        train_loader=_batches(8),
-        optim=lr_optims["tensor"],
-        scheduler=_sched(Schedulers.STEP, clock="epoch", step_size=1),
-        save_phase_checkpoints=False,
-    )
+    rates = set()  # the optimizer's own rate tensors, by address (a detached view shares it)
+
+    def tracked(groups, config):
+        optimizer = _tensor_lr(groups, config)
+        rates.update(group["lr"].data_ptr() for group in optimizer.param_groups)
+        return optimizer
+
+    optim = _factory_optim("lr-541", tracked)  # the fixture's factory id, so its teardown unregisters it
+    sched = _sched(Schedulers.STEP, clock="epoch", step_size=1)
     spec = HistoryJournal(retention=journal[0], chunk_size=journal[1]) if journal is not None else None
-    reads = []
-    with pytest.MonkeyPatch.context() as patch:  # host reads of a tensor by the history and the lr helpers
+    reads, rate_reads = [], []
+    with pytest.MonkeyPatch.context() as patch:  # host reads of a tensor
         for name in ("item", "tolist", "__float__"):
 
             def counted(self, *args, _read=getattr(torch.Tensor, name), **kwargs):
                 caller = sys._getframe(1).f_code.co_filename
                 if caller.endswith((os.path.join("nnx", "history.py"), os.path.join("nnx", "_scheduler_clock.py"))):
-                    reads.append(caller)
+                    reads.append(caller)  # by the history and the lr helpers
+                elif self.data_ptr() in rates:
+                    rate_reads.append(caller)  # of the optimizer's own rate, by anyone else
                 return _read(self, *args, **kwargs)
 
             patch.setattr(torch.Tensor, name, counted)
-        run = _model().train(params, history=spec)
+        if loop == "NNModel.train":
+            params = NNTrainParams(
+                n_epochs=2, train_loader=_batches(8), optim=optim, scheduler=sched, save_phase_checkpoints=False
+            )
+            run = _model().train(params, history=spec)
+        else:
+            trainer_params = NNTrainerParams(
+                n_epochs=2,
+                train_loader=_batches(8),
+                optims={"main": optim},
+                schedulers={"main": sched},
+                save_phase_checkpoints=False,
+            )
+            run = Trainer(_model()).train(trainer_params, trainer_step_fn=_plain_step, history=spec)
     assert len(reads) == 2 * per_epoch, reads  # 8 batches per epoch
+    # Never per batch: once as the scheduler is built (torch 2.4 reads its initial rate), and at most once per
+    # epoch after it (the progress bar's postfix).
+    assert len(rate_reads) <= 1 + 2, rate_reads
     every = [0.1] * 8 + [0.05] * 8
     _assert_float_lrs([idp.lr for idp in run.idps], every[-len(run.idps) :])
     assert [idp.iter_idx for idp in run.idps] == list(range(16))[-len(run.idps) :]  # each record in its place
