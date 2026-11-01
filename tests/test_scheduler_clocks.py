@@ -986,6 +986,71 @@ def test_a_tensor_learning_rate_is_settled_in_a_history_journal(lr_optims):
     _assert_float_lrs([NNCheckpoint.load(run=run.id, type=Checkpoints.LAST).idp.lr], [0.025])
 
 
+@pytest.mark.parametrize(
+    ("journal", "per_epoch"),
+    [(None, 1), ((100, None), 1), ((4, 4), 2)],
+    ids=["eager", "journal", "journal-chunk-mid-epoch"],
+)
+def test_a_tensor_learning_rate_is_read_back_per_epoch_not_per_batch(lr_optims, journal, per_epoch):
+    """3071b44: the epoch clock adds no per-batch host sync for a tensor learning rate, a journal's records
+    included: the copies are read back once per epoch, and once per chunk a journal writes mid-epoch."""
+    import os
+    import sys
+
+    from nnx.history import HistoryJournal
+
+    params = NNTrainParams(
+        n_epochs=2,
+        train_loader=_batches(8),
+        optim=lr_optims["tensor"],
+        scheduler=_sched(Schedulers.STEP, clock="epoch", step_size=1),
+        save_phase_checkpoints=False,
+    )
+    spec = HistoryJournal(retention=journal[0], chunk_size=journal[1]) if journal is not None else None
+    reads = []
+    with pytest.MonkeyPatch.context() as patch:  # host reads of a tensor by the history and the lr helpers
+        for name in ("item", "tolist", "__float__"):
+
+            def counted(self, *args, _read=getattr(torch.Tensor, name), **kwargs):
+                caller = sys._getframe(1).f_code.co_filename
+                if caller.endswith((os.path.join("nnx", "history.py"), os.path.join("nnx", "_scheduler_clock.py"))):
+                    reads.append(caller)
+                return _read(self, *args, **kwargs)
+
+            patch.setattr(torch.Tensor, name, counted)
+        run = _model().train(params, history=spec)
+    assert len(reads) == 2 * per_epoch, reads  # 8 batches per epoch
+    every = [0.1] * 8 + [0.05] * 8
+    _assert_float_lrs([idp.lr for idp in run.idps], every[-len(run.idps) :])
+    if spec is not None:
+        from nnx.history import iter_history
+
+        _assert_float_lrs([idp.lr for idp in iter_history(run.id)], every)  # the journal's chunks
+
+
+def test_a_tensor_learning_rate_record_the_journal_cannot_store_fails_on_the_first_batch(lr_optims):
+    import numpy as np
+
+    from nnx.history import HistoryJournal
+
+    steps = []
+
+    def step(ctx):
+        steps.append(None)
+        return NNEvaluationDataPoint(loss=0.5, error=0.5, extra={"per_class": np.array([0.9, 0.8])})
+
+    params = NNTrainParams(
+        n_epochs=1,
+        train_loader=_batches(3),
+        optim=lr_optims["tensor"],
+        scheduler=_sched(Schedulers.STEP, clock="epoch", step_size=1),
+        save_phase_checkpoints=False,
+    )
+    with pytest.raises(TypeError, match="cannot store as JSON"):
+        _model().train(params, train_step_fn=step, history=HistoryJournal(retention=10, chunk_size=10))
+    assert len(steps) == 1  # its line waits for the rate, but the rest of the record is checked at once
+
+
 @pytest.mark.parametrize("lr", ["float", "tensor"])
 def test_a_detached_update_clock_records_a_tensor_learning_rate_as_floats(lr_optims, lr):
     def stepping(ctx):

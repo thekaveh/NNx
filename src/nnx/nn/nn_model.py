@@ -33,6 +33,7 @@ from .._scheduler_clock import (
     SchedulerClock,
     listens,
     planned_updates,
+    recorded_lr,
     refuse_optimizer_name,
     uses_update_clock,
 )
@@ -46,7 +47,6 @@ from ..history import (
     _lend_idps,
     _ReplicaHistory,
     _training_history,
-    recorded_lr,
 )
 from ..models import (
     BatchAdapter,
