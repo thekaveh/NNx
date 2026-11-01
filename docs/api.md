@@ -8858,8 +8858,10 @@ One poolable group: the shared fields (``metric``, ``split``, ``selection``, ``c
 ``n_failed`` those not completed (failed, cancelled, running or of
 unknown status) and ``n_nonfinite`` completed ones without a finite
 value. ``std`` is the sample standard deviation (``n - 1``): ``None``
-when ``n < 2``; ``mean`` is ``None`` when ``n == 0``. ``unknown`` names
-the identity fields that are not known.
+when ``n < 2``; ``mean`` is ``None`` when ``n == 0``. The mean is the
+exact sum over ``n``, rounded once, so identical values have their own
+value as the mean and a ``std`` of 0. ``unknown`` names the identity
+fields that are not known.
 ```
 
 ##### `nnx.comparison.GroupSummary.unknown`
@@ -8923,7 +8925,8 @@ Configuration B against A over shared replicate keys.
 flipped: for a metric to minimize, a negative delta means B is lower);
 ``unmatched_a`` / ``unmatched_b`` list the replicate keys found on one
 side only, with their attempt ids. ``n``, ``mean`` and ``std`` (``n - 1``)
-summarize the finite deltas; ``n_nonfinite`` counts the pairs of two
+summarize the finite deltas (the mean rounded once, as
+:class:`GroupSummary`'s); ``n_nonfinite`` counts the pairs of two
 finite values whose delta overflows a float (excluded from ``n`` and
 reported); ``interval`` is the bootstrap's, when one was requested and
 ``n >= 2``.
@@ -8985,7 +8988,7 @@ No public description is currently available.
 nnx.comparison.Bootstrap.interval(self, deltas: 'Sequence[float]') -> 'Optional[tuple[float, float]]'
 ```
 
-No public description is currently available.
+The ``level`` percentile interval of the resampled means of ``deltas`` (``None`` for fewer than two). Each resample's mean is kept within its draws, so equal deltas ``d`` give ``(d, d)``.
 
 
 #### `nnx.comparison.ComparisonReport`
@@ -9074,9 +9077,25 @@ Observations of ``metric`` read from saved runs, without loading a model or a ch
 ```text
 Args:
     run_ids: the runs (under ``root``'s ``runs/``).
-    metric: the metric to read — a named metric (``train.metrics``), a
-        built-in field (``loss``, ``error``, ``accuracy``, ``f1``,
-        ``recall``, ``precision``) or an ``extra_metrics`` name.
+    metric: the metric to read: ``extra/<name>`` for an
+        ``extra_metrics`` value (the loggers' tag), ``metrics/<name>``
+        for any declared (``train.metrics``) or task metric (``mse``,
+        ``subset_accuracy``; the loggers use this form for one named
+        like a field) and ``field/<name>`` for one of the record's own
+        fields (``loss``, ``error``, ``accuracy``, ``f1``, ``recall``,
+        ``precision``). A bare name reads a declared or task metric,
+        else a field, else an extra metric. A declared or task metric
+        named like a field (a declared ``accuracy`` on a multilabel
+        task, a link task's own ``accuracy``) is read as the run's
+        monitor reads it, and the evaluation names it. A bare
+        name that the run records both as an extra metric and as a
+        field or a declared or task metric is refused with a
+        :class:`ComparisonError` naming ``extra/<name>`` and the other
+        reading, never read as one of them — even where the epoch's
+        value is NaN, which ``idps.csv`` reads back as missing. An
+        extra metric itself named with one of these prefixes
+        (``extra/x``) is read as ``extra/extra/x``; its own name is
+        refused.
     split: ``"validation"`` (the epoch's validation record) or
         ``"train"`` (its whole-epoch training summary — recorded only by
         runs that declare metrics or a monitor; never a last batch).
