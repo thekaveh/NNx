@@ -204,12 +204,20 @@ def _fingerprint(value: Any) -> str:
     """A digest of an input that is the same in every process: text as
     UTF-8, a numeric array or tensor as its dtype, shape and bytes, a tuple
     (several inputs) part by part, other JSON-able values as canonical JSON.
-    Anything else has no stable digest: the caller must name the derived
-    sample (``id=``)."""
+    Anything else — a text without a UTF-8 encoding (a lone surrogate)
+    included — has no stable digest: the caller must name the derived sample
+    (``id=``)."""
     import numpy as np
 
     if isinstance(value, str):
-        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+        try:
+            encoded = value.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise BenchmarkError(
+                f"a text input with no UTF-8 encoding (the lone surrogate {value[error.start]!r} at index "
+                f"{error.start}) has no stable digest to derive a sample id from; pass id="
+            ) from error
+        return hashlib.sha256(encoded).hexdigest()
     if isinstance(value, tuple):
         parts = ",".join(_fingerprint(part) for part in value)
         return hashlib.sha256(f"tuple:{parts}".encode()).hexdigest()
