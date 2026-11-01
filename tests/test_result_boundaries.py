@@ -384,3 +384,8 @@ def test_the_rows_of_several_text_inputs_are_the_first_parts_rows():
     assert decide_result(Spy(distributions=((0.9, 0.1), (0.2, 0.8))), TOPIC, pairs).is_ok
     # An input NNx cannot classify is the provider's to judge: its row count too.
     assert decide_result(Spy(), TOPIC, [{"pixels": [1, 2]}, {"pixels": [3, 4]}]).is_ok
+    # An empty batch has no rows, whatever it would hold: it is answered with no results.
+    for empty in ([], ([], [])):
+        spurious = decide_result(Spy(), TOPIC, empty)
+        assert spurious.is_err and "1 results for 0 input rows" in str(spurious.error.cause)
+        assert decide_result(Spy(distributions=()), TOPIC, empty).is_ok
