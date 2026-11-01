@@ -11,7 +11,7 @@ sampling lives in ``GenerativeNNModel.generate()`` (PR 4).
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 from torch import nn
@@ -76,6 +76,11 @@ class TransformerNN(nn.Module):
             # so .parameters() doesn't double-count and gradients flow
             # through a single shared tensor.
             self.lm_head.weight = self.tok_embed.weight
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        super().__setstate__(state)
+        if "_max_seq_len" not in self.__dict__:  # a whole-module pickle from 0.3.x (FIX-065)
+            self._max_seq_len = self.params.max_seq_len
 
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
         """Args:
