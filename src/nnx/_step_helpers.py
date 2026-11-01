@@ -24,6 +24,7 @@ import torch
 import torch.nn.functional as F
 
 from ._validation import require_finite_real
+from .models import _as_inputs
 from .nn.nn_model import TrainStepContext
 from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from .tasks import STEP_TASKS, TaskAdapter, _StepTasks
@@ -40,9 +41,11 @@ def first_input(model: Any, batch: Any, *, who: str) -> torch.Tensor:
     """A self-supervised paradigm's one input from a batch, on the model's
     device (labels, if any, are ignored): split by the model's batch adapter
     when it has one (FEAT-006) — which must yield exactly one input,
-    positional or keyword — else the net's own ``unpack_batch``, else the
-    first element of a tuple / list, else the batch itself (a net swapped in
-    for a built-in one)."""
+    positional or keyword — else the net's own ``unpack_batch``, whose
+    inputs must also be one input: a 1-tuple, or a bare tensor (never split
+    into rows, as ``NNModel._split_batch`` reads it) — else the first
+    element of a tuple / list, else the batch itself (a net swapped in for a
+    built-in one)."""
     adapter = getattr(model, "_batch_adapter", None)
     if adapter is not None:
         args, kwargs, _ = adapter.split(batch)
@@ -54,7 +57,8 @@ def first_input(model: Any, batch: Any, *, who: str) -> torch.Tensor:
             )
         x = inputs[0]
     elif hasattr(model.net, "unpack_batch"):
-        inputs, _ = cast(Any, model.net).unpack_batch(batch)
+        unpacked, _ = cast(Any, model.net).unpack_batch(batch)
+        inputs = _as_inputs(unpacked)
         if len(inputs) != 1:
             raise ValueError(f"{who} needs batches of exactly one input; the net's unpack_batch gave {len(inputs)}")
         (x,) = inputs

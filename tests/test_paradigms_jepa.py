@@ -782,3 +782,49 @@ def test_a_non_tensor_net_output_names_the_adapter_remedy(tmp_path, monkeypatch)
             params=_sgd_params(),
             train_step_fn=jepa_train_step_factory(target, predictor, _fixed_mask_fn(16, 4)),
         )
+
+
+# -------------------------------------------------------------------------
+# #564: a swapped net whose unpack_batch returns a bare tensor
+# -------------------------------------------------------------------------
+
+
+class _BareViT(ViTNN):
+    """A ViTNN whose ``unpack_batch`` returns its one input as a bare tensor,
+    as NNModel's supervised path reads it."""
+
+    def unpack_batch(self, batch):
+        return batch[0], None
+
+
+@pytest.mark.parametrize("batch_size", [8, 1])
+def test_a_swapped_net_with_a_bare_tensor_unpack_batch_trains_as_one_input(batch_size, tmp_path, monkeypatch):
+    """The step read each row of the bare tensor as an input: 8-row batches
+    were refused ("gave 8") and 1-row batches lost their batch axis (#564).
+    Swapped onto a built-in model, the net trains exactly as the same weights
+    wrapped with module= do, loss for loss."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    swapped = _build_tiny_vit_model()  # a built-in model: no batch adapter
+    swapped.net = _BareViT(image_size=32, patch_size=8, in_channels=3, d_model=32, n_layers=2, n_heads=4)
+    wrapped = NNModel(module=copy.deepcopy(swapped.net), params=NNModelParams(loss=Losses.MEAN_SQUARED_ERROR))
+    predictor = _build_predictor(swapped)
+    loader = _image_loader(n=8, batch_size=batch_size)
+    losses = []
+    for model in (swapped, wrapped):
+        target = build_target_encoder(model.net)
+        own = copy.deepcopy(predictor)
+        _attach_predictor_for_optim(model, own)
+        run = model.train(
+            params=NNTrainParams(
+                n_epochs=1,
+                train_loader=loader,
+                optim=NNOptimParams(name=Optims.SGD, max_lr=0.05, momentum=0.0, weight_decay=0.0),
+                seed=1,
+            ),
+            train_step_fn=jepa_train_step_factory(target, own, _fixed_mask_fn(16, 4), ema_momentum=0.5),
+        )
+        losses.append([idp.train_edp.loss for idp in run.idps])
+
+    assert all(loss is not None and torch.isfinite(torch.tensor(loss)) for loss in losses[0])
+    assert losses[0] == losses[1]

@@ -486,3 +486,39 @@ def test_a_non_tensor_net_output_names_the_adapter_remedy():
     model.net.add_module("_jepa_predictor", predictor)
     with pytest.raises(TypeError, match=REMEDY):
         model.train(params=_params([_batch(_images(3))]), objective=jepa_objective(target, predictor, _masks(FOUR)))
+
+
+# --- #564: a swapped net whose unpack_batch returns a bare tensor ------------------------------------------------
+
+
+class _BareViT(ViTNN):
+    """A ViTNN whose ``unpack_batch`` returns its one input as a bare tensor,
+    as NNModel's supervised path reads it."""
+
+    def unpack_batch(self, batch):
+        return batch[0], None
+
+
+@pytest.mark.parametrize("batch_size", [8, 1])
+def test_a_swapped_net_with_a_bare_tensor_unpack_batch_trains_as_one_input(batch_size):
+    """The objective read each row of the bare tensor as an input: 8-row
+    batches were refused ("gave 8") and 1-row batches lost their batch axis
+    (#564). Swapped onto a built-in model, the net trains exactly as the same
+    weights wrapped with module= do: loss for loss, one EMA update per batch."""
+    swapped, _, predictor = _parts(attach=False)
+    swapped.net = _BareViT(image_size=16, patch_size=4, in_channels=3, d_model=16, n_layers=1, n_heads=2)
+    wrapped = NNModel(module=copy.deepcopy(swapped.net), params=NNModelParams(loss=Losses.MEAN_SQUARED_ERROR))
+    images = _images(8)
+    loader = [(images[start : start + batch_size],) for start in range(0, 8, batch_size)]
+    losses = []
+    for model in (swapped, wrapped):
+        target = build_target_encoder(model.net)
+        own = copy.deepcopy(predictor)
+        model.net.add_module("_jepa_predictor", own)
+        objective = jepa_objective(target, own, _masks(FOUR, TWO), ema_momentum=0.5)
+        run = model.train(params=_params(loader, seed=1), objective=objective)
+        losses.append([idp.train_edp.loss for idp in run.idps])
+        assert objective.ema_updates == len(loader)
+
+    assert all(loss is not None and torch.isfinite(torch.tensor(loss)) for loss in losses[0])
+    assert losses[0] == losses[1]
