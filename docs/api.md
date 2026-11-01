@@ -9084,9 +9084,10 @@ Args:
         like a field) and ``field/<name>`` for one of the record's own
         fields (``loss``, ``error``, ``accuracy``, ``f1``, ``recall``,
         ``precision``). A bare name reads a declared or task metric,
-        else a field, else an extra metric. A declared metric named
-        like a field (``accuracy`` on a multilabel task) is read as the
-        run's monitor reads it, and the evaluation names it. A bare
+        else a field, else an extra metric. A declared or task metric
+        named like a field (a declared ``accuracy`` on a multilabel
+        task, a link task's own ``accuracy``) is read as the run's
+        monitor reads it, and the evaluation names it. A bare
         name that the run records both as an extra metric and as a
         field or a declared or task metric is refused with a
         :class:`ComparisonError` naming ``extra/<name>`` and the other

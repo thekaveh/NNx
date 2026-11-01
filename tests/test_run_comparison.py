@@ -1411,6 +1411,12 @@ def _read(run, name):
     return item
 
 
+# What a bare "accuracy" that reads a declared or task metric named like the field says it read.
+_ACCURACY_NOTE = (
+    "the declared or task metric 'accuracy' (metrics/accuracy), not the record's own 'accuracy' field (field/accuracy)"
+)
+
+
 @pytest.mark.parametrize("journal", [False, True], ids=["idps.csv", "history journal"])
 def test_extra_and_declared_metrics_are_read_by_their_namespaced_names(journal, tmp_path, monkeypatch):
     """``extra/<name>`` reads an extra metric and ``metrics/<name>`` a
@@ -1508,10 +1514,7 @@ def test_extra_and_declared_metrics_are_read_by_their_namespaced_names(journal, 
     # value, as the run's monitor does, and the evaluation says so.
     item = _read(multilabel, "accuracy")
     assert item.value == ml.metrics["accuracy"] != ml.accuracy
-    assert item.evaluation.split(";")[0] == (
-        f"epoch 1 validation record ({source}): the declared metric 'accuracy' (metrics/accuracy), "
-        "not the record's own 'accuracy' field (field/accuracy)"
-    )
+    assert item.evaluation.split(";")[0] == f"epoch 1 validation record ({source}): {_ACCURACY_NOTE}"
 
 
 def test_a_bare_name_of_a_declared_metric_named_like_a_field_reads_the_declared_value(tmp_path, monkeypatch):
@@ -1535,11 +1538,54 @@ def test_a_bare_name_of_a_declared_metric_named_like_a_field_reads_the_declared_
     frame.to_csv(csv_path, index=False)
     bare, declared, own = _read(run, "accuracy"), _read(run, "metrics/accuracy"), _read(run, "field/accuracy")
     assert (bare.value, declared.value, own.value) == (0.8, 0.8, 0.5)
-    assert (
-        "the declared metric 'accuracy' (metrics/accuracy), not the record's own 'accuracy' field (field/accuracy)"
-        in bare.evaluation
-    )
+    assert _ACCURACY_NOTE in bare.evaluation
     assert "declared" not in declared.evaluation and "declared" not in own.evaluation
+
+
+def test_a_bare_name_of_a_task_metric_named_like_a_field_names_it_without_calling_it_declared(tmp_path, monkeypatch):
+    """A link task records its own ``accuracy`` beside the ``auroc`` / ``ap``
+    it declares, and its record has no ``accuracy`` field: the bare name
+    reads the task metric and names it as a declared or task metric, never
+    as a declared one."""
+    from nnx import MonitorSpec
+    from nnx.link_tasks import LinkTask, link_predictor_spec, split_links
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    g = torch.Generator().manual_seed(0)
+    community = torch.arange(30) % 2
+    edges = [
+        (u, v)
+        for u in range(30)
+        for v in range(u + 1, 30)
+        if torch.rand(1, generator=g).item() < (0.4 if community[u] == community[v] else 0.03)
+    ]
+    x = torch.nn.functional.one_hot(community, 2).float() + 0.1 * torch.randn(30, 2, generator=g)
+    task = LinkTask(split_links(torch.tensor(edges).t().contiguous(), 30, val=0.1, test=0.1, seed=0))
+    assert [spec.name for spec in task.metric_specs()] == ["auroc", "ap"]
+    spec = link_predictor_spec(input_dim=2, hidden_dims=[16], seed=0)
+    run = NNModel(params=NNModelParams(net=spec, loss=Losses.MEAN_SQUARED_ERROR)).train(
+        params=NNTrainParams(
+            n_epochs=2,
+            seed=0,
+            data_id="link",
+            save_phase_checkpoints=False,
+            train_loader=task.loader("train", x, batch_size=32, seed=0),
+            val_loader=task.loader("val", x, batch_size=16),
+            optim=NNOptimParams.builder().adam(max_lr=1e-2).build(),
+            metrics=task.metric_specs(),
+            monitor=MonitorSpec("auroc"),
+        ),
+        objective=task.objective(),
+        eval_step_fn=task.eval_step(),
+        provenance=ExperimentManifest(data={"train": hash_bytes(b"toy")}),
+    )
+    edp = run.idps[-1].val_edp
+    assert edp.kind == "link" and edp.accuracy is None and math.isfinite(edp.metrics["accuracy"])
+    bare, metric, own = _read(run, "accuracy"), _read(run, "metrics/accuracy"), _read(run, "field/accuracy")
+    assert bare.value == metric.value == edp.metrics["accuracy"] and own.value is None
+    assert bare.evaluation.split(";")[0] == f"epoch 1 validation record (idps.csv): {_ACCURACY_NOTE}"
+    assert "the declared metric" not in bare.evaluation and "declared" not in metric.evaluation
 
 
 def test_a_namespaced_name_that_is_also_a_literal_extra_name_is_refused(tmp_path, monkeypatch):
@@ -1673,10 +1719,9 @@ def test_a_nan_value_still_holds_its_name_in_either_history_source(journal, tmp_
     )
 
     # A NaN declared accuracy: the bare name reads it, on either split, and names it.
-    note = "the declared metric 'accuracy' (metrics/accuracy), not the record's own 'accuracy' field (field/accuracy)"
     for split in ("validation", "train"):
         (item,) = observations_from_runs([multilabel.id], metric=Metric("accuracy", "maximize"), split=split)
-        assert nan_read(item.value) and note in item.evaluation, split
+        assert nan_read(item.value) and _ACCURACY_NOTE in item.evaluation, split
     assert _read(multilabel, "field/accuracy").value == ml.accuracy
 
 
