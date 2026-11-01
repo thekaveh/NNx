@@ -295,9 +295,9 @@ def test_a_resumes_step_count_refusal_hands_every_ranks_model_and_rng_back(first
 
 
 def test_a_resume_whose_first_fetch_fails_on_one_rank_is_rolled_back_on_both(first_split_run, monkeypatch):
-    """Rank 1's first fetch fails; rank 0 waits in its first step until the
-    process group's timeout fails it. Neither has committed an update, so
-    both hand their model and RNG back."""
+    """Rank 1's first fetch fails; rank 0 waits in its first step until rank
+    1 has left (or the process group's timeout expires). Neither has
+    committed an update, so both hand their model and RNG back."""
     monkeypatch.setenv("NNX_DDP_TIMEOUT", "15")
     launch("resume_unreadable_rank", first_split_run, timeout=180)
     waiting, failing = results(first_split_run)
