@@ -335,7 +335,7 @@ Subclass `BatchAdapter` for other layouts. Implement `split(batch) -> (args, kwa
 
 **What renders.** A registered or runtime run has no built-in `NNParams`. `run.yaml` omits `net`, and `model.net` holds the descriptor mapping (`kind: registered | runtime`). `str(run)` and the notebook table show the descriptor instead of dims, dropout and activation. The descriptor fields are `kind`, `factory` (`id@vN`), `config` and `seed`, or `module` and `reconstructible=False`. `NNRun.load` restores the same descriptor.
 
-Built-in runs serialize exactly as before. `to_onnx` exports any tensor-output module whose forward takes positional tensors, from its `example_input`. It refuses a mapping example (a keyword-input module): wrap such a module in one with a positional forward. Task adapters (§6.3) check the loss up front and the output width on the first batch. `GenerativeNNModel` stays built-in only. [`examples/custom_module.py`](https://github.com/thekaveh/NNx/blob/main/examples/custom_module.py) trains, reconstructs and prints a registered encoder and a wrapped keyword-input module. `examples/04_onnx_export.py::registered_module_variant` exports one.
+Built-in runs serialize exactly as before. `to_onnx` exports any tensor-output module whose forward takes positional tensors, from its `example_input`. It refuses a mapping example (a keyword-input module): wrap such a module in one with a positional forward. Task adapters (§6.3) check the loss up front and the output width on the first batch; `predict()` and `predict_proba()` check an in-memory input's whole output the same way. `GenerativeNNModel` stays built-in only. [`examples/custom_module.py`](https://github.com/thekaveh/NNx/blob/main/examples/custom_module.py) trains, reconstructs and prints a registered encoder and a wrapped keyword-input module. `examples/04_onnx_export.py::registered_module_variant` exports one.
 
 ## 4. What lands on disk
 
@@ -771,7 +771,12 @@ below):
 - **Model checks.** The model itself is checked at construction. The loss
   must suit the task (`CROSS_ENTROPY` / `NEGATIVE_LOG_LIKELIHOOD`,
   `BINARY_CROSS_ENTROPY`, `MEAN_SQUARED_ERROR`), and a declared width must
-  equal `output_dim`. `Nets.TRANSFORMER` and `Nets.VIT` are out of scope; language-model,
+  equal `output_dim`. A wrapped, registered or swapped net's width is unknown
+  until it runs. The default step and `evaluate()` check it on every batch, and
+  `predict()`, `iter_predict()` and `predict_proba()` without a spec check a
+  loader's first batch or an in-memory input's whole output. Both refuse an
+  output without axis 1 or of another width with `TaskValidationError`.
+  `Nets.TRANSFORMER` and `Nets.VIT` are out of scope; language-model,
   ranking, link and structured-prediction tasks are separate work.
   `NNModel.train`, `Trainer.train` and `NNModel.evaluate()` (the default
   and streaming validation steps included) re-check the live `loss_fn`

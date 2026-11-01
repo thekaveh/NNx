@@ -5595,6 +5595,13 @@ class NNModel(_HubMixinBase):
         that unpacks like the original 2-tuple. For probabilities, decoded
         labels and per-row sample ids, use :meth:`predict_proba`.
 
+        A model with a task checks the output before decoding it, as
+        :meth:`predict_proba` does: the whole output of an in-memory input,
+        or a loader's first batch. An output without axis 1 or of a width
+        other than the declared one raises :class:`~nnx.TaskValidationError`
+        (a wrapped, registered or swapped net's width is unknown until it
+        runs).
+
         Non-destructive: ``self.net.training`` is snapshotted before
         switching to ``eval()`` and restored on exit (matches
         ``NNModel.evaluate``, ``nnx.viz.activation_map``, and
@@ -5602,7 +5609,10 @@ class NNModel(_HubMixinBase):
         train → predict → train-more pattern silently leaves the net
         in ``.eval()`` mode.
         """
-        logits, _ = self._predict_logits(X, caller="predict()")
+        adapter = getattr(self, "task_adapter", None)
+        logits, _ = self._predict_logits(
+            X, caller="predict()", check_first=adapter.check_logits if adapter is not None else None
+        )
         return PredictResult(logits=logits, classes=self._decode_classes(logits))
 
     def _decode_classes(self, logits: np.ndarray) -> np.ndarray:
@@ -5645,7 +5655,9 @@ class NNModel(_HubMixinBase):
         An empty loader yields no batches (the eager calls raise instead).
         Over a shuffling ``DataLoader``, the first batch whose sample ids are
         iteration positions warns (graph seed rows carry global node indices,
-        graph-level rows their own graph ids).
+        graph-level rows their own graph ids). Without a spec, a model with a
+        task checks the first batch's output against it, as :meth:`predict`
+        does, before yielding any batch.
         """
         from ..prediction import _check_spec_fits, prediction_from_logits
         from ..streaming import PredictionBatch, PredictionStream, _as_probability_spec, _check_stream_source
@@ -5678,7 +5690,12 @@ class NNModel(_HubMixinBase):
                 ):
                     yield adapter.prediction(logits, ids)
             else:
-                for logits, ids in self._logit_batches(X, positional_warning=warn_as, caller="iter_predict()"):
+                for logits, ids in self._logit_batches(
+                    X,
+                    check_first=adapter.check_logits if adapter is not None else None,
+                    positional_warning=warn_as,
+                    caller="iter_predict()",
+                ):
                     yield PredictionBatch(logits=logits, classes=self._decode_classes(logits), sample_ids=ids)
 
         return PredictionStream(batches())
@@ -5704,7 +5721,11 @@ class NNModel(_HubMixinBase):
         an ordinary ``DataLoader`` (the dataset index only when the loader
         does not shuffle — a shuffling loader warns); and the global node
         index for graph seed rows. A spec that does not fit the logits is
-        rejected on the first loader batch.
+        rejected on the first loader batch. Without a spec, the task checks
+        the output as :meth:`predict` does, an in-memory input's whole output
+        as a loader's first batch, and raises
+        :class:`~nnx.TaskValidationError` for an output without axis 1 or of
+        a width other than the declared one.
 
         The task kind is never inferred from the loss or the output shape.
         For the default decoding rules, a categorical spec's ``decoded``
@@ -5749,9 +5770,10 @@ class NNModel(_HubMixinBase):
         raw logits (numpy) plus an ``int64`` sample id per row, computed in
         eval mode under ``no_grad`` with every submodule's training mode
         restored on exit (success or failure). ``check_first`` sees the
-        first loader batch's logits, so a caller can reject them before the
-        rest of the loader is run. ``batches=True`` treats any iterable of
-        batches like a ``DataLoader``."""
+        first loader batch's logits (so a caller can reject them before the
+        rest of the loader is run) or an in-memory input's whole logits.
+        ``batches=True`` treats any iterable of batches like a
+        ``DataLoader``."""
         precision = _inference_precision(self)  # before eval(): a failure leaves the modes alone
         training_modes = _capture_training_modes(self.net)
         self.net.eval()
@@ -5794,6 +5816,8 @@ class NNModel(_HubMixinBase):
             with torch.no_grad(), precision.autocast():
                 output = self._net_forward(args_t, kwargs_t)
             Y_hat_logits = precision.output(output).cpu().numpy()
+            if check_first is not None:  # the whole output, as a loader's first batch (#533)
+                check_first(Y_hat_logits)
             return Y_hat_logits, np.arange(Y_hat_logits.shape[0], dtype=np.int64)
         finally:
             _restore_training_modes(training_modes)
