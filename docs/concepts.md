@@ -3092,16 +3092,17 @@ batch is never used.
 - `extra/<name>` reads an `extra_metrics` value, as the loggers tag it.
 - `metrics/<name>` reads any declared (`train.metrics`) or task metric
   (`mse`, `subset_accuracy`). The loggers use this form only for a declared
-  metric named like a field and tag the others bare.
+  or task metric named like a field and tag the others bare.
 - `field/<name>` reads one of the record's own fields (`loss`, `error`,
   `accuracy`, `f1`, `recall`, `precision`). Any other name after `field/`
   is refused before a run is read.
 - A bare name reads a declared or task metric, else a record field, else an
   extra metric.
-- A bare name of a declared metric named like a field (`accuracy` on a
-  multilabel task) reads the declared metric, as the run's monitor does. The
-  observation's `evaluation` then says the declared metric was read, not the
-  record's own field, which `field/accuracy` reads.
+- A bare name of a declared or task metric named like a field (a declared
+  `accuracy` on a multilabel task, or a link task's own `accuracy`) reads
+  that metric, as the run's monitor does. The observation's `evaluation`
+  then says the declared or task metric was read, not the record's own
+  field, which `field/accuracy` reads.
 - A bare name that the run records both as an extra metric and as a field
   or a declared or task metric is refused with a `ComparisonError` naming
   `extra/<name>` and the other reading. For an extra metric named `f1`,

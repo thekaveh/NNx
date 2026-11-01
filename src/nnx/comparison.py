@@ -1372,8 +1372,11 @@ def _raw_metric_value(
         )
     if name in metrics:
         note = None
-        if name in _SCALARS:
-            note = f"the declared metric {name!r} (metrics/{name}), not the record's own {name!r} field (field/{name})"
+        if name in _SCALARS:  # a declared metric, or a task's own (a link task's accuracy)
+            note = (
+                f"the declared or task metric {name!r} (metrics/{name}), "
+                f"not the record's own {name!r} field (field/{name})"
+            )
         return (float(edp.metrics[name]) if name in edp.metrics else None), note
     if name in _SCALARS:
         value = getattr(edp, name)
@@ -1514,9 +1517,10 @@ def observations_from_runs(
             like a field) and ``field/<name>`` for one of the record's own
             fields (``loss``, ``error``, ``accuracy``, ``f1``, ``recall``,
             ``precision``). A bare name reads a declared or task metric,
-            else a field, else an extra metric. A declared metric named
-            like a field (``accuracy`` on a multilabel task) is read as the
-            run's monitor reads it, and the evaluation names it. A bare
+            else a field, else an extra metric. A declared or task metric
+            named like a field (a declared ``accuracy`` on a multilabel
+            task, a link task's own ``accuracy``) is read as the run's
+            monitor reads it, and the evaluation names it. A bare
             name that the run records both as an extra metric and as a
             field or a declared or task metric is refused with a
             :class:`ComparisonError` naming ``extra/<name>`` and the other
@@ -1646,7 +1650,7 @@ def observations_from_runs(
                     if source == "idps.csv"
                     else "(missing, or NaN)"
                 )
-                evaluation += note  # a missing declared metric still names what was read
+                evaluation += note  # a missing declared or task metric still names what was read
             if committed is not None and last is not None and last.get("checkpoint") is not None:
                 evaluation += f"; committed with {last['checkpoint']} generation {last.get('generation')}"
         # Every run records "train" (a Trainer run copies its data_id there
