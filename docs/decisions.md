@@ -410,8 +410,9 @@ result.calls                                           # provider calls made
       the state's modality. A list of texts is text, and so is a tuple of
       several inputs whose first part is one; a tensor or array is a
       tensor. Any other state (images as dicts, say) is the provider's to
-      judge, as in `collect` and `decide_result`; one `str` is no batch and
-      is refused;
+      judge, as in `collect` and `decide_result`. One value is no batch
+      and is refused: one `str`, or a 0-d tensor or array (alone or as a
+      tuple's first part);
     - a `limits` that is neither `None` (the default `Limits()`) nor a
       `Limits`, such as a mapping, `{}` or `0`;
     - a `Limits.max_tokens` cap the provider cannot enforce (it needs
