@@ -1545,8 +1545,9 @@ def test_a_bare_name_of_a_declared_metric_named_like_a_field_reads_the_declared_
 def test_a_namespaced_name_that_is_also_a_literal_extra_name_is_refused(tmp_path, monkeypatch):
     """An extra metric named ``extra/x`` was read by that bare name; the
     name now means extra ``x``, so a record holding the literal name refuses
-    it rather than read another value, naming ``extra/extra/x``. So does one
-    named ``field/f1``, which now reads the macro f1 field."""
+    it rather than read another value, naming ``extra/extra/x``. So do ones
+    named ``field/f1``, which now reads the macro f1 field, and
+    ``metrics/foo``. A name without a slash, even ``field``, is still bare."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
     run = _named_fit(
@@ -1554,22 +1555,38 @@ def test_a_namespaced_name_that_is_also_a_literal_extra_name_is_refused(tmp_path
         None,
         lambda X: (X[:, 0] > 0.3).long(),
         2,
-        extra_metrics={"extra/x": lambda t, p: 0.5, "field/f1": lambda t, p: 0.75},
+        extra_metrics={
+            "extra/x": lambda t, p: 0.5,
+            "field/f1": lambda t, p: 0.75,
+            "metrics/foo": lambda t, p: 0.125,
+            "field": lambda t, p: 0.25,
+        },
         data_id="cls",
     )
     with pytest.raises(ComparisonError, match="'extra/extra/x'"):
         _read(run, "extra/x")
     with pytest.raises(ComparisonError, match="reads its field 'f1': read the first as 'extra/field/f1'"):
         _read(run, "field/f1")
+    with pytest.raises(ComparisonError, match="reads its declared or task metric 'foo': read the first as 'extra/m"):
+        _read(run, "metrics/foo")
     assert (_read(run, "extra/extra/x").value, _read(run, "extra/field/f1").value) == (0.5, 0.75)
+    assert (_read(run, "extra/metrics/foo").value, _read(run, "field").value, _read(run, "extra/field").value) == (
+        0.125,
+        0.25,
+        0.25,
+    )
 
 
-def test_a_field_name_that_names_no_field_is_refused_before_any_run_is_read():
+def test_a_field_name_that_names_no_field_is_refused_before_any_run_is_read(tmp_path):
     """``field/<name>`` reads one of the six record fields; any other name
-    is a mistake on every run, refused before a run is read."""
+    is a mistake on every run, refused before a run is read. A name without
+    the ``field/`` prefix, even ``field`` itself, goes on to read the run."""
     for name in ("field/mse", "field/", "field/extra/f1"):
         with pytest.raises(ComparisonError, match=f"metric {name!r} names no record field: the fields are loss, "):
             observations_from_runs(["no-such-run"], metric=Metric(name, "maximize"))
+    for name in ("field", "fieldwork", "extra", "field/loss"):
+        with pytest.raises(ComparisonError, match="run no-such-run: run.yaml is missing or unreadable"):
+            observations_from_runs(["no-such-run"], metric=Metric(name, "maximize"), root=str(tmp_path))
 
 
 class _NaNMetric:
@@ -1664,20 +1681,8 @@ def test_a_nan_value_still_holds_its_name_in_either_history_source(journal, tmp_
 
 
 def _part2(values, config):
-    return [
-        Observation(
-            run_id=f"{config}-{i}",
-            attempt_id=f"att-{config}-{i}",
-            metric=ACC,
-            value=v,
-            status="completed",
-            split="validation",
-            selection="last",
-            config=config,
-            replicate=f"seed={i}",
-        )
-        for i, v in enumerate(values)
-    ]
+    """The ticket's Part 2 replicates, which declare no data, split or evaluation."""
+    return replicates(values, config=config, data=None, split_id=None, evaluation=None)
 
 
 def test_identical_values_have_their_own_mean_and_no_spread():

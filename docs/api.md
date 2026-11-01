@@ -9091,7 +9091,10 @@ Args:
         field or a declared or task metric is refused with a
         :class:`ComparisonError` naming ``extra/<name>`` and the other
         reading, never read as one of them — even where the epoch's
-        value is NaN, which ``idps.csv`` reads back as missing.
+        value is NaN, which ``idps.csv`` reads back as missing. An
+        extra metric itself named with one of these prefixes
+        (``extra/x``) is read as ``extra/extra/x``; its own name is
+        refused.
     split: ``"validation"`` (the epoch's validation record) or
         ``"train"`` (its whole-epoch training summary — recorded only by
         runs that declare metrics or a monitor; never a last batch).
