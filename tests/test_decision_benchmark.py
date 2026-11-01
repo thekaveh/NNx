@@ -1044,3 +1044,41 @@ def test_selective_coverage_of_saturating_float32_logits_matches_the_policy_on_p
     for name in ("in_family", "family:default", "perturbation:original"):
         coverage = report.slices[name].metrics["selective_coverage"]
         assert (coverage.value, coverage.denominator) == (expected, 20), name
+
+
+# --- #557: text without a UTF-8 encoding ---------------------------------------------------------------------
+
+HALF_EMOJI = json.loads('"the striker scored \\ud83d"')  # strict JSON: an emoji a JavaScript client cut in half
+
+
+def test_a_text_input_without_a_utf8_encoding_has_no_derived_id():
+    """#557: a derived sample id hashes its text input as UTF-8, and a lone surrogate raised a bare
+    UnicodeEncodeError out of rewrite_input / add_context and every other perturbation."""
+    base = Sample("t1", TOPIC, "the striker scored a goal", "sport")
+    broken = Sample("t2", TOPIC, HALF_EMOJI, "sport")
+    pair = Sample("t3", TOPIC, ("a premise", HALF_EMOJI), "sport")
+    for derive in (
+        lambda: rewrite_input(base, HALF_EMOJI, kind="adversarial"),
+        lambda: rewrite_input(broken, HALF_EMOJI, kind="multilingual"),
+        lambda: add_context(broken, "unrelated filler text"),
+        lambda: add_context(base, HALF_EMOJI),
+        lambda: permute_options(broken, ["economy", "sport"]),
+        lambda: permute_options(pair, ["economy", "sport"]),
+    ):
+        with pytest.raises(BenchmarkError, match="no UTF-8 encoding .*lone surrogate .*pass id="):
+            derive()
+    assert rewrite_input(base, HALF_EMOJI, kind="adversarial", id="t1-cut").input == HALF_EMOJI  # named: no digest
+
+
+def test_perturbed_options_without_a_utf8_encoding_are_refused_before_any_sample():
+    """No question holding a lone surrogate reaches collect() or evaluate(): building its option refuses it."""
+    from nnx.decisions import InvalidDecisionRequest
+
+    base = Sample("t1", TOPIC, "the striker scored a goal", "sport")
+    for derive in (
+        lambda: redescribe(base, {"sport": HALF_EMOJI}),
+        lambda: add_distractors(base, [("weather", HALF_EMOJI)]),
+        lambda: add_none_of_the_above(base, (HALF_EMOJI.split()[-1], "None of these")),
+    ):
+        with pytest.raises(InvalidDecisionRequest, match="lone surrogate"):
+            derive()

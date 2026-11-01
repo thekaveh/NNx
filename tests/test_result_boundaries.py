@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pickle
 
@@ -345,3 +346,46 @@ def test_question_state_with_keys_of_another_kind_is_refused(state):
 
     with pytest.raises(InvalidDecisionRequest, match="does not take"):
         question_from_state(state)
+
+
+# ---------------- #557: text without a UTF-8 encoding; inputs NNx cannot classify ----------------
+
+HALF_EMOJI = json.loads('"Is this spam? \\ud83d"')  # strict JSON: an emoji cut in half
+
+
+@pytest.mark.parametrize(
+    ("kind", "prompt", "options"),
+    [
+        ("choice", HALF_EMOJI, [("a", "yes"), ("b", "no")]),
+        ("boolean", HALF_EMOJI, None),
+        ("score", "Level?", [("low", "Low"), ("high", HALF_EMOJI)]),
+        ("choice", "Spam?", [(HALF_EMOJI.split()[-1], "yes"), ("b", "no")]),
+    ],
+    ids=["choice-prompt", "boolean-prompt", "score-description", "option-id"],
+)
+def test_a_request_without_a_utf8_encoding_is_an_err_and_nothing_reaches_a_provider(kind, prompt, options):
+    """#557: such a request built a question, decide_result called the provider, and digest() then raised a
+    bare UnicodeEncodeError."""
+    provider = Spy(distributions=((0.5, 0.5),))
+    result = validate_decision_request_result(kind, prompt, options).bind(
+        lambda question: decide_result(provider, question, ["buy now"])
+    )
+    assert result.is_err and provider.calls == 0
+    assert result.error.code == "invalid_decision_request" and result.error.where == "request"
+    assert isinstance(result.error.cause, InvalidDecisionRequest) and "lone surrogate" in str(result.error.cause)
+
+
+def test_the_rows_of_several_text_inputs_are_the_first_parts_rows():
+    """A tuple of text lists (premises, hypotheses) has the first part's rows, as DecisionJob reads it."""
+    pairs = (["premise 1", "premise 2"], ["hypothesis 1", "hypothesis 2"])
+    short = decide_result(Spy(), TOPIC, pairs)  # one result for two rows
+    assert short.is_err and short.error.code == "invalid_decision_response"
+    assert "1 results for 2 input rows" in str(short.error.cause)
+    assert decide_result(Spy(distributions=((0.9, 0.1), (0.2, 0.8))), TOPIC, pairs).is_ok
+    # An input NNx cannot classify is the provider's to judge: its row count too.
+    assert decide_result(Spy(), TOPIC, [{"pixels": [1, 2]}, {"pixels": [3, 4]}]).is_ok
+    # An empty batch has no rows, whatever it would hold: it is answered with no results.
+    for empty in ([], ([], [])):
+        spurious = decide_result(Spy(), TOPIC, empty)
+        assert spurious.is_err and "1 results for 0 input rows" in str(spurious.error.cause)
+        assert decide_result(Spy(distributions=()), TOPIC, empty).is_ok

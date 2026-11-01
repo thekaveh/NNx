@@ -39,7 +39,10 @@ this end to end on a deterministic local model.
 | `Score(prompt, levels)` | 2+ ordered `Option(level_id, description)`, lowest first | a distribution over the levels |
 
 Options may be given as `(id, description)` pairs; anything else (a bare
-string, say) raises `InvalidDecisionRequest`. `kind` (`"choice"`,
+string, say) raises `InvalidDecisionRequest`. So does a prompt, option id or
+description without a UTF-8 encoding: a lone surrogate, such as half an
+emoji a JavaScript client cut or a `surrogateescape` decode. It is refused
+when the question is built, before any provider call. `kind` (`"choice"`,
 `"boolean"`, `"score"`) is the discriminator. `state()` /
 `question_from_state(...)` round-trip a question as plain data. Malformed
 state raises `InvalidDecisionRequest`, never a bare `KeyError`.
@@ -402,8 +405,18 @@ result.calls                                           # provider calls made
   lowers it.
 - **Refused before any call.** These raise `InvalidJob` with no call made:
     - duplicate question ids;
-    - a question the provider cannot serve (its `check(question, inputs)`
-      when it has one, else `capabilities().check(...)`);
+    - a question the provider cannot serve: its `check(question, inputs)`
+      when it has one, else `capabilities().check(...)` when NNx can tell
+      the state's modality. A list of texts is text, and so is a tuple of
+      several inputs whose first part is one; a tensor or array is a
+      tensor. Any other state (images as dicts, say) is the provider's to
+      judge, as in `collect` and `decide_result`. So is an empty list or
+      tuple, which has no row to tell its modality by (a continuation that
+      re-asks the rows that match and finds none, say); it is answered with
+      no results. One value is no batch and is refused: one `str`, or a
+      0-d tensor or array (alone or as a tuple's first part);
+    - a `limits` that is neither `None` (the default `Limits()`) nor a
+      `Limits`, such as a mapping, `{}` or `0`;
     - a `Limits.max_tokens` cap the provider cannot enforce (it needs
       `count_tokens(questions, inputs)`);
     - an abstention `policy` whose labels or `model_id` do not fit its
@@ -458,11 +471,13 @@ result.calls                                           # provider calls made
 - **Other cancellations.** A cancellation the provider raises itself is a
   provider failure, not a cancelled job. Cancelling the task cancels only
   the job's own tasks and re-raises.
-- **Timeouts and limits.** `Limits.timeout` raises `JobTimeout`. A request or
-  depth limit lets the calls already in flight finish, then raises
-  `JobLimitExceeded`. A request whose call began is reported with
-  `sent=True`, never as rolled back: whatever the provider did with it stays
-  done.
+- **Timeouts and limits.** `Limits.timeout` raises `JobTimeout`. It is a
+  positive number of seconds that converts to a float: `float("inf")` never
+  expires, and an integer too large for a float (`10**400`) is an
+  `InvalidJob` when the `Limits` is built. A request or depth limit lets the
+  calls already in flight finish, then raises `JobLimitExceeded`. A request
+  whose call began is reported with `sent=True`, never as rolled back:
+  whatever the provider did with it stays done.
 - **Hooks in `arun`.** The provider's hooks (`check`, `capabilities()`,
   `count_tokens`) are synchronous and run on the event loop in `arun`. Keep
   them local and fast (no network round trip). The timeout is checked
@@ -602,9 +617,9 @@ print(report.text())
 - **Variant ids.** Perturbation helpers give each variant a distinct id, or
   the `id=` you pass. The id is the original id, the kind and a digest of
   the change. The
-  digest is the same in every process for text, numeric arrays and tensors,
-  tuples of them and JSON-able values. An input with no stable digest needs
-  `id=`.
+  digest is the same in every process for text that has a UTF-8 encoding,
+  numeric arrays and tensors, tuples of them and JSON-able values. An input
+  with no stable digest, such as text holding a lone surrogate, needs `id=`.
 - **Exports.** `to_json()`, `to_csv()` and `text()` agree on units,
   eligible, failure and `extra` counts, unavailable states and notes (the
   CSV's `note` column). A non-finite

@@ -215,8 +215,9 @@ def validate_decision_request_result(
     ``(id, description)`` pairs (a Choice's options, a Score's levels, none
     for a Boolean). The question objects are built inside the boundary, so a
     malformed request — duplicate or empty ids, too few options, an empty
-    prompt, an unknown kind — is ``Err(BoundaryError(code=
-    "invalid_decision_request"))`` and nothing is ever sent to a provider.
+    prompt, text without a UTF-8 encoding (a lone surrogate), an unknown
+    kind — is ``Err(BoundaryError(code="invalid_decision_request"))`` and
+    nothing is ever sent to a provider.
     Only :class:`~nnx.decisions.InvalidDecisionRequest` is converted.
     """
     from .decisions.schema import InvalidDecisionRequest, question_from_state
@@ -292,12 +293,9 @@ def decide_result(
             )
         policy._check(tuple(question.option_ids), cast(str, model_id), "probabilities", None)
     context = {"question": question.digest(), "provider": type(provider).__name__}
-    from .decisions.jobs import _check_results, _modality
+    from .decisions.jobs import _check_results, _rows
 
-    try:
-        rows: Optional[int] = _modality(inputs)[1]
-    except UnsupportedCapability:  # a provider-specific input: its row count is the provider's to check
-        rows = None
+    rows = _rows(inputs)  # None for a provider-specific input: its row count is the provider's
     try:
         # Checked as DecisionJob checks an answer: one result of this
         # question per input row.
