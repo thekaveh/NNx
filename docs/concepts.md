@@ -3109,6 +3109,9 @@ batch is never used.
   the macro `f1` field. The rule holds when the epoch's value is NaN, which
   `idps.csv` reads back as missing: its column still names the value, so
   both history sources refuse the same names.
+- An extra metric itself named with one of these prefixes (`extra/x`) is
+  read as `extra/extra/x`. Its own name is refused, since it now means
+  another value; earlier versions read it by that name.
 
 **Configuration identity.** The configuration identity is a digest of the
 run's configuration without its salt, seeds and device. The seeds are the

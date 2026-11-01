@@ -1521,7 +1521,10 @@ def observations_from_runs(
             field or a declared or task metric is refused with a
             :class:`ComparisonError` naming ``extra/<name>`` and the other
             reading, never read as one of them — even where the epoch's
-            value is NaN, which ``idps.csv`` reads back as missing.
+            value is NaN, which ``idps.csv`` reads back as missing. An
+            extra metric itself named with one of these prefixes
+            (``extra/x``) is read as ``extra/extra/x``; its own name is
+            refused.
         split: ``"validation"`` (the epoch's validation record) or
             ``"train"`` (its whole-epoch training summary — recorded only by
             runs that declare metrics or a monitor; never a last batch).
@@ -1557,8 +1560,7 @@ def observations_from_runs(
     """
     if not isinstance(metric, Metric):
         raise ComparisonError(f"metric must be a Metric, got {type(metric).__name__}")
-    namespace, _, key = metric.name.partition("/")
-    if namespace == "field" and key not in _SCALARS:
+    if metric.name.startswith("field/") and metric.name[len("field/") :] not in _SCALARS:
         raise ComparisonError(
             f"metric {metric.name!r} names no record field: the fields are {', '.join(_SCALARS)} "
             f"(an extra metric itself named {metric.name!r} is read as 'extra/{metric.name}')"
