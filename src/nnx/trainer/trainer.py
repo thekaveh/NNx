@@ -54,7 +54,7 @@ from .._scheduler_clock import (
 )
 from .._update_engine import check_scaler_ownership, warn_unowned_trainables
 from ..components import ComponentRegistry
-from ..history import HistoryJournal, _check_history, _dispatch_epoch_end, _training_history
+from ..history import HistoryJournal, _check_history, _dispatch_epoch_end, _training_history, recorded_lr
 from ..monitors import MonitorRecord, MonitorSpec, MonitorTracker, _TrainEpochSummary
 from ..nn.enum.checkpoints import Checkpoints
 from ..nn.nn_model import (
@@ -849,7 +849,7 @@ class Trainer:
                             train_edp=train_edp,
                             # The rate this batch trained with when the primary
                             # schedule steps on updates inside the step (FEAT-014).
-                            lr=lr_used if lr_used is not None else optimizers[primary].param_groups[0]["lr"],
+                            lr=lr_used if lr_used is not None else recorded_lr(optimizers[primary]),
                             update_count=engine.commits if engine is not None else None,
                         )
                     )
@@ -864,6 +864,9 @@ class Trainer:
                         f"train_loader yielded no batches in epoch {idx_epoch} — check batch_size vs "
                         "dataset size with drop_last=True, or whether the loader is a one-shot iterable."
                     )
+                # #541: as NNModel.train, a tensor learning rate's copies are
+                # read back as floats once, before the callbacks and the commit.
+                records.settle_lrs()
 
                 if validate:
                     assert params.val_loader is not None

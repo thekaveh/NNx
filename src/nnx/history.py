@@ -71,8 +71,10 @@ import math
 import os
 import tempfile
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Optional, Union
+
+import torch
 
 from ._json_depth import MAX_JSON_DEPTH, too_deep
 
@@ -430,6 +432,13 @@ class _JournalWriter:
         self._lines[-1] = _record_line(record)
         self._pending[-1] = record
 
+    def settle_pending(self, settled: Sequence[NNIterationDataPoint]) -> None:
+        """Take the waiting records from ``settled``, the epoch's newest with
+        float learning rates (#541). Their lines, encoded as they arrived,
+        hold those floats already."""
+        if self._pending:
+            self._pending[:] = settled[len(settled) - len(self._pending) :]
+
     def discard_epoch(self) -> None:
         """Forget the epoch in progress (FEAT-033): its unwritten records,
         and the chunks it already wrote. Those stay on disk beyond the
@@ -737,6 +746,30 @@ def has_journal(run_path: str) -> bool:
 # --- the training loop's history ---------------------------------------------------------------
 
 
+def recorded_lr(optimizer: Any) -> Any:
+    """The learning rate of ``optimizer``'s first group that a batch's
+    record keeps (#541). A tensor rate (a registered optimizer factory's),
+    which the scheduler updates in place, is copied on its device, so the
+    batch loop takes no host sync; the epoch's copies are read back as
+    floats together (``settle_lrs``)."""
+    lr = optimizer.param_groups[0]["lr"]
+    return lr.detach().clone() if isinstance(lr, torch.Tensor) else lr
+
+
+def _settled_lrs(records: Sequence[NNIterationDataPoint]) -> Optional[list[NNIterationDataPoint]]:
+    """``records`` with each tensor learning rate (:func:`recorded_lr`) as
+    the float it holds, read back in one host sync; ``None`` when every
+    rate is a float already."""
+    held = [(index, record.lr) for index, record in enumerate(records) if isinstance(record.lr, torch.Tensor)]
+    if not held:
+        return None
+    values = torch.stack([lr.reshape(()) for _, lr in held]).tolist()
+    settled = list(records)
+    for (index, _), value in zip(held, values, strict=True):
+        settled[index] = replace(records[index], lr=float(value))
+    return settled
+
+
 class _EagerHistory:
     """Every record in one list, rewritten to ``idps.csv`` each epoch — the
     behaviour of every run without a :class:`HistoryJournal`."""
@@ -760,6 +793,13 @@ class _EagerHistory:
 
     def replace_last(self, record: NNIterationDataPoint) -> None:
         self.records[-1] = record
+
+    def settle_lrs(self) -> None:
+        """The epoch's tensor learning rates as floats (#541), before its
+        callbacks and commit read the records."""
+        settled = _settled_lrs(self.records[self._epoch_start :])
+        if settled is not None:
+            self.records[self._epoch_start :] = settled
 
     def discard_epoch(self) -> None:
         """Drop the epoch in progress (a stop at an update boundary, FEAT-033)."""
@@ -858,6 +898,19 @@ class _JournalHistory:
     def replace_last(self, record: NNIterationDataPoint) -> None:
         self._writer.replace_last(record)
         self._window[-1] = record
+
+    def settle_lrs(self) -> None:
+        """The epoch's tensor learning rates as floats (#541), in the window
+        and among the records waiting for a chunk (always the window's
+        newest: ``chunk_size <= retention``)."""
+        held = min(self._epoch_records, len(self._window))
+        settled = _settled_lrs(list(itertools.islice(reversed(self._window), held))[::-1])
+        if settled is None:
+            return
+        for _ in range(held):
+            self._window.pop()
+        self._window.extend(settled)
+        self._writer.settle_pending(settled)
 
     def __bool__(self) -> bool:
         return bool(self._window)

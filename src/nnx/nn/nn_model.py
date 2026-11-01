@@ -46,6 +46,7 @@ from ..history import (
     _lend_idps,
     _ReplicaHistory,
     _training_history,
+    recorded_lr,
 )
 from ..models import (
     BatchAdapter,
@@ -5242,7 +5243,7 @@ class NNModel(_HubMixinBase):
                             epoch_idx=idx_epoch,
                             batch_idx=idx_batch,
                             train_edp=train_edp,
-                            lr=lr_used if lr_used is not None else optimizer.param_groups[0]["lr"],
+                            lr=lr_used if lr_used is not None else recorded_lr(optimizer),
                             update_count=engine.commits if engine is not None else None,
                         )
                     )
@@ -5282,6 +5283,9 @@ class NNModel(_HubMixinBase):
                         f"train_loader yielded no batches in epoch {idx_epoch} — check batch_size vs "
                         "dataset size with drop_last=True, or whether the loader is a one-shot iterable."
                     )
+                # #541: a tensor learning rate's per-batch copies, read back as
+                # floats once, before validation, the callbacks and the commit.
+                records.settle_lrs()
 
                 if validate and compile_session is not None:
                     compile_session.where = {"phase": "validation", "epoch": idx_epoch}
