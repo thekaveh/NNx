@@ -3089,19 +3089,26 @@ batch is never used.
 
 **Metric names.** The `Metric` name says which recorded value is read:
 
-- `extra/<name>` reads an `extra_metrics` value, and `metrics/<name>` a
-  declared (`train.metrics`) or task metric (`mse`, `subset_accuracy`), as
-  the loggers name them.
-- A bare name reads a declared or task metric, else a record field (`loss`,
-  `error`, `accuracy`, `f1`, `recall`, `precision`), else an extra metric.
+- `extra/<name>` reads an `extra_metrics` value, as the loggers tag it.
+- `metrics/<name>` reads any declared (`train.metrics`) or task metric
+  (`mse`, `subset_accuracy`). The loggers use this form only for a declared
+  metric named like a field and tag the others bare.
+- `field/<name>` reads one of the record's own fields (`loss`, `error`,
+  `accuracy`, `f1`, `recall`, `precision`). Any other name after `field/`
+  is refused before a run is read.
+- A bare name reads a declared or task metric, else a record field, else an
+  extra metric.
 - A bare name of a declared metric named like a field (`accuracy` on a
   multilabel task) reads the declared metric, as the run's monitor does. The
   observation's `evaluation` then says the declared metric was read, not the
-  record's own field.
-- A bare name that the record holds both as an extra metric and as a field
+  record's own field, which `field/accuracy` reads.
+- A bare name that the run records both as an extra metric and as a field
   or a declared or task metric is refused with a `ComparisonError` naming
-  `extra/<name>`. For an extra metric named `f1`, `"f1"` is refused and
-  `"extra/f1"` reads it; it never reads the macro `f1` field in its place.
+  `extra/<name>` and the other reading. For an extra metric named `f1`,
+  `"f1"` is refused, `"extra/f1"` reads the extra metric and `"field/f1"`
+  the macro `f1` field. The rule holds when the epoch's value is NaN, which
+  `idps.csv` reads back as missing: its column still names the value, so
+  both history sources refuse the same names.
 
 **Configuration identity.** The configuration identity is a digest of the
 run's configuration without its salt, seeds and device. The seeds are the

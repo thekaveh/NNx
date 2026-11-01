@@ -47,7 +47,7 @@ import math
 import numbers
 import os
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence, Set
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -384,7 +384,7 @@ class GroupSummary:
                 f"{strays} do not",
                 fields=POOL_FIELDS,
             )
-        values = [_value_of(item.value) for item in self.observations if item.finite]
+        values = _finite_values(self.observations)
         mean, std = _mean_std(values)
         object.__setattr__(self, "n", len(values))
         object.__setattr__(self, "n_attempts", len(self.observations))
@@ -425,6 +425,16 @@ def _value_of(value: Optional[float]) -> float:
     if value is None:  # callers filter on Observation.finite
         raise ComparisonError("an observation without a value has no finite value")
     return value
+
+
+def _finite_values(observations: Iterable[Observation]) -> list[float]:
+    """The values a :class:`GroupSummary` summarizes: its finite ones."""
+    return [_value_of(item.value) for item in observations if item.finite]
+
+
+def _finite_deltas(pairs: Iterable[Pair]) -> list[float]:
+    """The deltas a :class:`PairedComparison` summarizes: its finite ones."""
+    return [pair.delta for pair in pairs if pair.delta is not None and math.isfinite(pair.delta)]
 
 
 def _group(observations: tuple[Observation, ...]) -> GroupSummary:
@@ -655,7 +665,7 @@ class PairedComparison:
             left, right = by_a[key], by_b[key]
             delta = _value_of(right.value) - _value_of(left.value) if left.finite and right.finite else None
             pairs.append(Pair(str(key), left.id, right.id, delta))
-        deltas = [pair.delta for pair in pairs if pair.delta is not None and math.isfinite(pair.delta)]
+        deltas = _finite_deltas(pairs)
         mean, std = _mean_std(deltas)
         object.__setattr__(self, "pairs", tuple(pairs))
         object.__setattr__(
@@ -961,11 +971,10 @@ def _state_rounded_twice(report: ComparisonReport) -> dict[str, Any]:
     versions saved hold: such a report is neither edited nor corrupt."""
     state = report.state()
     for group, saved in zip(report.summary.groups, state["summary"]["groups"], strict=True):
-        values = [_value_of(item.value) for item in group.observations if item.finite]
-        mean, std = _mean_std(values, _mean_rounded_twice)
+        mean, std = _mean_std(_finite_values(group.observations), _mean_rounded_twice)
         saved.update(mean=_encode(mean), std=_encode(std))
     for result, saved in zip(report.comparisons, state["comparisons"], strict=True):
-        deltas = [pair.delta for pair in result.pairs if pair.delta is not None and math.isfinite(pair.delta)]
+        deltas = _finite_deltas(result.pairs)
         mean, std = _mean_std(deltas, _mean_rounded_twice)
         saved.update(mean=_encode(mean), std=_encode(std))
         interval = None if result.bootstrap is None else result.bootstrap._interval(deltas, within_draws=False)
@@ -982,7 +991,13 @@ def _bootstrap_from_state(state: Optional[Mapping[str, Any]]) -> Optional[Bootst
 # --- reading saved runs ---------------------------------------------------------------------------
 
 _SCALARS = ("loss", "error", "accuracy", "f1", "recall", "precision")
-_NAMESPACES = ("extra/", "metrics/")  # namespaced metric names, as the loggers write them
+# Namespaced metric names: an extra metric (as the loggers tag it), a
+# declared or task metric, and one of the record's own fields.
+_NAMESPACES = ("extra/", "metrics/", "field/")
+_READINGS = {"extra": "extra metric", "metrics": "declared or task metric", "field": "field"}  # by namespace
+_HELD = {"extra": "an extra metric", "metrics": "a declared or task metric", "field": "its own field"}
+_RECORDS = ("val_edp", "train_summary")  # the records a split reads: validation, whole-epoch training
+_GROUPS = ("extra", "metrics")  # a record's named values, as idps.csv flattens them: <record>.<group>.<name>
 
 
 def _canonical_text(value: Any) -> str:
@@ -1283,57 +1298,94 @@ def _identities(refs: Mapping[str, Any]) -> Optional[str]:
     )
 
 
-def _metric_value(edp: Any, name: str, where: str) -> tuple[Optional[float], Optional[str]]:
+def _recorded_names(idps: Iterable[Any], columns: Iterable[Any] = ()) -> dict[tuple[str, str], frozenset[str]]:
+    """The extra and declared or task metric names a run's history records,
+    by record and group (``("val_edp", "extra")``): its records' own and,
+    for ``idps.csv``, its ``<record>.<group>.<name>`` columns, which still
+    name a NaN that the records read back as missing."""
+    found: dict[tuple[str, str], set[str]] = {(record, group): set() for record in _RECORDS for group in _GROUPS}
+    for idp in idps:
+        for record in _RECORDS:
+            edp = getattr(idp, record)
+            if edp is not None:
+                for group in _GROUPS:
+                    found[record, group].update(getattr(edp, group))
+    for column in map(str, columns):
+        record, _, rest = column.partition(".")
+        group, _, name = rest.partition(".")
+        if (record, group) in found and name:
+            found[record, group].add(name)
+    return {key: frozenset(names) for key, names in found.items()}
+
+
+def _metric_value(
+    edp: Any, name: str, where: str, *, extras: Set[str] = frozenset(), metrics: Set[str] = frozenset()
+) -> tuple[Optional[float], Optional[str]]:
     """The record's value of metric ``name`` and, when a bare name read one
     of two same-named values, a note naming the one read; ``where`` names
     the record in a refusal."""
     try:
-        return _raw_metric_value(edp, name, where)
+        return _raw_metric_value(edp, name, where, extras=extras, metrics=metrics)
     except ComparisonError:
         raise
     except (TypeError, ValueError) as error:
         raise ComparisonError(f"the record's {name!r} is not a number: {error}") from error
 
 
-def _raw_metric_value(edp: Any, name: str, where: str) -> tuple[Optional[float], Optional[str]]:
-    """The loggers' names: ``extra/<name>`` reads an extra metric and
-    ``metrics/<name>`` a declared or task metric. A bare name reads a
-    declared or task metric (as a monitor does, even one named like a
-    field), else a field, else an extra metric — and is refused when the
-    record holds it both as an extra metric and as a field or a declared or
-    task metric, rather than read one of them in place of the other."""
+def _raw_metric_value(
+    edp: Any, name: str, where: str, *, extras: Set[str] = frozenset(), metrics: Set[str] = frozenset()
+) -> tuple[Optional[float], Optional[str]]:
+    """``extra/<name>`` reads an extra metric (as the loggers tag it),
+    ``metrics/<name>`` a declared or task metric and ``field/<name>`` one of
+    the record's own fields. A bare name reads a declared or task metric (as
+    a monitor does, even one named like a field), else a field, else an
+    extra metric — and is refused when the run records it both as an extra
+    metric and as a field or a declared or task metric, rather than read one
+    of them in place of the other. ``extras`` and ``metrics`` are the names
+    the run's history records (:func:`_recorded_names`) beside this
+    record's own, so a NaN that ``idps.csv`` read back as missing still
+    counts, as the history journal's NaN does."""
     if edp is None:
         return None, None
+    extras, metrics = {*extras, *edp.extra}, {*metrics, *edp.metrics}
     namespace, _, key = name.partition("/")
     if name.startswith(_NAMESPACES):
         # An extra metric itself named "extra/x" (the old bare reading) is "extra/extra/x".
-        literal = "extra" if name in edp.extra else "metrics" if name in edp.metrics else None
+        literal = "extra" if name in extras else "metrics" if name in metrics else None
         if literal is not None:
             raise ComparisonError(
-                f"{where} holds a metric itself named {name!r}, but {name!r} reads its {namespace} metric "
+                f"{where} holds a metric itself named {name!r}, but {name!r} reads its {_READINGS[namespace]} "
                 f"{key!r}: read the first as '{literal}/{name}'"
             )
-        values = edp.extra if namespace == "extra" else edp.metrics
-        return (float(values[key]) if key in values else None), None
-    if name in edp.extra and (name in edp.metrics or name in _SCALARS):
-        if name in edp.metrics:
-            both, remedy = "a declared or task metric", f"read them as 'metrics/{name}' and 'extra/{name}'"
+        if namespace == "field":
+            value = getattr(edp, key) if key in _SCALARS else None
         else:
-            both, remedy = "its own field", f"read the extra metric as 'extra/{name}'"
+            values = edp.extra if namespace == "extra" else edp.metrics
+            value = values[key] if key in values else None
+        return (None if value is None else float(value)), None
+    if name in extras and (name in metrics or name in _SCALARS):
+        held = ["extra", *(["metrics"] if name in metrics else []), *(["field"] if name in _SCALARS else [])]
+        reads = [f"the {_READINGS[h]} as {h + '/' + name!r}" for h in held]
         raise ComparisonError(
-            f"{where}: {name!r} names both {both} and an extra metric; a bare name never picks one: {remedy}"
+            f"{where}: {name!r} names {_listed([_HELD[h] for h in held])}; a bare name never picks one: "
+            f"read {_listed(reads)}"
         )
-    if name in edp.metrics:
+    if name in metrics:
         note = None
         if name in _SCALARS:
-            note = f"the declared metric {name!r} (metrics/{name}), not the record's own {name!r} field"
-        return float(edp.metrics[name]), note
+            note = f"the declared metric {name!r} (metrics/{name}), not the record's own {name!r} field (field/{name})"
+        return (float(edp.metrics[name]) if name in edp.metrics else None), note
     if name in _SCALARS:
         value = getattr(edp, name)
         return (None if value is None else float(value)), None
     if name in edp.extra:
         return float(edp.extra[name]), None
     return None, None
+
+
+def _listed(items: Sequence[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c``."""
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
 def _cached_state(files: dict[Any, Any], run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], str]:
@@ -1377,9 +1429,10 @@ def _read_run_state(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any]
 
 def _read_run(
     run_id: str, root: Optional[str], files: Optional[dict[Any, Any]] = None
-) -> tuple[Mapping[str, Any], list[Any], Any, Optional[int], bool, str]:
-    """A run's ``run.yaml``, records, provenance, committed epoch (``None``:
-    not filtered), whether that epoch is known, and its directory. Under the
+) -> tuple[Mapping[str, Any], list[Any], dict[tuple[str, str], frozenset[str]], Any, Optional[int], bool, str]:
+    """A run's ``run.yaml``, records, the names they record
+    (:func:`_recorded_names`), provenance, committed epoch (``None``: not
+    filtered), whether that epoch is known, and its directory. Under the
     history protocol LAST commits the history, and the attempt record names
     LAST's epoch: no checkpoint is read."""
     import pandas as pd
@@ -1414,6 +1467,7 @@ def _read_run(
                 f"run {run_id}: unreadable history journal: {type(error).__name__}: {error}"
             ) from error
         idps = list(last_records.values())
+        recorded = _recorded_names(idps)  # the journal keeps a NaN as NaN
     else:
         csv_path = os.path.join(run_path, "idps.csv")
         try:
@@ -1424,9 +1478,11 @@ def _read_run(
             for row in rows:  # only each epoch's last record is ever read
                 last_rows[row.get("epoch_idx")] = row
             idps = [NNIterationDataPoint.from_state(row) for row in last_rows.values()]
+            # A NaN cell is read back as missing, but its column still names the value.
+            recorded = _recorded_names(idps, () if frame is None else frame.columns)
         except Exception as error:  # an empty or damaged history is not an empty one
             raise ComparisonError(f"run {run_id}: malformed idps.csv: {type(error).__name__}: {error}") from error
-    return run_state, idps, provenance, committed, known, run_path
+    return run_state, idps, recorded, provenance, committed, known, run_path
 
 
 def observations_from_runs(
@@ -1452,18 +1508,20 @@ def observations_from_runs(
     Args:
         run_ids: the runs (under ``root``'s ``runs/``).
         metric: the metric to read: ``extra/<name>`` for an
-            ``extra_metrics`` value and ``metrics/<name>`` for a declared
-            (``train.metrics``) or task metric (``mse``,
-            ``subset_accuracy``), as the loggers name them. A bare name
-            reads a declared or task metric, else a built-in field
-            (``loss``, ``error``, ``accuracy``, ``f1``, ``recall``,
-            ``precision``), else an extra metric. A declared metric named
+            ``extra_metrics`` value (the loggers' tag), ``metrics/<name>``
+            for any declared (``train.metrics``) or task metric (``mse``,
+            ``subset_accuracy``; the loggers use this form for one named
+            like a field) and ``field/<name>`` for one of the record's own
+            fields (``loss``, ``error``, ``accuracy``, ``f1``, ``recall``,
+            ``precision``). A bare name reads a declared or task metric,
+            else a field, else an extra metric. A declared metric named
             like a field (``accuracy`` on a multilabel task) is read as the
             run's monitor reads it, and the evaluation names it. A bare
-            name that the record holds both as an extra metric and as a
+            name that the run records both as an extra metric and as a
             field or a declared or task metric is refused with a
-            :class:`ComparisonError` naming ``extra/<name>``, never read
-            as one of them.
+            :class:`ComparisonError` naming ``extra/<name>`` and the other
+            reading, never read as one of them — even where the epoch's
+            value is NaN, which ``idps.csv`` reads back as missing.
         split: ``"validation"`` (the epoch's validation record) or
             ``"train"`` (its whole-epoch training summary — recorded only by
             runs that declare metrics or a monitor; never a last batch).
@@ -1499,6 +1557,12 @@ def observations_from_runs(
     """
     if not isinstance(metric, Metric):
         raise ComparisonError(f"metric must be a Metric, got {type(metric).__name__}")
+    namespace, _, key = metric.name.partition("/")
+    if namespace == "field" and key not in _SCALARS:
+        raise ComparisonError(
+            f"metric {metric.name!r} names no record field: the fields are {', '.join(_SCALARS)} "
+            f"(an extra metric itself named {metric.name!r} is read as 'extra/{metric.name}')"
+        )
     if split not in ("validation", "train"):
         raise ComparisonError(f"split must be 'validation' or 'train', got {split!r}")
     if selection not in ("last", "best"):
@@ -1518,7 +1582,7 @@ def observations_from_runs(
     identities: dict[str, tuple[str, int]] = {}  # run id -> (identity with its parents', ancestor count)
     files: dict[Any, Any] = {}  # every run.yaml / provenance read in this call, read once
     for run_id in run_ids:
-        run_state, idps, provenance, committed, known, run_path = _read_run(run_id, root, files)
+        run_state, idps, recorded, provenance, committed, known, run_path = _read_run(run_id, root, files)
         source = "history journal" if has_journal(run_path) else "idps.csv"
         attempt = None if provenance is None else provenance.attempt
         status = "unknown" if attempt is None else attempt.status
@@ -1556,11 +1620,18 @@ def observations_from_runs(
         evaluation = unknown_reason
         if chosen is not None:
             if split == "validation":
-                edp = chosen.val_edp
+                edp, record = chosen.val_edp, "val_edp"
             else:  # the whole-epoch summary only: a last batch is not an epoch's value
-                edp = chosen.train_summary
-            value, note = _metric_value(edp, metric.name, f"run {run_id}'s epoch {chosen.epoch_idx} {split} record")
-            evaluation = f"epoch {chosen.epoch_idx} {split} record ({source})" + ("" if note is None else f": {note}")
+                edp, record = chosen.train_summary, "train_summary"
+            value, note = _metric_value(
+                edp,
+                metric.name,
+                f"run {run_id}'s epoch {chosen.epoch_idx} {split} record",
+                extras=recorded[record, "extra"],
+                metrics=recorded[record, "metrics"],
+            )
+            note = "" if note is None else f": {note}"
+            evaluation = f"epoch {chosen.epoch_idx} {split} record ({source}){note}"
             if edp is None:
                 evaluation = (
                     "unknown: no whole-epoch training summary (declare metrics or a monitor)"
@@ -1573,6 +1644,7 @@ def observations_from_runs(
                     if source == "idps.csv"
                     else "(missing, or NaN)"
                 )
+                evaluation += note  # a missing declared metric still names what was read
             if committed is not None and last is not None and last.get("checkpoint") is not None:
                 evaluation += f"; committed with {last['checkpoint']} generation {last.get('generation')}"
         # Every run records "train" (a Trainer run copies its data_id there
