@@ -1116,7 +1116,10 @@ They are the counterparts of `diffusion_train_step_factory` and
 `jepa_train_step_factory`, which stay available and unchanged.
 
 Each reads one input per batch. When the model has a batch adapter, the
-batch is split by it, and the adapter must then yield exactly one input.
+batch is split by it, and the adapter must then yield exactly one input. As
+in the supervised step, the adapter's `output()` turns the net's return value
+into the tensor the loss scores (§3.2). `jepa_objective` applies it to the
+EMA target's return value too.
 Each returns one normalized term, `"noise_mse"` / `"latent_mse"`: the
 squared-error **sum** over every valid element, over the element count. It
 also returns detached metrics (`metrics={term: value}`, no classification
@@ -1443,6 +1446,8 @@ The factory builds tensors on CPU; the train step and sampler migrate them to `m
 ### 9.2. Denoising network
 
 `DiffusionMLP` is a small conditional MLP: sinusoidal time embed → MLP projection → concat with flattened `x` → MLP → noise prediction. It's *not* a U-Net. For image-space diffusion, the same schedule / train step / sampler work against any user-supplied `nn.Module` with the `forward(x, t)` signature.
+
+The train step, `diffusion_objective` and `sample` read the module's return value through the model's batch adapter's `output()` (§3.2). A module that returns something other than the noise tensor, such as a diffusers `UNet2DModel` (a `UNet2DOutput` by default), needs an adapter whose `output()` extracts it. The default adapter refuses a non-tensor with a `TypeError` that names this remedy.
 
 ### 9.3. Training step
 
