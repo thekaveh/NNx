@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 from ..params.nn_params import NNParams
+from ._pickling import restore_params_property
 
 
 class FeedFwdNN(nn.Module):
@@ -47,6 +48,11 @@ class FeedFwdNN(nn.Module):
         self.__dict__["_hidden"] = tuple(
             (params.activation_for(i)(), params.dropout_for(i)) for i in range(len(params.dims) - 2)
         )
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        # A whole-module pickle from 0.3.x stored params as a plain attribute
+        # and no cached fields: set it through the property (FIX-065).
+        restore_params_property(self, state)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         X = X.reshape(X.size(0), -1)  # a non-contiguous input (a transposed array) too
