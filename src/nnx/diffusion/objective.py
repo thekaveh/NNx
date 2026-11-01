@@ -76,6 +76,10 @@ class DiffusionObjective(Objective):
     uninterrupted run would have drawn. A resume with a different schedule
     is rejected before anything is restored.
 
+    The denoiser's return value is read through the model's batch
+    adapter's ``output()``, so a module returning something else (a
+    diffusers ``UNet2DOutput``) needs an adapter that extracts the noise.
+
     Args:
         schedule: the :class:`NoiseSchedule` (any device; the coefficients
             are indexed on the model's device).

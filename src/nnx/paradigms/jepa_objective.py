@@ -117,6 +117,10 @@ class JEPAObjective(Objective):
     predictor reference or a different spec is rejected before anything is
     restored.
 
+    Both encoders' return values, the online net's and the EMA target's,
+    are read through the model's batch adapter's ``output()``, so a net
+    returning a non-tensor needs an adapter that extracts the embeddings.
+
     Before any run is reserved (:meth:`check_run`) the objective refuses:
     a net without the ViT patch contract (``n_patches``,
     ``patch_positions()``); a predictor that is not a submodule of
