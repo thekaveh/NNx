@@ -1071,9 +1071,9 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         # #507: a resume that fails on every rank before its first committed
         # update hands each rank's model and RNG back: the step-count refusal
         # (rank 1 has more batches, past the descriptor check), or rank 1's
-        # first fetch failing while rank 0 waits in its first step until the
-        # process group's (short) timeout fails it. #540: or a writer-only
-        # on_train_begin failing, agreed on every rank.
+        # first fetch failing while rank 0 waits in its first step until rank
+        # 1 has left (or the process group's short timeout expires). #540: or
+        # a writer-only on_train_begin failing, agreed on every rank.
         import time
 
         first_id = open("first_run_id.txt", encoding="utf-8").read().strip()
@@ -1114,6 +1114,7 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         out["rng_unchanged"] = torch.equal(torch.get_rng_state(), torch_rng)
         if name == "resume_unreadable_rank":
             out["teardown_done"] = True  # the timed-out group is left for process exit
+            out["hard_exit"] = True  # and ends with os._exit: its C++ teardown can abort the rank
         if name == "resume_writer_begin_fails":
             out["shutdown"] = _leave_together()
     elif name == "parked":
@@ -1223,6 +1224,14 @@ def main() -> None:
     if not result.get("teardown_done"):
         nnx_dist.shutdown()  # leave together (a no-op when the scenario already did)
     _mark("left the group")
+    if result.get("hard_exit"):
+        # A timed-out Gloo group's destructors can abort a rank while the
+        # interpreter finalizes ("terminate called without an active
+        # exception", exit -6), so end without them once the result is saved.
+        _mark("exiting without teardown")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 if __name__ == "__main__":
