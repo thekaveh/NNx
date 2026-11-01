@@ -98,16 +98,19 @@ def test_update_ema_is_convex_combination():
 
 def test_update_ema_takes_a_one_element_tensor_momentum():
     # A momentum scheduled with torch (``torch.linspace(0.996, 1.0, n)[i]``)
-    # updates like the same float.
+    # updates like the same float. The float is the tensor's own fp32 value
+    # (0.9 rounds to 0.89999998), so the two updates match bit for bit
+    # whatever weights the unseeded Linear starts from.
     src = torch.nn.Linear(3, 3)
     by_float, by_tensor = build_target_encoder(src), build_target_encoder(src)
     with torch.no_grad():
         for p in src.parameters():
             p.add_(torch.ones_like(p))
-    update_ema(src, by_float, momentum=0.9)
-    update_ema(src, by_tensor, momentum=torch.tensor(0.9))
+    momentum = torch.tensor(0.9)
+    update_ema(src, by_float, momentum=float(momentum))
+    update_ema(src, by_tensor, momentum=momentum)
     for a, b in zip(by_float.parameters(), by_tensor.parameters(), strict=True):
-        assert torch.allclose(a, b)
+        assert torch.equal(a, b)
 
 
 @pytest.mark.parametrize(
