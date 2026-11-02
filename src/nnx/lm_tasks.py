@@ -52,6 +52,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import torch
+from torch._C._functorch import is_batchedtensor, is_legacy_batchedtensor
 
 from .components import ComponentSpec
 from .objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult
@@ -93,7 +94,8 @@ class _TokenNLL(torch.autograd.Function):
     differentiable in the logits. Its backward writes ``(softmax - one_hot)
     * grad`` into one ``(n, V)`` buffer in float32 or wider, the gradient
     itself (cast once more to the logits' dtype for half-precision logits),
-    where autograd's own logsumexp and gather backward peak at four. Its
+    where autograd's own logsumexp and gather backward peak at four; under
+    ``create_graph`` or for a batched gradient it runs out of place. Its
     ``setup_context``, ``jvp`` and generated vmap rule keep ``torch.func``
     transforms and forward-mode AD working, as on ``cross_entropy``
     (Dynamo does not trace a custom ``jvp``, so ``torch.compile`` breaks
@@ -117,7 +119,11 @@ class _TokenNLL(torch.autograd.Function):
     def backward(ctx: Any, *grads: torch.Tensor) -> tuple[torch.Tensor, None]:
         flat, chosen, lse = ctx.saved_tensors
         grad, index = grads[0].unsqueeze(1), chosen.unsqueeze(1)
-        if torch.is_grad_enabled():  # create_graph=True: out of place, so the gradient has a derivative too
+        batched = is_batchedtensor(grads[0]) or is_legacy_batchedtensor(grads[0])
+        # Out of place under create_graph=True, so the gradient has a derivative too, and for a batched incoming
+        # gradient (is_grads_batched, a vectorized jacobian, vmap over autograd.grad), whose batch an in-place
+        # write cannot hold.
+        if torch.is_grad_enabled() or batched:
             out = torch.softmax(flat.to(lse.dtype), dim=-1) * grad
             return (out - torch.zeros_like(out).scatter(1, index, grad)).to(flat.dtype), None
         out = torch.sub(flat, lse.unsqueeze(1)).exp_().mul_(grad)  # softmax * grad, in lse's dtype
@@ -450,17 +456,20 @@ class CausalLMTask:
         are widened to float32 for it, as the NLL always was, and its
         backward fills one ``(n, V)`` buffer in float32 or wider, the
         gradient itself (cast once more to the logits' dtype for
-        half-precision logits); second derivatives, ``torch.func``
-        transforms and forward-mode AD run through it as through the
-        cross-entropy. Label smoothing keeps the cross-entropy for the loss
-        and adds a no-grad pass of the same NLL, which is also evaluation's
-        (``with_ce=False``) only pass. The accuracy is an argmax."""
+        half-precision logits); second derivatives, batched gradients,
+        ``torch.func`` transforms and forward-mode AD run through it as
+        through the cross-entropy. Label smoothing keeps the cross-entropy
+        for the loss and adds a no-grad pass of the same NLL, which is also
+        evaluation's (``with_ce=False``) only pass. The accuracy is an
+        argmax."""
         targets = targets.to(logits.device)
         valid = valid.to(logits.device)
         n = int(valid.sum())
         if n == 0:  # an empty sum keeps the graph and stays finite whatever the logits hold
             return logits.reshape(-1)[:0].sum(), 0.0, 0, 0
-        if n == valid.numel():  # every position scored: a view, no (n, V) copy
+        # Every position scored: a view, no (n, V) copy. Logits or targets whose shape does not fit the mask fall
+        # through to the indexing, which refuses them.
+        if n == valid.numel() and logits.shape[:-1] == valid.shape == targets.shape:
             flat, chosen = logits.reshape(-1, logits.shape[-1]), targets.reshape(-1)
         else:
             flat, chosen = logits[valid], targets[valid]  # (n, V): unscored rows stay out of the softmax
