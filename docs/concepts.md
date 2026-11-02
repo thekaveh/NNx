@@ -1044,7 +1044,12 @@ of one microbatch (the default) takes a single backward pass through its
 combined loss, and a term of weight `0` is never back-propagated. At the
 window's end the gradients are built in the buffers, which are released
 before the optimizer steps. An accumulated window therefore holds about one
-gradient set per term at its peak, like the default step's one set.
+gradient set per term at its peak, like the default step's one set. A
+parameter with a post-accumulate-grad hook
+(`Tensor.register_post_accumulate_grad_hook`) never sees these buffers: its
+window takes each term's gradients with `torch.autograd.grad`, which does not
+run the hook, and holds one more gradient set beside the buffers while it
+back-propagates.
 
 The update window is
 `accumulate_grad_batches` microbatches, or fewer when the epoch ends. At its

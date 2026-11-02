@@ -188,6 +188,8 @@ class UpdateEngine:
         self._trains = False  # a term with a nonzero weight and samples was seen
         # A one-microbatch window's combined gradients (one backward pass).
         self._fused: Optional[list[Optional[torch.Tensor]]] = None
+        # The window gathers its gradients out of place, as before #576 (see _backward).
+        self._out_of_place = False
 
     #: Whether the last :meth:`commit` dropped its window under the
     #: non-finite policy (a non-finite term or non-finite gradients).
@@ -270,18 +272,39 @@ class UpdateEngine:
         parameter's is left alone). Each active parameter's ``.grad`` holds
         its buffer during the pass, so autograd adds into it in place: no
         second gradient set beside the buffers (#576). ``.grad`` is empty
-        again afterwards; the engine owns it until :meth:`commit`."""
+        again afterwards; the engine owns it until :meth:`commit`.
+
+        The rest of the window gathers its gradients out of place instead,
+        with ``torch.autograd.grad`` as before #576, once a parameter has a
+        post-accumulate-grad hook (the in-place pass would run it on a term
+        buffer, and it could change the update) or refuses its buffer (its
+        dtype, device or shape changed mid-window)."""
         if self.scaler is not None:
             loss = self.scaler.scale(loss)
         params = [self._params[j] for j in active]
-        for j, param in zip(active, params, strict=True):
-            param.grad = grads[j]
-        try:
-            torch.autograd.backward(loss, inputs=params, retain_graph=retain_graph)
-        finally:
-            for j, param in zip(active, params, strict=True):
-                grads[j] = param.grad
-                param.grad = None
+        if not self._out_of_place and any(param._post_accumulate_grad_hooks for param in params):
+            self._out_of_place = True
+        if not self._out_of_place:
+            assigned = 0
+            try:
+                for j, param in zip(active, params, strict=True):
+                    param.grad = grads[j]
+                    assigned += 1
+                torch.autograd.backward(loss, inputs=params, retain_graph=retain_graph)
+                return
+            except RuntimeError:
+                if assigned == len(params):
+                    raise  # the backward pass failed
+                self._out_of_place = True  # a refused buffer
+            finally:
+                for j, param in zip(active[:assigned], params[:assigned], strict=True):
+                    grads[j] = param.grad
+                    param.grad = None
+        fresh = torch.autograd.grad(loss, params, retain_graph=retain_graph, allow_unused=True)
+        for j, grad in zip(active, fresh, strict=True):
+            if grad is not None:
+                previous = grads[j]
+                grads[j] = grad.detach() if previous is None else previous + grad.detach()
 
     # ---------- per window ----------
 
@@ -400,7 +423,8 @@ class UpdateEngine:
         buffers, built in place in the first one (the same operations, in
         the same order, as out of place). Every buffer is released here,
         before any optimizer steps, so the update holds one gradient set
-        (#576)."""
+        (#576). An out-of-place window sums out of place: its buffers may
+        share memory, as ``torch.autograd.grad``'s gradients can."""
         for j, param in enumerate(self._params):
             combined: Optional[torch.Tensor] = None
             if self._fused is not None:
@@ -413,8 +437,16 @@ class UpdateEngine:
                     window.grads[j] = None
                     if not param.requires_grad:
                         continue
-                    contribution = grad.mul_(_term_scale(window.reduction, window.weight, window.denominator))
-                    combined = contribution if combined is None else combined.add_(contribution)
+                    scale = _term_scale(window.reduction, window.weight, window.denominator)
+                    contribution = grad * scale if self._out_of_place else grad.mul_(scale)
+                    if combined is None:
+                        combined = contribution
+                    elif not self._out_of_place and _alike(combined, contribution):
+                        combined.add_(contribution)
+                    else:
+                        # Unlike buffers (the parameter's dtype, device or shape changed mid-window)
+                        # promote as before.
+                        combined = combined + contribution
             # A parameter frozen since it was differentiated is not updated.
             param.grad = combined if param.requires_grad else None
 
@@ -517,6 +549,11 @@ def trains(reduction: str, weight: float, denominator: Optional[float]) -> bool:
     or a normalized one with a positive denominator). Shared by the commit
     gate, the records and the whole-epoch loss."""
     return bool(weight) and (reduction == "sum" or bool(denominator))
+
+
+def _alike(a: torch.Tensor, b: torch.Tensor) -> bool:
+    """Whether ``a.add_(b)`` computes ``a + b``: the same dtype, device and shape."""
+    return a.dtype == b.dtype and a.device == b.device and a.shape == b.shape
 
 
 def _term_scale(reduction: str, weight: float, denominator: Optional[float]) -> float:
