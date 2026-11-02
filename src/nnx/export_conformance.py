@@ -57,6 +57,7 @@ import os
 import platform
 import posixpath
 import re
+import stat
 import subprocess
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
@@ -865,16 +866,27 @@ def _finish(record: dict[str, Any]) -> dict[str, Any]:
 # --- profiles ----------------------------------------------------------------------------------------------------
 
 
-def run_profile(
-    profile: Union[str, Profile],
-    directory: Union[str, os.PathLike[str]],
-    *,
-    source_revision: Optional[str] = None,
-) -> dict[str, Any]:
-    """Run one profile, writing its artifacts into ``directory/<name>/``
-    (which must not exist or be empty), and return its record (see the
-    module docstring). Never raises for a failing stage: every outcome is
-    classified in the record."""
+def _check_folder(root: str) -> None:
+    """Refuse a profile folder that is not new or an empty directory of its
+    own: a symlink (to anything, or dangling) is refused, never followed,
+    and so is a folder that cannot be read or looked up (its parent not
+    searchable, say)."""
+    try:
+        mode = os.lstat(root).st_mode  # the folder itself, never a link's target
+        held = not stat.S_ISLNK(mode) and (not stat.S_ISDIR(mode) or bool(os.listdir(root)))
+    except FileNotFoundError:
+        return  # a new folder
+    except OSError as error:
+        raise ConformanceError(f"{root!r} cannot be read: {type(error).__name__}: {error}") from error
+    if stat.S_ISLNK(mode):
+        raise ConformanceError(f"{root!r} is a symlink: a profile writes its artifacts only into its own folder")
+    if held:
+        raise ConformanceError(f"{root!r} must be a new or empty directory: a profile owns its artifacts")
+
+
+def _checked(profile: Union[str, Profile], directory: Union[str, os.PathLike[str]]) -> tuple[Profile, str]:
+    """The profile to run and its artifact folder, once every check that
+    comes before anything is written has passed."""
     if isinstance(profile, str):
         if profile not in PROFILES:
             raise ConformanceError(f"unknown profile {profile!r}; tested profiles are {sorted(PROFILES)}")
@@ -886,8 +898,25 @@ def run_profile(
             f"{profile.name!r} names a tested profile; a profile with other settings needs its own name"
         )
     root = os.path.join(os.fspath(directory), profile.name)
-    if os.path.exists(root) and (not os.path.isdir(root) or os.listdir(root)):
-        raise ConformanceError(f"{root!r} must be a new or empty directory: a profile owns its artifacts")
+    _check_folder(root)
+    return profile, root
+
+
+def run_profile(
+    profile: Union[str, Profile],
+    directory: Union[str, os.PathLike[str]],
+    *,
+    source_revision: Optional[str] = None,
+) -> dict[str, Any]:
+    """Run one profile, writing its artifacts into ``directory/<name>/``
+    (which must not exist or be an empty directory, and must not be a
+    symlink; ``directory`` itself may be one), and return its record (see
+    the module docstring). An unknown name, a tested name with other
+    settings, or a folder that is not new or empty (a symlink, dangling
+    or not, or a folder that cannot be read) raises
+    :class:`ConformanceError` before anything is written. Never raises for
+    a failing stage: every outcome is classified in the record."""
+    profile, root = _checked(profile, directory)
     os.makedirs(root, exist_ok=True)
     model = build_model(profile.model)
     config = {**_canonical_model(profile.model), "weights_sha256": _weights_digest(model.net)}
@@ -986,8 +1015,16 @@ def run_profiles(
     source_revision: Optional[str] = None,
 ) -> dict[str, Any]:
     """Run ``names`` (every tested profile by default) under ``directory``;
-    the report's ``status`` is ``passed`` only when every profile passed."""
+    the report's ``status`` is ``passed`` only when every profile passed.
+    Every name and profile folder is checked before the first profile
+    runs: an unknown name, a tested name whose settings changed, or a
+    ``directory/<name>/`` that is not new or an empty directory (a
+    symlink, dangling or not, or a folder that cannot be read) raises
+    :class:`ConformanceError` before anything is written, so no earlier
+    profile's artifacts are left to block the retry."""
     chosen = list(PROFILES) if names is None else list(dict.fromkeys(names))  # each profile once
+    for name in chosen:
+        _checked(name, directory)
     records = [run_profile(name, directory, source_revision=source_revision) for name in chosen]
     return {
         "format": FORMAT,

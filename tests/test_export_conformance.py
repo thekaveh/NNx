@@ -948,3 +948,150 @@ def test_the_profile_model_and_inputs_are_fp32_under_any_default_dtype():
         torch.set_default_dtype(previous)
     fp32 = build_model()
     assert all(torch.equal(a, b) for a, b in zip(model.net.parameters(), fp32.net.parameters(), strict=True))
+
+
+# --- FIX-098 (#566): every name and profile folder is checked before anything is written ------------------------
+
+_HELD = {"empty": [], "full": ["old.onnx"], "dangling": None}  # what each link target holds
+
+
+def _linked_folder(tmp_path, target, name="feedfwd-fp32-torchscript"):
+    """``<tmp>/artifacts/<name>`` as a symlink to an empty folder, a folder
+    holding ``old.onnx``, or a path that does not exist."""
+    elsewhere = tmp_path / "elsewhere"
+    if target != "dangling":
+        elsewhere.mkdir(parents=True)
+    if target == "full":
+        (elsewhere / "old.onnx").write_bytes(b"old")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / name).symlink_to(elsewhere, target_is_directory=True)
+    return artifacts, elsewhere
+
+
+def _untouched(link, elsewhere, target):
+    held = sorted(os.listdir(elsewhere)) if os.path.lexists(elsewhere) else None
+    return link.is_symlink() and os.readlink(link) == str(elsewhere) and held == _HELD[target]
+
+
+def test_an_unknown_later_name_is_refused_before_any_profile_runs(tmp_path):
+    with pytest.raises(ConformanceError, match="unknown profile 'feedfwd-fp32-dynamoo'"):
+        run_profiles(tmp_path, ["feedfwd-fp32-torchscript", "feedfwd-fp32-dynamoo"], source_revision="test")
+    assert not (tmp_path / "feedfwd-fp32-torchscript").exists()  # nothing was written, so the retry is not blocked
+    _runtime("feedfwd-fp32-dynamo")
+    report = run_profiles(tmp_path, ["feedfwd-fp32-torchscript", "feedfwd-fp32-dynamo"], source_revision="test")
+    assert report["status"] == "passed"
+
+
+def test_a_later_profile_folder_is_checked_before_any_profile_runs(tmp_path, monkeypatch):
+    held = tmp_path / "feedfwd-fp32-dynamo"
+    held.mkdir()
+    (held / "stale.txt").write_text("", encoding="utf-8")
+    with pytest.raises(ConformanceError, match="new or empty directory"):
+        run_profiles(tmp_path, source_revision="test")  # the default names: the torchscript profile comes first
+    assert not (tmp_path / "feedfwd-fp32-torchscript").exists() and os.listdir(held) == ["stale.txt"]
+
+    artifacts, elsewhere = _linked_folder(tmp_path / "linked", "empty", name="feedfwd-fp32-dynamo")
+    with pytest.raises(ConformanceError, match="is a symlink"):
+        run_profiles(artifacts, source_revision="test")
+    assert os.listdir(artifacts) == ["feedfwd-fp32-dynamo"]
+    assert _untouched(artifacts / "feedfwd-fp32-dynamo", elsewhere, "empty")
+
+    # Every check run_profile makes before it writes runs for each name first: a later tested profile changed in place.
+    monkeypatch.setitem(PROFILES["feedfwd-fp32-dynamo"].model, "dropout", 0.5)
+    with pytest.raises(ConformanceError, match="'feedfwd-fp32-dynamo' names a tested profile"):
+        run_profiles(tmp_path / "fresh", source_revision="test")
+    assert not (tmp_path / "fresh").exists()
+
+
+@pytest.mark.parametrize("target", sorted(_HELD))
+def test_a_symlinked_profile_folder_is_refused_before_anything_is_written(tmp_path, target):
+    """A link to an empty or a filled folder, or a dangling one, is refused
+    (never followed or cleared), by ``run_profile`` and ``run_profiles``."""
+    name = "feedfwd-fp32-torchscript"
+    artifacts, elsewhere = _linked_folder(tmp_path, target)
+    with pytest.raises(ConformanceError, match="is a symlink"):
+        run_profile(name, artifacts, source_revision="test")
+    with pytest.raises(ConformanceError, match="is a symlink"):
+        run_profiles(artifacts, [name], source_revision="test")
+    assert _untouched(artifacts / name, elsewhere, target)
+
+
+@pytest.mark.parametrize("call", ["listdir", "lstat"])  # it cannot be listed, or looked up (its parent unsearchable)
+def test_an_unreadable_profile_folder_is_a_refusal_not_a_raw_error(tmp_path, monkeypatch, call):
+    name = "feedfwd-fp32-torchscript"
+    folder = tmp_path / name
+    folder.mkdir()
+    real = getattr(os, call)
+
+    def denied(path=".", **kwargs):
+        if os.fspath(path) == str(folder):
+            raise PermissionError(13, "Permission denied", str(folder))
+        return real(path, **kwargs)
+
+    monkeypatch.setattr(conformance.os, call, denied)
+    with pytest.raises(ConformanceError, match="cannot be read: PermissionError"):
+        run_profile(name, tmp_path, source_revision="test")
+    with pytest.raises(ConformanceError, match="cannot be read: PermissionError"):
+        run_profiles(tmp_path, [name], source_revision="test")
+    monkeypatch.undo()
+    assert os.listdir(tmp_path) == [name] and os.listdir(folder) == []  # nothing was written
+
+
+def test_a_symlinked_artifacts_root_still_runs_and_verifies(tmp_path):
+    _runtime()
+    real = tmp_path / "real"
+    real.mkdir()
+    root = tmp_path / "root"
+    root.symlink_to(real, target_is_directory=True)  # only the profile's own folder must be no link
+    (record,) = run_profiles(root, ["feedfwd-fp32-torchscript"], source_revision="test")["profiles"]
+    assert record["status"] == "passed" and record["level"] == "executed"
+    verify_artifacts(record, root)
+    assert (real / "feedfwd-fp32-torchscript" / "model.onnx").is_file()
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("target", sorted(_HELD))
+def test_the_script_refuses_a_symlinked_profile_folder_even_when_forced(tmp_path, capsys, target, force):
+    name = "feedfwd-fp32-torchscript"
+    artifacts, elsewhere = _linked_folder(tmp_path, target)
+    output = tmp_path / "conformance.json"
+    args = ["--output", str(output), "--artifacts", str(artifacts), "--profile", name, "--source-revision", "test"]
+    with pytest.raises(SystemExit) as refused:
+        _script().main([*args, "--force"] if force else args)
+    assert refused.value.code == 2 and "is a symlink" in capsys.readouterr().err  # a usage error
+    assert _untouched(artifacts / name, elsewhere, target) and not output.exists()
+
+
+@pytest.mark.parametrize("call", ["iterdir", "lstat"])  # it cannot be listed, or looked up (its parent unsearchable)
+def test_the_script_refuses_an_unreadable_profile_folder_even_when_forced(tmp_path, capsys, monkeypatch, call):
+    artifacts = tmp_path / "artifacts"
+    folder = artifacts / "feedfwd-fp32-torchscript"
+    folder.mkdir(parents=True)
+    (folder / "old.onnx").write_bytes(b"old")
+    real = getattr(Path, call)
+
+    def denied(self, *args, **kwargs):
+        if self == folder:
+            raise PermissionError(13, "Permission denied", str(folder))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, call, denied)
+    output = tmp_path / "c.json"
+    args = ["--output", str(output), "--artifacts", str(artifacts), "--profile", "feedfwd-fp32-torchscript"]
+    with pytest.raises(SystemExit) as refused:
+        _script().main([*args, "--source-revision", "test", "--force"])
+    monkeypatch.undo()
+    assert refused.value.code == 2 and "cannot be read: PermissionError" in capsys.readouterr().err  # a usage error
+    assert os.listdir(folder) == ["old.onnx"] and not output.exists()  # nothing was cleared or written
+
+
+def test_the_script_checks_every_folder_before_force_clears_any(tmp_path, capsys):
+    artifacts = tmp_path / "artifacts"
+    (artifacts / "feedfwd-fp32-torchscript").mkdir(parents=True)
+    (artifacts / "feedfwd-fp32-torchscript" / "old.onnx").write_bytes(b"old")
+    (artifacts / "feedfwd-fp32-dynamo").symlink_to(tmp_path / "gone", target_is_directory=True)
+    with pytest.raises(SystemExit) as refused:
+        _script().main(["--output", str(tmp_path / "c.json"), "--artifacts", str(artifacts), "--force"])
+    assert refused.value.code == 2 and "is a symlink" in capsys.readouterr().err
+    assert os.listdir(artifacts / "feedfwd-fp32-torchscript") == ["old.onnx"]  # nothing was cleared
