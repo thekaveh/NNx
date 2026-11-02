@@ -590,6 +590,33 @@ def test_fixed_head_refuses_set_and_mapping_labels(labels):
         FixedHeadProvider(_classifier(3), labels=labels)
 
 
+@pytest.mark.parametrize(
+    ("model", "labels", "extra"),
+    [
+        pytest.param(lambda: _classifier(3), LABELS, {}, id="categorical"),
+        pytest.param(lambda: _classifier(task=TaskSpec.categorical(3, labels=LABELS)), LABELS, {}, id="task-labels"),
+        pytest.param(
+            lambda: _classifier(1, Losses.BINARY_CROSS_ENTROPY),
+            ("cat",),
+            {"question": Boolean("Is it a cat?")},
+            id="bernoulli",
+        ),
+    ],
+)
+def test_fixed_head_refuses_a_generator_unread_on_every_head_kind(model, labels, extra):
+    """#559: the label checks consumed a generator, so a categorical head (with
+    or without task labels) reported "2+ unique non-empty strings, got ()" and a
+    one-output Bernoulli head "a multi-output Bernoulli head". The shared
+    labels rule (#550) refuses it by name, unread, on every head kind; the
+    list form still resolves."""
+    assert FixedHeadProvider(model(), labels=list(labels), **extra).labels == labels
+    generator = (label for label in labels)
+    with pytest.raises(InvalidDecisionRequest, match="labels must be an ordered sequence of class names") as caught:
+        FixedHeadProvider(model(), labels=generator, **extra)
+    assert "unique" not in str(caught.value) and "Bernoulli" not in str(caught.value)
+    assert tuple(generator) == labels  # refused before anything read it
+
+
 def test_fixed_head_takes_numpy_and_pandas_labels_as_plain_str():
     import pandas as pd
 

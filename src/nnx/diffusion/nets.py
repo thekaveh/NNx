@@ -16,6 +16,7 @@ in by the user as needed.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 
 import torch
 from torch import nn
@@ -75,13 +76,17 @@ class DiffusionMLP(nn.Module):
         # otherwise only surfaces at the first forward, mid-training.
         if time_embed_dim <= 0 or time_embed_dim % 2 != 0:
             raise ValueError(f"time_embed_dim must be a positive even integer, got {time_embed_dim}")
-        if hidden_dims is None:
-            hidden_dims = [128, 128]
+        given = [128, 128] if hidden_dims is None else hidden_dims
+        # Read once, like NNParams.hidden_dims (#559): the check below
+        # consumed a generator or map(), and the net had no hidden layers.
+        hidden = list(given)
         # Same fail-fast + convention as NNParams.hidden_dims: a non-positive
         # entry otherwise builds a zero/negative-width nn.Linear silently. An
         # empty list is valid (a single input+t -> input projection).
-        if not all(d > 0 for d in hidden_dims):
-            raise ValueError(f"hidden_dims entries must be positive, got {hidden_dims}")
+        if not all(d > 0 for d in hidden):
+            # An iterator by the entries it read; anything else as given.
+            shown = hidden if isinstance(given, Iterator) else given
+            raise ValueError(f"hidden_dims entries must be positive, got {shown}")
         self.input_dim = input_dim
         self.time_embed_dim = time_embed_dim
 
@@ -93,7 +98,7 @@ class DiffusionMLP(nn.Module):
             nn.GELU(),
         )
 
-        layer_dims = [input_dim + time_embed_dim, *hidden_dims, input_dim]
+        layer_dims = [input_dim + time_embed_dim, *hidden, input_dim]
         layers = []
         for in_d, out_d in zip(layer_dims[:-1], layer_dims[1:], strict=True):
             layers.append(nn.Linear(in_d, out_d))

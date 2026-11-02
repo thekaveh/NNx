@@ -795,6 +795,32 @@ def test_generate_validates_stop_and_seed(kwargs):
         GenerativeNNModel.generate(object(), "hi", **kwargs)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    ("make", "shown"),
+    [
+        (lambda: iter([""]), "['']"),
+        (lambda: (s for s in ["END", ""]), "['END', '']"),
+        (lambda: map(str.strip, ["END", " "]), "['END', '']"),
+        (lambda: filter(None, ["END", 3]), "['END', 3]"),
+        (lambda: [""], "['']"),
+        (lambda: ("END", ""), "('END', '')"),
+        (lambda: {""}, "{''}"),
+        (lambda: "END", "'END'"),
+    ],
+    ids=["iter", "generator", "map", "filter", "list", "tuple", "set", "str"],
+)
+def test_an_invalid_stop_is_refused_showing_its_items(make, shown):
+    """#559: the message formatted the caller's object, which for a one-shot
+    iterable the check had just consumed (``<list_iterator object at ...>``).
+    An iterator shows the items read; any other value (a list, tuple, set
+    or string) reads as before."""
+    from nnx import GenerativeNNModel
+
+    with pytest.raises(ValueError, match=re.escape(f"stop must be a list of non-empty strings, got {shown}")) as caught:
+        GenerativeNNModel.generate(object(), "hi", stop=make())  # type: ignore[arg-type]
+    assert "object at" not in str(caught.value)
+
+
 def test_softened_kl_refuses_single_logit_and_mismatched_shapes():
     """A softmax over one logit is always 1 (a zero soft loss that trains
     nothing); a mismatched teacher would broadcast."""
