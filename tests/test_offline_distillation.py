@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import re
 import socket
 
 import pytest
@@ -453,6 +454,25 @@ def test_live_distillation_rejects_probability_only_records():
         student.train(_params(dataset.loader(batch_size=2)))  # the default supervised step
     with pytest.raises(TypeError, match="born_again_train distills live generations"):
         born_again_train(student, generations=2, train_params=_params(dataset.loader(batch_size=2)))
+
+
+def test_the_teacher_batch_refusal_names_its_remedy_without_a_tracking_id():
+    """#575: ``train`` (the default supervised step), ``predict`` and
+    ``evaluate`` refuse a TeacherBatch with a message that names the remedy;
+    it cited an internal tracking id it never explained."""
+    dataset = _dataset(2)
+    model = _model()
+    calls = {
+        "train": lambda: model.train(_params(dataset.loader(batch_size=2))),
+        "predict": lambda: model.predict(dataset.loader(batch_size=2)),
+        "evaluate": lambda: model.evaluate(dataset.loader(batch_size=2)),
+    }
+    for name, call in calls.items():
+        with pytest.raises(TypeError, match="a TeacherBatch") as refused:
+            call()
+        message = str(refused.value)
+        assert "TeacherDataset.objective()" in message and "evaluate_offline" in message, (name, message)
+        assert re.search(r"(?:FEAT|FIX)-\d+", message) is None, (name, message)
 
 
 def test_a_batch_in_another_candidate_order_is_refused():
