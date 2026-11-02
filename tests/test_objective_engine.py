@@ -775,6 +775,95 @@ def test_term_buffers_accumulate_in_place_and_leave_unused_parameters_alone():
     assert event.losses == {"a": 7.0, "b": 27.0}  # (5 + 9) / 2 and 9 + 18
 
 
+class _ZeroingHookFrom:
+    """``inner``, with a post-accumulate-grad hook that zeroes ``.grad`` (the
+    optimizer-in-backward pattern's shape) on every parameter from batch
+    ``at`` of epoch 0."""
+
+    def __init__(self, inner, at: int):
+        self.inner, self.at, self.calls = inner, at, []
+
+    def _hook(self, param):
+        self.calls.append(1)
+        param.grad.zero_()
+
+    def __call__(self, ctx):
+        if (ctx.epoch_idx, ctx.batch_idx) == (0, self.at):
+            for param in ctx.model.net.parameters():
+                param.register_post_accumulate_grad_hook(self._hook)
+        return self.inner(ctx)
+
+
+@pytest.mark.parametrize(
+    ("accumulate", "at"),
+    [(1, 0), (2, 0), (2, 1)],
+    ids=["one-microbatch-windows", "accumulated-windows", "hooked-mid-window"],
+)
+def test_post_accumulate_grad_hooks_never_run_in_an_objective_run(tmp_path, monkeypatch, accumulate, at):
+    """#576 review: the in-place backward ran such a hook on a term buffer
+    in ``.grad``, once per term and microbatch, and a hook zeroing it
+    changed the update. A window with one gathers its gradients out of
+    place, as before: the hook never runs, and the run is bit for bit the
+    unhooked one."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    batches = [(X[:1], Y[:1]), (X[1:2], Y[1:2]), (X[2:], Y[2:])]
+    reference, model = _linear(), _linear()
+    _fit(reference, batches, kd_objective(_teacher(), alpha=0.3), epochs=2, optim=_sgd(accumulate), data_id="plain")
+    hooked = _ZeroingHookFrom(kd_objective(_teacher(), alpha=0.3), at)
+    _fit(model, batches, hooked, epochs=2, optim=_sgd(accumulate), data_id="hooked")
+    assert hooked.calls == []
+    for key, value in reference.net.state_dict().items():
+        assert torch.equal(model.net.state_dict()[key], value), key
+
+
+def test_a_hooked_window_sums_gradients_that_share_memory_out_of_place():
+    """``torch.autograd.grad`` may hand two parameters one gradient tensor
+    (``a + b``), so a window gathered out of place also sums out of place."""
+    a, b = torch.nn.Parameter(torch.zeros(2)), torch.nn.Parameter(torch.zeros(2))
+    a.register_post_accumulate_grad_hook(lambda param: None)
+    engine = UpdateEngine(optimizers={"default": torch.optim.SGD([a, b], lr=1.0)})
+    engine.accumulate([LossTerm("t", (a + b).sum(), 2), LossTerm("u", (3 * a).sum(), reduction="sum")])
+    engine.commit(epoch_idx=0, batch_idx=0)
+    assert torch.equal(a.detach(), torch.full((2,), -3.5)) and torch.equal(b.detach(), torch.full((2,), -0.5))
+
+
+def _retyped_window(engine_class, case: str) -> torch.nn.Module:
+    """A two-microbatch window whose second layer turns float64 between its
+    microbatches: ``"refused"`` back-propagates into its float32 buffers
+    again, ``"unlike-buffers"`` gives it a float64 buffer of a second term
+    beside a float32 one."""
+    torch.manual_seed(0)
+    net = torch.nn.Sequential(torch.nn.Linear(3, 4), torch.nn.Linear(4, 1))
+    engine = engine_class(optimizers={"default": torch.optim.SGD(net.parameters(), lr=0.1)})
+    x = torch.randn(2, 3, generator=torch.Generator().manual_seed(0))
+    engine.accumulate([LossTerm("a", net(x).sum(), 2), LossTerm("b", net[0](x).sum(), reduction="sum")])
+    net[1].double()
+    out = net[1](net[0](x).double()).sum()
+    if case == "refused":
+        terms = [LossTerm("a", out, 2), LossTerm("b", net[0](x).sum(), reduction="sum")]
+    else:
+        terms = [LossTerm("a", out * 0, 0), LossTerm("b", out, reduction="sum")]  # "a" has no samples here
+    engine.accumulate(terms, closes_window=True)
+    assert all(param.grad is None for param in net.parameters())  # nothing left aliasing a term buffer
+    (event,) = engine.commit(epoch_idx=0, batch_idx=1)
+    assert event.microbatches == 2
+    return net
+
+
+@pytest.mark.parametrize("case", ["refused", "unlike-buffers"])
+def test_a_parameter_retyped_mid_window_finishes_the_window_as_before(case):
+    """#576 review: a parameter refusing its term buffer left the parameters
+    assigned before it with ``.grad`` aliasing their buffers, and the
+    window failed; a float32 and a float64 buffer of one parameter were
+    summed into float32, which the parameter refused. The engine hands
+    the assigned buffers back and finishes such a window out of place, as
+    before: promoted to float64, the same update."""
+    reference, net = _retyped_window(_OutOfPlaceEngine, case), _retyped_window(UpdateEngine, case)
+    for (name, expected), param in zip(reference.named_parameters(), net.parameters(), strict=True):
+        assert param.dtype == expected.dtype and torch.equal(param, expected), name
+
+
 class _OutOfPlaceEngine(UpdateEngine):
     """The engine's arithmetic before #576, as the bit-identity reference:
     every gradient from ``torch.autograd.grad``, microbatches and terms
