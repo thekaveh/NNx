@@ -145,9 +145,9 @@ writes it. Its settings are rebuilt as a `Profile` within these limits:
 The rebuilt settings are compared as canonical text. The comparison is with
 the tested profile of that name, whose name stands for its exact settings,
 or with the rebuilt profile itself. So input cases, exporter options or an
-artifact layout no profile produces are refused. These are refused before
-anything is written, by `run_profile` and, for every name before the first
-profile runs, by `run_profiles` (which takes names only):
+artifact layout no profile produces are refused. The following are refused
+before anything is written, by `run_profile` and, for every name before the
+first profile runs, by `run_profiles` (which takes names only):
 
 - an unknown name;
 - a tested name whose settings were changed in place, or, for
