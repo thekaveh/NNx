@@ -388,27 +388,45 @@ class CausalLMTask:
         """``(smoothed CE sum (differentiable), unsmoothed NLL sum, correct,
         valid count)`` over the valid positions; flattened once, here.
         ``with_ce=False`` (evaluation) skips the cross-entropy pass and
-        returns an empty sum in its place."""
+        returns an empty sum in its place.
+
+        Cost: a batch whose every position is scored is read through a view
+        of the logits; a partially masked one copies its ``(n, V)`` scored
+        rows, so an unscored row (NaN logits, say) never enters the softmax.
+        With ``smoothing=0`` and a cross-entropy in float32 or wider (float32
+        or float64 logits, or half-precision logits under autocast), the one
+        cross-entropy pass gives both the loss and the NLL, and the accuracy
+        is an argmax. Label smoothing, or half-precision logits outside
+        autocast, add a float32 logsumexp pass for the unsmoothed NLL, which
+        is also evaluation's (``with_ce=False``) only pass."""
         targets = targets.to(logits.device)
         valid = valid.to(logits.device)
         n = int(valid.sum())
         if n == 0:  # an empty sum keeps the graph and stays finite whatever the logits hold
             return logits.reshape(-1)[:0].sum(), 0.0, 0, 0
-        flat = logits[valid]  # (n, V)
-        chosen = targets[valid]
-        ce = (
-            torch.nn.functional.cross_entropy(flat, chosen, reduction="sum", label_smoothing=self.smoothing)
-            if with_ce
-            else flat.reshape(-1)[:0].sum()
-        )
+        if n == valid.numel():  # every position scored: a view, no (n, V) copy
+            flat, chosen = logits.reshape(-1, logits.shape[-1]), targets.reshape(-1)
+        else:
+            flat, chosen = logits[valid], targets[valid]  # (n, V): unscored rows stay out of the softmax
+        per_token: Optional[torch.Tensor] = None  # the unsmoothed per-token NLL, when the CE pass gives it
+        if not with_ce:
+            ce = flat.reshape(-1)[:0].sum()
+        elif self.smoothing:
+            ce = torch.nn.functional.cross_entropy(flat, chosen, reduction="sum", label_smoothing=self.smoothing)
+        else:
+            losses = torch.nn.functional.cross_entropy(flat, chosen, reduction="none")
+            ce = losses.sum()
+            if losses.dtype in (torch.float32, torch.float64):  # half precision would round confident tokens' NLL to 0
+                per_token = losses.detach()
         with torch.no_grad():
             detached = flat.detach()
-            if detached.dtype in (torch.float16, torch.bfloat16):
-                detached = detached.float()  # half precision would round confident tokens' NLL to 0
-            # Per-token NLL in (at least) float32 — no full-vocabulary float64
-            # copy — summed in float64.
-            per_token = torch.logsumexp(detached, dim=-1) - detached.gather(1, chosen.unsqueeze(1)).squeeze(1)
-            nll = float(per_token.detach().cpu().double().sum())  # MPS has no float64
+            if per_token is None:
+                if detached.dtype in (torch.float16, torch.bfloat16):
+                    detached = detached.float()  # half precision would round confident tokens' NLL to 0
+                # Per-token NLL in (at least) float32 — no full-vocabulary
+                # float64 copy — summed in float64.
+                per_token = torch.logsumexp(detached, dim=-1) - detached.gather(1, chosen.unsqueeze(1)).squeeze(1)
+            nll = float(per_token.cpu().double().sum())  # MPS has no float64
             correct = int((detached.argmax(dim=-1) == chosen).sum())
         return ce, nll, correct, n
 

@@ -318,10 +318,18 @@ class LinkSplit:
 
     def _is_message_graph(self, edge_index: torch.Tensor) -> bool:
         """Whether ``edge_index`` holds exactly the message edges (each once,
-        in any order) — a vectorised check, so a large graph costs a sort,
-        not a Python set per batch."""
+        in any order). A loader-built batch carries the message graph itself
+        (int64, in the split's order), so one exact comparison with the
+        split's tensor (cached per device) accepts it in O(E), with no sort.
+        Any other order or integer dtype costs a sort of the edge keys:
+        vectorised, never a Python set per batch."""
         if edge_index.is_floating_point() or edge_index.is_complex():
             return False
+        if edge_index.dtype == torch.long:
+            device = edge_index.device
+            messages = self._cached(f"messages:{device}", lambda: self._messages().to(device))
+            if torch.equal(edge_index, messages):
+                return True
         if edge_index.numel() and (int(edge_index.min()) < 0 or int(edge_index.max()) >= self.num_nodes):
             return False  # out-of-graph ids would alias keys: the exact check names them
         keys = edge_index[0].long() * self.num_nodes + edge_index[1].long()

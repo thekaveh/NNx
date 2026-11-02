@@ -9320,6 +9320,20 @@ nnx.lm_tasks.CausalLMTask.token_sums(self, logits: 'torch.Tensor', targets: 'tor
 
 ``(smoothed CE sum (differentiable), unsmoothed NLL sum, correct, valid count)`` over the valid positions; flattened once, here. ``with_ce=False`` (evaluation) skips the cross-entropy pass and returns an empty sum in its place.
 
+**Details**
+
+```text
+Cost: a batch whose every position is scored is read through a view
+of the logits; a partially masked one copies its ``(n, V)`` scored
+rows, so an unscored row (NaN logits, say) never enters the softmax.
+With ``smoothing=0`` and a cross-entropy in float32 or wider (float32
+or float64 logits, or half-precision logits under autocast), the one
+cross-entropy pass gives both the loss and the NLL, and the accuracy
+is an argmax. Label smoothing, or half-precision logits outside
+autocast, add a float32 logsumexp pass for the unsmoothed NLL, which
+is also evaluation's (``with_ce=False``) only pass.
+```
+
 ##### `nnx.lm_tasks.CausalLMTask.objective`
 
 ```python
@@ -9630,8 +9644,11 @@ lower-graded one) in blocks of at most :data:`PAIR_BLOCK` pairs, so no
 query's full pair matrix is ever held — in training too: a block of at
 least :data:`CHECKPOINT_PAIRS` pairs is recomputed in backward
 (``torch.utils.checkpoint``) rather than kept, while a smaller one costs
-less to keep than to recompute. ``relevance`` may live on any device; it
-is moved to the scores'. float16 / bfloat16 scores are widened to
+less to keep than to recompute. Rows are grouped by query and grade on
+the host, from one read of ``relevance`` (which may live on any
+device), and reach the scores' device as one permutation: a call makes
+one host-to-device copy and reads nothing back from the scores' device,
+however many queries it holds. float16 / bfloat16 scores are widened to
 float32 first, so the cross-query sum accumulates in full precision
 (the numerator is float32); other dtypes are kept.
 ```

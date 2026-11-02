@@ -50,6 +50,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Optional, Union
 
+import numpy as np
 import torch
 from torch.utils.checkpoint import checkpoint
 
@@ -190,6 +191,38 @@ def _block_loss(high: torch.Tensor, low: torch.Tensor) -> torch.Tensor:
     return torch.nn.functional.softplus(-(high.unsqueeze(1) - low.unsqueeze(0))).sum()
 
 
+def _grade_blocks(
+    relevance: torch.Tensor, query_ids: Sequence[Id]
+) -> tuple[np.ndarray, list[list[tuple[int, int, int]]]]:
+    """The rows ordered by query (first appearance), then grade, and, per
+    query with an unequal pair, its grade blocks ``(start, end, low)``:
+    positions ``start:end`` of that order hold one grade, ``low:start``
+    every lower grade of the query. Built on the host from one read of the
+    grades; a NaN grade equals no grade, so its row is in no pair."""
+    grades = relevance.detach().cpu()
+    grades = (grades.double() if grades.is_floating_point() else grades.long()).numpy()
+    codes: dict[Id, int] = {}
+    query = np.fromiter((codes.setdefault(q, len(codes)) for q in query_ids), dtype=np.int64, count=len(query_ids))
+    rows = np.flatnonzero(~np.isnan(grades)) if grades.dtype.kind == "f" else np.arange(len(grades))
+    order = rows[np.lexsort((grades[rows], query[rows]))]  # stable: a grade keeps its rows' order
+    if not len(order):
+        return order, []
+    q, g = query[order], grades[order]
+    opens = np.r_[True, q[1:] != q[:-1]]  # the first position of each query
+    starts = np.flatnonzero(opens | np.r_[True, g[1:] != g[:-1]])
+    plan: list[list[tuple[int, int, int]]] = []
+    first = 0
+    for start, end, new in zip(
+        starts.tolist(), [*starts[1:].tolist(), len(order)], opens[starts].tolist(), strict=True
+    ):
+        if new:
+            first = start  # the query's lowest grade: nothing below it
+            plan.append([])
+        else:
+            plan[-1].append((start, end, first))
+    return order, [blocks for blocks in plan if blocks]
+
+
 def pairwise_logistic_loss(
     scores: torch.Tensor, relevance: torch.Tensor, query_ids: Sequence[Id], *, weighting: str = "query"
 ) -> tuple[torch.Tensor, int]:
@@ -201,8 +234,11 @@ def pairwise_logistic_loss(
     query's full pair matrix is ever held — in training too: a block of at
     least :data:`CHECKPOINT_PAIRS` pairs is recomputed in backward
     (``torch.utils.checkpoint``) rather than kept, while a smaller one costs
-    less to keep than to recompute. ``relevance`` may live on any device; it
-    is moved to the scores'. float16 / bfloat16 scores are widened to
+    less to keep than to recompute. Rows are grouped by query and grade on
+    the host, from one read of ``relevance`` (which may live on any
+    device), and reach the scores' device as one permutation: a call makes
+    one host-to-device copy and reads nothing back from the scores' device,
+    however many queries it holds. float16 / bfloat16 scores are widened to
     float32 first, so the cross-query sum accumulates in full precision
     (the numerator is float32); other dtypes are kept."""
     if weighting not in WEIGHTINGS:
@@ -211,22 +247,19 @@ def pairwise_logistic_loss(
         raise RankingError(f"{scores.shape[0]} scores for {relevance.shape[0]} grades and {len(query_ids)} query ids")
     if scores.dtype in (torch.float16, torch.bfloat16):
         scores = scores.float()  # differentiable; a reduced-precision running sum stalls over many queries
-    relevance = relevance.to(scores.device)
-    groups: dict[Id, list[int]] = {}
-    for row, query in enumerate(query_ids):
-        groups.setdefault(query, []).append(row)
     numerator = scores.reshape(-1)[:0].sum()  # an empty sum: on the graph, finite whatever the scores hold
+    order, plan = _grade_blocks(relevance, query_ids)
+    if not plan:
+        return numerator, 0  # no unequal-relevance pair: nothing to upload or score
+    ordered = scores[torch.from_numpy(order).to(scores.device)]  # the one upload; the blocks below are slices
     denominator = 0
-    for rows in groups.values():
-        index = torch.tensor(rows, device=scores.device)
-        s, r = scores[index], relevance[index]
-        total = s[:0].sum()
-        pairs = 0
-        for grade in torch.unique(r).tolist()[1:]:  # each grade above the lowest, against every lower one
-            high, low = s[r == grade], s[r < grade]
-            block = max(1, PAIR_BLOCK // max(1, low.shape[0]))
-            for start in range(0, high.shape[0], block):
-                chunk = high[start : start + block]
+    for blocks in plan:
+        parts, pairs = [], 0
+        for start, end, first in blocks:
+            low = ordered[first:start]
+            block = max(1, PAIR_BLOCK // low.shape[0])
+            for begin in range(start, end, block):
+                chunk = ordered[begin : min(begin + block, end)]
                 n_pairs = chunk.shape[0] * low.shape[0]
                 if (
                     n_pairs >= CHECKPOINT_PAIRS
@@ -234,13 +267,13 @@ def pairwise_logistic_loss(
                     and (chunk.requires_grad or low.requires_grad)
                 ):
                     # Recomputed in backward: autograd keeps the block's inputs, never its pair matrix.
-                    part = checkpoint(_block_loss, chunk, low, use_reentrant=False)
+                    parts.append(checkpoint(_block_loss, chunk, low, use_reentrant=False))
                 else:
-                    part = _block_loss(chunk, low)
-                total = total + part
+                    parts.append(_block_loss(chunk, low))
                 pairs += n_pairs
-        if pairs == 0:
-            continue  # no unequal-relevance pair: the query teaches nothing
+        total = parts[0]
+        for part in parts[1:]:
+            total = total + part
         if weighting == "pair":
             numerator = numerator + total
             denominator += pairs
@@ -569,14 +602,17 @@ class RankingObjective(Objective):
         model.net.train()
         features, query_ids, candidate_ids, relevance, mask = self.task.split(ctx.batch)
         scores = ctx.full_precision(self.task.scores(model, features, len(query_ids)))
-        rows = list(range(len(query_ids))) if mask is None else [i for i in range(len(query_ids)) if bool(mask[i])]
-        index = torch.tensor(rows, dtype=torch.long)
-        numerator, denominator = pairwise_logistic_loss(
-            scores[index.to(scores.device)],
-            relevance[index],
-            [query_ids[i] for i in rows],
-            weighting=self.task.weighting,
-        )
+        if mask is None:  # every row: the loss's own upload is the batch's only one
+            numerator, denominator = pairwise_logistic_loss(scores, relevance, query_ids, weighting=self.task.weighting)
+        else:
+            rows = [i for i in range(len(query_ids)) if bool(mask[i])]
+            index = torch.tensor(rows, dtype=torch.long)
+            numerator, denominator = pairwise_logistic_loss(
+                scores[index.to(scores.device)],
+                relevance[index],
+                [query_ids[i] for i in rows],
+                weighting=self.task.weighting,
+            )
         term = LossTerm("pairwise_logistic", numerator, denominator)
         self.units += denominator
         from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
