@@ -48,6 +48,13 @@ python scripts/check_export_conformance.py --output conformance.json
 #   --force                clear the profiles' earlier artifacts (else a non-empty folder is refused)
 ```
 
+Every name and profile folder is checked before anything is written. The
+script exits `2` (a usage error) for a profile folder that already holds
+files, unless `--force` clears it. It also exits `2`, even with `--force`,
+for a profile folder that is a symlink (to an empty or a filled folder, or
+dangling): `--force` never touches a link or its target. Every folder is
+checked before any is cleared. The artifact root itself may be a symlink.
+
 Or from Python:
 
 ```python
@@ -58,6 +65,19 @@ assert record["level"] == "executed"
 verify_artifacts(record, "artifacts/")   # refuses a changed, missing or extra file
 again = execute(record, "artifacts/")    # re-runs load + parity; hashes checked first
 ```
+
+`run_profiles(directory, names)` checks every name and every
+`directory/<name>/` before the first profile runs. It raises
+`ConformanceError` before anything is written for:
+
+- an unknown name;
+- a tested profile whose settings were changed in place;
+- a profile folder that holds files, is a symlink (dangling or not) or
+  cannot be read.
+
+So a typo or a stale folder in a later entry leaves no earlier profile's
+artifacts behind to block the retry. `run_profile` makes the same checks for
+its one profile.
 
 Nothing is downloaded. `import nnx` and `import nnx.export_conformance` need
 neither `onnx` nor `onnxruntime`; a profile run without them is a
@@ -70,7 +90,8 @@ does not run. The record's `failure` is the first failing stage's class.
 Its `level` is `executed` when parity passed, `structural` when only the
 checker did, and `none` otherwise. The script's exit status separates the
 failure classes. `1` is an error and `2` a usage error. An artifact folder
-that already holds a profile's files is refused unless `--force` clears it:
+that already holds a profile's files is refused unless `--force` clears it.
+A profile folder that is a symlink is refused even with `--force` (§2):
 
 | Exit | Failure | Stage | Meaning |
 |---|---|---|---|
@@ -79,7 +100,7 @@ that already holds a profile's files is refused unless `--force` clears it:
 | 11 | `export-error` | export | the exporter raised (a dynamo dispatch error included — it is never skipped) |
 | 12 | `state-changed` | export | the model's parameters, gradients or mixed train / eval modes changed |
 | 13 | `checker-error` | check | `onnx.checker.check_model(path, full_check=True)` refused the file |
-| 14 | `hash-mismatch` | load | an artifact's SHA-256 or size differs from the record, or a file is missing or unlisted; nothing is loaded |
+| 14 | `hash-mismatch` | load | an artifact's SHA-256 or size differs from the record, a file is missing or unlisted, or an artifact or its folder became a symlink after the export; nothing is loaded |
 | 15 | `load-error` | load | ONNX Runtime could not create a session on the declared provider |
 | 16 | `mismatch` | parity | a raw logit is outside `atol + rtol * abs(native)` or not finite, or the output count, dtype or shape differs |
 | 17 | `input-contract` | parity | a valid batch was refused as an invalid argument (e.g. a static batch dimension), or a wrong feature width was accepted |
@@ -123,9 +144,18 @@ writes it. Its settings are rebuilt as a `Profile` within these limits:
 The rebuilt settings are compared as canonical text. The comparison is with
 the tested profile of that name, whose name stands for its exact settings,
 or with the rebuilt profile itself. So input cases, exporter options or an
-artifact layout no profile produces are refused. A `Profile` reusing a
-tested name with other settings is refused before anything is written. A
-symlinked artifact or artifact folder never verifies.
+artifact layout no profile produces are refused. These are refused before
+anything is written, by `run_profiles` for every name before the first
+profile runs:
+
+- a `Profile` reusing a tested name with other settings;
+- an unknown name;
+- a profile folder that is not new or empty, a symlinked or dangling one
+  included.
+
+A symlinked artifact or artifact folder never verifies. A folder replaced
+by a link after the export is a `hash-mismatch` when the record is
+executed again.
 
 `validate_record` names the problems it finds. It refuses:
 
