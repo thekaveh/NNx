@@ -8,7 +8,7 @@ on top.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, Optional, cast
 
@@ -109,8 +109,10 @@ class GenerativeNNModel(NNModel):
             top_p: nucleus (top-p) cutoff. None disables.
             repetition_penalty: divide previously-seen tokens' positive
                 logits by this. 1.0 is no-op (default).
-            stop: list of stop strings — generation halts once any of
-                them appears in the decoded CONTINUATION (the prompt
+            stop: list of stop strings (a tuple or a one-shot iterable,
+                a generator say, is read once; a bare string is
+                refused) — generation halts once any of them appears
+                in the decoded CONTINUATION (the prompt
                 itself is not searched, so a prompt containing a stop
                 string doesn't halt generation immediately; a stop
                 string straddling the prompt/continuation boundary is
@@ -166,11 +168,18 @@ class GenerativeNNModel(NNModel):
         max_new_tokens = require_count(max_new_tokens, "max_new_tokens", owner="GenerativeNNModel.generate", minimum=0)
         if seed is not None:  # a float or bool seed was truncated / accepted silently
             seed = require_count(seed, "seed", owner="GenerativeNNModel.generate", minimum=0, maximum=2**64 - 1)
+        stops: tuple[str, ...] = ()
         if stop is not None:
             # A bare string would be read character by character; an empty
-            # stop string matches at once.
-            if isinstance(stop, (str, bytes)) or not all(isinstance(s, str) and s for s in stop):
-                raise ValueError(f"GenerativeNNModel.generate stop must be a list of non-empty strings, got {stop!r}")
+            # stop string matches at once. Any other iterable is read once
+            # (#559): the check consumed a generator, map() or iter(), so the
+            # decode loops never matched it. Only the copy is used below.
+            one_name = isinstance(stop, (str, bytes))
+            stops = () if one_name else tuple(stop)
+            if one_name or not all(isinstance(s, str) and s for s in stops):
+                # An iterator by the items it read; anything else as given.
+                shown = list(stops) if isinstance(stop, Iterator) else stop
+                raise ValueError(f"GenerativeNNModel.generate stop must be a list of non-empty strings, got {shown!r}")
         if logits_chain is not None and logits_pipeline is not None:
             raise ValueError(
                 "pass either logits_chain (a LogitsChain) or logits_pipeline (an OrderedLogitsPipeline), not both"
@@ -258,7 +267,7 @@ class GenerativeNNModel(NNModel):
                         max_seq_len=max_seq_len,
                         processors=processors,
                         gen=gen,
-                        stop=stop,
+                        stop=stops,
                         on_token=on_token,
                     )
                 else:
@@ -269,7 +278,7 @@ class GenerativeNNModel(NNModel):
                         max_seq_len=max_seq_len,
                         processors=processors,
                         gen=gen,
-                        stop=stop,
+                        stop=stops,
                         on_token=on_token,
                     )
         finally:
@@ -288,7 +297,7 @@ class GenerativeNNModel(NNModel):
         max_seq_len: int,
         processors: list[LogitsProcessor],
         gen: Optional[torch.Generator],
-        stop: Optional[list[str]],
+        stop: tuple[str, ...],
         on_token: Optional[Callable[[int], None]],
     ) -> None:
         """Full-recompute path: every step re-runs the model on the
@@ -327,7 +336,7 @@ class GenerativeNNModel(NNModel):
         max_seq_len: int,
         processors: list[LogitsProcessor],
         gen: Optional[torch.Generator],
-        stop: Optional[list[str]],
+        stop: tuple[str, ...],
         on_token: Optional[Callable[[int], None]],
     ) -> None:
         """KV-cache path. Runs one prefill pass on the
