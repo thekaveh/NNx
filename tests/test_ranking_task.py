@@ -15,10 +15,12 @@ from __future__ import annotations
 import ast
 import itertools
 import math
+from collections import Counter
 from pathlib import Path
 
 import pytest
 import torch
+from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
@@ -41,6 +43,7 @@ from nnx.nn.callbacks import WandbCallback
 from nnx.nn.enum.checkpoints import Checkpoints
 from nnx.objectives import ObjectiveContext
 from nnx.ranking import (
+    WEIGHTINGS,
     RankingError,
     RankingTask,
     mrr_at_k,
@@ -605,19 +608,22 @@ def test_without_a_monitor_an_all_excluded_epoch_never_becomes_best():
 # --- review round 1 -----------------------------------------------------------------------------------
 
 
-def test_relevance_on_another_device_is_moved_to_the_scores_before_any_indexing():
-    """CPU stand-in for the GPU case: the grades are moved (whole) to the
-    scores' device before a device index ever touches them."""
-    moved = []
+def test_relevance_on_another_device_is_read_once_on_the_host_before_any_indexing():
+    """CPU stand-in for the GPU case: the grades are read (whole, once) on
+    the host, which groups the rows, before any index touches them."""
+    read = []
 
     class Grades(torch.Tensor):
-        def to(self, *args, **kwargs):
-            moved.append(tuple(self.shape))
-            return super().to(*args, **kwargs)
+        def cpu(self, *args, **kwargs):
+            read.append(tuple(self.shape))
+            return super().cpu(*args, **kwargs)
+
+        def __getitem__(self, index):
+            raise AssertionError("the grades are never indexed on their device")
 
     grades = torch.tensor([1, 0, 2, 0, 1, 1]).as_subclass(Grades)
     numerator, denominator = pairwise_logistic_loss(torch.rand(6), grades, ["a"] * 3 + ["b"] * 3)
-    assert moved[0] == (6,) and denominator == 2
+    assert read == [(6,)] and denominator == 2
 
 
 def test_pairs_are_scored_in_bounded_blocks(monkeypatch):
@@ -1019,3 +1025,204 @@ def test_ndcg_accepts_numpy_integer_grades():
 
     grades = [np.int64(2), np.int32(0), np.int64(1)]
     assert ndcg_at_k(grades, [3.0, 2.0, 1.0], [1, 2, 3], 2) == ndcg_at_k([2, 0, 1], [3.0, 2.0, 1.0], [1, 2, 3], 2)
+
+
+# --- #577: rows grouped on the host, one upload per call --------------------------------------------------
+
+
+class _Census(TorchDispatchMode):
+    """The ops that sync a device with the host, or copy to it, counted (#577, script 3)."""
+
+    def __init__(self):
+        super().__init__()
+        self.ops: Counter = Counter()
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        name = func.overloadpacket.__name__
+        if name == "index" and any(isinstance(i, torch.Tensor) and i.dtype == torch.bool for i in args[1]):
+            self.ops["boolean gather"] += 1  # a nonzero: a device-to-host sync
+        elif name in ("_unique", "_unique2", "unique_dim", "unique_consecutive"):
+            self.ops["unique"] += 1  # a device-to-host sync
+        elif name in ("lift_fresh", "_to_copy", "copy_"):
+            self.ops[name] += 1  # a host tensor made, or one moved to the scores' device
+        return func(*args, **(kwargs or {}))
+
+
+def _calls(monkeypatch, owner, name):
+    """Calls of ``owner.name``, recorded as they happen."""
+    calls = []
+    original = getattr(owner, name)
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(owner, name, spy)
+    return calls
+
+
+def _loss_census(monkeypatch, *args, **kwargs):
+    lists = []
+    original = torch.Tensor.tolist
+    monkeypatch.setattr(torch.Tensor, "tolist", lambda self: lists.append(1) or original(self))
+    with _Census() as census:
+        out = pairwise_logistic_loss(*args, **kwargs)
+    monkeypatch.setattr(torch.Tensor, "tolist", original)
+    return out, census.ops, len(lists)
+
+
+def _binary_queries(n_queries: int, candidates: int = 50, seed: int = 0):
+    g = torch.Generator().manual_seed(seed)
+    scores = torch.randn(n_queries * candidates, generator=g).requires_grad_()
+    relevance = (torch.rand(n_queries * candidates, generator=g) < 0.1).long()  # on the CPU, as split() gives it
+    return scores, relevance, [q for q in range(n_queries) for _ in range(candidates)]
+
+
+def test_the_pairwise_loss_groups_rows_on_the_host_and_uploads_once_per_call(monkeypatch):
+    """The CPU census stands in for the CUDA / MPS syncs: no unique, no
+    boolean gather, no tolist, and as many uploads for 4 queries as for 64."""
+    uploads = set()
+    for n_queries in (4, 64):
+        scores, relevance, query_ids = _binary_queries(n_queries, seed=n_queries)
+        for weighting in WEIGHTINGS:
+            (numerator, denominator), ops, lists = _loss_census(
+                monkeypatch, scores, relevance, query_ids, weighting=weighting
+            )
+            assert denominator > 0 and ops["unique"] == ops["boolean gather"] == lists == 0
+            uploads.add((ops["lift_fresh"], ops["_to_copy"], ops["copy_"]))
+    assert uploads == {(1, 0, 0)}  # one permutation per call, whatever the query count
+    # On the meta device every read back to the host raises: the loss reads nothing back from the scores'
+    # device, and the one permutation is its only copy to it.
+    scores, relevance, query_ids = _binary_queries(64)
+    expected = pairwise_logistic_loss(scores, relevance, query_ids)
+    meta = scores.detach().to("meta").requires_grad_()
+    with _Census() as census:
+        numerator, denominator = pairwise_logistic_loss(meta, relevance, query_ids)
+    assert numerator.device.type == "meta" and denominator == expected[1] and census.ops["_to_copy"] == 1
+
+
+def _e69fd74_pairwise(scores, relevance, query_ids, weighting="query"):
+    """``pairwise_logistic_loss`` before #577: a device-side loop over the queries."""
+    from torch.utils.checkpoint import checkpoint
+
+    import nnx.ranking as ranking
+
+    if scores.dtype in (torch.float16, torch.bfloat16):
+        scores = scores.float()
+    relevance = relevance.to(scores.device)
+    groups = {}
+    for row, query in enumerate(query_ids):
+        groups.setdefault(query, []).append(row)
+    numerator, denominator = scores.reshape(-1)[:0].sum(), 0
+    for rows in groups.values():
+        index = torch.tensor(rows, device=scores.device)
+        s, r = scores[index], relevance[index]
+        total, pairs = s[:0].sum(), 0
+        for grade in torch.unique(r).tolist()[1:]:
+            high, low = s[r == grade], s[r < grade]
+            block = max(1, ranking.PAIR_BLOCK // max(1, low.shape[0]))
+            for start in range(0, high.shape[0], block):
+                chunk = high[start : start + block]
+                n_pairs = chunk.shape[0] * low.shape[0]
+                if (
+                    n_pairs >= ranking.CHECKPOINT_PAIRS
+                    and torch.is_grad_enabled()
+                    and (chunk.requires_grad or low.requires_grad)
+                ):
+                    part = checkpoint(ranking._block_loss, chunk, low, use_reentrant=False)
+                else:
+                    part = ranking._block_loss(chunk, low)
+                total, pairs = total + part, pairs + n_pairs
+        if pairs:
+            numerator = numerator + (total if weighting == "pair" else total / pairs)
+            denominator += pairs if weighting == "pair" else 1
+    return numerator, denominator
+
+
+def _graded_queries(dtype=torch.long):
+    """Interleaved queries: multi-grade, all ties (no unequal pair), a lone
+    candidate, a big one whose blocks reach CHECKPOINT_PAIRS; int and string
+    ids."""
+    g = torch.Generator().manual_seed(21)
+    sizes = {"multi": 30, "ties": 12, 7: 1, "big": 90, 3: 25}
+    query_ids = [query for query, size in sizes.items() for _ in range(size)]
+    order = torch.randperm(len(query_ids), generator=g).tolist()  # a query's rows are not contiguous
+    query_ids = [query_ids[i] for i in order]
+    relevance = torch.randint(0, 4, (len(query_ids),), generator=g).to(dtype)
+    relevance[torch.tensor([q == "ties" for q in query_ids])] = 2
+    scores = torch.randn(len(query_ids), generator=g) * 2
+    return scores, relevance, query_ids
+
+
+@pytest.mark.parametrize("weighting", WEIGHTINGS)
+@pytest.mark.parametrize("grades", ["long", "float-with-nan", "bool"])
+def test_the_pairwise_loss_matches_the_per_query_reference(monkeypatch, weighting, grades):
+    import nnx.ranking as ranking
+
+    monkeypatch.setattr(ranking, "PAIR_BLOCK", 512)  # several blocks per grade
+    monkeypatch.setattr(ranking, "CHECKPOINT_PAIRS", 200)  # blocks below and above it
+    blocks = _calls(monkeypatch, ranking, "_block_loss")
+    checkpointed = _calls(monkeypatch, ranking, "checkpoint")
+    scores, relevance, query_ids = _graded_queries(torch.long if grades == "long" else torch.float64)
+    if grades == "float-with-nan":
+        relevance[::7] = math.nan  # a NaN grade equals no grade: its row is in no pair, as before
+    elif grades == "bool":
+        relevance = relevance > 1
+    results, counts = [], []
+    for fn in (pairwise_logistic_loss, _e69fd74_pairwise):
+        s = scores.clone().requires_grad_()
+        numerator, denominator = fn(s, relevance, query_ids, weighting=weighting)
+        counts.append((len(blocks), len(checkpointed)))
+        numerator.backward()
+        results.append((numerator.detach(), denominator, s.grad))
+    (numerator, denominator, grad), (ref, ref_denominator, ref_grad) = results
+    assert denominator == ref_denominator > 0 and numerator.dtype == ref.dtype
+    assert torch.allclose(numerator, ref, rtol=1e-5) and torch.allclose(grad, ref_grad, rtol=1e-5, atol=1e-7)
+    assert 0 < counts[0][1] < counts[0][0]  # some blocks recomputed in backward, some kept
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs an MPS device")
+def test_the_pairwise_loss_on_mps_matches_the_cpu_with_relevance_on_either_device():
+    scores, relevance, query_ids = _graded_queries()
+    expected, denominator = pairwise_logistic_loss(scores, relevance, query_ids)
+    for grades in (relevance, relevance.to("mps")):
+        numerator, count = pairwise_logistic_loss(scores.to("mps"), grades, query_ids)
+        assert count == denominator and float(numerator) == pytest.approx(float(expected), rel=1e-5)
+
+
+def test_the_ranking_objective_trains_through_nnmodel_and_trainer_with_host_grouping(monkeypatch):
+    import nnx.ranking as ranking
+    from nnx import NNTrainerParams, Trainer
+
+    calls = []
+
+    def spy(*args, **kwargs):
+        out, ops, lists = _loss_census(monkeypatch, *args, **kwargs)
+        calls.append((ops["unique"], ops["boolean gather"], lists, ops["lift_fresh"]))
+        return out
+
+    monkeypatch.setattr(ranking, "pairwise_logistic_loss", spy)  # RankingObjective calls it by this name
+    task = RankingTask(k=(1,), max_relevance=2)
+    batch = _data(6, seed=3)
+    losses = []
+    for fit in ("nnmodel", "trainer"):
+        model = _scorer()
+        with torch.no_grad():
+            reference, count = _e69fd74_pairwise(model.net(batch[0])[:, 0], batch[3], batch[1].tolist(), "query")
+        if fit == "nnmodel":
+            run = model.train(
+                params=NNTrainParams(n_epochs=1, train_loader=[batch], optim=FROZEN), objective=task.objective()
+            )
+        else:
+            params = (
+                NNTrainerParams.builder()
+                .n_epochs(1)
+                .train_loader([batch])
+                .optimizer("default", FROZEN)
+                .save_phase_checkpoints(False)
+                .build()
+            )
+            run = Trainer(model).train(params=params, objective=task.objective())
+        losses.append((run.idps[0].train_edp.loss, float(reference) / count))
+    assert len(calls) == 2 and set(calls) == {(0, 0, 0, 1)}
+    assert all(loss == pytest.approx(expected, rel=1e-6) for loss, expected in losses)

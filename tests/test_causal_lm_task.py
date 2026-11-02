@@ -14,10 +14,12 @@ before the first resumed update.
 from __future__ import annotations
 
 import math
+from typing import Optional
 
 import pytest
 import torch
 import torch.nn.functional as F
+from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
@@ -48,7 +50,9 @@ def _workdir(tmp_path, monkeypatch):
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
 
 
-def _model(seed: int = 0) -> NNModel:
+def _model(seed: int = 0, precision: Optional[str] = None) -> NNModel:
+    from nnx.precision import PrecisionPolicy
+
     torch.manual_seed(seed)
     net = NNTransformerParams(
         input_dim=V,
@@ -62,7 +66,13 @@ def _model(seed: int = 0) -> NNModel:
         max_seq_len=8,
     )
     return NNModel(
-        net_params=net, params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+        net_params=net,
+        params=NNModelParams(
+            net=Nets.TRANSFORMER,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
+            precision=None if precision is None else PrecisionPolicy(precision),
+        ),
     )
 
 
@@ -552,3 +562,153 @@ def test_padding_before_a_real_token_is_refused(mask):
     task = CausalLMTask(vocab_size=V, pad_id=0)
     with pytest.raises(LMTaskError, match="right-pad the batch"):
         task.split({"input_ids": torch.tensor([[0, 0, 1, 2, 3]]), "attention_mask": torch.tensor(mask)})
+
+
+# --- #577: one vocabulary pass, and no logits copy when every position is scored ---------------------------
+
+COPIES = {"index", "masked_select", "clone", "_to_copy", "copy", "copy_"}  # ops that would copy (n, V) logits
+
+
+class _Census(TorchDispatchMode):
+    """The aten ops a call runs, with their output sizes."""
+
+    def __init__(self):
+        super().__init__()
+        self.ops: list[tuple[str, int]] = []
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        out = func(*args, **(kwargs or {}))
+        self.ops.append((func.overloadpacket.__name__, out.numel() if isinstance(out, torch.Tensor) else 0))
+        return out
+
+
+def _token_sums_census(monkeypatch) -> list[dict]:
+    """Every ``token_sums`` call: its logits, the ops it ran and the
+    storage ``cross_entropy`` read."""
+    calls: list[dict] = []
+    original, cross_entropy = CausalLMTask.token_sums, F.cross_entropy
+    read: list[int] = []
+
+    def spy_ce(input, *args, **kwargs):
+        read.append(input.untyped_storage().data_ptr())
+        return cross_entropy(input, *args, **kwargs)
+
+    def spy(self, logits, targets, valid, **kwargs):
+        read.clear()
+        census = _Census()
+        with census:
+            out = original(self, logits, targets, valid, **kwargs)
+        calls.append(
+            {
+                "with_ce": kwargs.get("with_ce", True),
+                "size": logits.numel(),
+                "dtype": logits.dtype,
+                "n": out[3],
+                "ops": census.ops,
+                "same_storage": [ptr == logits.untyped_storage().data_ptr() for ptr in read],
+            }
+        )
+        return out
+
+    monkeypatch.setattr(CausalLMTask, "token_sums", spy)
+    monkeypatch.setattr(F, "cross_entropy", spy_ce)
+    return calls
+
+
+def _trainer_fit(model: NNModel, objective) -> None:
+    from nnx.trainer import NNTrainerParams, Trainer
+
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(1)
+        .train_loader(DataLoader(TensorDataset(_ids(8, 6, seed=7).clamp(min=1)), batch_size=4))
+        .optimizer("default", NNOptimParams.builder().sgd(max_lr=0.1).build())
+        .save_phase_checkpoints(False)
+        .build()
+    )
+    Trainer(model).train(params=params, objective=objective)
+
+
+def test_an_all_scored_batch_costs_one_vocabulary_pass_and_no_logits_copy(monkeypatch):
+    task = CausalLMTask(vocab_size=V)  # smoothing 0; _params' batches score every position
+    calls = _token_sums_census(monkeypatch)
+    _model().train(params=_params(1), objective=task.objective(), eval_step_fn=task.eval_step())
+    _trainer_fit(_model(), task.objective())
+    trained = [call for call in calls if call["with_ce"]]
+    evaluated = [call for call in calls if not call["with_ce"]]
+    assert len(trained) == 4 and len(evaluated) == 2  # two training batches per fit; two validation batches
+    for call in calls:
+        assert call["dtype"] == torch.float32 and call["n"] * V == call["size"]  # every position scored
+        assert not [op for op, size in call["ops"] if op in COPIES and size == call["size"]]  # no (n, V) copy
+    for call in trained:
+        assert call["same_storage"] == [True]  # the cross-entropy reads the logits themselves
+        assert [op for op, _ in call["ops"]].count("logsumexp") == 0  # its pass gives the NLL too
+    assert all(call["same_storage"] == [] for call in evaluated)  # evaluation: the NLL pass only
+
+
+def test_bf16_logits_under_autocast_cost_no_second_vocabulary_pass(monkeypatch):
+    task = CausalLMTask(vocab_size=V)
+    calls = _token_sums_census(monkeypatch)
+    _model(precision="bf16").train(params=_params(1), objective=task.objective(), eval_step_fn=task.eval_step())
+    _trainer_fit(_model(precision="bf16"), task.objective())
+    trained = [call for call in calls if call["with_ce"]]
+    assert len(trained) == 4 and all(call["dtype"] == torch.bfloat16 for call in trained)
+    assert all([op for op, _ in call["ops"]].count("logsumexp") == 0 for call in trained)
+
+
+def _e69fd74_token_sums(task, logits, targets, valid):
+    """``token_sums`` before #577: a copy of the scored rows, then a second pass for the NLL."""
+    n = int(valid.sum())
+    flat, chosen = logits[valid], targets[valid]
+    ce = F.cross_entropy(flat, chosen, reduction="sum", label_smoothing=task.smoothing)
+    with torch.no_grad():
+        detached = flat.detach()
+        if detached.dtype in (torch.float16, torch.bfloat16):
+            detached = detached.float()
+        per_token = torch.logsumexp(detached, dim=-1) - detached.gather(1, chosen.unsqueeze(1)).squeeze(1)
+        nll = float(per_token.cpu().double().sum())
+        correct = int((detached.argmax(dim=-1) == chosen).sum())
+    return ce, nll, correct, n
+
+
+@pytest.mark.parametrize("smoothing", [0.0, 0.1])
+@pytest.mark.parametrize("masked", [False, True], ids=["all-scored", "masked"])
+@pytest.mark.parametrize("dtype", ["float32", "float64", "bf16-autocast", "bf16"])
+def test_token_sums_match_the_two_pass_reference(smoothing, masked, dtype):
+    task = CausalLMTask(vocab_size=V, smoothing=smoothing)
+    g = torch.Generator().manual_seed(11)
+    base = torch.randn(4, 7, V, generator=g) * 3
+    targets = torch.randint(0, V, (4, 7), generator=g)
+    if masked:
+        targets[:, :2] = task.ignore_id
+    valid = task.valid(targets, None)
+    width = torch.float64 if dtype == "float64" else torch.bfloat16 if dtype.startswith("bf16") else torch.float32
+    results = []
+    for fn in (task.token_sums, lambda *args: _e69fd74_token_sums(task, *args)):
+        logits = base.to(width).requires_grad_()
+        with torch.autocast("cpu", dtype=torch.bfloat16, enabled=dtype == "bf16-autocast"):
+            ce, nll, correct, n = fn(logits, targets, valid)
+        ce.backward()
+        results.append((ce.detach(), nll, correct, n, logits.grad))
+    (ce, nll, correct, n, grad), (ce_ref, nll_ref, correct_ref, n_ref, grad_ref) = results
+    assert ce.dtype == ce_ref.dtype and torch.allclose(ce, ce_ref, rtol=1e-6 if width != torch.bfloat16 else 1e-2)
+    assert nll == pytest.approx(nll_ref, rel=1e-5) and (correct, n) == (correct_ref, n_ref)
+    assert torch.allclose(grad, grad_ref, rtol=1e-5, atol=1e-7)
+
+
+def test_a_partially_masked_batch_with_nan_logits_at_unscored_positions_stays_finite():
+    task = CausalLMTask(vocab_size=V)
+    targets = _ids(3, 6, seed=12)
+    targets[:, :2] = task.ignore_id  # a prompt-masked batch
+    logits = torch.randn(3, 6, V, generator=torch.Generator().manual_seed(13))
+    logits[:, :2] = math.nan  # unscored positions never enter the softmax
+    logits.requires_grad_()
+    ce, nll, correct, n = task.token_sums(logits, targets, task.valid(targets, None))
+    ce.backward()
+    assert n == 12 and math.isfinite(float(ce.detach())) and math.isfinite(nll) and 0 <= correct <= n
+    assert logits.grad is not None and bool(torch.isfinite(logits.grad).all())
+    assert float(logits.grad[:, :2].abs().sum()) == 0.0
+    expected = float(
+        F.cross_entropy(logits.detach()[:, 2:].reshape(-1, V), targets[:, 2:].reshape(-1), reduction="sum")
+    )
+    assert float(ce.detach()) == pytest.approx(expected, rel=1e-6) and nll == pytest.approx(expected, rel=1e-5)
