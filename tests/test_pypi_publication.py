@@ -27,6 +27,7 @@ import json
 import os
 import pathlib
 import re
+import types
 import urllib.error
 import urllib.request
 
@@ -52,6 +53,21 @@ _PRE_COMMIT_CONFIG = (".pre-commit-config.yaml",)
 _PYPI_README = _PYPROJECT.parent / "PYPI_README.md"
 _PYPI_TIMEOUT_SEC = 5.0
 _STUDIO_REQUIRED_APIS = ("NNMoEParams", "NNConvParams", "FeedFwdMoENN", "ConvNN")
+# FEAT-051: first-class nnx.* subsystems and the [project] keyword that
+# lists each on PyPI. graph_tasks classifies whole graphs, which the
+# network-family keyword graph-neural-networks does not say.
+_SUBSYSTEM_KEYWORDS = {
+    "link_tasks": "link-prediction",
+    "graph_tasks": "graph-classification",
+    "streaming": "streaming-metrics",
+    "provenance": "provenance",
+    "preprocessing": "preprocessing",
+    "data_splits": "data-splitting",
+    "comparison": "multi-seed-comparison",
+    "plans": "experiment-tracking",
+    "history": "experiment-tracking",
+    "bundles": "experiment-tracking",
+}
 
 
 def test_draft_release_please_forces_tag_creation():
@@ -349,3 +365,12 @@ def test_the_build_backend_pin_matches_the_release_groups():
     assert build_system is not None and release_block is not None
     # Exactly one exact pin inside the release group, equal to the backend's.
     assert re.findall(r'"setuptools([^"]*)"', release_block.group(1)) == [f"=={build_system.group(1)}"]
+
+
+@pytest.mark.parametrize(("module", "keyword"), _SUBSYSTEM_KEYWORDS.items())
+def test_first_class_subsystems_have_a_pypi_keyword(module, keyword):
+    """Each subsystem bound on nnx and in nnx.__all__ is findable by its keyword."""
+    keywords = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))["project"]["keywords"]
+
+    assert isinstance(getattr(nnx, module), types.ModuleType) and module in nnx.__all__
+    assert keyword in keywords, f"pyproject.toml [project] keywords has no {keyword!r} for nnx.{module}"

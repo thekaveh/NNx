@@ -9,6 +9,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 ### Added
 
 - **CUDA rows on the feature-composition matrix.** The matrix now has a `cuda` evidence profile beside the CPU one. FP16 AMP (TC-06), BF16 AMP (TC-10) and two-GPU NCCL DDP (TC-11) have tests, and a report from a GPU run verifies them. Until one runs, they stay *unverified*. CONTRIBUTING describes the opt-in GPU runner and a manual run ([#420](https://github.com/thekaveh/NNx/issues/420)).
+- **PyPI keywords for ten more subsystems.** `[project] keywords` adds `link-prediction` (`nnx.link_tasks`), `graph-classification` (`nnx.graph_tasks`), `streaming-metrics` (`nnx.streaming`), `provenance`, `preprocessing`, `data-splitting` (`nnx.data_splits`), `multi-seed-comparison` (`nnx.comparison`) and `experiment-tracking` (`nnx.plans`, `nnx.history` and `nnx.bundles`) ([#573](https://github.com/thekaveh/NNx/issues/573)).
 
 ### Fixed
 
