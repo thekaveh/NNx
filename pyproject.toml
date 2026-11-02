@@ -18,7 +18,7 @@ docs-publish = [
 [project]
 name = "thekaveh-nnx"
 # Managed by release-please (CONTRIBUTING §7); never bump it by hand.
-version = "0.4.1"
+version = "0.4.2"
 description = "Lightweight PyTorch training/eval/visualization toolkit"
 readme = "PYPI_README.md"
 license = "Apache-2.0"
