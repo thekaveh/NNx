@@ -22,10 +22,10 @@ The exit status separates failures — it never passes by skipping:
 
 1 is an error and 2 a usage error: an artifact folder that already holds a
 profile's files is refused unless ``--force`` clears it, and a profile
-folder that is a symlink (dangling or not) is refused even with
-``--force``, which never touches a link or its target. Every folder is
-checked before any is cleared or written. Nothing is downloaded. Needs
-``thekaveh-nnx[onnx-runtime,onnx-dynamo]``.
+folder that is a symlink (dangling or not), or that cannot be read, is
+refused even with ``--force``, which never touches a link or its target.
+Every folder is checked before any is cleared or written. Nothing is
+downloaded. Needs ``thekaveh-nnx[onnx-runtime,onnx-dynamo]``.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -59,15 +60,18 @@ def main(argv: list[str] | None = None) -> int:
     held = []
     for name in names:  # every folder is checked before --force clears any
         folder = Path(artifacts) / name
-        if folder.is_symlink():  # never followed or cleared, even with --force
+        try:
+            mode = folder.lstat().st_mode  # the folder itself, never a link's target
+            filled = not stat.S_ISLNK(mode) and (not stat.S_ISDIR(mode) or any(folder.iterdir()))
+        except FileNotFoundError:
+            continue  # a new folder
+        except OSError as error:  # the folder, or its parent, cannot be read
+            parser.error(f"{folder} cannot be read: {type(error).__name__}: {error}")
+        if stat.S_ISLNK(mode):  # never followed or cleared, even with --force
             parser.error(
                 f"{folder} is a symlink: a profile writes its artifacts only into its own folder; "
                 "remove the link, or pass a new --artifacts folder"
             )
-        try:
-            filled = folder.exists() and (not folder.is_dir() or any(folder.iterdir()))
-        except OSError as error:
-            parser.error(f"{folder} cannot be read: {type(error).__name__}: {error}")
         if filled:
             if not args.force:
                 parser.error(f"{folder} already holds artifacts: pass --force to clear it, or a new --artifacts folder")

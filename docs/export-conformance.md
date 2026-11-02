@@ -52,8 +52,9 @@ Every name and profile folder is checked before anything is written. The
 script exits `2` (a usage error) for a profile folder that already holds
 files, unless `--force` clears it. It also exits `2`, even with `--force`,
 for a profile folder that is a symlink (to an empty or a filled folder, or
-dangling): `--force` never touches a link or its target. Every folder is
-checked before any is cleared. The artifact root itself may be a symlink.
+dangling) or that cannot be read: `--force` never touches a link or its
+target. Every folder is checked before any is cleared. The artifact root
+itself may be a symlink.
 
 Or from Python:
 
@@ -73,7 +74,7 @@ again = execute(record, "artifacts/")    # re-runs load + parity; hashes checked
 - an unknown name;
 - a tested profile whose settings were changed in place;
 - a profile folder that holds files, is a symlink (dangling or not) or
-  cannot be read.
+  cannot be read (or looked up, when its parent cannot be searched).
 
 So a typo or a stale folder in a later entry leaves no earlier profile's
 artifacts behind to block the retry. `run_profile` makes the same checks for
@@ -145,13 +146,14 @@ The rebuilt settings are compared as canonical text. The comparison is with
 the tested profile of that name, whose name stands for its exact settings,
 or with the rebuilt profile itself. So input cases, exporter options or an
 artifact layout no profile produces are refused. These are refused before
-anything is written, by `run_profiles` for every name before the first
-profile runs:
+anything is written, by `run_profile` and, for every name before the first
+profile runs, by `run_profiles` (which takes names only):
 
-- a `Profile` reusing a tested name with other settings;
 - an unknown name;
-- a profile folder that is not new or empty, a symlinked or dangling one
-  included.
+- a tested name whose settings were changed in place, or, for
+  `run_profile`, a `Profile` reusing a tested name with other settings;
+- a profile folder that is not new or empty, a symlinked, dangling or
+  unreadable one included.
 
 A symlinked artifact or artifact folder never verifies. A folder replaced
 by a link after the export is a `hash-mismatch` when the record is
