@@ -133,9 +133,13 @@ validation loop runs no collective.
 
 ```text
 forward + backward through DDP  (no_sync until the window's last microbatch)
-   │   loss numerator only; finiteness agreed on every rank before backward
+   │   loss numerator only; before backward, one gather agrees on every rank's
+   │   loss finiteness and, without a task, scorable targets
    ▼
-window end:  W, S = all_reduce(the ranks' loss denominators, ranks with an additive loss)
+records gather: each rank's outputs, targets and window so far
+   ▼
+window end:  W, S = the ranks' loss denominators, ranks with an additive loss
+   │   (summed from the records gather)
    │   a task model with no valid target on any rank → skip the update on every rank
    ▼
 grad = DDP average × world_size / W        (an additive loss, S > 0: × world_size)
@@ -145,6 +149,13 @@ clip → optimizer.step()  — identical parameters on every rank
 
 With this order, each committed update equals one process training on the
 union of the ranks' batches, unequal valid counts included.
+
+Besides DDP's gradient all-reduce, a step takes two gathers: the agreement
+before the backward and the records after it. `W` and `S` need no collective
+of their own. Every rank sums the gathered denominators in rank order, so `W`
+is identical on every rank. With more than two ranks and fractional
+denominators (class-weighted losses), it can differ from an all-reduced sum
+in the last bit.
 
 **Records and decisions.** Each batch's outputs, targets and loss terms are
 gathered and scored the same way on every rank. Validation gathers each

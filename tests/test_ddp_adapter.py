@@ -453,7 +453,51 @@ def test_a_rank_batch_with_no_valid_target_trains_like_the_union_batch(tmp_path)
 def test_a_global_window_with_no_valid_target_fails_on_every_rank(tmp_path):
     out = tmp_path / "all-ignored-window"
     launch("all_ignored_window", out)
-    assert [rank["error"] for rank in results(out)] == ["FloatingPointError", "FloatingPointError"]
+    assert [(rank["error"], rank["message"]) for rank in results(out)] == [
+        (
+            "FloatingPointError",
+            "non-finite training loss (nan): no rank's batch in this optimizer window has a valid target",
+        )
+    ] * 2
+
+
+@pytest.fixture(scope="module")
+def collectives(tmp_path_factory) -> list[dict]:
+    out = tmp_path_factory.mktemp("ddp-collectives")
+    launch("collectives", out)
+    return results(out)
+
+
+@pytest.mark.parametrize("label", list(scenarios.COLLECTIVE_FITS))
+def test_each_default_step_takes_one_verdict_gather_and_one_records_gather(collectives, label):
+    """#576: before the backward one gather exchanges every rank's loss and
+    target verdicts (a task model's loss verdict only); after it the records
+    gather also carries the window weight W, so no all-reduce follows. Was
+    three gathers (two for a task model) and one all-reduce per committed
+    update."""
+    for rank in collectives:
+        assert rank["cases"][label]["per_step"] == {
+            "all_gather_object": 2.0,
+            "all_reduce": 0.0,
+            "all_gather": 0.0,
+            "broadcast": 0.0,
+            "barrier": 0.0,
+        }
+
+
+def test_every_rank_scales_each_update_by_the_same_window_weight(collectives, tmp_path):
+    """#576: W, summed in rank order from the records gather, is identical on
+    every rank and, on two ranks, equals the all-reduced value (world / W)."""
+    expected = {"acc1": [2 / 2, 2 / 3, 2 / 4], "acc2": [2 / 5, 2 / 4]}
+    for rank in collectives:
+        for label, (_task, accumulate) in scenarios.COLLECTIVE_FITS.items():
+            assert rank["cases"][label]["scales"] == expected[f"acc{accumulate}"], label
+    first, second = collectives
+    for label in scenarios.COLLECTIVE_FITS:
+        assert_close_states(first["cases"][label]["state"], second["cases"][label]["state"])
+    ref_model, _ = reference(tmp_path, n_epochs=1)
+    for rank in collectives:
+        assert_close_states(rank["cases"]["acc2"]["state"], ref_model.net.state_dict())
 
 
 @pytest.fixture(scope="module")
@@ -865,3 +909,42 @@ def test_distributed_regression_refusals_advise_only_a_task_declaration(tmp_path
             f"targets: {_DECLARE_TASK}",
             "task": None,
         }
+
+
+_NAN_LOSS = (
+    "non-finite training loss (nan) — training diverged. Check learning rate, gradient clipping "
+    "(NNOptimParams.grad_clip_norm), or input normalization."
+)
+
+
+def _nonfinite_on(ranks: list[int]) -> tuple[str, str]:
+    return "FloatingPointError", f"non-finite training loss on rank(s) {ranks}: every rank stops before the update"
+
+
+def _unscorable_on(ranks: list[int]) -> tuple[str, str]:
+    return "ValueError", f"rank(s) {ranks} cannot score their batch's targets: every rank stops before the update"
+
+
+# Each rank's (error type, message) per case, rank 0 first: a non-finite
+# loss is agreed on before an unscorable target, and a failing rank raises
+# its own error.
+_VERDICTS = {
+    "nan_rank0": [("FloatingPointError", _NAN_LOSS), _nonfinite_on([0])],
+    "nan_both": [("FloatingPointError", _NAN_LOSS)] * 2,
+    "unscorable_rank1": [_unscorable_on([1]), ("ValueError", _DDP_DEFAULT_STEP_REFUSAL)],
+    "unscorable_both": [("ValueError", _DDP_DEFAULT_STEP_REFUSAL)] * 2,
+    "nan_rank0_unscorable_rank1": [("FloatingPointError", _NAN_LOSS), _nonfinite_on([0])],
+    "nan_and_unscorable_rank0": [("FloatingPointError", _NAN_LOSS), _nonfinite_on([0])],
+    "task_nan_rank1": [_nonfinite_on([1]), ("FloatingPointError", _NAN_LOSS)],
+}
+
+
+def test_the_merged_step_agreement_raises_the_same_errors_in_the_same_order(tmp_path):
+    """#576: one gather now carries the loss and target verdicts; every rank
+    still raises what the two gathers raised, a non-finite loss first."""
+    out = tmp_path / "verdict-order"
+    launch("verdict_order", out)
+    ranks = results(out)
+    assert set(_VERDICTS) == set(scenarios.VERDICT_CASES)
+    for label, expected in _VERDICTS.items():
+        assert [rank["cases"][label] for rank in ranks] == expected, label
