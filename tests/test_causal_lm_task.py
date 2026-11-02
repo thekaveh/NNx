@@ -649,24 +649,57 @@ def test_an_all_scored_batch_costs_one_vocabulary_pass_and_no_logits_copy(monkey
         assert [read == call["storage"] for op, _, _, read, _ in call["ops"] if op == "logsumexp"] == [True]
 
 
-def test_the_smoothing_0_backward_fills_one_vocabulary_buffer_the_gradient():
+@pytest.mark.parametrize("dtype", ["float32", "bf16", "bf16-autocast"])
+def test_the_smoothing_0_backward_fills_one_vocabulary_buffer_the_gradient(dtype):
     task = CausalLMTask(vocab_size=V)
     targets = _ids(4, 7, seed=14)
-    logits = torch.randn(4, 7, V, generator=torch.Generator().manual_seed(15)).requires_grad_()
-    ce, _, _, n = task.token_sums(logits, targets, task.valid(targets, None))
+    logits = torch.randn(4, 7, V, generator=torch.Generator().manual_seed(15))
+    logits = (logits if dtype == "float32" else logits.to(torch.bfloat16)).requires_grad_()
+    with torch.autocast("cpu", dtype=torch.bfloat16, enabled=dtype == "bf16-autocast"):
+        ce, _, _, n = task.token_sums(logits, targets, task.valid(targets, None))
     census = _Census()
     with census:
         ce.backward()
     seen: set[int] = {logits.untyped_storage().data_ptr()}
     fresh = []
-    for op, size, _, read, wrote in census.ops:
+    for _, size, out_dtype, read, wrote in census.ops:
         if wrote not in seen and size >= n * V:
-            fresh.append(op)
+            fresh.append(out_dtype)
         seen |= {read, wrote}
-    assert n * V == logits.numel() and len(fresh) == 1  # one (n, V) buffer: the gradient itself
-    assert logits.grad is not None and torch.allclose(
-        logits.grad, torch.softmax(logits.detach(), dim=-1) - F.one_hot(targets, V), atol=1e-7
-    )
+    # One (n, V) buffer in float32, the gradient itself; for bf16 logits it is cast once more, to bf16.
+    assert n * V == logits.numel() and fresh == [torch.float32] + [logits.dtype] * (dtype != "float32")
+    assert logits.grad is not None and logits.grad.dtype == logits.dtype
+    expected = torch.softmax(logits.detach().float(), dim=-1) - F.one_hot(targets, V)
+    assert torch.allclose(logits.grad.float(), expected, rtol=1e-5 if dtype == "float32" else 2**-8, atol=1e-7)
+
+
+@pytest.mark.parametrize("transform", ["func.grad", "func.jvp", "forward_ad", "func.hessian"])
+@pytest.mark.parametrize("masked", [False, True], ids=["all-scored", "masked"])
+def test_torch_func_and_forward_mode_ad_run_through_the_smoothing_0_loss_as_through_cross_entropy(masked, transform):
+    import torch.autograd.forward_ad as fwAD
+
+    task = CausalLMTask(vocab_size=V)
+    g = torch.Generator().manual_seed(20)
+    base = torch.randn(2, 3, V, generator=g, dtype=torch.float64) * 2
+    tangent = torch.randn(2, 3, V, generator=g, dtype=torch.float64)
+    targets = torch.randint(0, V, (2, 3), generator=g)
+    if masked:
+        targets[0, :2] = task.ignore_id
+    valid = task.valid(targets, None)
+
+    def apply(fn):
+        if transform == "func.grad":
+            return torch.func.grad(fn)(base)
+        if transform == "func.jvp":
+            return torch.func.jvp(fn, (base,), (tangent,))[1]
+        if transform == "func.hessian":  # forward over reverse mode, vmapped
+            return torch.func.hessian(fn)(base)
+        with fwAD.dual_level():
+            return fwAD.unpack_dual(fn(fwAD.make_dual(base, tangent))).tangent
+
+    ours = apply(lambda x: task.token_sums(x, targets, valid)[0])
+    reference = apply(lambda x: F.cross_entropy(x[valid], targets[valid], reduction="sum"))
+    assert torch.allclose(ours, reference, rtol=1e-10, atol=1e-12)
 
 
 def test_the_smoothing_0_loss_keeps_a_second_derivative():
