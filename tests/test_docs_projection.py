@@ -339,24 +339,38 @@ def test_external_contract_tool_versions_match_automation_sources():
     assert f"Ruff `{locked_version('ruff')}`" in contracts
     assert f"`setuptools=={locked_version('setuptools')}`" in contracts
     assert "Reusable release workflow" not in contracts
-    for workflow in (build_docs.ROOT / ".github" / "workflows").glob("*.yml"):
-        text = workflow.read_text(encoding="utf-8")
-        if "astral-sh/setup-uv" in text:
-            assert f'version: "{requirement_versions["uv"]}"' in text, workflow
+    # test_dependabot_config_lists_every_uv_bump_hand_edit checks the uv version
+    # input of every setup-uv step.
+
+
+def _dependabot_groups(ecosystem: str) -> dict:
+    config = yaml.safe_load((build_docs.ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
+    (update,) = (update for update in config["updates"] if update["package-ecosystem"] == ecosystem)
+    return update.get("groups", {})
 
 
 def _dependabot_group(ecosystem: str, dependency: str) -> str | None:
-    """The group a Dependabot version update puts ``dependency`` in: "If a
-    dependency matches more than one rule, it's included in the first group
-    that it matches." None when no group matches."""
-    config = yaml.safe_load((build_docs.ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
-    (update,) = (update for update in config["updates"] if update["package-ecosystem"] == ecosystem)
-    for name, group in update.get("groups", {}).items():
+    """The group a Dependabot version update puts ``dependency`` in, per the
+    documented rule: "If a dependency matches more than one rule, it's included
+    in the first group that it matches." None when no group matches. See
+    _assert_lists_exact_names for when dependabot-core's own ranking agrees."""
+    for name, group in _dependabot_groups(ecosystem).items():
         if any(fnmatch.fnmatchcase(dependency, pattern) for pattern in group.get("patterns", [])) and not any(
             fnmatch.fnmatchcase(dependency, pattern) for pattern in group.get("exclude-patterns", [])
         ):
             return name
     return None
+
+
+def _assert_lists_exact_names(ecosystem: str, group: str) -> None:
+    """dependabot-core's updater sends a dependency that matches several groups
+    to the most specific one (a pattern equal to its name ranks first, "*"
+    last), keeps file order for ties, matches case-insensitively and treats
+    only "*" as a wildcard. A dependency that first-matches a group of exact
+    lower-case names equals one of its patterns, so it ranks first there and
+    dependabot-core puts it in the same group as _dependabot_group."""
+    for pattern in _dependabot_groups(ecosystem)[group]["patterns"]:
+        assert re.fullmatch(r"[a-z0-9][a-z0-9._/-]*", pattern), pattern
 
 
 def test_every_ledger_and_tool_file_pin_first_matches_the_pinned_tools_group():
@@ -380,6 +394,7 @@ def test_every_ledger_and_tool_file_pin_first_matches_the_pinned_tools_group():
             pins.add((match.group(1) or match.group(2)).lower())
     assert {"uv", "pip-audit", "twine", "setuptools", "pyright", "ruff"} <= pins
     assert _dependabot_group("uv", "an-unpinned-dependency") == "python-dependencies"
+    _assert_lists_exact_names("uv", "pinned-tools")
     for pin in sorted(pins):
         assert _dependabot_group("uv", pin) == "pinned-tools", pin
 
@@ -393,6 +408,7 @@ def test_setup_uv_first_matches_a_github_actions_group_of_its_own():
     assert "astral-sh/setup-uv" in actions
     group = _dependabot_group("github-actions", "astral-sh/setup-uv")
     assert group not in (None, "github-actions")
+    _assert_lists_exact_names("github-actions", group)
     for action in sorted(actions - {"astral-sh/setup-uv"}):
         assert _dependabot_group("github-actions", action) != group, action
 
