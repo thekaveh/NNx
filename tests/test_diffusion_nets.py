@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import torch
 
@@ -76,6 +78,32 @@ def test_diffusion_mlp_non_positive_hidden_dims_raises(bad_hidden):
     width otherwise builds a degenerate nn.Linear silently."""
     with pytest.raises(ValueError, match="hidden_dims entries must be positive"):
         DiffusionMLP(input_dim=2, hidden_dims=bad_hidden)
+
+
+@pytest.mark.parametrize(
+    "make",
+    [lambda: (d for d in [64, 32]), lambda: iter([64, 32]), lambda: map(int, "64,32".split(",")), lambda: (64, 32)],
+    ids=["generator", "iter", "map", "tuple"],
+)
+def test_diffusion_mlp_reads_one_shot_hidden_dims_once(make):
+    """#559: the positivity check consumed a one-shot ``hidden_dims``, so the
+    net was built with no hidden layers. It is read once and builds the list
+    form's layers."""
+    shapes = [tuple(layer.weight.shape) for layer in DiffusionMLP(input_dim=2, hidden_dims=make()).layers]
+    assert shapes == [tuple(layer.weight.shape) for layer in DiffusionMLP(input_dim=2, hidden_dims=[64, 32]).layers]
+    assert shapes == [(64, 34), (32, 64), (2, 32)]
+
+
+@pytest.mark.parametrize(
+    ("make", "shown"),
+    [(lambda: (d for d in [8, 0, 8]), "[8, 0, 8]"), (lambda: iter([-4]), "[-4]"), (lambda: [8, 0], "[8, 0]")],
+    ids=["generator", "iter", "list"],
+)
+def test_diffusion_mlp_refuses_a_non_positive_one_shot_entry_showing_it(make, shown):
+    """#559: a one-shot ``hidden_dims`` with a non-positive entry still raises,
+    and the message shows its entries, not the consumed iterator."""
+    with pytest.raises(ValueError, match=re.escape(f"hidden_dims entries must be positive, got {shown}")):
+        DiffusionMLP(input_dim=2, hidden_dims=make())
 
 
 def test_diffusion_mlp_accepts_empty_hidden_dims():

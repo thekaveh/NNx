@@ -811,8 +811,10 @@ Args:
     top_p: nucleus (top-p) cutoff. None disables.
     repetition_penalty: divide previously-seen tokens' positive
         logits by this. 1.0 is no-op (default).
-    stop: list of stop strings — generation halts once any of
-        them appears in the decoded CONTINUATION (the prompt
+    stop: list of stop strings (a tuple or a one-shot iterable,
+        a generator say, is read once; a bare string is
+        refused) — generation halts once any of them appears
+        in the decoded CONTINUATION (the prompt
         itself is not searched, so a prompt containing a stop
         string doesn't halt generation immediately; a stop
         string straddling the prompt/continuation boundary is
