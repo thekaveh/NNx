@@ -804,14 +804,16 @@ def test_generate_validates_stop_and_seed(kwargs):
         (lambda: filter(None, ["END", 3]), "['END', 3]"),
         (lambda: [""], "['']"),
         (lambda: ("END", ""), "('END', '')"),
+        (lambda: {""}, "{''}"),
         (lambda: "END", "'END'"),
     ],
-    ids=["iter", "generator", "map", "filter", "list", "tuple", "str"],
+    ids=["iter", "generator", "map", "filter", "list", "tuple", "set", "str"],
 )
 def test_an_invalid_stop_is_refused_showing_its_items(make, shown):
     """#559: the message formatted the caller's object, which for a one-shot
     iterable the check had just consumed (``<list_iterator object at ...>``).
-    It shows the items read; a list, tuple or string reads as before."""
+    An iterator shows the items read; any other value (a list, tuple, set
+    or string) reads as before."""
     from nnx import GenerativeNNModel
 
     with pytest.raises(ValueError, match=re.escape(f"stop must be a list of non-empty strings, got {shown}")) as caught:
