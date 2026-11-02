@@ -16,6 +16,7 @@ in by the user as needed.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 
 import torch
 from torch import nn
@@ -83,8 +84,8 @@ class DiffusionMLP(nn.Module):
         # entry otherwise builds a zero/negative-width nn.Linear silently. An
         # empty list is valid (a single input+t -> input projection).
         if not all(d > 0 for d in hidden):
-            # A list or tuple as given; a one-shot iterable by its entries.
-            shown = given if isinstance(given, (list, tuple)) else hidden
+            # An iterator by the entries it read; anything else as given.
+            shown = hidden if isinstance(given, Iterator) else given
             raise ValueError(f"hidden_dims entries must be positive, got {shown}")
         self.input_dim = input_dim
         self.time_embed_dim = time_embed_dim

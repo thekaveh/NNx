@@ -8,7 +8,7 @@ on top.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, Optional, cast
 
@@ -177,8 +177,8 @@ class GenerativeNNModel(NNModel):
             one_name = isinstance(stop, (str, bytes))
             stops = () if one_name else tuple(stop)
             if one_name or not all(isinstance(s, str) and s for s in stops):
-                # A string, list or tuple as given; a one-shot iterable by its items.
-                shown = stop if isinstance(stop, (str, bytes, list, tuple)) else list(stops)
+                # An iterator by the items it read; anything else as given.
+                shown = list(stops) if isinstance(stop, Iterator) else stop
                 raise ValueError(f"GenerativeNNModel.generate stop must be a list of non-empty strings, got {shown!r}")
         if logits_chain is not None and logits_pipeline is not None:
             raise ValueError(

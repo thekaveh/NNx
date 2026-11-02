@@ -96,12 +96,19 @@ def test_diffusion_mlp_reads_one_shot_hidden_dims_once(make):
 
 @pytest.mark.parametrize(
     ("make", "shown"),
-    [(lambda: (d for d in [8, 0, 8]), "[8, 0, 8]"), (lambda: iter([-4]), "[-4]"), (lambda: [8, 0], "[8, 0]")],
-    ids=["generator", "iter", "list"],
+    [
+        (lambda: (d for d in [8, 0, 8]), "[8, 0, 8]"),
+        (lambda: iter([-4]), "[-4]"),
+        (lambda: [8, 0], "[8, 0]"),
+        (lambda: (8, 0), "(8, 0)"),
+        (lambda: range(0, 2), "range(0, 2)"),
+    ],
+    ids=["generator", "iter", "list", "tuple", "range"],
 )
 def test_diffusion_mlp_refuses_a_non_positive_one_shot_entry_showing_it(make, shown):
     """#559: a one-shot ``hidden_dims`` with a non-positive entry still raises,
-    and the message shows its entries, not the consumed iterator."""
+    and the message shows its entries, not the consumed iterator; a list,
+    tuple or range reads as before."""
     with pytest.raises(ValueError, match=re.escape(f"hidden_dims entries must be positive, got {shown}")):
         DiffusionMLP(input_dim=2, hidden_dims=make())
 
