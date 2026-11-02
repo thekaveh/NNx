@@ -557,8 +557,9 @@ print(report.text())
     - `execution` metadata (batch, size, `partial_batch`, seconds, attempt).
 
     A record is immutable: `execution` is read-only at every depth, its lists
-    as tuples, and `state()` gives the plain JSON. Equal records hash equal,
-    a record and its `read_records` copy included.
+    as tuples, and `state()` gives the plain JSON (for `json.dumps`, or to
+    compare with lists). Equal records hash equal, a record and its
+    `read_records` copy included.
 
 - **Coverage statuses.** Records join samples by sample id **and** question
   digest, never by row position. Each sample has one status:
@@ -629,8 +630,9 @@ print(report.text())
   eligible, failure and `extra` counts, unavailable states and notes (the
   CSV's `note` column). A non-finite
   value is `"Infinity"` in the JSON and the CSV. A report's coverage
-  reasons, metrics, `metric_identity` and `slices` are read-only, so it
-  cannot drift from its exports, and equal reports hash equal.
+  reasons, metrics, `metric_identity` and `slices` are read-only (`state()`
+  gives them as plain JSON), so it cannot drift from its exports, and equal
+  reports hash equal.
 - **Comparison.** `compare_reports` gives `b - a` per slice and metric only
   for reports that share all of these:
     - the same split;

@@ -369,15 +369,39 @@ class _FrozenList(tuple[Any, ...]):
 
     __slots__ = ()
 
+    def __reduce__(self) -> tuple[Any, ...]:
+        # Copied and pickled as its plain form, refrozen: level by level, a
+        # value as deep as the depth bound admits would overflow the stack.
+        return (_frozen, (_plain(self),))
+
+
+class _FrozenDict(_FrozenMapping[Any]):
+    """A JSON object frozen by :func:`_frozen`: a :class:`_FrozenMapping`
+    copied and pickled, like a :class:`_FrozenList`, as its plain form."""
+
+    __slots__ = ()
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (_frozen, (_plain(self),))
+
 
 def _frozen(value: Any) -> Any:
     """A read-only copy of a JSON-like value: mappings as order-free, hashable
     snapshots and lists as tuples, at every depth."""
     if isinstance(value, Mapping):
-        return _FrozenMapping({key: _frozen(item) for key, item in value.items()})
+        return _FrozenDict({key: _frozen(item) for key, item in value.items()})
     if isinstance(value, (list, tuple)):
-        return _FrozenList(_frozen(item) for item in value)
+        return _FrozenList([_frozen(item) for item in value])  # a generator would add a frame per level
     return value
+
+
+def _check_depth(value: Any, what: str, holder: str) -> None:
+    """Refuse a value nested past what ``holder`` (a record line, a report
+    file: one level around the value) can hold, before the recursive copies,
+    which would overflow."""
+    limit = MAX_JSON_DEPTH - 1
+    if too_deep(value, limit):
+        raise BenchmarkError(f"{what} nests more than {limit} levels; {holder} holds at most {MAX_JSON_DEPTH}")
 
 
 def _plain(value: Any) -> Any:
@@ -393,10 +417,14 @@ def _plain(value: Any) -> Any:
 def _snapshot(value: Any, what: str, *, deep: bool = False) -> Any:
     """A read-only copy of a mapping — of its values as they are (counts,
     metrics, slices: immutable already) or, ``deep``, of a JSON-like value
-    at every depth (:func:`_frozen`); anything else raises."""
+    at every depth (:func:`_frozen`, within the report file's depth bound);
+    anything else raises."""
     if not isinstance(value, Mapping):
         raise BenchmarkError(f"{what} must be a mapping, got {value!r}")
-    return _frozen(value) if deep else _FrozenMapping(value)
+    if not deep:
+        return _FrozenMapping(value)
+    _check_depth(value, what, "a report file")
+    return _frozen(value)
 
 
 @dataclass(frozen=True)
@@ -467,11 +495,7 @@ class Record:
         # scalar, a NaN or an int key would fail or change on the round trip).
         if not all(isinstance(key, str) for key in self.execution):
             raise BenchmarkError(f"Record.execution keys must be strings, got {list(self.execution)!r}")
-        limit = MAX_JSON_DEPTH - 1  # a record line wraps it in one more level
-        if too_deep(self.execution, limit):  # before the recursive copies, which would overflow
-            raise BenchmarkError(
-                f"Record.execution nests more than {limit} levels; a record line holds at most {MAX_JSON_DEPTH}"
-            )
+        _check_depth(self.execution, "Record.execution", "a record line")
         execution = _plain(dict(self.execution))  # a record's own read-only execution (replace()) checks again
         try:
             round_trip = json.loads(json.dumps(execution, allow_nan=False))
