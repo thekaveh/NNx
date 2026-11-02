@@ -5938,7 +5938,7 @@ class NNModel(_HubMixinBase):
         ``unpack_batch``, else the model's batch adapter (FEAT-006)."""
         if getattr(batch, "_nnx_teacher_records", False) is True:
             raise TypeError(
-                "this batch holds stored teacher probabilities (a TeacherBatch, FEAT-022), not (inputs, labels): "
+                "this batch holds stored teacher probabilities (a TeacherBatch), not (inputs, labels): "
                 "train it with TeacherDataset.objective() (nnx.paradigms.offline_distillation) and score it with "
                 "evaluate_offline; the supervised and live-teacher steps cannot use it"
             )

@@ -124,7 +124,7 @@ def main():
     parser.add_argument(
         "--objective",
         action="store_true",
-        help="Train with the diffusion_objective adapter (FEAT-040) instead of the imperative step.",
+        help="Train with the diffusion_objective adapter instead of the imperative step.",
     )
     args = parser.parse_args()
 
