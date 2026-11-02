@@ -52,6 +52,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import torch
+from torch._C._functorch import is_batchedtensor, is_legacy_batchedtensor
 
 from .components import ComponentSpec
 from .objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult
@@ -78,6 +79,62 @@ def _integer(value: Any, what: str) -> int:
     if isinstance(value, bool) or not isinstance(value, numbers.Integral):
         raise LMTaskError(f"{what} must be an integer, got {value!r}")
     return int(value)
+
+
+def _token_nll(flat: torch.Tensor, chosen: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """``(logsumexp, per-token NLL)`` of ``(n, V)`` logits, in float32 or
+    wider: half precision would round confident tokens' NLL to 0."""
+    x = flat.float() if flat.dtype in (torch.float16, torch.bfloat16) else flat
+    lse = torch.logsumexp(x, dim=-1)
+    return lse, lse - x.gather(1, chosen.unsqueeze(1)).squeeze(1)
+
+
+class _TokenNLL(torch.autograd.Function):
+    """:func:`_token_nll` as ``(per-token NLL, logsumexp)``, the NLL
+    differentiable in the logits. Its backward writes ``(softmax - one_hot)
+    * grad`` into one ``(n, V)`` buffer in float32 or wider, the gradient
+    itself (cast once more to the logits' dtype for half-precision logits),
+    where autograd's own logsumexp and gather backward peak at four; under
+    ``create_graph`` or for a batched gradient it runs out of place. Its
+    ``setup_context``, ``jvp`` and generated vmap rule keep ``torch.func``
+    transforms and forward-mode AD working, as on ``cross_entropy``
+    (Dynamo does not trace a custom ``jvp``, so ``torch.compile`` breaks
+    the graph here and runs it eagerly)."""
+
+    generate_vmap_rule = True
+
+    @staticmethod
+    def forward(flat: torch.Tensor, chosen: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        lse, per_token = _token_nll(flat, chosen)
+        return per_token, lse
+
+    @staticmethod
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: Any) -> None:
+        (flat, chosen), (_, lse) = inputs, output
+        ctx.mark_non_differentiable(lse)
+        ctx.save_for_backward(flat, chosen, lse)
+        ctx.save_for_forward(flat, chosen, lse)
+
+    @staticmethod
+    def backward(ctx: Any, *grads: torch.Tensor) -> tuple[torch.Tensor, None]:
+        flat, chosen, lse = ctx.saved_tensors
+        grad, index = grads[0].unsqueeze(1), chosen.unsqueeze(1)
+        batched = is_batchedtensor(grads[0]) or is_legacy_batchedtensor(grads[0])
+        # Out of place under create_graph=True, so the gradient has a derivative too, and for a batched incoming
+        # gradient (is_grads_batched, a vectorized jacobian, vmap over autograd.grad), whose batch an in-place
+        # write cannot hold.
+        if torch.is_grad_enabled() or batched:
+            out = torch.softmax(flat.to(lse.dtype), dim=-1) * grad
+            return (out - torch.zeros_like(out).scatter(1, index, grad)).to(flat.dtype), None
+        out = torch.sub(flat, lse.unsqueeze(1)).exp_().mul_(grad)  # softmax * grad, in lse's dtype
+        return out.scatter_add_(1, index, -grad).to(flat.dtype), None  # minus grad at each target
+
+    @staticmethod
+    def jvp(ctx: Any, flat_t: torch.Tensor, _: None) -> tuple[torch.Tensor, None]:
+        flat, chosen, lse = ctx.saved_tensors
+        tangent = flat_t.to(lse.dtype)  # the NLL's tangent, in its dtype: softmax . tangent - tangent[target]
+        dot = (torch.softmax(flat.to(lse.dtype), dim=-1) * tangent).sum(dim=-1)
+        return dot - tangent.gather(1, chosen.unsqueeze(1)).squeeze(1), None
 
 
 def perplexity(nll: Optional[float]) -> Optional[float]:
@@ -388,28 +445,53 @@ class CausalLMTask:
         """``(smoothed CE sum (differentiable), unsmoothed NLL sum, correct,
         valid count)`` over the valid positions; flattened once, here.
         ``with_ce=False`` (evaluation) skips the cross-entropy pass and
-        returns an empty sum in its place."""
+        returns an empty sum in its place.
+
+        Cost: a batch whose every position is scored is read through a view
+        of the logits; a partially masked one copies its ``(n, V)`` scored
+        rows, so an unscored row (NaN logits, say) never enters the softmax.
+        With ``smoothing=0`` the loss is the unsmoothed NLL itself, and one
+        differentiable pass, ``logsumexp(x) - x[target]`` in float32 or
+        wider, gives both: half-precision logits, under autocast or not,
+        are widened to float32 for it, as the NLL always was, and its
+        backward fills one ``(n, V)`` buffer in float32 or wider, the
+        gradient itself (cast once more to the logits' dtype for
+        half-precision logits); second derivatives, batched gradients,
+        ``torch.func`` transforms and forward-mode AD run through it as
+        through the cross-entropy. Label smoothing keeps the cross-entropy
+        for the loss and adds a no-grad pass of the same NLL, which is also
+        evaluation's (``with_ce=False``) only pass. The accuracy is an
+        argmax."""
         targets = targets.to(logits.device)
         valid = valid.to(logits.device)
         n = int(valid.sum())
         if n == 0:  # an empty sum keeps the graph and stays finite whatever the logits hold
             return logits.reshape(-1)[:0].sum(), 0.0, 0, 0
-        flat = logits[valid]  # (n, V)
-        chosen = targets[valid]
-        ce = (
-            torch.nn.functional.cross_entropy(flat, chosen, reduction="sum", label_smoothing=self.smoothing)
-            if with_ce
-            else flat.reshape(-1)[:0].sum()
-        )
+        # Every position scored: a view, no (n, V) copy. Logits or targets whose shape does not fit the mask fall
+        # through to the indexing, which refuses them.
+        if n == valid.numel() and logits.shape[:-1] == valid.shape == targets.shape:
+            flat, chosen = logits.reshape(-1, logits.shape[-1]), targets.reshape(-1)
+        else:
+            flat, chosen = logits[valid], targets[valid]  # (n, V): unscored rows stay out of the softmax
+        if with_ce and not self.smoothing:
+            # The NLL's own formula, not cross_entropy: on a CPU, its float32
+            # kernel loses precision on confident tokens, and under MPS
+            # autocast it runs log_softmax in half precision.
+            per_token = _TokenNLL.apply(flat, chosen)[0]
+            ce = per_token.sum()
+        else:
+            ce = (
+                torch.nn.functional.cross_entropy(flat, chosen, reduction="sum", label_smoothing=self.smoothing)
+                if with_ce
+                else flat.reshape(-1)[:0].sum()
+            )
+            with torch.no_grad():
+                per_token = _token_nll(flat.detach(), chosen)[1]
         with torch.no_grad():
-            detached = flat.detach()
-            if detached.dtype in (torch.float16, torch.bfloat16):
-                detached = detached.float()  # half precision would round confident tokens' NLL to 0
-            # Per-token NLL in (at least) float32 — no full-vocabulary float64
-            # copy — summed in float64.
-            per_token = torch.logsumexp(detached, dim=-1) - detached.gather(1, chosen.unsqueeze(1)).squeeze(1)
+            # Per-token NLL in (at least) float32 — no full-vocabulary
+            # float64 copy — summed in float64.
             nll = float(per_token.detach().cpu().double().sum())  # MPS has no float64
-            correct = int((detached.argmax(dim=-1) == chosen).sum())
+            correct = int((flat.detach().argmax(dim=-1) == chosen).sum())
         return ce, nll, correct, n
 
     # ---------- training and evaluation ----------

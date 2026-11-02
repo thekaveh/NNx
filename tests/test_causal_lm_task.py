@@ -14,10 +14,12 @@ before the first resumed update.
 from __future__ import annotations
 
 import math
+from typing import Optional
 
 import pytest
 import torch
 import torch.nn.functional as F
+from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils.data import DataLoader, TensorDataset
 
 from nnx import (
@@ -48,7 +50,9 @@ def _workdir(tmp_path, monkeypatch):
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
 
 
-def _model(seed: int = 0) -> NNModel:
+def _model(seed: int = 0, precision: Optional[str] = None) -> NNModel:
+    from nnx.precision import PrecisionPolicy
+
     torch.manual_seed(seed)
     net = NNTransformerParams(
         input_dim=V,
@@ -62,7 +66,13 @@ def _model(seed: int = 0) -> NNModel:
         max_seq_len=8,
     )
     return NNModel(
-        net_params=net, params=NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
+        net_params=net,
+        params=NNModelParams(
+            net=Nets.TRANSFORMER,
+            device=Devices.CPU,
+            loss=Losses.CROSS_ENTROPY,
+            precision=None if precision is None else PrecisionPolicy(precision),
+        ),
     )
 
 
@@ -552,3 +562,361 @@ def test_padding_before_a_real_token_is_refused(mask):
     task = CausalLMTask(vocab_size=V, pad_id=0)
     with pytest.raises(LMTaskError, match="right-pad the batch"):
         task.split({"input_ids": torch.tensor([[0, 0, 1, 2, 3]]), "attention_mask": torch.tensor(mask)})
+
+
+# --- #577: one vocabulary pass, and no logits copy when every position is scored ---------------------------
+
+COPIES = {"index", "masked_select", "clone", "_to_copy", "copy", "copy_"}  # ops that would copy (n, V) logits
+CROSS_ENTROPY = {"_log_softmax", "log_softmax", "nll_loss_forward", "nll_loss2d_forward", "cross_entropy_loss"}
+
+
+class _Census(TorchDispatchMode):
+    """The aten ops a call runs: name, output size and dtype, and the
+    storages of the first tensor argument and of the output."""
+
+    def __init__(self):
+        super().__init__()
+        self.ops: list[tuple[str, int, Optional[torch.dtype], int, int]] = []
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        out = func(*args, **(kwargs or {}))
+        first = next((arg for arg in args if isinstance(arg, torch.Tensor)), None)
+        tensor = out if isinstance(out, torch.Tensor) else None
+        self.ops.append(
+            (
+                func.overloadpacket.__name__,
+                0 if tensor is None else tensor.numel(),
+                None if tensor is None else tensor.dtype,
+                0 if first is None else first.untyped_storage().data_ptr(),
+                0 if tensor is None else tensor.untyped_storage().data_ptr(),
+            )
+        )
+        return out
+
+
+def _token_sums_census(monkeypatch) -> list[dict]:
+    """Every ``token_sums`` call: its logits and the ops it ran."""
+    calls: list[dict] = []
+    original = CausalLMTask.token_sums
+
+    def spy(self, logits, targets, valid, **kwargs):
+        census = _Census()
+        with census:
+            out = original(self, logits, targets, valid, **kwargs)
+        calls.append(
+            {
+                "with_ce": kwargs.get("with_ce", True),
+                "size": logits.numel(),
+                "dtype": logits.dtype,
+                "storage": logits.untyped_storage().data_ptr(),
+                "n": out[3],
+                "ops": census.ops,
+            }
+        )
+        return out
+
+    monkeypatch.setattr(CausalLMTask, "token_sums", spy)
+    return calls
+
+
+def _trainer_fit(model: NNModel, objective) -> None:
+    from nnx.trainer import NNTrainerParams, Trainer
+
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(1)
+        .train_loader(DataLoader(TensorDataset(_ids(8, 6, seed=7).clamp(min=1)), batch_size=4))
+        .optimizer("default", NNOptimParams.builder().sgd(max_lr=0.1).build())
+        .save_phase_checkpoints(False)
+        .build()
+    )
+    Trainer(model).train(params=params, objective=objective)
+
+
+def test_an_all_scored_batch_costs_one_vocabulary_pass_and_no_logits_copy(monkeypatch):
+    task = CausalLMTask(vocab_size=V)  # smoothing 0; _params' batches score every position
+    calls = _token_sums_census(monkeypatch)
+    _model().train(params=_params(1), objective=task.objective(), eval_step_fn=task.eval_step())
+    _trainer_fit(_model(), task.objective())
+    trained = [call for call in calls if call["with_ce"]]
+    evaluated = [call for call in calls if not call["with_ce"]]
+    assert len(trained) == 4 and len(evaluated) == 2  # two training batches per fit; two validation batches
+    for call in calls:
+        assert call["dtype"] == torch.float32 and call["n"] * V == call["size"]  # every position scored
+        assert not [op for op, size, *_ in call["ops"] if op in COPIES and size == call["size"]]  # no (n, V) copy
+        assert not [op for op, *_ in call["ops"] if op in CROSS_ENTROPY]  # no cross-entropy pass
+        # One logsumexp, over the logits themselves: the loss and the NLL in training, the NLL in evaluation.
+        assert [read == call["storage"] for op, _, _, read, _ in call["ops"] if op == "logsumexp"] == [True]
+
+
+@pytest.mark.parametrize("dtype", ["float32", "bf16", "bf16-autocast"])
+def test_the_smoothing_0_backward_fills_one_vocabulary_buffer_the_gradient(dtype):
+    task = CausalLMTask(vocab_size=V)
+    targets = _ids(4, 7, seed=14)
+    logits = torch.randn(4, 7, V, generator=torch.Generator().manual_seed(15))
+    logits = (logits if dtype == "float32" else logits.to(torch.bfloat16)).requires_grad_()
+    with torch.autocast("cpu", dtype=torch.bfloat16, enabled=dtype == "bf16-autocast"):
+        ce, _, _, n = task.token_sums(logits, targets, task.valid(targets, None))
+    census = _Census()
+    with census:
+        ce.backward()
+    seen: set[int] = {logits.untyped_storage().data_ptr()}
+    fresh = []
+    for _, size, out_dtype, read, wrote in census.ops:
+        if wrote not in seen and size >= n * V:
+            fresh.append(out_dtype)
+        seen |= {read, wrote}
+    # One (n, V) buffer in float32, the gradient itself; for bf16 logits it is cast once more, to bf16.
+    assert n * V == logits.numel() and fresh == [torch.float32] + [logits.dtype] * (dtype != "float32")
+    assert logits.grad is not None and logits.grad.dtype == logits.dtype
+    expected = torch.softmax(logits.detach().float(), dim=-1) - F.one_hot(targets, V)
+    assert torch.allclose(logits.grad.float(), expected, rtol=1e-5 if dtype == "float32" else 2**-8, atol=1e-7)
+
+
+@pytest.mark.parametrize(
+    "transform",
+    [
+        "func.grad",
+        "func.jvp",
+        "forward_ad",
+        "func.hessian",
+        "is_grads_batched",
+        "vmap-autograd.grad",
+        "jacobian-vectorize",
+        "gradcheck-batched",
+    ],
+)
+@pytest.mark.parametrize("masked", [False, True], ids=["all-scored", "masked"])
+def test_transforms_and_batched_gradients_run_through_the_smoothing_0_loss_as_through_cross_entropy(masked, transform):
+    import torch.autograd.forward_ad as fwAD
+
+    task = CausalLMTask(vocab_size=V)
+    g = torch.Generator().manual_seed(20)
+    base = torch.randn(2, 3, V, generator=g, dtype=torch.float64) * 2
+    tangent = torch.randn(2, 3, V, generator=g, dtype=torch.float64)
+    targets = torch.randint(0, V, (2, 3), generator=g)
+    if masked:
+        targets[0, :2] = task.ignore_id
+    valid = task.valid(targets, None)
+
+    def apply(fn):
+        if transform == "func.grad":
+            return torch.func.grad(fn)(base)
+        if transform == "func.jvp":
+            return torch.func.jvp(fn, (base,), (tangent,))[1]
+        if transform == "func.hessian":  # forward over reverse mode, vmapped
+            return torch.func.hessian(fn)(base)
+        # Batched incoming gradients, without create_graph: under autograd's legacy vmap or under torch.func.vmap.
+        if transform in ("is_grads_batched", "vmap-autograd.grad"):
+            logits = base.clone().requires_grad_()
+            out, batch = fn(logits), torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+            if transform == "is_grads_batched":
+                return torch.autograd.grad(out, logits, batch, is_grads_batched=True)[0]
+            return torch.func.vmap(lambda grad: torch.autograd.grad(out, logits, grad, retain_graph=True)[0])(batch)
+        if transform == "jacobian-vectorize":
+            return torch.autograd.functional.jacobian(fn, base, vectorize=True)
+        if transform == "gradcheck-batched":  # finite differences, and a batched gradient against one at a time
+            passed = torch.autograd.gradcheck(fn, (base.clone().requires_grad_(),), check_batched_grad=True)
+            return torch.tensor(float(passed))
+        with fwAD.dual_level():
+            return fwAD.unpack_dual(fn(fwAD.make_dual(base, tangent))).tangent
+
+    ours = apply(lambda x: task.token_sums(x, targets, valid)[0])
+    reference = apply(lambda x: F.cross_entropy(x[valid], targets[valid], reduction="sum"))
+    assert torch.allclose(ours, reference, rtol=1e-10, atol=1e-12)
+
+
+def test_the_smoothing_0_loss_keeps_a_second_derivative():
+    task = CausalLMTask(vocab_size=V)
+    targets = _ids(3, 4, seed=18)
+    targets[:, 0] = task.ignore_id
+    valid = task.valid(targets, None)
+    base = torch.randn(3, 4, V, dtype=torch.float64, generator=torch.Generator().manual_seed(19))
+    assert torch.autograd.gradgradcheck(lambda x: task.token_sums(x, targets, valid)[0], (base.requires_grad_(),))
+    penalties = []
+    for fn in (task.token_sums, lambda *args: _e69fd74_token_sums(task, *args)):  # a gradient penalty
+        logits = base.detach().clone().requires_grad_()
+        (grad,) = torch.autograd.grad(fn(logits, targets, valid)[0], logits, create_graph=True)
+        grad.pow(2).sum().backward()
+        penalties.append(logits.grad)
+    assert torch.allclose(penalties[0], penalties[1], rtol=1e-10, atol=1e-12)
+
+
+@pytest.mark.parametrize("case", ["seq-first-logits", "a-longer-sequence", "flat-logits", "seq-first-targets"])
+def test_logits_or_targets_that_do_not_fit_the_mask_are_refused_as_before(case):
+    # The all-scored view would pair logit rows with the wrong targets; the indexing refuses them, as on e69fd74.
+    g = torch.Generator().manual_seed(21)
+    targets = torch.randint(0, V, (2, 3), generator=g)
+    logits = torch.randn(2, 3, V, generator=g)
+    if case == "seq-first-logits":  # (T, B, V) logits for (B, T) targets
+        logits = logits.transpose(0, 1).contiguous()
+    elif case == "a-longer-sequence":  # (1, 2, V) logits for (1, 1) targets
+        logits, targets = logits[:1, :2], targets[:1, :1]
+    elif case == "flat-logits":  # (B * T, V)
+        logits = logits.reshape(-1, V)
+    valid = CausalLMTask(vocab_size=V).valid(targets, None)  # every position scored
+    if case == "seq-first-targets":  # (T, B) targets for the (B, T) logits and mask
+        targets = targets.t().contiguous()
+    for task, with_ce in (
+        (CausalLMTask(vocab_size=V), True),
+        (CausalLMTask(vocab_size=V, smoothing=0.1), True),
+        (CausalLMTask(vocab_size=V), False),
+    ):
+        with pytest.raises(IndexError, match="does not match the shape of the indexed tensor"):
+            task.token_sums(logits.clone().requires_grad_(), targets, valid, with_ce=with_ce)
+        with pytest.raises(IndexError, match="does not match the shape of the indexed tensor"):
+            _e69fd74_token_sums(task, logits.clone().requires_grad_(), targets, valid)
+
+
+def test_bf16_logits_under_autocast_cost_one_vocabulary_pass_in_float32(monkeypatch):
+    task = CausalLMTask(vocab_size=V)
+    calls = _token_sums_census(monkeypatch)
+    _model(precision="bf16").train(params=_params(1), objective=task.objective(), eval_step_fn=task.eval_step())
+    _trainer_fit(_model(precision="bf16"), task.objective())
+    trained = [call for call in calls if call["with_ce"]]
+    assert len(trained) == 4 and all(call["dtype"] == torch.bfloat16 for call in trained)
+    for call in trained:
+        assert not [op for op, *_ in call["ops"] if op in CROSS_ENTROPY]
+        assert [dtype for op, _, dtype, _, _ in call["ops"] if op == "logsumexp"] == [torch.float32]
+    # Its one float32 widening of the (n, V) logits is one e69fd74 made too, for the NLL.
+    logits = torch.randn(4, 7, V, generator=torch.Generator().manual_seed(16)).to(torch.bfloat16)
+    targets = _ids(4, 7, seed=17)
+    valid = task.valid(targets, None)
+    widened = []
+    for fn in (task.token_sums, lambda *args: _e69fd74_token_sums(task, *args)):
+        census = _Census()
+        with torch.autocast("cpu", dtype=torch.bfloat16), census:
+            fn(logits.clone().requires_grad_(), targets, valid)
+        widened.append(
+            sum(
+                op == "_to_copy" and size == logits.numel() and dtype == torch.float32
+                for op, size, dtype, *_ in census.ops
+            )
+        )
+    assert widened[0] == 1 and widened[1] >= 1
+
+
+def _e69fd74_token_sums(task, logits, targets, valid):
+    """``token_sums`` before #577: a copy of the scored rows, then a second pass for the NLL."""
+    n = int(valid.sum())
+    flat, chosen = logits[valid], targets[valid]
+    ce = F.cross_entropy(flat, chosen, reduction="sum", label_smoothing=task.smoothing)
+    with torch.no_grad():
+        detached = flat.detach()
+        if detached.dtype in (torch.float16, torch.bfloat16):
+            detached = detached.float()
+        per_token = torch.logsumexp(detached, dim=-1) - detached.gather(1, chosen.unsqueeze(1)).squeeze(1)
+        nll = float(per_token.cpu().double().sum())
+        correct = int((detached.argmax(dim=-1) == chosen).sum())
+    return ce, nll, correct, n
+
+
+@pytest.mark.parametrize("smoothing", [0.0, 0.1])
+@pytest.mark.parametrize("masked", [False, True], ids=["all-scored", "masked"])
+@pytest.mark.parametrize("dtype", ["float32", "float64", "bf16-autocast", "bf16"])
+def test_token_sums_match_the_two_pass_reference(smoothing, masked, dtype):
+    task = CausalLMTask(vocab_size=V, smoothing=smoothing)
+    g = torch.Generator().manual_seed(11)
+    base = torch.randn(4, 7, V, generator=g) * 3
+    targets = torch.randint(0, V, (4, 7), generator=g)
+    if masked:
+        targets[:, :2] = task.ignore_id
+    valid = task.valid(targets, None)
+    width = torch.float64 if dtype == "float64" else torch.bfloat16 if dtype.startswith("bf16") else torch.float32
+    # Without smoothing, bf16 logits outside autocast now get their loss in float32, like their NLL.
+    widen = dtype == "bf16" and not smoothing
+    results = []
+    for fn in (task.token_sums, lambda x, *args: _e69fd74_token_sums(task, x.float() if widen else x, *args)):
+        logits = base.to(width).requires_grad_()
+        with torch.autocast("cpu", dtype=torch.bfloat16, enabled=dtype == "bf16-autocast"):
+            ce, nll, correct, n = fn(logits, targets, valid)
+        ce.backward()
+        results.append((ce.detach(), nll, correct, n, logits.grad))
+    (ce, nll, correct, n, grad), (ce_ref, nll_ref, correct_ref, n_ref, grad_ref) = results
+    assert ce.dtype == ce_ref.dtype and torch.allclose(ce, ce_ref, rtol=1e-2 if ce.dtype == torch.bfloat16 else 1e-6)
+    assert nll == pytest.approx(nll_ref, rel=1e-5) and (correct, n) == (correct_ref, n_ref)
+    assert torch.allclose(grad, grad_ref, rtol=1e-5, atol=1e-7)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "bf16-autocast"])
+@pytest.mark.parametrize(("margin", "noise"), [(16.0, 2.0), (16.0, 1.0)], ids=["nll-0.14", "nll-0.011"])
+def test_confident_tokens_keep_e69fd74s_nll_at_a_realistic_vocabulary(margin, noise, dtype):
+    vocab = 32000
+    task = CausalLMTask(vocab_size=vocab)
+    g = torch.Generator().manual_seed(3)
+    base = torch.randn(2, 128, vocab, generator=g) * noise
+    targets = torch.randint(0, vocab, (2, 128), generator=g)
+    base.scatter_add_(2, targets.unsqueeze(-1), torch.full((2, 128, 1), margin))  # each target leads by `margin`
+    if dtype == "bf16-autocast":
+        base = base.to(torch.bfloat16)
+    valid = task.valid(targets, None)
+    results = []
+    for fn in (task.token_sums, lambda *args: _e69fd74_token_sums(task, *args)):
+        logits = base.clone().requires_grad_()
+        with torch.autocast("cpu", dtype=torch.bfloat16, enabled=dtype == "bf16-autocast"):
+            ce, nll, correct, n = fn(logits, targets, valid)
+        ce.backward()
+        assert logits.grad is not None
+        results.append((float(ce.detach()), nll, correct, n, logits.grad.double()))
+    (ce, nll, correct, n, grad), (_, nll_ref, correct_ref, n_ref, grad_ref) = results
+    exact = base.double().reshape(-1, vocab).requires_grad_()
+    reference = F.cross_entropy(exact, targets.reshape(-1), reduction="sum")
+    reference.backward()
+    assert exact.grad is not None
+    assert nll == pytest.approx(nll_ref, rel=1e-5) and (correct, n) == (correct_ref, n_ref)  # e69fd74's formula
+    assert nll == pytest.approx(float(reference.detach()), rel=1e-5)
+    assert ce == pytest.approx(nll, rel=1e-6)  # the loss is that NLL
+    rtol = 1e-5 if dtype == "float32" else 2**-7  # a bf16 gradient is rounded to bf16
+    assert torch.allclose(grad, exact.grad.reshape(base.shape), rtol=rtol, atol=5e-6)
+    # e69fd74's gradient came from torch's cross-entropy, which on these tokens is itself up to 1.1e-4 off.
+    assert torch.allclose(grad, grad_ref, rtol=rtol, atol=2e-4)
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs an MPS device")
+@pytest.mark.parametrize("half", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
+def test_mps_autocast_keeps_the_loss_and_the_nll_in_float32(half):
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            with torch.autocast("mps", dtype=half):
+                supported = torch.is_autocast_enabled("mps")
+        except RuntimeError:  # no MPS autocast before torch 2.5
+            supported = False
+    if not supported:
+        pytest.skip("this torch has no MPS autocast")
+    task = CausalLMTask(vocab_size=V)
+    g = torch.Generator().manual_seed(5)
+    base = (torch.randn(3, 9, V, generator=g) * 4).to(half)
+    targets = torch.randint(0, V, (3, 9), generator=g)
+    valid = task.valid(targets, None)
+    logits = base.to("mps").requires_grad_()
+    census = _Census()
+    with torch.autocast("mps", dtype=half), census:
+        ce, nll, correct, n = task.token_sums(logits, targets, valid)
+    ce.backward()
+    _, nll_ref, correct_ref, n_ref = _e69fd74_token_sums(task, base, targets, valid)  # its NLL, in float32 on the CPU
+    assert nll == pytest.approx(nll_ref, rel=1e-5) and float(ce.detach()) == pytest.approx(nll, rel=1e-6)
+    assert (correct, n) == (correct_ref, n_ref)
+    assert not [op for op, *_ in census.ops if op in CROSS_ENTROPY]  # no half-precision log_softmax
+    assert [dtype for op, _, dtype, _, _ in census.ops if op == "logsumexp"] == [torch.float32]
+    assert logits.grad is not None and bool(torch.isfinite(logits.grad).all())
+
+
+def test_a_partially_masked_batch_with_nan_logits_at_unscored_positions_stays_finite():
+    task = CausalLMTask(vocab_size=V)
+    targets = _ids(3, 6, seed=12)
+    targets[:, :2] = task.ignore_id  # a prompt-masked batch
+    logits = torch.randn(3, 6, V, generator=torch.Generator().manual_seed(13))
+    logits[:, :2] = math.nan  # unscored positions never enter the softmax
+    logits.requires_grad_()
+    ce, nll, correct, n = task.token_sums(logits, targets, task.valid(targets, None))
+    ce.backward()
+    assert n == 12 and math.isfinite(float(ce.detach())) and math.isfinite(nll) and 0 <= correct <= n
+    assert logits.grad is not None and bool(torch.isfinite(logits.grad).all())
+    assert float(logits.grad[:, :2].abs().sum()) == 0.0
+    expected = float(
+        F.cross_entropy(logits.detach()[:, 2:].reshape(-1, V), targets[:, 2:].reshape(-1), reduction="sum")
+    )
+    assert float(ce.detach()) == pytest.approx(expected, rel=1e-6) and nll == pytest.approx(expected, rel=1e-5)

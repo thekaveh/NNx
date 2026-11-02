@@ -9320,6 +9320,26 @@ nnx.lm_tasks.CausalLMTask.token_sums(self, logits: 'torch.Tensor', targets: 'tor
 
 ``(smoothed CE sum (differentiable), unsmoothed NLL sum, correct, valid count)`` over the valid positions; flattened once, here. ``with_ce=False`` (evaluation) skips the cross-entropy pass and returns an empty sum in its place.
 
+**Details**
+
+```text
+Cost: a batch whose every position is scored is read through a view
+of the logits; a partially masked one copies its ``(n, V)`` scored
+rows, so an unscored row (NaN logits, say) never enters the softmax.
+With ``smoothing=0`` the loss is the unsmoothed NLL itself, and one
+differentiable pass, ``logsumexp(x) - x[target]`` in float32 or
+wider, gives both: half-precision logits, under autocast or not,
+are widened to float32 for it, as the NLL always was, and its
+backward fills one ``(n, V)`` buffer in float32 or wider, the
+gradient itself (cast once more to the logits' dtype for
+half-precision logits); second derivatives, batched gradients,
+``torch.func`` transforms and forward-mode AD run through it as
+through the cross-entropy. Label smoothing keeps the cross-entropy
+for the loss and adds a no-grad pass of the same NLL, which is also
+evaluation's (``with_ce=False``) only pass. The accuracy is an
+argmax.
+```
+
 ##### `nnx.lm_tasks.CausalLMTask.objective`
 
 ```python
@@ -9630,10 +9650,14 @@ lower-graded one) in blocks of at most :data:`PAIR_BLOCK` pairs, so no
 query's full pair matrix is ever held — in training too: a block of at
 least :data:`CHECKPOINT_PAIRS` pairs is recomputed in backward
 (``torch.utils.checkpoint``) rather than kept, while a smaller one costs
-less to keep than to recompute. ``relevance`` may live on any device; it
-is moved to the scores'. float16 / bfloat16 scores are widened to
-float32 first, so the cross-query sum accumulates in full precision
-(the numerator is float32); other dtypes are kept.
+less to keep than to recompute. Rows are grouped by query and grade on
+the host, from one read of ``relevance`` (which may live on any
+device), and reach the scores' device as one permutation: however many
+queries it holds, a call makes one host-to-device copy and no read back
+from the scores' device beyond that one read of ``relevance`` when it
+lives there. float16 / bfloat16 scores are widened to float32 first,
+so the cross-query sum accumulates in full precision (the numerator is
+float32); other dtypes are kept.
 ```
 
 
