@@ -17331,7 +17331,7 @@ No public description is currently available.
 nnx.export_conformance.run_profile(profile: 'Union[str, Profile]', directory: 'Union[str, os.PathLike[str]]', *, source_revision: 'Optional[str]' = None) -> 'dict[str, Any]'
 ```
 
-Run one profile, writing its artifacts into ``directory/<name>/`` (which must not exist or be empty), and return its record (see the module docstring). Never raises for a failing stage: every outcome is classified in the record.
+Run one profile, writing its artifacts into ``directory/<name>/`` (which must not exist or be an empty directory, and must not be a symlink; ``directory`` itself may be one), and return its record (see the module docstring). An unknown name, a tested name with other settings, or a folder that is not new or empty (a symlink, dangling or not, or a folder that cannot be read) raises `ConformanceError` before anything is written. Never raises for a failing stage: every outcome is classified in the record.
 
 
 #### `nnx.export_conformance.run_profiles`
@@ -17340,7 +17340,7 @@ Run one profile, writing its artifacts into ``directory/<name>/`` (which must no
 nnx.export_conformance.run_profiles(directory: 'Union[str, os.PathLike[str]]', names: 'Optional[Sequence[str]]' = None, *, source_revision: 'Optional[str]' = None) -> 'dict[str, Any]'
 ```
 
-Run ``names`` (every tested profile by default) under ``directory``; the report's ``status`` is ``passed`` only when every profile passed.
+Run ``names`` (every tested profile by default) under ``directory``; the report's ``status`` is ``passed`` only when every profile passed. Every name and profile folder is checked before the first profile runs: an unknown name, a tested name whose settings changed, or a ``directory/<name>/`` that is not new or an empty directory (a symlink, dangling or not, or a folder that cannot be read) raises `ConformanceError` before anything is written, so no earlier profile's artifacts are left to block the retry.
 
 
 #### `nnx.export_conformance.execute`

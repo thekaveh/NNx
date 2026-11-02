@@ -20,9 +20,12 @@ The exit status separates failures — it never passes by skipping:
     12 state-changed              17 input-contract
     13 checker-error              18 runtime-error
 
-1 is an error and 2 a usage error (an artifact folder that already holds a
-profile's files is refused unless ``--force`` clears it). Nothing is
-downloaded. Needs ``thekaveh-nnx[onnx-runtime,onnx-dynamo]``.
+1 is an error and 2 a usage error: an artifact folder that already holds a
+profile's files is refused unless ``--force`` clears it, and a profile
+folder that is a symlink (dangling or not) is refused even with
+``--force``, which never touches a link or its target. Every folder is
+checked before any is cleared or written. Nothing is downloaded. Needs
+``thekaveh-nnx[onnx-runtime,onnx-dynamo]``.
 """
 
 from __future__ import annotations
@@ -53,12 +56,24 @@ def main(argv: list[str] | None = None) -> int:
 
     artifacts = args.artifacts or args.output.with_name(f"{args.output.stem}-artifacts")
     names = list(dict.fromkeys(args.profile or PROFILES))
-    for name in names:
+    held = []
+    for name in names:  # every folder is checked before --force clears any
         folder = Path(artifacts) / name
-        if folder.exists() and (not folder.is_dir() or any(folder.iterdir())):
+        if folder.is_symlink():  # never followed or cleared, even with --force
+            parser.error(
+                f"{folder} is a symlink: a profile writes its artifacts only into its own folder; "
+                "remove the link, or pass a new --artifacts folder"
+            )
+        try:
+            filled = folder.exists() and (not folder.is_dir() or any(folder.iterdir()))
+        except OSError as error:
+            parser.error(f"{folder} cannot be read: {type(error).__name__}: {error}")
+        if filled:
             if not args.force:
                 parser.error(f"{folder} already holds artifacts: pass --force to clear it, or a new --artifacts folder")
-            shutil.rmtree(folder) if folder.is_dir() else folder.unlink()
+            held.append(folder)
+    for folder in held:
+        shutil.rmtree(folder) if folder.is_dir() else folder.unlink()
     os.makedirs(artifacts, exist_ok=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     report = run_profiles(artifacts, names, source_revision=args.source_revision)
