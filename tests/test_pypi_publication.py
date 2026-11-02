@@ -75,6 +75,8 @@ def test_all_workflows_use_pinned_uv_action_and_no_unlocked_tool_install():
         workflow = path.read_text(encoding="utf-8")
         assert "pip install -r requirements-tools.txt" not in workflow, path
         if "uv " in workflow:
+            # A setup-uv bump needs this pin edited by hand; its own Dependabot
+            # group keeps the other action bumps from waiting on it (FIX-099).
             assert "astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7" in workflow, path
 
 
