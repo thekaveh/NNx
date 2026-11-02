@@ -368,9 +368,17 @@ def _assert_lists_exact_names(ecosystem: str, group: str) -> None:
     last), keeps file order for ties, matches case-insensitively and treats
     only "*" as a wildcard. A dependency that first-matches a group of exact
     lower-case names equals one of its patterns, so it ranks first there and
-    dependabot-core puts it in the same group as _dependabot_group."""
+    dependabot-core puts it in the same group as _dependabot_group. Its uv
+    parser names a dependency in PEP 503 form but leaves patterns as written,
+    so a uv pattern must already be in that form."""
+    exact = r"[a-z0-9]+(-[a-z0-9]+)*" if ecosystem == "uv" else r"[a-z0-9][a-z0-9._/-]*"
     for pattern in _dependabot_groups(ecosystem)[group]["patterns"]:
-        assert re.fullmatch(r"[a-z0-9][a-z0-9._/-]*", pattern), pattern
+        assert re.fullmatch(exact, pattern), pattern
+
+
+def _pep503(name: str) -> str:
+    """The name dependabot-core's uv parser gives a pinned package."""
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def test_every_ledger_and_tool_file_pin_first_matches_the_pinned_tools_group():
@@ -379,7 +387,7 @@ def test_every_ledger_and_tool_file_pin_first_matches_the_pinned_tools_group():
     contracts = (build_docs.ROOT / "docs" / "external-contracts.md").read_text(encoding="utf-8")
     requirements = (build_docs.ROOT / "requirements-tools.txt").read_text(encoding="utf-8")
     pins = {
-        line.split("==", 1)[0].strip()
+        _pep503(line.split("==", 1)[0].strip())
         for line in requirements.splitlines()
         if "==" in line and not line.startswith("#")
     }
@@ -391,7 +399,7 @@ def test_every_ledger_and_tool_file_pin_first_matches_the_pinned_tools_group():
             # `name==version` or Name `version`; an entry in any other form fails here.
             match = re.fullmatch(r"`([\w.-]+)==[^`]+`|([A-Z][\w-]*) `\d[^`]*`", item)
             assert match is not None, item
-            pins.add((match.group(1) or match.group(2)).lower())
+            pins.add(_pep503(match.group(1) or match.group(2)))
     assert {"uv", "pip-audit", "twine", "setuptools", "pyright", "ruff"} <= pins
     assert _dependabot_group("uv", "an-unpinned-dependency") == "python-dependencies"
     _assert_lists_exact_names("uv", "pinned-tools")
