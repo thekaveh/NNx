@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import re
 import struct
@@ -338,10 +339,117 @@ def test_external_contract_tool_versions_match_automation_sources():
     assert f"Ruff `{locked_version('ruff')}`" in contracts
     assert f"`setuptools=={locked_version('setuptools')}`" in contracts
     assert "Reusable release workflow" not in contracts
+    # test_dependabot_config_lists_every_uv_bump_hand_edit checks the uv version
+    # input of every setup-uv step.
+
+
+def _dependabot_groups(ecosystem: str) -> dict:
+    config = yaml.safe_load((build_docs.ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
+    (update,) = (update for update in config["updates"] if update["package-ecosystem"] == ecosystem)
+    return update.get("groups", {})
+
+
+def _dependabot_group(ecosystem: str, dependency: str) -> str | None:
+    """The group a Dependabot version update puts ``dependency`` in, per the
+    documented rule: "If a dependency matches more than one rule, it's included
+    in the first group that it matches." None when no group matches. See
+    _assert_lists_exact_names for when dependabot-core's own ranking agrees."""
+    for name, group in _dependabot_groups(ecosystem).items():
+        if any(fnmatch.fnmatchcase(dependency, pattern) for pattern in group.get("patterns", [])) and not any(
+            fnmatch.fnmatchcase(dependency, pattern) for pattern in group.get("exclude-patterns", [])
+        ):
+            return name
+    return None
+
+
+def _assert_lists_exact_names(ecosystem: str, group: str) -> None:
+    """dependabot-core's updater sends a dependency that matches several groups
+    to the most specific one (a pattern equal to its name ranks first, "*"
+    last), keeps file order for ties, matches case-insensitively and treats
+    only "*" as a wildcard. A dependency that first-matches a group of exact
+    lower-case names equals one of its patterns, so it ranks first there and
+    dependabot-core puts it in the same group as _dependabot_group. Its uv
+    parser names a dependency in PEP 503 form but leaves patterns as written,
+    so a uv pattern must already be in that form."""
+    exact = r"[a-z0-9]+(-[a-z0-9]+)*" if ecosystem == "uv" else r"[a-z0-9][a-z0-9._/-]*"
+    for pattern in _dependabot_groups(ecosystem)[group]["patterns"]:
+        assert re.fullmatch(exact, pattern), pattern
+
+
+def _pep503(name: str) -> str:
+    """The name dependabot-core's uv parser gives a pinned package."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def test_every_ledger_and_tool_file_pin_first_matches_the_pinned_tools_group():
+    """FIX-099: a pinned tool's bump needs hand edits to land, so it must not
+    share a pull request with (and hold back) the catch-all group's updates."""
+    contracts = (build_docs.ROOT / "docs" / "external-contracts.md").read_text(encoding="utf-8")
+    requirements = (build_docs.ROOT / "requirements-tools.txt").read_text(encoding="utf-8")
+    pins = {
+        _pep503(line.split("==", 1)[0].strip())
+        for line in requirements.splitlines()
+        if "==" in line and not line.startswith("#")
+    }
+    for row in ("Maintenance tooling", "Package publishing"):
+        (line,) = (line for line in contracts.splitlines() if line.startswith(f"| {row} |"))
+        for item in (item.strip() for item in line.split("|")[2].split(";")):
+            if item == "PyPI OIDC":  # a trust relationship, not a package
+                continue
+            # `name==version` or Name `version`; an entry in any other form fails here.
+            match = re.fullmatch(r"`([\w.-]+)==[^`]+`|([A-Z][\w-]*) `\d[^`]*`", item)
+            assert match is not None, item
+            pins.add(_pep503(match.group(1) or match.group(2)))
+    assert {"uv", "pip-audit", "twine", "setuptools", "pyright", "ruff"} <= pins
+    assert _dependabot_group("uv", "an-unpinned-dependency") == "python-dependencies"
+    _assert_lists_exact_names("uv", "pinned-tools")
+    for pin in sorted(pins):
+        assert _dependabot_group("uv", pin) == "pinned-tools", pin
+
+
+def test_setup_uv_first_matches_a_github_actions_group_of_its_own():
+    """FIX-099: test_pypi_publication pins the setup-uv commit, so a setup-uv
+    bump stays red until that pin is edited; no other action bump may wait on it."""
+    actions = set()
     for workflow in (build_docs.ROOT / ".github" / "workflows").glob("*.yml"):
-        text = workflow.read_text(encoding="utf-8")
-        if "astral-sh/setup-uv" in text:
-            assert f'version: "{requirement_versions["uv"]}"' in text, workflow
+        actions |= set(re.findall(r"uses: ([\w.-]+/[\w.-]+)[\w./-]*@", workflow.read_text(encoding="utf-8")))
+    assert "astral-sh/setup-uv" in actions
+    group = _dependabot_group("github-actions", "astral-sh/setup-uv")
+    assert group not in (None, "github-actions")
+    _assert_lists_exact_names("github-actions", group)
+    for action in sorted(actions - {"astral-sh/setup-uv"}):
+        assert _dependabot_group("github-actions", action) != group, action
+
+
+def test_dependabot_config_lists_every_uv_bump_hand_edit():
+    """FIX-099: the hand edits a uv bump needs, listed where its pull request's
+    group is defined, and each one checked here so a bump stays red until all land."""
+    requirements = (build_docs.ROOT / "requirements-tools.txt").read_text(encoding="utf-8")
+    (uv,) = (line.split("==", 1)[1].strip() for line in requirements.splitlines() if line.startswith("uv=="))
+    contracts = (build_docs.ROOT / "docs" / "external-contracts.md").read_text(encoding="utf-8")
+    ledger_rows = [line for line in contracts.splitlines() if f"`uv=={uv}`" in line]
+    assert [line.split("|")[1].strip() for line in ledger_rows] == ["Maintenance tooling", "Package publishing"]
+    setup_uv_steps = {}
+    for workflow in sorted((build_docs.ROOT / ".github" / "workflows").glob("*.yml")):
+        jobs = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]
+        steps = [
+            step
+            for job in jobs.values()
+            for step in job.get("steps", [])
+            if step.get("uses", "").startswith("astral-sh/setup-uv@")
+        ]
+        assert [step["with"]["version"] for step in steps] == [uv] * len(steps), workflow
+        if steps:
+            setup_uv_steps[workflow.name] = len(steps)
+    dependabot = (build_docs.ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    comments = " ".join(line.strip().lstrip("#").strip() for line in dependabot.splitlines())
+    total = sum(setup_uv_steps.values())
+    per_file = ", ".join(f"{name} {count}" for name, count in setup_uv_steps.items())
+    assert f"A uv bump needs {len(ledger_rows) + total} hand edits" in comments
+    assert f"({total}: {per_file})" in comments
+    # Security updates skip the groups above and target main, not develop.
+    assert "Security updates ignore every option below, groups included" in comments
+    assert "each opens ungrouped against the default branch, main" in comments
 
 
 def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
