@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -1184,3 +1185,111 @@ def test_link_splits_with_and_without_categories_round_trip(label_existence):
         reloaded = LinkSplit.from_state(state)
         assert reloaded == split and reloaded.digest() == split.digest() and reloaded.state() == state
         assert LinkSplit.from_state(_without(state, "topology")) == split  # topology is derived, so optional
+
+
+# --- #577: the leak check sorts nothing for loader-built batches ---------------------------------------------
+
+
+def _calls(monkeypatch, owner, name):
+    """Calls of ``owner.name``, recorded as they happen."""
+    calls = []
+    original = getattr(owner, name)
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(owner, name, spy)
+    return calls
+
+
+def _link_sorts(monkeypatch):
+    """The ``torch.sort`` calls made from ``nnx.link_tasks``."""
+    calls = []
+    original = torch.sort
+
+    def spy(*args, **kwargs):
+        if sys._getframe(1).f_globals.get("__name__") == "nnx.link_tasks":
+            calls.append(args[0].numel())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "sort", spy)
+    return calls
+
+
+def test_loader_built_batches_pass_the_leak_check_without_a_sort(monkeypatch):
+    from nnx.trainer import NNTrainerParams, Trainer
+
+    edge_index, x = _sbm()
+    task = LinkTask(split_links(edge_index, 30, val=0.1, test=0.1, seed=4))
+    sorts, keys = _link_sorts(monkeypatch), _calls(monkeypatch, LinkSplit, "_message_keys")
+    checks = _calls(monkeypatch, LinkTask, "check_batch")
+    model, run = _train(task, x, epochs=2)  # NNModel.train: LinkObjective, then LinkEval (LinkTask.predict)
+    assert run.idps[-1].val_edp.metrics["auroc"] is not None
+    fitted = len(checks)
+    params = (
+        NNTrainerParams.builder()
+        .n_epochs(2)
+        .train_loader(task.loader("train", x, batch_size=32, seed=0))
+        .optimizer("default", NNOptimParams.builder().adam(max_lr=1e-2).build())
+        .save_phase_checkpoints(False)
+        .build()
+    )
+    Trainer(_model()).train(params=params, objective=task.objective())
+    trained = len(checks)
+    prediction = task.predict(model, task.loader("test", x, batch_size=16))
+    assert 0 < fitted < trained < len(checks) and prediction.split == "test"
+    assert sorts == [] and keys == []  # every batch checked by one comparison, none by a sort
+
+
+def _forwards_of_a_fit(task, batch, salt):
+    """The forward passes of a one-batch fit; one that is refused raises
+    only after asserting it ran none (refused before any forward pass)."""
+    model, forwards = _model(), []
+    model.net.register_forward_pre_hook(lambda module, args: forwards.append(1))
+    try:
+        model.train(
+            params=NNTrainParams(
+                n_epochs=1, train_loader=[batch], optim=NNOptimParams.builder().sgd(max_lr=0.1).build()
+            ),
+            objective=task.objective(),
+            salt=salt,
+        )
+    except LinkTaskError:
+        assert forwards == []
+        raise
+    return len(forwards)
+
+
+def test_a_permuted_message_graph_is_accepted_and_a_leak_or_wrong_topology_is_refused_before_any_forward(
+    monkeypatch,
+):
+    edge_index, x = _sbm()
+    split = split_links(edge_index, 30, val=0.1, test=0.1, seed=4)
+    task = LinkTask(split)
+    (batch,) = list(task.loader("train", x, batch_size=10_000, seed=0))
+    messages, leaked = batch.edge_index, split.test[0]
+    graphs = {
+        "permuted": messages[:, torch.randperm(messages.shape[1], generator=torch.Generator().manual_seed(0))],
+        "int32": messages.int(),
+        "leak": torch.cat([messages, torch.tensor([[leaked[0], leaked[1]], [leaked[1], leaked[0]]])], dim=1),
+        "repeated": torch.cat([messages, messages[:, :1]], dim=1),
+        "missing": messages[:, 1:],
+    }
+    refusals = {
+        "leak": "leak: held-out positive",
+        "repeated": "1 repeated edge",
+        "missing": r"training topology \(unexpected \[\], missing \[\(",
+    }
+    sorts = _link_sorts(monkeypatch)
+    for name, graph in graphs.items():
+        given = batch.clone()
+        given.edge_index = graph
+        if name in refusals:
+            with pytest.raises(LinkTaskError, match=refusals[name]):
+                _forwards_of_a_fit(task, given, name)
+        else:
+            assert _forwards_of_a_fit(task, given, name), name
+    sorts.clear()  # a permutation or another integer dtype is not the split's tensor: the exact check sorts it
+    assert split._is_message_graph(graphs["permuted"]) and split._is_message_graph(graphs["int32"])
+    assert len(sorts) == 2
