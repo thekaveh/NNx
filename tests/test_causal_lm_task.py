@@ -673,9 +673,21 @@ def test_the_smoothing_0_backward_fills_one_vocabulary_buffer_the_gradient(dtype
     assert torch.allclose(logits.grad.float(), expected, rtol=1e-5 if dtype == "float32" else 2**-8, atol=1e-7)
 
 
-@pytest.mark.parametrize("transform", ["func.grad", "func.jvp", "forward_ad", "func.hessian"])
+@pytest.mark.parametrize(
+    "transform",
+    [
+        "func.grad",
+        "func.jvp",
+        "forward_ad",
+        "func.hessian",
+        "is_grads_batched",
+        "vmap-autograd.grad",
+        "jacobian-vectorize",
+        "gradcheck-batched",
+    ],
+)
 @pytest.mark.parametrize("masked", [False, True], ids=["all-scored", "masked"])
-def test_torch_func_and_forward_mode_ad_run_through_the_smoothing_0_loss_as_through_cross_entropy(masked, transform):
+def test_transforms_and_batched_gradients_run_through_the_smoothing_0_loss_as_through_cross_entropy(masked, transform):
     import torch.autograd.forward_ad as fwAD
 
     task = CausalLMTask(vocab_size=V)
@@ -694,6 +706,18 @@ def test_torch_func_and_forward_mode_ad_run_through_the_smoothing_0_loss_as_thro
             return torch.func.jvp(fn, (base,), (tangent,))[1]
         if transform == "func.hessian":  # forward over reverse mode, vmapped
             return torch.func.hessian(fn)(base)
+        # Batched incoming gradients, without create_graph: under autograd's legacy vmap or under torch.func.vmap.
+        if transform in ("is_grads_batched", "vmap-autograd.grad"):
+            logits = base.clone().requires_grad_()
+            out, batch = fn(logits), torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+            if transform == "is_grads_batched":
+                return torch.autograd.grad(out, logits, batch, is_grads_batched=True)[0]
+            return torch.func.vmap(lambda grad: torch.autograd.grad(out, logits, grad, retain_graph=True)[0])(batch)
+        if transform == "jacobian-vectorize":
+            return torch.autograd.functional.jacobian(fn, base, vectorize=True)
+        if transform == "gradcheck-batched":  # finite differences, and a batched gradient against one at a time
+            passed = torch.autograd.gradcheck(fn, (base.clone().requires_grad_(),), check_batched_grad=True)
+            return torch.tensor(float(passed))
         with fwAD.dual_level():
             return fwAD.unpack_dual(fn(fwAD.make_dual(base, tangent))).tangent
 
@@ -716,6 +740,32 @@ def test_the_smoothing_0_loss_keeps_a_second_derivative():
         grad.pow(2).sum().backward()
         penalties.append(logits.grad)
     assert torch.allclose(penalties[0], penalties[1], rtol=1e-10, atol=1e-12)
+
+
+@pytest.mark.parametrize("case", ["seq-first-logits", "a-longer-sequence", "flat-logits", "seq-first-targets"])
+def test_logits_or_targets_that_do_not_fit_the_mask_are_refused_as_before(case):
+    # The all-scored view would pair logit rows with the wrong targets; the indexing refuses them, as on e69fd74.
+    g = torch.Generator().manual_seed(21)
+    targets = torch.randint(0, V, (2, 3), generator=g)
+    logits = torch.randn(2, 3, V, generator=g)
+    if case == "seq-first-logits":  # (T, B, V) logits for (B, T) targets
+        logits = logits.transpose(0, 1).contiguous()
+    elif case == "a-longer-sequence":  # (1, 2, V) logits for (1, 1) targets
+        logits, targets = logits[:1, :2], targets[:1, :1]
+    elif case == "flat-logits":  # (B * T, V)
+        logits = logits.reshape(-1, V)
+    valid = CausalLMTask(vocab_size=V).valid(targets, None)  # every position scored
+    if case == "seq-first-targets":  # (T, B) targets for the (B, T) logits and mask
+        targets = targets.t().contiguous()
+    for task, with_ce in (
+        (CausalLMTask(vocab_size=V), True),
+        (CausalLMTask(vocab_size=V, smoothing=0.1), True),
+        (CausalLMTask(vocab_size=V), False),
+    ):
+        with pytest.raises(IndexError, match="does not match the shape of the indexed tensor"):
+            task.token_sums(logits.clone().requires_grad_(), targets, valid, with_ce=with_ce)
+        with pytest.raises(IndexError, match="does not match the shape of the indexed tensor"):
+            _e69fd74_token_sums(task, logits.clone().requires_grad_(), targets, valid)
 
 
 def test_bf16_logits_under_autocast_cost_one_vocabulary_pass_in_float32(monkeypatch):

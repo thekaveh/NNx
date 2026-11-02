@@ -9332,11 +9332,12 @@ wider, gives both: half-precision logits, under autocast or not,
 are widened to float32 for it, as the NLL always was, and its
 backward fills one ``(n, V)`` buffer in float32 or wider, the
 gradient itself (cast once more to the logits' dtype for
-half-precision logits); second derivatives, ``torch.func``
-transforms and forward-mode AD run through it as through the
-cross-entropy. Label smoothing keeps the cross-entropy for the loss
-and adds a no-grad pass of the same NLL, which is also evaluation's
-(``with_ce=False``) only pass. The accuracy is an argmax.
+half-precision logits); second derivatives, batched gradients,
+``torch.func`` transforms and forward-mode AD run through it as
+through the cross-entropy. Label smoothing keeps the cross-entropy
+for the loss and adds a no-grad pass of the same NLL, which is also
+evaluation's (``with_ce=False``) only pass. The accuracy is an
+argmax.
 ```
 
 ##### `nnx.lm_tasks.CausalLMTask.objective`
