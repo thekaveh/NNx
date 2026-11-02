@@ -89,16 +89,29 @@ def _token_nll(flat: torch.Tensor, chosen: torch.Tensor) -> tuple[torch.Tensor, 
 
 
 class _TokenNLL(torch.autograd.Function):
-    """:func:`_token_nll`'s per-token NLL, differentiable in the logits. Its
-    backward writes ``(softmax - one_hot) * grad`` into one ``(n, V)``
-    buffer, the gradient itself, where autograd's own logsumexp and gather
-    backward peak at four."""
+    """:func:`_token_nll` as ``(per-token NLL, logsumexp)``, the NLL
+    differentiable in the logits. Its backward writes ``(softmax - one_hot)
+    * grad`` into one ``(n, V)`` buffer in float32 or wider, the gradient
+    itself (cast once more to the logits' dtype for half-precision logits),
+    where autograd's own logsumexp and gather backward peak at four. Its
+    ``setup_context``, ``jvp`` and generated vmap rule keep ``torch.func``
+    transforms and forward-mode AD working, as on ``cross_entropy``
+    (Dynamo does not trace a custom ``jvp``, so ``torch.compile`` breaks
+    the graph here and runs it eagerly)."""
+
+    generate_vmap_rule = True
 
     @staticmethod
-    def forward(ctx: Any, flat: torch.Tensor, chosen: torch.Tensor) -> torch.Tensor:
+    def forward(flat: torch.Tensor, chosen: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         lse, per_token = _token_nll(flat, chosen)
+        return per_token, lse
+
+    @staticmethod
+    def setup_context(ctx: Any, inputs: tuple[Any, ...], output: Any) -> None:
+        (flat, chosen), (_, lse) = inputs, output
+        ctx.mark_non_differentiable(lse)
         ctx.save_for_backward(flat, chosen, lse)
-        return per_token
+        ctx.save_for_forward(flat, chosen, lse)
 
     @staticmethod
     def backward(ctx: Any, *grads: torch.Tensor) -> tuple[torch.Tensor, None]:
@@ -109,6 +122,13 @@ class _TokenNLL(torch.autograd.Function):
             return (out - torch.zeros_like(out).scatter(1, index, grad)).to(flat.dtype), None
         out = torch.sub(flat, lse.unsqueeze(1)).exp_().mul_(grad)  # softmax * grad, in lse's dtype
         return out.scatter_add_(1, index, -grad).to(flat.dtype), None  # minus grad at each target
+
+    @staticmethod
+    def jvp(ctx: Any, flat_t: torch.Tensor, _: None) -> tuple[torch.Tensor, None]:
+        flat, chosen, lse = ctx.saved_tensors
+        tangent = flat_t.to(lse.dtype)  # the NLL's tangent, in its dtype: softmax . tangent - tangent[target]
+        dot = (torch.softmax(flat.to(lse.dtype), dim=-1) * tangent).sum(dim=-1)
+        return dot - tangent.gather(1, chosen.unsqueeze(1)).squeeze(1), None
 
 
 def perplexity(nll: Optional[float]) -> Optional[float]:
@@ -428,10 +448,13 @@ class CausalLMTask:
         differentiable pass, ``logsumexp(x) - x[target]`` in float32 or
         wider, gives both: half-precision logits, under autocast or not,
         are widened to float32 for it, as the NLL always was, and its
-        backward fills one ``(n, V)`` buffer, the gradient itself. Label
-        smoothing keeps the cross-entropy for the loss and adds a no-grad
-        pass of the same NLL, which is also evaluation's (``with_ce=False``)
-        only pass. The accuracy is an argmax."""
+        backward fills one ``(n, V)`` buffer in float32 or wider, the
+        gradient itself (cast once more to the logits' dtype for
+        half-precision logits); second derivatives, ``torch.func``
+        transforms and forward-mode AD run through it as through the
+        cross-entropy. Label smoothing keeps the cross-entropy for the loss
+        and adds a no-grad pass of the same NLL, which is also evaluation's
+        (``with_ce=False``) only pass. The accuracy is an argmax."""
         targets = targets.to(logits.device)
         valid = valid.to(logits.device)
         n = int(valid.sum())
@@ -445,7 +468,7 @@ class CausalLMTask:
             # The NLL's own formula, not cross_entropy: on a CPU, its float32
             # kernel loses precision on confident tokens, and under MPS
             # autocast it runs log_softmax in half precision.
-            per_token = _TokenNLL.apply(flat, chosen)
+            per_token = _TokenNLL.apply(flat, chosen)[0]
             ce = per_token.sum()
         else:
             ce = (
