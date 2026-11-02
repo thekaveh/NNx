@@ -1017,19 +1017,25 @@ def test_a_symlinked_profile_folder_is_refused_before_anything_is_written(tmp_pa
     assert _untouched(artifacts / name, elsewhere, target)
 
 
-def test_an_unreadable_profile_folder_is_a_refusal_not_a_raw_error(tmp_path, monkeypatch):
-    folder = tmp_path / "feedfwd-fp32-torchscript"
+@pytest.mark.parametrize("call", ["listdir", "lstat"])  # it cannot be listed, or looked up (its parent unsearchable)
+def test_an_unreadable_profile_folder_is_a_refusal_not_a_raw_error(tmp_path, monkeypatch, call):
+    name = "feedfwd-fp32-torchscript"
+    folder = tmp_path / name
     folder.mkdir()
-    real = os.listdir
+    real = getattr(os, call)
 
-    def denied(path="."):
+    def denied(path=".", **kwargs):
         if os.fspath(path) == str(folder):
-            raise PermissionError("denied")
-        return real(path)
+            raise PermissionError(13, "Permission denied", str(folder))
+        return real(path, **kwargs)
 
-    monkeypatch.setattr(conformance.os, "listdir", denied)
+    monkeypatch.setattr(conformance.os, call, denied)
     with pytest.raises(ConformanceError, match="cannot be read: PermissionError"):
-        run_profiles(tmp_path, ["feedfwd-fp32-torchscript"], source_revision="test")
+        run_profile(name, tmp_path, source_revision="test")
+    with pytest.raises(ConformanceError, match="cannot be read: PermissionError"):
+        run_profiles(tmp_path, [name], source_revision="test")
+    monkeypatch.undo()
+    assert os.listdir(tmp_path) == [name] and os.listdir(folder) == []  # nothing was written
 
 
 def test_a_symlinked_artifacts_root_still_runs_and_verifies(tmp_path):
@@ -1055,6 +1061,29 @@ def test_the_script_refuses_a_symlinked_profile_folder_even_when_forced(tmp_path
         _script().main([*args, "--force"] if force else args)
     assert refused.value.code == 2 and "is a symlink" in capsys.readouterr().err  # a usage error
     assert _untouched(artifacts / name, elsewhere, target) and not output.exists()
+
+
+@pytest.mark.parametrize("call", ["iterdir", "lstat"])  # it cannot be listed, or looked up (its parent unsearchable)
+def test_the_script_refuses_an_unreadable_profile_folder_even_when_forced(tmp_path, capsys, monkeypatch, call):
+    artifacts = tmp_path / "artifacts"
+    folder = artifacts / "feedfwd-fp32-torchscript"
+    folder.mkdir(parents=True)
+    (folder / "old.onnx").write_bytes(b"old")
+    real = getattr(Path, call)
+
+    def denied(self, *args, **kwargs):
+        if self == folder:
+            raise PermissionError(13, "Permission denied", str(folder))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, call, denied)
+    output = tmp_path / "c.json"
+    args = ["--output", str(output), "--artifacts", str(artifacts), "--profile", "feedfwd-fp32-torchscript"]
+    with pytest.raises(SystemExit) as refused:
+        _script().main([*args, "--source-revision", "test", "--force"])
+    monkeypatch.undo()
+    assert refused.value.code == 2 and "cannot be read: PermissionError" in capsys.readouterr().err  # a usage error
+    assert os.listdir(folder) == ["old.onnx"] and not output.exists()  # nothing was cleared or written
 
 
 def test_the_script_checks_every_folder_before_force_clears_any(tmp_path, capsys):

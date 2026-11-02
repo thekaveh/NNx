@@ -57,6 +57,7 @@ import os
 import platform
 import posixpath
 import re
+import stat
 import subprocess
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
@@ -868,13 +869,17 @@ def _finish(record: dict[str, Any]) -> dict[str, Any]:
 def _check_folder(root: str) -> None:
     """Refuse a profile folder that is not new or an empty directory of its
     own: a symlink (to anything, or dangling) is refused, never followed,
-    and so is a folder that cannot be read."""
-    if os.path.islink(root):
-        raise ConformanceError(f"{root!r} is a symlink: a profile writes its artifacts only into its own folder")
+    and so is a folder that cannot be read or looked up (its parent not
+    searchable, say)."""
     try:
-        held = os.path.exists(root) and (not os.path.isdir(root) or bool(os.listdir(root)))
+        mode = os.lstat(root).st_mode  # the folder itself, never a link's target
+        held = not stat.S_ISLNK(mode) and (not stat.S_ISDIR(mode) or bool(os.listdir(root)))
+    except FileNotFoundError:
+        return  # a new folder
     except OSError as error:
         raise ConformanceError(f"{root!r} cannot be read: {type(error).__name__}: {error}") from error
+    if stat.S_ISLNK(mode):
+        raise ConformanceError(f"{root!r} is a symlink: a profile writes its artifacts only into its own folder")
     if held:
         raise ConformanceError(f"{root!r} must be a new or empty directory: a profile owns its artifacts")
 
