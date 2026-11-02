@@ -1190,7 +1190,8 @@ def test_a_record_execution_still_refuses_what_would_not_read_back(tmp_path):
     """The strict-JSON check is unchanged: a caller's tuple, an int key, a NaN or a NumPy integer is
     refused. A value nested past what NNx's JSON files hold is refused too, not frozen into a
     RecursionError: a record line wraps its execution in one more level. One level less still
-    copies and pickles (rebuilt level by level, a deep copy overflowed at ~200 levels)."""
+    copies and pickles, the record and a nested value on its own (rebuilt level by level, a deep
+    copy overflowed at ~200 levels)."""
     import copy
     import pickle
 
@@ -1215,6 +1216,10 @@ def test_a_record_execution_still_refuses_what_would_not_read_back(tmp_path):
         assert read_records(path) == [deepest]
         assert copy.deepcopy(deepest) == deepest
         assert pickle.loads(pickle.dumps(deepest)) == deepest
+        # The record copies through its plain form; a nested mapping or list copies through its own.
+        inner = deepest.execution["k"]
+        for copied in (copy.deepcopy(inner), pickle.loads(pickle.dumps(inner))):
+            assert copied == inner and type(copied) is type(inner)
 
 
 def test_a_report_identity_nested_too_deep_is_refused(tmp_path):
