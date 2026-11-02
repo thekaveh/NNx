@@ -5,7 +5,7 @@ plus, for a normalized term, the explicit number of samples it sums over —
 for each microbatch. This engine owns everything after that:
 
 1. per microbatch, every term's numerator is back-propagated into its own
-   gradient buffer (numerators are sums, so buffers add across
+   gradient buffer, in place (numerators are sums, so buffers add across
    microbatches). A window of one microbatch — the default — needs no
    buffers: its weighted, normalized loss is back-propagated once. Terms
    with weight ``0`` are never back-propagated, and only optimizer-owned
@@ -18,10 +18,12 @@ for each microbatch. This engine owns everything after that:
    window-total denominator, summed terms are left as totals, and the
    weighted combination becomes the parameters' gradients — exactly the
    gradient of the full-window loss, whatever the microbatch sizes or
-   masks. Only a term with a nonzero weight and samples (a summed term,
-   or a normalized one with a positive denominator) trains: a window
-   without one — every term masked, or every term of weight ``0`` — takes
-   no update. A normalized term with no samples (denominator ``0``) adds
+   masks. The combination is built in place in the buffers, which are
+   released before any optimizer steps: a window peaks at one buffer set per
+   term (#576). Only a term with a nonzero weight and samples (a summed
+   term, or a normalized one with a positive denominator) trains: a window
+   without one — every term masked, or every term of weight ``0`` — takes no
+   update. A normalized term with no samples (denominator ``0``) adds
    nothing, so it may share a window with the same term summed (a
    sum-reduction ``TaskSpec`` loss over a valid and an all-masked
    microbatch);
@@ -250,30 +252,36 @@ class UpdateEngine:
         if single:
             # The window's loss is known now: Σ weight · numerator / denominator.
             combined = sum(term.numerator * _term_scale(term.reduction, term.weight, term.denominator) for term in live)
-            self._fused = self._gradients(cast(torch.Tensor, combined), active, retain_graph=False)
+            fused: list[Optional[torch.Tensor]] = [None] * len(self._params)
+            self._backward(cast(torch.Tensor, combined), active, fused, retain_graph=False)
+            self._fused = fused
             return
         for i, term in enumerate(live):
-            grads = self._gradients(term.numerator, active, retain_graph=i < len(live) - 1)
             window = self._terms[term.name]
             if not window.grads:
                 window.grads = [None] * len(self._params)
-            for j, grad in enumerate(grads):
-                if grad is not None:
-                    previous = window.grads[j]
-                    window.grads[j] = grad if previous is None else previous + grad
+            self._backward(term.numerator, active, window.grads, retain_graph=i < len(live) - 1)
 
-    def _gradients(self, loss: torch.Tensor, active: list[int], *, retain_graph: bool) -> list[Optional[torch.Tensor]]:
-        """Gradients of ``loss`` (scaled for AMP) for every parameter —
-        ``None`` for a frozen or unused one."""
+    def _backward(
+        self, loss: torch.Tensor, active: list[int], grads: list[Optional[torch.Tensor]], *, retain_graph: bool
+    ) -> None:
+        """Back-propagate ``loss`` (scaled for AMP) into ``grads``, one buffer
+        per parameter (``None`` until a gradient arrives; a frozen or unused
+        parameter's is left alone). Each active parameter's ``.grad`` holds
+        its buffer during the pass, so autograd adds into it in place: no
+        second gradient set beside the buffers (#576). ``.grad`` is empty
+        again afterwards; the engine owns it until :meth:`commit`."""
         if self.scaler is not None:
             loss = self.scaler.scale(loss)
-        grads = torch.autograd.grad(
-            loss, [self._params[j] for j in active], retain_graph=retain_graph, allow_unused=True
-        )
-        out: list[Optional[torch.Tensor]] = [None] * len(self._params)
-        for j, grad in zip(active, grads, strict=True):
-            out[j] = None if grad is None else grad.detach()
-        return out
+        params = [self._params[j] for j in active]
+        for j, param in zip(active, params, strict=True):
+            param.grad = grads[j]
+        try:
+            torch.autograd.backward(loss, inputs=params, retain_graph=retain_graph)
+        finally:
+            for j, param in zip(active, params, strict=True):
+                grads[j] = param.grad
+                param.grad = None
 
     # ---------- per window ----------
 
@@ -388,21 +396,27 @@ class UpdateEngine:
             self._reset_window()
 
     def _assign_gradients(self) -> None:
+        """Each trained parameter's gradient: the weighted sum of its term
+        buffers, built in place in the first one (the same operations, in
+        the same order, as out of place). Every buffer is released here,
+        before any optimizer steps, so the update holds one gradient set
+        (#576)."""
         for j, param in enumerate(self._params):
-            if not param.requires_grad:
-                param.grad = None  # frozen since it was differentiated: not updated
-                continue
-            if self._fused is not None:
-                param.grad = self._fused[j]
-                continue
             combined: Optional[torch.Tensor] = None
-            for window in self._terms.values():
-                grad = window.grads[j] if window.grads else None
-                if grad is None:
-                    continue
-                contribution = grad * _term_scale(window.reduction, window.weight, window.denominator)
-                combined = contribution if combined is None else combined + contribution
-            param.grad = combined
+            if self._fused is not None:
+                combined, self._fused[j] = self._fused[j], None
+            else:
+                for window in self._terms.values():
+                    grad = window.grads[j] if window.grads else None
+                    if grad is None:
+                        continue
+                    window.grads[j] = None
+                    if not param.requires_grad:
+                        continue
+                    contribution = grad.mul_(_term_scale(window.reduction, window.weight, window.denominator))
+                    combined = contribution if combined is None else combined.add_(contribution)
+            # A parameter frozen since it was differentiated is not updated.
+            param.grad = combined if param.requires_grad else None
 
     def _gradients_finite(self) -> bool:
         return gradients_finite(self._params)

@@ -1793,17 +1793,22 @@ def _record_step_loss(
     )
 
 
-def _agreed_step_loss(
+def _agreed_step_checks(
     ddp: Any,
     terms: _StepLossTerms,
     accumulation_state: Optional[GradientAccumulationState],
     *,
     should_step: bool,
+    loss_fn: Optional[torch.nn.Module] = None,
 ) -> Optional[float]:
-    """``_record_step_loss`` decided on every rank together (FEAT-030): a
-    non-finite loss on any rank raises ``FloatingPointError`` on all of
-    them, before any gradient collective could leave the others waiting."""
+    """``_record_step_loss`` and, for a task-free model (``loss_fn``),
+    ``_check_scorable_target`` decided on every rank together in one gather
+    (FEAT-030, #576), before any gradient collective could leave the others
+    waiting. A non-finite loss on any rank raises ``FloatingPointError`` on
+    all of them; otherwise an unscorable batch on any rank raises
+    ``ValueError`` on all of them. A rank that failed raises its own error."""
     error: Optional[FloatingPointError] = None
+    refusal: Optional[ValueError] = None
     value: Optional[float] = None
     try:
         if terms.valid is None and terms.normalization_weight == 0:
@@ -1815,28 +1820,25 @@ def _agreed_step_loss(
             value = _record_step_loss(terms, accumulation_state, should_step=should_step)
     except FloatingPointError as caught:
         error = caught
-    failed = [rank for rank, bad in enumerate(ddp.gather(error is not None)) if bad]
+    if loss_fn is not None and error is None:
+        # Checked once this rank's loss passed: a non-finite loss on any
+        # rank is raised first, as when a second gather followed the first.
+        try:
+            _check_scorable_target(loss_fn, terms.target, scoring=_DISTRIBUTED_STEP_SCORING)
+        except ValueError as caught:
+            refusal = caught
+    verdicts = ddp.gather((error is not None, refusal is not None))
+    failed = [rank for rank, (bad, _) in enumerate(verdicts) if bad]
     if error is not None:
         raise error
     if failed:
         raise FloatingPointError(f"non-finite training loss on rank(s) {failed}: every rank stops before the update")
-    return value
-
-
-def _agreed_scorable_target(ddp: Any, loss_fn: torch.nn.Module, target: torch.Tensor) -> None:
-    """``_check_scorable_target`` decided on every rank together: one rank's
-    unscorable batch must not leave the others waiting in the backward's
-    gradient all-reduce."""
-    refusal: Optional[ValueError] = None
-    try:
-        _check_scorable_target(loss_fn, target, scoring=_DISTRIBUTED_STEP_SCORING)
-    except ValueError as caught:
-        refusal = caught
-    failed = [rank for rank, bad in enumerate(ddp.gather(refusal is not None)) if bad]
+    refused = [rank for rank, (_, bad) in enumerate(verdicts) if bad]
     if refusal is not None:
         raise refusal
-    if failed:
-        raise ValueError(f"rank(s) {failed} cannot score their batch's targets: every rank stops before the update")
+    if refused:
+        raise ValueError(f"rank(s) {refused} cannot score their batch's targets: every rank stops before the update")
+    return value
 
 
 def _global_window_check(
@@ -1862,19 +1864,29 @@ def _cpu(value: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
 
 def _global_records(
     ddp: Any, terms: _StepLossTerms, accumulation_state: Optional[GradientAccumulationState]
-) -> tuple[_StepLossTerms, Optional[float]]:
+) -> tuple[_StepLossTerms, Optional[float], tuple[float, int]]:
     """The global batch's record terms and display loss (FEAT-030): every
     rank's outputs, targets, predictions and validity concatenated in rank
     order, with the loss recomputed from every rank's numerator and
     denominator — identical on every rank, so the records, summaries and
     monitors agree. A global batch without a valid target shows what one
     process would: the window's running mean so far (or 0.0), or no loss
-    for a task model."""
+    for a task model.
+
+    The same gather carries each rank's window so far, so it also returns
+    the global window: ``W``, the ranks' loss denominators summed in rank
+    order, and how many ranks' loss is additive (#503). Every rank sums the
+    same values in the same order, so ``W`` is identical on every rank
+    (#576)."""
     loss = float(terms.train_loss.detach())
     window = (
-        (accumulation_state.loss_numerator, accumulation_state.normalization_weight)
+        (
+            accumulation_state.loss_numerator,
+            accumulation_state.normalization_weight,
+            not accumulation_state.normalization_required,
+        )
         if accumulation_state is not None
-        else (0.0, 0.0)
+        else (0.0, 0.0, False)
     )
     parts = ddp.gather(
         (
@@ -1893,6 +1905,8 @@ def _global_records(
         return None if tensors[0] is None else torch.cat(tensors)
 
     weights = [part[5] for part in parts]
+    window_weight = float(sum(float(part[6][1]) for part in parts))
+    additive_ranks = sum(1 for part in parts if part[6][2])
     display: Optional[float]
     if any(weight is None for weight in weights):  # an additive (sum) loss
         # A rank whose task batch is all-masked (weight 0, a NaN loss) adds
@@ -1906,12 +1920,12 @@ def _global_records(
         elif terms.valid is not None:
             display = None  # an all-masked task batch has no loss of its own
         else:
-            window_weight = sum(part[6][1] for part in parts)
             display = sum(part[6][0] for part in parts) / window_weight if window_weight else 0.0
     output, target = joined(0), joined(1)
     assert output is not None and target is not None
     loss_tensor = torch.tensor(float("nan") if display is None else display, dtype=torch.float64)
-    return _StepLossTerms(output, target, joined(2), joined(3), loss_tensor, loss_tensor, total), display
+    record_terms = _StepLossTerms(output, target, joined(2), joined(3), loss_tensor, loss_tensor, total)
+    return record_terms, display, (window_weight, additive_ranks)
 
 
 def _window_is_masked(
@@ -2923,10 +2937,15 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
             if adapter is None:
                 _check_scorable_target(model.loss_fn, terms.target)  # before any backward or update
         else:
-            # Every rank decides together — before any gradient collective.
-            loss_value = _agreed_step_loss(ddp, terms, accumulation_state, should_step=should_step)
-            if adapter is None:
-                _agreed_scorable_target(ddp, model.loss_fn, terms.target)
+            # Every rank decides together, in one gather — before any
+            # gradient collective.
+            loss_value = _agreed_step_checks(
+                ddp,
+                terms,
+                accumulation_state,
+                should_step=should_step,
+                loss_fn=model.loss_fn if adapter is None else None,
+            )
         # FEAT-029: a compiled fit's backward may compile on first use; its
         # failure is recorded honestly (never retried).
         session = getattr(model, "_compile_session", None)
@@ -2937,25 +2956,24 @@ def default_train_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
                 terms.backward_loss.backward()
 
     # The batch's records: this rank's, or under DDP the global batch's.
+    global_window = (0.0, 0)
     if ddp is None:
         record_terms = terms
     else:
-        record_terms, loss_value = _global_records(ddp, terms, accumulation_state)
+        record_terms, loss_value, global_window = _global_records(ddp, terms, accumulation_state)
 
     if ctx.epoch_summary is not None:
         _observe_epoch_summary(ctx.epoch_summary, model, record_terms, adapter)
 
-    # FEAT-030: the window's global loss denominator and the number of ranks
-    # whose loss is additive (one collective per committed update) normalize
-    # the averaged gradient and decide a masked window on every rank alike:
-    # a sum-reduction window is masked only when no rank has a valid target
-    # (#503), whatever one rank's own window held.
+    # FEAT-030: the window's global loss denominator W and the number of
+    # ranks whose loss is additive (read from the records gather, #576)
+    # normalize the averaged gradient and decide a masked window on every
+    # rank alike: a sum-reduction window is masked only when no rank has a
+    # valid target (#503), whatever one rank's own window held.
     global_weight: Optional[float] = None
-    additive_ranks = 0.0
+    additive_ranks = 0
     if ddp is not None and should_step and accumulation_state is not None:
-        global_weight, additive_ranks = ddp.sum(
-            accumulation_state.normalization_weight, float(not accumulation_state.normalization_required)
-        )
+        global_weight, additive_ranks = global_window
     if ddp is not None and should_step:
         _global_window_check(terms, accumulation_state, global_weight)
     masked = (
