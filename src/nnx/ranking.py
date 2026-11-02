@@ -236,11 +236,12 @@ def pairwise_logistic_loss(
     (``torch.utils.checkpoint``) rather than kept, while a smaller one costs
     less to keep than to recompute. Rows are grouped by query and grade on
     the host, from one read of ``relevance`` (which may live on any
-    device), and reach the scores' device as one permutation: a call makes
-    one host-to-device copy and reads nothing back from the scores' device,
-    however many queries it holds. float16 / bfloat16 scores are widened to
-    float32 first, so the cross-query sum accumulates in full precision
-    (the numerator is float32); other dtypes are kept."""
+    device), and reach the scores' device as one permutation: however many
+    queries it holds, a call makes one host-to-device copy and no read back
+    from the scores' device beyond that one read of ``relevance`` when it
+    lives there. float16 / bfloat16 scores are widened to float32 first,
+    so the cross-query sum accumulates in full precision (the numerator is
+    float32); other dtypes are kept."""
     if weighting not in WEIGHTINGS:
         raise RankingError(f"weighting must be one of {WEIGHTINGS}, got {weighting!r}")
     if len(query_ids) != scores.shape[0] or relevance.shape[0] != scores.shape[0]:
