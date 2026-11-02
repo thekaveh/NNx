@@ -61,6 +61,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Union
 
+from .._json_depth import MAX_JSON_DEPTH, too_deep
+from ..trainer.params import _FrozenMapping
 from .providers import _synchronous
 from .schema import (
     PROBABILITY_TOLERANCE,
@@ -321,9 +323,11 @@ def add_none_of_the_above(
 
 
 def add_context(sample: Sample, context: str, *, kind: str = "long_context", id: Optional[str] = None) -> Sample:
-    """Irrelevant context appended to a text input."""
+    """Irrelevant context appended to a text input; ``kind`` (a non-empty
+    string) names the perturbation."""
     if not isinstance(sample.input, str):
         raise BenchmarkError("context applies to a text input")
+    _text(kind, "kind")  # a None kind would record the variant as an original (perturbation=None)
     return _derived(sample, kind, id, input=f"{sample.input}\n\n{_text(context, 'context')}")
 
 
@@ -358,6 +362,71 @@ def _finite_probability(value: Any, what: str) -> float:
     return number
 
 
+class _FrozenList(tuple[Any, ...]):
+    """A JSON array frozen by :func:`_frozen`: a tuple, told apart from a
+    caller's tuple, which ``Record.execution`` still refuses (it would read
+    back as a list)."""
+
+    __slots__ = ()
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # Copied and pickled as its plain form, refrozen: level by level, a
+        # value as deep as the depth bound admits would overflow the stack.
+        return (_frozen, (_plain(self),))
+
+
+class _FrozenDict(_FrozenMapping[Any]):
+    """A JSON object frozen by :func:`_frozen`: a :class:`_FrozenMapping`
+    copied and pickled, like a :class:`_FrozenList`, as its plain form."""
+
+    __slots__ = ()
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (_frozen, (_plain(self),))
+
+
+def _frozen(value: Any) -> Any:
+    """A read-only copy of a JSON-like value: mappings as order-free, hashable
+    snapshots and lists as tuples, at every depth."""
+    if isinstance(value, Mapping):
+        return _FrozenDict({key: _frozen(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return _FrozenList([_frozen(item) for item in value])  # a generator would add a frame per level
+    return value
+
+
+def _check_depth(value: Any, what: str, holder: str) -> None:
+    """Refuse a value nested past what ``holder`` (a record line, a report
+    file: one level around the value) can hold, before the recursive copies,
+    which would overflow."""
+    limit = MAX_JSON_DEPTH - 1
+    if too_deep(value, limit):
+        raise BenchmarkError(f"{what} nests more than {limit} levels; {holder} holds at most {MAX_JSON_DEPTH}")
+
+
+def _plain(value: Any) -> Any:
+    """The plain JSON form (dicts and lists) of a value :func:`_frozen` made,
+    whole or in part; anything else as it is."""
+    if isinstance(value, (dict, _FrozenMapping)):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, _FrozenList)):
+        return [_plain(item) for item in value]
+    return value
+
+
+def _snapshot(value: Any, what: str, *, deep: bool = False) -> Any:
+    """A read-only copy of a mapping — of its values as they are (counts,
+    metrics, slices: immutable already) or, ``deep``, of a JSON-like value
+    at every depth (:func:`_frozen`, within the report file's depth bound);
+    anything else raises."""
+    if not isinstance(value, Mapping):
+        raise BenchmarkError(f"{what} must be a mapping, got {value!r}")
+    if not deep:
+        return _FrozenMapping(value)
+    _check_depth(value, what, "a report file")
+    return _frozen(value)
+
+
 @dataclass(frozen=True)
 class Record:
     """One provider output for one sample.
@@ -368,7 +437,9 @@ class Record:
     the latter two carry a ``reason``. ``revision`` is the model revision,
     ``prompt_identity`` how the provider rendered the question (a digest of
     its settings), ``execution`` free JSON metadata (batch, timing, whether
-    the budget cut the batch short)."""
+    the budget cut the batch short). ``execution`` is a read-only copy at
+    every depth, its lists as tuples (``state()`` gives the plain JSON), so
+    equal records hash equal."""
 
     sample_id: str
     question_digest: str
@@ -424,15 +495,18 @@ class Record:
         # scalar, a NaN or an int key would fail or change on the round trip).
         if not all(isinstance(key, str) for key in self.execution):
             raise BenchmarkError(f"Record.execution keys must be strings, got {list(self.execution)!r}")
+        _check_depth(self.execution, "Record.execution", "a record line")
+        execution = _plain(dict(self.execution))  # a record's own read-only execution (replace()) checks again
         try:
-            round_trip = json.loads(json.dumps(dict(self.execution), allow_nan=False))
+            round_trip = json.loads(json.dumps(execution, allow_nan=False))
         except (TypeError, ValueError) as error:
             raise BenchmarkError(f"Record.execution must be strict JSON: {error}") from error
-        if round_trip != dict(self.execution):  # a nested int key or a tuple would change on the round trip
+        if round_trip != execution:  # a nested int key or a tuple would change on the round trip
             raise BenchmarkError(
                 "Record.execution must survive a JSON round trip unchanged (string keys, lists, plain numbers)"
             )
-        object.__setattr__(self, "execution", dict(self.execution))
+        # Read-only at every depth (#558): an edit can no longer skip this check, and the record hashes.
+        object.__setattr__(self, "execution", _frozen(execution))
 
     def state(self) -> dict[str, Any]:
         return {
@@ -446,7 +520,7 @@ class Record:
             "reason": self.reason,
             "revision": self.revision,
             "prompt_identity": self.prompt_identity,
-            "execution": dict(self.execution),
+            "execution": _plain(self.execution),
         }
 
     @staticmethod
@@ -867,7 +941,7 @@ class Coverage:
     digest), ``invalid`` (an answered record that does not fit its question:
     options in another order or set, a Boolean answer for a Choice),
     ``unsupported`` and ``failed`` (with their reasons). Records for no
-    sample are the report's ``extra`` count."""
+    sample are the report's ``extra`` count. ``reasons`` is read-only."""
 
     samples: int
     eligible: int
@@ -878,6 +952,9 @@ class Coverage:
     unsupported: int
     failed: int
     reasons: Mapping[str, int] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "reasons", _snapshot(self.reasons, "Coverage.reasons"))
 
     def state(self) -> dict[str, Any]:
         return {
@@ -895,12 +972,16 @@ class Coverage:
 
 @dataclass(frozen=True)
 class SliceReport:
-    """One slice: its coverage, every metric and the reliability bins."""
+    """One slice: its coverage, every metric (a read-only mapping) and the
+    reliability bins."""
 
     name: str
     coverage: Coverage
     metrics: Mapping[str, MetricValue]
     bins: tuple[Any, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metrics", _snapshot(self.metrics, "SliceReport.metrics"))
 
     def state(self) -> dict[str, Any]:
         return {
@@ -1345,7 +1426,10 @@ def bootstrap_interval(
 @dataclass(frozen=True)
 class BenchmarkReport:
     """A replayed benchmark: the split and metric identity, every slice's
-    coverage, metrics and bins, and the declared :class:`Resources`."""
+    coverage, metrics and bins, and the declared :class:`Resources`.
+    ``metric_identity`` (its ``metrics`` list a tuple) and ``slices`` are
+    read-only, so a report cannot drift from its exports and equal reports
+    hash equal; ``state()`` gives the plain JSON."""
 
     split: str
     provider: Optional[str]
@@ -1355,12 +1439,17 @@ class BenchmarkReport:
     extra: int = 0  # records for no sample (benchmark-wide)
     sample_set: Optional[str] = None  # a digest of the samples' ids, questions, labels and slicing
 
+    def __post_init__(self) -> None:
+        identity = _snapshot(self.metric_identity, "BenchmarkReport.metric_identity", deep=True)
+        object.__setattr__(self, "metric_identity", identity)
+        object.__setattr__(self, "slices", _snapshot(self.slices, "BenchmarkReport.slices"))
+
     def state(self) -> dict[str, Any]:
         return {
             "format": FORMAT,
             "split": self.split,
             "provider": self.provider,
-            "metric_identity": dict(self.metric_identity),
+            "metric_identity": _plain(self.metric_identity),
             "extra": self.extra,
             "sample_set": self.sample_set,
             "resources": self.resources.state(),
