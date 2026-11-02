@@ -594,6 +594,73 @@ def test_generate_stop_string_halts_decoding(tmp_path):
         assert out[len("the") :].count(stop_str) == 1
 
 
+# One-shot forms of a stop list (#559), and the tuple, which never was one.
+_ONE_SHOT_STOPS = {
+    "generator": lambda stops: (s for s in stops),
+    "map": lambda stops: map(str, stops),
+    "filter": lambda stops: filter(None, stops),
+    "iter": iter,
+    "tuple": tuple,
+}
+
+
+def _stop_counts(model, stop, use_cache: bool) -> int:
+    """How many tokens a greedy ``stop=`` run hands ``on_token``."""
+    emitted: list[int] = []
+    model.generate(
+        prompt="the", max_new_tokens=16, temperature=0.0, stop=stop, use_cache=use_cache, on_token=emitted.append
+    )
+    return len(emitted)
+
+
+@pytest.mark.parametrize("use_cache", [True, False])
+@pytest.mark.parametrize("kind", list(_ONE_SHOT_STOPS))
+def test_a_one_shot_stop_halts_at_the_list_forms_token(tmp_path, kind, use_cache):
+    """#559: the stop check consumed a generator, ``map``, ``filter`` or
+    ``iter()`` with ``all(...)``, so the decode loops never matched and ran
+    to ``max_new_tokens``. Each now halts at the list form's token on both
+    paths: for the first token (the cached path's prefill check) and for a
+    string that first matches several tokens in."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(42)
+    model = _make_model(tokenizer)
+    free: list[int] = []
+    free_run = model.generate(prompt="the", max_new_tokens=16, temperature=0.0, on_token=free.append)
+    first, later = tokenizer.decode(free[:1]), _pick_stop_string(free_run)
+
+    listed = [_stop_counts(model, [s], use_cache) for s in (first, later)]
+    assert listed[0] == 1 and 1 < listed[1] < 16, f"fixture degenerate: list stops halted after {listed} tokens"
+    one_shot = [_stop_counts(model, _ONE_SHOT_STOPS[kind]([s]), use_cache) for s in (first, later)]
+    assert one_shot == listed
+
+
+class _CountingStops:
+    """An iterable of stop strings that counts how often it is iterated."""
+
+    def __init__(self, stops: list[str]):
+        self.stops, self.reads = stops, 0
+
+    def __iter__(self):
+        self.reads += 1
+        return iter(self.stops)
+
+
+@pytest.mark.parametrize("use_cache", [True, False])
+def test_generate_reads_the_stop_iterable_once(tmp_path, use_cache):
+    """#559: the check read the caller's ``stop``, then every decode step read
+    it again. It is read once; the check and each step use that copy."""
+    tokenizer = _make_tokenizer(tmp_path)
+    torch.manual_seed(42)
+    model = _make_model(tokenizer)
+    stop_str = _pick_stop_string(model.generate(prompt="the", max_new_tokens=16, temperature=0.0))
+
+    stops = _CountingStops([stop_str])
+    assert _stop_counts(model, stops, use_cache) == _stop_counts(model, [stop_str], use_cache) < 16
+    assert stops.reads == 1
+    missing = _CountingStops(["never-decoded"])
+    assert _stop_counts(model, missing, use_cache) == 16 and missing.reads == 1
+
+
 def test_kv_cache_speedup_at_long_context(tmp_path):
     """Performance regression test: the cache path should be measurably
     faster than the full-recompute path on a non-trivial generation.
