@@ -80,6 +80,37 @@ def _integer(value: Any, what: str) -> int:
     return int(value)
 
 
+def _token_nll(flat: torch.Tensor, chosen: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """``(logsumexp, per-token NLL)`` of ``(n, V)`` logits, in float32 or
+    wider: half precision would round confident tokens' NLL to 0."""
+    x = flat.float() if flat.dtype in (torch.float16, torch.bfloat16) else flat
+    lse = torch.logsumexp(x, dim=-1)
+    return lse, lse - x.gather(1, chosen.unsqueeze(1)).squeeze(1)
+
+
+class _TokenNLL(torch.autograd.Function):
+    """:func:`_token_nll`'s per-token NLL, differentiable in the logits. Its
+    backward writes ``(softmax - one_hot) * grad`` into one ``(n, V)``
+    buffer, the gradient itself, where autograd's own logsumexp and gather
+    backward peak at four."""
+
+    @staticmethod
+    def forward(ctx: Any, flat: torch.Tensor, chosen: torch.Tensor) -> torch.Tensor:
+        lse, per_token = _token_nll(flat, chosen)
+        ctx.save_for_backward(flat, chosen, lse)
+        return per_token
+
+    @staticmethod
+    def backward(ctx: Any, *grads: torch.Tensor) -> tuple[torch.Tensor, None]:
+        flat, chosen, lse = ctx.saved_tensors
+        grad, index = grads[0].unsqueeze(1), chosen.unsqueeze(1)
+        if torch.is_grad_enabled():  # create_graph=True: out of place, so the gradient has a derivative too
+            out = torch.softmax(flat.to(lse.dtype), dim=-1) * grad
+            return (out - torch.zeros_like(out).scatter(1, index, grad)).to(flat.dtype), None
+        out = torch.sub(flat, lse.unsqueeze(1)).exp_().mul_(grad)  # softmax * grad, in lse's dtype
+        return out.scatter_add_(1, index, -grad).to(flat.dtype), None  # minus grad at each target
+
+
 def perplexity(nll: Optional[float]) -> Optional[float]:
     """``exp(nll)``; ``+inf`` when it overflows (never a clipped value)."""
     if nll is None:
@@ -393,12 +424,14 @@ class CausalLMTask:
         Cost: a batch whose every position is scored is read through a view
         of the logits; a partially masked one copies its ``(n, V)`` scored
         rows, so an unscored row (NaN logits, say) never enters the softmax.
-        With ``smoothing=0`` and a cross-entropy in float32 or wider (float32
-        or float64 logits, or half-precision logits under autocast), the one
-        cross-entropy pass gives both the loss and the NLL, and the accuracy
-        is an argmax. Label smoothing, or half-precision logits outside
-        autocast, add a float32 logsumexp pass for the unsmoothed NLL, which
-        is also evaluation's (``with_ce=False``) only pass."""
+        With ``smoothing=0`` the loss is the unsmoothed NLL itself, and one
+        differentiable pass, ``logsumexp(x) - x[target]`` in float32 or
+        wider, gives both: half-precision logits, under autocast or not,
+        are widened to float32 for it, as the NLL always was, and its
+        backward fills one ``(n, V)`` buffer, the gradient itself. Label
+        smoothing keeps the cross-entropy for the loss and adds a no-grad
+        pass of the same NLL, which is also evaluation's (``with_ce=False``)
+        only pass. The accuracy is an argmax."""
         targets = targets.to(logits.device)
         valid = valid.to(logits.device)
         n = int(valid.sum())
@@ -408,26 +441,25 @@ class CausalLMTask:
             flat, chosen = logits.reshape(-1, logits.shape[-1]), targets.reshape(-1)
         else:
             flat, chosen = logits[valid], targets[valid]  # (n, V): unscored rows stay out of the softmax
-        per_token: Optional[torch.Tensor] = None  # the unsmoothed per-token NLL, when the CE pass gives it
-        if not with_ce:
-            ce = flat.reshape(-1)[:0].sum()
-        elif self.smoothing:
-            ce = torch.nn.functional.cross_entropy(flat, chosen, reduction="sum", label_smoothing=self.smoothing)
+        if with_ce and not self.smoothing:
+            # The NLL's own formula, not cross_entropy: on a CPU, its float32
+            # kernel loses precision on confident tokens, and under MPS
+            # autocast it runs log_softmax in half precision.
+            per_token = _TokenNLL.apply(flat, chosen)
+            ce = per_token.sum()
         else:
-            losses = torch.nn.functional.cross_entropy(flat, chosen, reduction="none")
-            ce = losses.sum()
-            if losses.dtype in (torch.float32, torch.float64):  # half precision would round confident tokens' NLL to 0
-                per_token = losses.detach()
+            ce = (
+                torch.nn.functional.cross_entropy(flat, chosen, reduction="sum", label_smoothing=self.smoothing)
+                if with_ce
+                else flat.reshape(-1)[:0].sum()
+            )
+            with torch.no_grad():
+                per_token = _token_nll(flat.detach(), chosen)[1]
         with torch.no_grad():
-            detached = flat.detach()
-            if per_token is None:
-                if detached.dtype in (torch.float16, torch.bfloat16):
-                    detached = detached.float()  # half precision would round confident tokens' NLL to 0
-                # Per-token NLL in (at least) float32 — no full-vocabulary
-                # float64 copy — summed in float64.
-                per_token = torch.logsumexp(detached, dim=-1) - detached.gather(1, chosen.unsqueeze(1)).squeeze(1)
-            nll = float(per_token.cpu().double().sum())  # MPS has no float64
-            correct = int((detached.argmax(dim=-1) == chosen).sum())
+            # Per-token NLL in (at least) float32 — no full-vocabulary
+            # float64 copy — summed in float64.
+            nll = float(per_token.detach().cpu().double().sum())  # MPS has no float64
+            correct = int((flat.detach().argmax(dim=-1) == chosen).sum())
         return ce, nll, correct, n
 
     # ---------- training and evaluation ----------
