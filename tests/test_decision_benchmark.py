@@ -1082,3 +1082,184 @@ def test_perturbed_options_without_a_utf8_encoding_are_refused_before_any_sample
     ):
         with pytest.raises(InvalidDecisionRequest, match="lone surrogate"):
             derive()
+
+
+# --- #558: add_context's kind; read-only, hashable records and reports ----------------------------------------
+
+
+def test_add_context_refuses_a_missing_or_blank_kind():
+    """#558: ``kind=None`` gave the variant ``perturbation=None``, so evaluate() scored the perturbed sample
+    as an original, under an id holding ``None``; a blank kind was refused as a bad ``Sample.perturbation``."""
+    base = Sample("t1", TOPIC, "the striker scored a goal", "sport")
+    for kind in (None, "", "   ", 3):
+        with pytest.raises(BenchmarkError, match="kind must be a non-empty string"):
+            add_context(base, "unrelated filler text", kind=kind)  # type: ignore[arg-type]
+    # The default and an explicit kind derive the ids they derived before.
+    assert add_context(base, "filler").id == "t1~long_context~7ab2d8ed"
+    assert add_context(base, "filler", kind="needle").id == "t1~needle~7ab2d8ed"
+    assert add_context(base, "filler", id="named").perturbation == "long_context"
+    variant = add_context(base, "unrelated filler text " * 5)
+    good = Record("t1", base.digest, "stub", "answered", distribution=(("sport", 0.9), ("economy", 0.1)))
+    wrong = Record(variant.id, variant.digest, "stub", "answered", distribution=(("sport", 0.1), ("economy", 0.9)))
+    report = evaluate([base, variant], [good, wrong], split="demo")
+    assert report.slices["perturbation:original"].coverage.samples == 1
+    assert report.slices["perturbation:long_context"].coverage.samples == 1
+
+
+EXECUTION = {"batch": 0, "seconds": 0.012, "meta": {"shape": [2, 3], "tags": ["x"]}, "partial_batch": False}
+# write_records' line and json.dumps(record.state()) for _record(), as at e69fd74 (DIGEST: TOPIC's digest).
+RECORD_LINE = (
+    '{"distribution": [["sport", 0.25], ["economy", 0.75]], "execution": {"batch": 0, "meta": {"shape": [2, 3], '
+    '"tags": ["x"]}, "partial_batch": false, "seconds": 0.012}, "format": "nnx.decision-record/1", "p_true": null, '
+    '"prompt_identity": "sha256:feed", "provider": "stub", "question_digest": "DIGEST", "reason": null, '
+    '"revision": "r@1", "sample_id": "s1", "status": "answered"}\n'
+)
+RECORD_STATE = (
+    '{"format": "nnx.decision-record/1", "sample_id": "s1", "question_digest": "DIGEST", "provider": "stub", '
+    '"status": "answered", "distribution": [["sport", 0.25], ["economy", 0.75]], "p_true": null, "reason": null, '
+    '"revision": "r@1", "prompt_identity": "sha256:feed", "execution": {"batch": 0, "seconds": 0.012, "meta": '
+    '{"shape": [2, 3], "tags": ["x"]}, "partial_batch": false}}'
+)
+
+
+def _record(**changes):
+    fields = {
+        "sample_id": "s1",
+        "question_digest": TOPIC.digest(),
+        "provider": "stub",
+        "status": "answered",
+        "distribution": (("sport", 0.25), ("economy", 0.75)),
+        "revision": "r@1",
+        "prompt_identity": "sha256:feed",
+        "execution": EXECUTION,
+    }
+    return Record(**{**fields, **changes})
+
+
+def test_a_record_execution_is_read_only_at_every_depth():
+    """#558: a frozen Record's execution dict could be edited after its strict-JSON check: a tuple stored
+    there read back as a list (an unequal copy), and a NaN made write_records raise a bare ValueError."""
+    record = _record()
+    with pytest.raises(TypeError):
+        record.execution["x"] = 1  # type: ignore[index]
+    with pytest.raises(TypeError):
+        del record.execution["batch"]  # type: ignore[attr-defined]
+    with pytest.raises(TypeError):
+        record.execution["meta"]["shape"] = (2, 3)
+    with pytest.raises(TypeError):
+        record.execution["meta"]["tags"][0] = "y"
+    assert not hasattr(record.execution["meta"]["tags"], "append")
+    given = {"batch": 0, "meta": {"tags": ["x"]}}
+    borrowed = _record(execution=given)
+    given["meta"]["tags"].append("y")  # the caller's dict, edited afterwards, never reaches the record
+    given["batch"] = 1
+    assert borrowed.state()["execution"] == {"batch": 0, "meta": {"tags": ["x"]}}
+
+
+def test_equal_records_hash_equal_and_keep_their_bytes(tmp_path):
+    """#558: hash(record) raised TypeError (a dict field). Equal records — a JSONL copy, another key order,
+    a pickle or a copy — hash equal, and state() and the JSONL line keep their e69fd74 bytes."""
+    import copy
+    import pickle
+    from dataclasses import replace
+
+    record = _record()
+    path = tmp_path / "records.jsonl"
+    write_records(path, [record])
+    assert path.read_text(encoding="utf-8") == RECORD_LINE.replace("DIGEST", TOPIC.digest())
+    assert json.dumps(record.state()) == RECORD_STATE.replace("DIGEST", TOPIC.digest())  # key order included
+    back = read_records(path)[0]
+    reordered = _record(
+        execution={"partial_batch": False, "meta": {"tags": ["x"], "shape": [2, 3]}, "seconds": 0.012, "batch": 0}
+    )
+    for twin in (back, reordered, pickle.loads(pickle.dumps(record)), copy.deepcopy(record), copy.copy(record)):
+        assert twin == record and hash(twin) == hash(record)
+        assert twin.state() == record.state()
+    assert len({record, back, reordered}) == 1
+    assert _record(execution={**EXECUTION, "batch": 1}) != record
+    # The record's own read-only execution passes the check again, whole or re-wrapped.
+    assert replace(record, provider="other").execution == record.execution
+    assert _record(execution=dict(record.execution)) == record
+    extended = _record(execution={**record.execution, "attempt": 2})
+    assert extended.state()["execution"] == {**EXECUTION, "attempt": 2}
+    listed = _record(execution={"sizes": [4, 4], "meta": {"shape": [2, 3]}})
+    assert _record(execution={**listed.execution}).state()["execution"] == {"sizes": [4, 4], "meta": {"shape": [2, 3]}}
+
+
+def test_a_record_execution_still_refuses_what_would_not_read_back(tmp_path):
+    """The strict-JSON check is unchanged: a caller's tuple, an int key, a NaN or a NumPy integer is
+    refused. A value nested past what NNx's JSON files hold is refused too, not frozen into a
+    RecursionError: a record line wraps its execution in one more level."""
+    from nnx._json_depth import MAX_JSON_DEPTH
+
+    for execution in ({"shape": (2, 3)}, {"meta": {1: 2}}, {"seconds": float("nan")}, {"n": np.int64(1)}):
+        with pytest.raises(BenchmarkError, match="execution"):
+            _record(execution=execution)
+    deep: object = 0
+    for _ in range(MAX_JSON_DEPTH):
+        deep = {"k": deep}
+    with pytest.raises(BenchmarkError, match=f"Record.execution nests more than {MAX_JSON_DEPTH - 1} levels"):
+        _record(execution=deep)
+    deepest = _record(execution=deep["k"])  # type: ignore[index]
+    path = tmp_path / "records.jsonl"
+    write_records(path, [deepest])
+    assert read_records(path) == [deepest]
+
+
+def test_reports_are_read_only_and_hash_by_value(tmp_path):
+    """#558: Coverage.reasons, SliceReport.metrics and BenchmarkReport.metric_identity / slices were plain
+    dicts — editable after evaluate(), and hash() raised on every report type and on Collection. They are
+    read-only now; state(), the JSON file and comparisons keep their plain dicts and lists."""
+    import copy
+    import pickle
+    from dataclasses import replace
+
+    from nnx.decisions.benchmark import Collection
+
+    samples, records = fixture()
+    records = records[:3] + [Record("s3", AB.digest(), "stub", "failed", reason="ProviderFailure: boom")]
+    report = evaluate(samples, records, split="x")
+    in_family = report.slices["in_family"]
+    with pytest.raises(TypeError):
+        in_family.coverage.reasons["failed: other"] = 2  # type: ignore[index]
+    with pytest.raises(TypeError):
+        in_family.metrics["accuracy"] = in_family.metrics["nll"]  # type: ignore[index]
+    with pytest.raises(TypeError):
+        report.metric_identity["n_bins"] = 5  # type: ignore[index]
+    with pytest.raises(TypeError):
+        report.metric_identity["metrics"][0] = "nll"
+    with pytest.raises(TypeError):
+        report.slices["copy"] = in_family  # type: ignore[index]
+    with pytest.raises(TypeError):
+        del report.slices["in_family"]  # type: ignore[attr-defined]
+    path = tmp_path / "records.jsonl"
+    write_records(path, records)
+    again = evaluate(samples, read_records(path), split="x")
+    for a, b in (
+        (report, again),
+        (in_family, again.slices["in_family"]),
+        (in_family.coverage, again.slices["in_family"].coverage),
+        (Collection(tuple(records), 1, True), Collection(tuple(read_records(path)), 1, True)),
+        (report, pickle.loads(pickle.dumps(report))),
+        (report, copy.deepcopy(report)),
+    ):
+        assert a == b and hash(a) == hash(b)
+    assert isinstance(hash(collect(KeywordProvider(), samples, provider_id="kw", budget=Budget(max_calls=1))), int)
+    assert replace(report, split="y").slices == report.slices
+    with pytest.raises(BenchmarkError, match="Coverage.reasons must be a mapping"):
+        replace(in_family.coverage, reasons=None)
+    state = report.state()
+    assert state["metric_identity"] == {
+        "format": "nnx.decision-benchmark/1",
+        "metrics": ["accuracy", "macro_f1", "nll", "brier", "ece", "selective_coverage", "selective_risk"],
+        "epsilon": None,
+        "n_bins": 10,
+        "policy": None,
+    }
+    assert state["slices"]["in_family"]["coverage"]["reasons"] == {"failed: ProviderFailure: boom": 1}
+    assert json.loads(report.to_json()) == state
+    report.save(tmp_path / "report.json")
+    saved = BenchmarkReport.load_state(tmp_path / "report.json")
+    assert saved == state
+    deltas = compare_reports(report, saved)
+    assert all(value in (0.0, None) for row in deltas.values() for value in row.values())

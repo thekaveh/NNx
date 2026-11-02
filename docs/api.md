@@ -4200,7 +4200,9 @@ declared it cannot serve the request) or ``"failed"`` (the call raised);
 the latter two carry a ``reason``. ``revision`` is the model revision,
 ``prompt_identity`` how the provider rendered the question (a digest of
 its settings), ``execution`` free JSON metadata (batch, timing, whether
-the budget cut the batch short).
+the budget cut the batch short). ``execution`` is a read-only copy at
+every depth, its lists as tuples (``state()`` gives the plain JSON), so
+equal records hash equal.
 ```
 
 ##### `nnx.decisions.benchmark.Record.state`
@@ -4309,7 +4311,7 @@ Args:
 class nnx.decisions.benchmark.BenchmarkReport(split: 'str', provider: 'Optional[str]', metric_identity: 'Mapping[str, Any]', slices: 'Mapping[str, SliceReport]', resources: 'Resources' = <factory>, extra: 'int' = 0, sample_set: 'Optional[str]' = None) -> 'None'
 ```
 
-A replayed benchmark: the split and metric identity, every slice's coverage, metrics and bins, and the declared `Resources`.
+A replayed benchmark: the split and metric identity, every slice's coverage, metrics and bins, and the declared `Resources`. ``metric_identity`` (its ``metrics`` list a tuple) and ``slices`` are read-only, so a report cannot drift from its exports and equal reports hash equal; ``state()`` gives the plain JSON.
 
 ##### `nnx.decisions.benchmark.BenchmarkReport.state`
 
@@ -4374,7 +4376,7 @@ A saved report's JSON state (for `compare_reports`).
 class nnx.decisions.benchmark.SliceReport(name: 'str', coverage: 'Coverage', metrics: 'Mapping[str, MetricValue]', bins: 'tuple[Any, ...]') -> 'None'
 ```
 
-One slice: its coverage, every metric and the reliability bins.
+One slice: its coverage, every metric (a read-only mapping) and the reliability bins.
 
 ##### `nnx.decisions.benchmark.SliceReport.state`
 
@@ -4391,7 +4393,7 @@ No public description is currently available.
 class nnx.decisions.benchmark.Coverage(samples: 'int', eligible: 'int', missing: 'int', duplicate: 'int', mismatched: 'int', invalid: 'int', unsupported: 'int', failed: 'int', reasons: 'Mapping[str, int]' = <factory>) -> 'None'
 ```
 
-How the samples of a slice joined their records: ``eligible`` (one answered record with the sample's digest), ``missing`` (no record), ``duplicate`` (several), ``mismatched`` (a record for another question digest), ``invalid`` (an answered record that does not fit its question: options in another order or set, a Boolean answer for a Choice), ``unsupported`` and ``failed`` (with their reasons). Records for no sample are the report's ``extra`` count.
+How the samples of a slice joined their records: ``eligible`` (one answered record with the sample's digest), ``missing`` (no record), ``duplicate`` (several), ``mismatched`` (a record for another question digest), ``invalid`` (an answered record that does not fit its question: options in another order or set, a Boolean answer for a Choice), ``unsupported`` and ``failed`` (with their reasons). Records for no sample are the report's ``extra`` count. ``reasons`` is read-only.
 
 ##### `nnx.decisions.benchmark.Coverage.state`
 
@@ -4529,7 +4531,7 @@ A none-of-the-above option; with ``remove_label`` the true option is removed, so
 nnx.decisions.benchmark.add_context(sample: 'Sample', context: 'str', *, kind: 'str' = 'long_context', id: 'Optional[str]' = None) -> 'Sample'
 ```
 
-Irrelevant context appended to a text input.
+Irrelevant context appended to a text input; ``kind`` (a non-empty string) names the perturbation.
 
 
 #### `nnx.decisions.benchmark.rewrite_input`
