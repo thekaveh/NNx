@@ -1189,7 +1189,11 @@ def test_equal_records_hash_equal_and_keep_their_bytes(tmp_path):
 def test_a_record_execution_still_refuses_what_would_not_read_back(tmp_path):
     """The strict-JSON check is unchanged: a caller's tuple, an int key, a NaN or a NumPy integer is
     refused. A value nested past what NNx's JSON files hold is refused too, not frozen into a
-    RecursionError: a record line wraps its execution in one more level."""
+    RecursionError: a record line wraps its execution in one more level. One level less still
+    copies and pickles (rebuilt level by level, a deep copy overflowed at ~200 levels)."""
+    import copy
+    import pickle
+
     from nnx._json_depth import MAX_JSON_DEPTH
 
     for execution in ({"shape": (2, 3)}, {"meta": {1: 2}}, {"seconds": float("nan")}, {"n": np.int64(1)}):
@@ -1200,10 +1204,39 @@ def test_a_record_execution_still_refuses_what_would_not_read_back(tmp_path):
         deep = {"k": deep}
     with pytest.raises(BenchmarkError, match=f"Record.execution nests more than {MAX_JSON_DEPTH - 1} levels"):
         _record(execution=deep)
-    deepest = _record(execution=deep["k"])  # type: ignore[index]
+    listed: object = 0
+    for _ in range(MAX_JSON_DEPTH - 2):
+        listed = [listed]
     path = tmp_path / "records.jsonl"
-    write_records(path, [deepest])
-    assert read_records(path) == [deepest]
+    # 255 levels each: of mappings, and of lists in one mapping.
+    for execution in (deep["k"], {"k": listed}):  # type: ignore[index]
+        deepest = _record(execution=execution)
+        write_records(path, [deepest])
+        assert read_records(path) == [deepest]
+        assert copy.deepcopy(deepest) == deepest
+        assert pickle.loads(pickle.dumps(deepest)) == deepest
+
+
+def test_a_report_identity_nested_too_deep_is_refused(tmp_path):
+    """#558: a hand-built report's metric_identity nested past what its JSON file holds raised a
+    RecursionError from the freeze; it raises BenchmarkError, and one level less builds, copies,
+    pickles and saves."""
+    import copy
+    import pickle
+
+    from nnx._json_depth import MAX_JSON_DEPTH
+
+    deep: object = 0
+    for _ in range(MAX_JSON_DEPTH - 1):
+        deep = [deep]
+    message = f"BenchmarkReport.metric_identity nests more than {MAX_JSON_DEPTH - 1} levels"
+    with pytest.raises(BenchmarkError, match=message):
+        BenchmarkReport(split="x", provider=None, metric_identity={"deep": deep}, slices={})
+    report = BenchmarkReport(split="x", provider=None, metric_identity={"deep": deep[0]}, slices={})  # type: ignore[index]
+    assert copy.deepcopy(report) == report
+    assert pickle.loads(pickle.dumps(report)) == report
+    report.save(tmp_path / "report.json")
+    assert BenchmarkReport.load_state(tmp_path / "report.json") == report.state()
 
 
 def test_reports_are_read_only_and_hash_by_value(tmp_path):
