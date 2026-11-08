@@ -1039,9 +1039,26 @@ with one exception. A normalized microbatch with **no samples**
 summed. That is how a `reduction="sum"` loss with a `TaskSpec` trains a
 window of a valid and an all-masked microbatch, in either order.
 
-Each term is back-propagated into its own gradient buffer. A window of one
-microbatch (the default) takes a single backward pass through its combined
-loss, and a term of weight `0` is never back-propagated.
+Each term is back-propagated into its own gradient buffer, in place. A window
+of one microbatch (the default) takes a single backward pass through its
+combined loss, and a term of weight `0` is never back-propagated. At the
+window's end the gradients are built in the buffers, which are released
+before the optimizer steps. An accumulated window therefore holds about one
+gradient set per term at its peak, like the default step's one set. A
+parameter with a post-accumulate-grad hook
+(`Tensor.register_post_accumulate_grad_hook`) never sees these buffers: its
+window takes each term's gradients with `torch.autograd.grad`, which does not
+run the hook, and holds one more gradient set beside the buffers while it
+back-propagates. A hook registered on the parameter's `AccumulateGrad` node
+itself still runs, on the term buffer.
+
+Each buffer, and a one-microbatch window's gradients, is stored in its
+parameter's memory layout, as the default step's `.backward()` stores
+`.grad`; earlier releases kept the layout
+autograd produced. When the two differ (a `channels_last` batch into a
+convolution, a parameter used transposed), the values are the same, but
+gradient clipping sums them in memory order, so a clipped update can differ
+from an earlier release's in the last bits.
 
 The update window is
 `accumulate_grad_batches` microbatches, or fewer when the epoch ends. At its
@@ -3492,6 +3509,18 @@ deliberately narrow and **guarantees no speedup**:
   forward's own error, a shape mistake for example. It propagates unchanged.
   The model's RNG and buffers are left as the failed call found them. Under
   `on_failure="error"`, a compile failure leaves them so too.
+- **Buffer snapshots.** For that re-run, the wrapper keeps the RNG state
+  and a copy of the net's buffers from before each compiled call. From
+  torch 2.5, a buffer unchanged since the previous call (the same tensor,
+  with the same `_version`) keeps its copy. A read-only buffer, such as a
+  `TransformerNN` layer's RoPE tables, is therefore copied once per fit. A
+  buffer written in place, by the forward (BatchNorm statistics) or between
+  calls, is copied again. An in-place write through `.data`
+  (`buffer.data.fill_(0)`) does not change `_version`, so the snapshot misses
+  it, and an eager re-run could start from the buffer's older value. Write
+  the buffer itself in place (`buffer.fill_(0)` under `torch.no_grad()`).
+  On torch 2.4, inductor writes buffers without changing `_version`, so
+  every compiled call copies every buffer.
 - **Recompile limit.** Hitting dynamo's recompile limit is a failure, never a
   silent eager fallback (torch >= 2.6 reports it). The limit is per code
   object and process-wide. Each fit therefore gets it afresh, on top of the

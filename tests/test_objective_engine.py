@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import math
 import os
+import time
 from typing import Any
 
 import pytest
@@ -26,6 +27,7 @@ from nnx import (
     Losses,
     Nets,
     NNCheckpoint,
+    NNConvParams,
     NNModel,
     NNModelParams,
     NNOptimParams,
@@ -41,7 +43,7 @@ from nnx import (
     set_seed,
 )
 from nnx._step_helpers import softened_kl
-from nnx._update_engine import UpdateEngine
+from nnx._update_engine import UpdateEngine, _term_scale
 from nnx.nn.nn_model import _objective_microbatch
 from nnx.objectives import LossTerm, ObjectiveResult, kd_objective, supervised_objective
 from tests import _task_steps as tasks
@@ -651,14 +653,6 @@ def test_trainer_step_functions_keep_the_plain_fetch_order(tmp_path, monkeypatch
 def test_single_microbatch_windows_take_one_backward_pass_and_zero_weights_none(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
-    calls = []
-    grad = torch.autograd.grad
-
-    def counting_grad(*args, **kwargs):
-        calls.append(1)
-        return grad(*args, **kwargs)
-
-    monkeypatch.setattr(torch.autograd, "grad", counting_grad)
     teacher = _teacher()
     with torch.no_grad():
         teacher_logits = teacher.net(X)
@@ -670,6 +664,15 @@ def test_single_microbatch_windows_take_one_backward_pass_and_zero_weights_none(
             alpha * softened_kl(m.net(X), teacher_logits, temperature) + (1 - alpha) * F.cross_entropy(m.net(X), Y)
         ),
     )
+    calls = []
+    backward = torch.autograd.backward
+
+    def counting_backward(*args, **kwargs):
+        calls.append(1)
+        return backward(*args, **kwargs)
+
+    # The engine's entry point (#576): each pass back-propagates into the term buffers in place.
+    monkeypatch.setattr(torch.autograd, "backward", counting_backward)
     model = _linear()
     _fit(model, [(X, Y)], kd_objective(teacher, alpha=alpha, temperature=temperature), optim=_sgd(1))
     assert len(calls) == 1  # two terms, one window of one microbatch: one backward pass
@@ -697,6 +700,414 @@ def test_each_term_is_read_from_the_device_once(monkeypatch):
     engine.accumulate(result.terms)
     result.loss()
     assert len(reads) == 2
+
+
+# --- term buffers in place (#576) ------------------------------------------------
+
+
+def _peak_gradient_sets(n_terms: int, accumulate: int = 4) -> tuple[float, float]:
+    """Peak live CPU tensor memory above the start, in gradient sets, while
+    a window's microbatches back-propagate and while it commits. Eight
+    equal layers: one parameter's fresh gradient (the transient of an
+    in-place accumulation) is an eighth of a set."""
+    from torch.profiler import ProfilerActivity, profile
+
+    torch.manual_seed(0)
+    width = 256
+    net = torch.nn.Sequential(*(torch.nn.Linear(width, width, bias=False) for _ in range(8)))
+    one_set = sum(param.numel() * param.element_size() for param in net.parameters())
+    engine = UpdateEngine(optimizers={"default": torch.optim.SGD(net.parameters(), lr=1e-3)})
+    inputs = torch.randn(accumulate, 4, width)
+    with profile(activities=[ProfilerActivity.CPU], profile_memory=True, record_shapes=True, with_stack=True) as prof:
+        for i in range(accumulate):
+            output = net(inputs[i])
+            # normalized terms over the microbatch's rows: the shape kd_objective returns
+            terms = [LossTerm(f"term{k}", (output * (k + 1)).square().sum(), 4) for k in range(n_terms)]
+            engine.accumulate(terms, closes_window=i == accumulate - 1)
+        commit_at = time.time_ns()
+        (event,) = engine.commit(epoch_idx=0, batch_idx=accumulate - 1)
+    assert event.microbatches == accumulate
+    live = start = 0
+    peaks = [0, 0]  # the microbatches, the commit
+    for at, action, _, size in sorted(prof._memory_profile().timeline, key=lambda row: row[0]):
+        if action.name == "PREEXISTING":
+            start += size
+        live += size if action.name in ("CREATE", "PREEXISTING") else -size if action.name == "DESTROY" else 0
+        phase = int(at >= commit_at)
+        peaks[phase] = max(peaks[phase], live)
+    return (peaks[0] - start) / one_set, (peaks[1] - start) / one_set
+
+
+@pytest.mark.parametrize("n_terms", [1, 2], ids=["one-term", "two-terms"])
+def test_an_accumulated_window_peaks_at_its_term_buffers(n_terms):
+    """#576: with accumulate_grad_batches=4 a window holds one gradient set
+    per term and nothing beside them — autograd adds each microbatch into
+    the buffers in place, and the commit builds the gradients in them. It
+    peaked at 2.13 sets in the microbatches and 2.00 at the commit for one
+    term, 4.13 and 3.25 for two."""
+    microbatches, commit = _peak_gradient_sets(n_terms)
+    assert n_terms <= microbatches <= n_terms + 0.25
+    assert commit <= n_terms + 0.25
+
+
+def test_term_buffers_accumulate_in_place_and_leave_unused_parameters_alone():
+    """#576, on every supported torch (the 2.4 floor included): the
+    backward into a term's buffers accepts parameters the term never
+    reaches, and adds each later microbatch into the same tensors."""
+    used = torch.nn.Parameter(torch.tensor([1.0, 2.0]))
+    other = torch.nn.Parameter(torch.tensor(3.0))
+    idle = torch.nn.Parameter(torch.tensor(5.0))  # no term reaches it
+    engine = UpdateEngine(optimizers={"default": torch.optim.SGD([used, other, idle], lr=0.5)})
+    engine.accumulate([LossTerm("a", (used * used).sum(), 1), LossTerm("b", (used * other).sum(), reduction="sum")])
+    first = {name: list(window.grads) for name, window in engine._terms.items()}
+    assert first["a"][1] is None and first["a"][2] is None and first["b"][2] is None
+    assert used.grad is None and other.grad is None  # the engine holds them between microbatches
+    engine.accumulate(
+        [LossTerm("a", (3 * used).sum(), 1), LossTerm("b", (2 * used * other).sum(), reduction="sum")],
+        closes_window=True,
+    )
+    for name, window in engine._terms.items():
+        for before, after in zip(first[name], window.grads, strict=True):
+            assert after is before, name  # None stays None; a buffer is added to in place
+    (event,) = engine.commit(epoch_idx=0, batch_idx=1)
+    # a: ([2, 4] + [3, 3]) / 2; b: [3, 3] + [6, 6] for `used`, 3 + 6 for `other`
+    assert torch.equal(used.detach(), torch.tensor([1.0, 2.0]) - 0.5 * torch.tensor([11.5, 12.5]))
+    assert torch.equal(other.detach(), torch.tensor(3.0 - 0.5 * 9.0)) and torch.equal(idle.detach(), torch.tensor(5.0))
+    assert event.losses == {"a": 7.0, "b": 27.0}  # (5 + 9) / 2 and 9 + 18
+
+
+class _ZeroingHookFrom:
+    """``inner``, with a post-accumulate-grad hook that zeroes ``.grad`` (the
+    optimizer-in-backward pattern's shape) on every parameter from batch
+    ``at`` of epoch 0."""
+
+    def __init__(self, inner, at: int):
+        self.inner, self.at, self.calls = inner, at, []
+
+    def _hook(self, param):
+        self.calls.append(1)
+        param.grad.zero_()
+
+    def __call__(self, ctx):
+        if (ctx.epoch_idx, ctx.batch_idx) == (0, self.at):
+            for param in ctx.model.net.parameters():
+                param.register_post_accumulate_grad_hook(self._hook)
+        return self.inner(ctx)
+
+
+@pytest.mark.parametrize(
+    ("accumulate", "at"),
+    [(1, 0), (2, 0), (2, 1)],
+    ids=["one-microbatch-windows", "accumulated-windows", "hooked-mid-window"],
+)
+def test_post_accumulate_grad_hooks_never_run_in_an_objective_run(tmp_path, monkeypatch, accumulate, at):
+    """#576 review: the in-place backward ran such a hook on a term buffer
+    in ``.grad``, once per term and microbatch, and a hook zeroing it
+    changed the update. A window with one gathers its gradients out of
+    place, as before: the hook never runs, and the run is bit for bit the
+    unhooked one."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    batches = [(X[:1], Y[:1]), (X[1:2], Y[1:2]), (X[2:], Y[2:])]
+    reference, model = _linear(), _linear()
+    _fit(reference, batches, kd_objective(_teacher(), alpha=0.3), epochs=2, optim=_sgd(accumulate), data_id="plain")
+    hooked = _ZeroingHookFrom(kd_objective(_teacher(), alpha=0.3), at)
+    _fit(model, batches, hooked, epochs=2, optim=_sgd(accumulate), data_id="hooked")
+    assert hooked.calls == []
+    for key, value in reference.net.state_dict().items():
+        assert torch.equal(model.net.state_dict()[key], value), key
+
+
+def test_a_hooked_window_sums_gradients_that_share_memory_out_of_place():
+    """``torch.autograd.grad`` may hand two parameters one gradient tensor
+    (``a + b``), so a window gathered out of place also sums out of place."""
+    a, b = torch.nn.Parameter(torch.zeros(2)), torch.nn.Parameter(torch.zeros(2))
+    a.register_post_accumulate_grad_hook(lambda param: None)
+    engine = UpdateEngine(optimizers={"default": torch.optim.SGD([a, b], lr=1.0)})
+    engine.accumulate([LossTerm("t", (a + b).sum(), 2), LossTerm("u", (3 * a).sum(), reduction="sum")])
+    engine.commit(epoch_idx=0, batch_idx=0)
+    assert torch.equal(a.detach(), torch.full((2,), -3.5)) and torch.equal(b.detach(), torch.full((2,), -0.5))
+
+
+def _retyped_window(engine_class, case: str) -> torch.nn.Module:
+    """A two-microbatch window whose second layer turns float64 between its
+    microbatches: ``"refused"`` back-propagates into its float32 buffers
+    again, ``"unlike-buffers"`` gives it a float64 buffer of a second term
+    beside a float32 one."""
+    torch.manual_seed(0)
+    net = torch.nn.Sequential(torch.nn.Linear(3, 4), torch.nn.Linear(4, 1))
+    engine = engine_class(optimizers={"default": torch.optim.SGD(net.parameters(), lr=0.1)})
+    x = torch.randn(2, 3, generator=torch.Generator().manual_seed(0))
+    engine.accumulate([LossTerm("a", net(x).sum(), 2), LossTerm("b", net[0](x).sum(), reduction="sum")])
+    net[1].double()
+    out = net[1](net[0](x).double()).sum()
+    if case == "refused":
+        terms = [LossTerm("a", out, 2), LossTerm("b", net[0](x).sum(), reduction="sum")]
+    else:
+        terms = [LossTerm("a", out * 0, 0), LossTerm("b", out, reduction="sum")]  # "a" has no samples here
+    engine.accumulate(terms, closes_window=True)
+    assert all(param.grad is None for param in net.parameters())  # nothing left aliasing a term buffer
+    (event,) = engine.commit(epoch_idx=0, batch_idx=1)
+    assert event.microbatches == 2
+    return net
+
+
+@pytest.mark.parametrize("case", ["refused", "unlike-buffers"])
+def test_a_parameter_retyped_mid_window_finishes_the_window_as_before(case):
+    """#576 review: a parameter refusing its term buffer left the parameters
+    assigned before it with ``.grad`` aliasing their buffers, and the
+    window failed; a float32 and a float64 buffer of one parameter were
+    summed into float32, which the parameter refused. The engine hands
+    the assigned buffers back and finishes such a window out of place, as
+    before: promoted to float64, the same update."""
+    reference, net = _retyped_window(_OutOfPlaceEngine, case), _retyped_window(UpdateEngine, case)
+    for (name, expected), param in zip(reference.named_parameters(), net.parameters(), strict=True):
+        assert param.dtype == expected.dtype and torch.equal(param, expected), name
+
+
+class _OutOfPlaceEngine(UpdateEngine):
+    """The engine's arithmetic before #576, as the bit-identity reference:
+    every gradient from ``torch.autograd.grad``, microbatches and terms
+    summed out of place. ``contiguous`` stores each gradient row-major, as
+    the default step's ``.backward()`` stores a contiguous parameter's."""
+
+    contiguous = False
+
+    def _backward(self, loss, active, grads, *, retain_graph):
+        if self.scaler is not None:
+            loss = self.scaler.scale(loss)
+        fresh = torch.autograd.grad(
+            loss, [self._params[j] for j in active], retain_graph=retain_graph, allow_unused=True
+        )
+        for j, grad in zip(active, fresh, strict=True):
+            if grad is not None:
+                grad = grad.detach().contiguous() if self.contiguous else grad.detach()
+                grads[j] = grad if grads[j] is None else grads[j] + grad
+
+    def _assign_gradients(self):
+        for j, param in enumerate(self._params):
+            if not param.requires_grad:
+                param.grad = None
+            elif self._fused is not None:
+                param.grad = self._fused[j]
+            else:
+                combined = None
+                for window in self._terms.values():
+                    grad = window.grads[j] if window.grads else None
+                    if grad is not None:
+                        contribution = grad * _term_scale(window.reduction, window.weight, window.denominator)
+                        combined = contribution if combined is None else combined + contribution
+                param.grad = combined
+
+
+def _scaled(engine_class):
+    """``engine_class`` with a CPU AMP loss scaler (fp16 itself runs on CUDA only)."""
+
+    class Scaled(engine_class):
+        def __init__(self, **kwargs):
+            super().__init__(**{**kwargs, "scaler": torch.amp.GradScaler("cpu", init_scale=2.0**10)})
+
+    return Scaled
+
+
+def _two_layers(seed: int = 0) -> NNModel:
+    torch.manual_seed(seed)
+    return NNModel(
+        net_params=NNParams(input_dim=1, output_dim=2, hidden_dims=[3], dropout_prob=0.0, activation=Activations.RELU),
+        params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+
+def _three_terms(ctx):
+    """A normalized term, a summed one only the last layer reaches, and one of weight 0."""
+    x, y = ctx.batch
+    valid = y != -100
+    numerator = F.cross_entropy(ctx.model.net(x), y, reduction="sum")
+    last = ctx.model.net.layers[-1].weight
+    return ObjectiveResult(
+        (
+            LossTerm("ce", numerator, int(valid.sum()), weight=0.7),
+            LossTerm("l2", (last**2).sum(), reduction="sum", weight=0.01),
+            LossTerm("unweighted", 2 * numerator, int(valid.sum()), weight=0.0),
+        )
+    )
+
+
+class _FreezeMidWindow:
+    """``inner``, with the first layer's bias frozen from microbatch 1 to 3 of each epoch."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def __call__(self, ctx):
+        ctx.model.net.layers[0].bias.requires_grad_(not 1 <= ctx.batch_idx < 3)
+        return self.inner(ctx)
+
+
+class _FreezeFirstWeightInEpoch0(Callback):
+    def on_epoch_begin(self, ctx):
+        ctx.model.net.layers[0].weight.requires_grad = ctx.epoch != 0
+
+
+_BIT_IDENTITY_OBJECTIVES = {
+    "one-term": lambda: supervised_objective(),
+    "two-terms": lambda: kd_objective(_two_layers(seed=1), alpha=0.3, temperature=2.0),
+    "weight-0-and-unreached": lambda: _three_terms,
+    "frozen-and-unfrozen": lambda: _FreezeMidWindow(kd_objective(_two_layers(seed=1), alpha=0.6, temperature=3.0)),
+}
+
+
+def _bit_identity_fit(via: str, objective: str, accumulate: int, data_id: str) -> tuple[NNModel, NNRun, list]:
+    generator = torch.Generator().manual_seed(4)
+    X12 = torch.randn(12, 1, generator=generator)
+    Y12 = torch.randint(0, 2, (12,), generator=generator)
+    Y12[[1, 5]] = -100
+    sizes, batches, start = [3, 1, 2, 4, 2], [], 0  # unequal microbatches
+    for size in sizes:
+        batches.append((X12[start : start + size], Y12[start : start + size]))
+        start += size
+    model, counter = _two_layers(), _Counter()
+    callbacks = [counter] + ([_FreezeFirstWeightInEpoch0()] if objective == "frozen-and-unfrozen" else [])
+    if via == "NNModel.train":
+        run = _fit(
+            model,
+            batches,
+            _BIT_IDENTITY_OBJECTIVES[objective](),
+            epochs=2,
+            optim=NNOptimParams.builder()
+            .sgd(max_lr=0.1, momentum=0.9)
+            .accumulate_grad(accumulate)
+            .grad_clip(0.5)
+            .build(),
+            callbacks=callbacks,
+            data_id=data_id,
+        )
+    else:
+        params = (
+            NNTrainerParams.builder()
+            .n_epochs(2)
+            .train_loader(batches)
+            .optimizer(
+                "first",
+                NNOptimParams.builder()
+                .sgd(max_lr=0.1, momentum=0.9)
+                .accumulate_grad(accumulate)
+                .grad_clip(0.5)
+                .param_groups([NNParamGroupSpec(name_pattern="layers.0.*")])
+                .build(),
+            )
+            .optimizer(
+                "second",
+                NNOptimParams.builder()
+                .adam(max_lr=0.01)
+                .accumulate_grad(accumulate)
+                .param_groups([NNParamGroupSpec(name_pattern="layers.1.*")])
+                .build(),
+            )
+            .save_phase_checkpoints(False)
+            .data_id(data_id)
+            .build()
+        )
+        run = Trainer(model).train(params=params, objective=_BIT_IDENTITY_OBJECTIVES[objective](), callbacks=callbacks)
+    return model, run, counter.events
+
+
+@pytest.mark.parametrize("amp", [False, True], ids=["fp32", "grad-scaler"])
+@pytest.mark.parametrize("accumulate", [1, 3], ids=["one-microbatch-windows", "accumulated-windows"])
+@pytest.mark.parametrize("objective", list(_BIT_IDENTITY_OBJECTIVES))
+@pytest.mark.parametrize("via", ["NNModel.train", "Trainer.train"])
+def test_objective_runs_match_the_out_of_place_engine_bit_for_bit(
+    tmp_path, monkeypatch, via, objective, accumulate, amp
+):
+    """#576: building the gradients in place changes no bit of the
+    parameters, the losses or the committed-update events."""
+    import nnx._update_engine as engine_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    fits = {}
+    for label, engine_class in (("reference", _OutOfPlaceEngine), ("engine", UpdateEngine)):
+        monkeypatch.setattr(engine_module, "UpdateEngine", _scaled(engine_class) if amp else engine_class)
+        fits[label] = _bit_identity_fit(via, objective, accumulate, data_id=label)
+    (reference, reference_run, reference_events), (model, run, events) = fits["reference"], fits["engine"]
+    for key, value in reference.net.state_dict().items():
+        assert torch.equal(model.net.state_dict()[key], value), key
+    assert [i.train_edp.loss for i in run.idps] == [i.train_edp.loss for i in reference_run.idps]
+    assert [i.train_summary.loss for i in run.idps if i.train_summary is not None] == [
+        i.train_summary.loss for i in reference_run.idps if i.train_summary is not None
+    ]
+    assert [i.update_count for i in run.idps] == [i.update_count for i in reference_run.idps]
+    assert events == reference_events and len(events) > 2
+
+
+class _ContiguousOutOfPlaceEngine(_OutOfPlaceEngine):
+    contiguous = True
+
+
+def _conv(seed: int = 0) -> NNModel:
+    torch.manual_seed(seed)
+    return NNModel(
+        net_params=NNConvParams(
+            input_dim=3 * 16 * 16,
+            in_channels=3,
+            conv_channels=[8, 16],
+            kernel_size=3,
+            activation=Activations.RELU,
+            output_dim=4,
+            hidden_dims=[16],
+            dropout_prob=0.0,
+        ),
+        params=NNModelParams(net=Nets.CONV, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+
+@pytest.mark.parametrize("accumulate", [1, 2], ids=["one-microbatch-windows", "accumulated-windows"])
+@pytest.mark.parametrize("objective", ["one-term", "two-terms"])
+def test_channels_last_conv_runs_store_each_gradient_in_its_parameters_layout(
+    tmp_path, monkeypatch, objective, accumulate
+):
+    """#576 review: a channels_last batch gives a conv weight a channels_last
+    gradient. The engine stores it in the parameter's (row-major) layout,
+    as the default step's ``.backward()`` does; before #576 it kept
+    autograd's. The values are equal, but the clip norm reduces in memory
+    order, so a clipped update can differ in the last bits from before. It
+    matches the out-of-place engine with row-major buffers bit for bit."""
+    import nnx._update_engine as engine_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    generator = torch.Generator().manual_seed(1)
+    images = torch.randn(24, 3, 16, 16, generator=generator).to(memory_format=torch.channels_last)
+    labels = torch.randint(0, 4, (24,), generator=generator)
+    batches = [(images[i : i + 4], labels[i : i + 4]) for i in range(0, 24, 4)]
+    probe = _conv()
+    weight = probe.net.convs[0].weight
+    (grad,) = torch.autograd.grad(probe.net(batches[0][0]).sum(), weight)
+    assert weight.is_contiguous() and not grad.is_contiguous()  # the layouts the case is about
+    fits = {}
+    for label, engine_class in (("reference", _ContiguousOutOfPlaceEngine), ("engine", UpdateEngine)):
+        monkeypatch.setattr(engine_module, "UpdateEngine", engine_class)
+        model, counter = _conv(), _Counter()
+        teacher = _conv(seed=1)
+        run = _fit(
+            model,
+            batches,
+            supervised_objective() if objective == "one-term" else kd_objective(teacher, alpha=0.3, temperature=2.0),
+            epochs=2,
+            optim=NNOptimParams.builder()
+            .sgd(max_lr=0.05, momentum=0.9)
+            .accumulate_grad(accumulate)
+            .grad_clip(0.5)
+            .build(),
+            callbacks=[counter],
+            data_id=label,
+        )
+        fits[label] = model, run, counter.events
+    (reference, reference_run, reference_events), (model, run, events) = fits["reference"], fits["engine"]
+    for key, value in reference.net.state_dict().items():
+        assert torch.equal(model.net.state_dict()[key], value), key
+    assert [i.train_edp.loss for i in run.idps] == [i.train_edp.loss for i in reference_run.idps]
+    assert events == reference_events and len(events) > 2
 
 
 def _resume_params(epochs: int, **resume) -> NNTrainParams:

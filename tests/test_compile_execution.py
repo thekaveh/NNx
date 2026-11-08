@@ -725,3 +725,142 @@ def test_the_compile_snapshot_restores_the_mps_generator():
     first = torch.rand(3, device="mps")
     snapshot.restore()
     assert torch.equal(torch.rand(3, device="mps"), first)
+
+
+# ---------------- #576: buffer clones kept while unchanged ----------------
+
+
+class _SnapshotSpy:
+    """Each compiled call's restart snapshot, by buffer name (the clones are
+    kept alive, so ``is`` tells a reused clone from a new one)."""
+
+    def __init__(self, monkeypatch, net: torch.nn.Module) -> None:
+        import nnx.compilation as compilation
+
+        self.snapshots: list[dict[str, torch.Tensor]] = []
+        names = {id(buffer): name for name, buffer in net.named_buffers()}
+        real = compilation._Snapshot.__init__
+
+        def spy(snapshot, *args, **kwargs):
+            real(snapshot, *args, **kwargs)
+            self.snapshots.append({names[id(buffer)]: saved for buffer, saved in snapshot.buffers})
+
+        monkeypatch.setattr(compilation._Snapshot, "__init__", spy)
+
+    def clones(self, name: str) -> list[torch.Tensor]:
+        return [snapshot[name] for snapshot in self.snapshots]
+
+
+def _distinct(tensors: list[torch.Tensor]) -> int:
+    return len({id(tensor) for tensor in tensors})
+
+
+class _Buffered(torch.nn.Module):
+    """A read-only table and a call counter the forward bumps in place under
+    no_grad, as a step counter or an EMA is written."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.linear = torch.nn.Linear(4, 3)
+        self.register_buffer("table", torch.randn(8, 3, generator=torch.Generator().manual_seed(0)))
+        self.register_buffer("calls", torch.zeros(()))
+
+    def forward(self, x):
+        with torch.no_grad():
+            self.calls.add_(1)
+        return self.linear(x) + self.table[:1]
+
+
+@pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+def test_the_snapshot_reclones_only_buffers_changed_since_the_previous_call(monkeypatch, backend):
+    """#576: an unchanged buffer (same tensor, same ``_version``) keeps its
+    clone across compiled calls; one mutated in place — by the forward, or
+    between calls — is cloned again, so each snapshot holds the value the
+    call started from. torch 2.4's inductor writes a buffer without bumping
+    its ``_version``, so there every call clones every buffer."""
+    from nnx.compilation import _compiled_writes_bump_versions
+
+    net = _Buffered()
+    session = _CompileSession(net, CompileSpec(backend=backend))
+    spy = _SnapshotSpy(monkeypatch, net)
+    x = torch.randn(2, 4, generator=torch.Generator().manual_seed(1))
+    for _ in range(3):
+        session.forward(x)
+    with torch.no_grad():
+        net.table.add_(1.0)  # written in place between calls
+    session.forward(x)
+    tables, calls = spy.clones("table"), spy.clones("calls")
+    # recloned once, after the write (on older torch, on every call)
+    assert _distinct(tables[:3]) == (1 if _compiled_writes_bump_versions() else 3) and _distinct(tables[2:]) == 2
+    assert torch.equal(tables[3], net.table) and not torch.equal(tables[2], net.table)
+    assert _distinct(calls) == 4 and [clone.item() for clone in calls] == [0.0, 1.0, 2.0, 3.0]
+    assert net.calls.item() == 4.0 and session.record.effective == "compiled"
+
+
+def test_a_compiled_transformer_fit_clones_its_rope_tables_once(monkeypatch):
+    """#576: a ``TransformerNN`` layer's read-only RoPE tables are cloned for
+    the first compiled call and reused by every later one (on torch >= 2.5;
+    older torch clones them for every call)."""
+    from nnx.compilation import _compiled_writes_bump_versions
+
+    model = _transformer()
+    spy = _SnapshotSpy(monkeypatch, model.net)
+    generator = torch.Generator().manual_seed(0)
+    tokens = torch.randint(0, 16, (12, 6), generator=generator)
+    batches = [(tokens[i : i + 3], torch.roll(tokens[i : i + 3], -1, dims=1)) for i in range(0, 12, 3)]
+    run = model.train(params=_params(batches, n_epochs=2), compile=FAST)
+    assert run.compile.effective == "compiled" and len(spy.snapshots) == 8  # one per compiled forward
+    names = [name for name, _ in model.net.named_buffers()]
+    assert names and all("rope" in name for name in names)
+    for name in names:
+        assert _distinct(spy.clones(name)) == (1 if _compiled_writes_bump_versions() else 8), name
+
+
+def _register_new_shape_failure_backend(inner: str) -> str:
+    """A backend that fails to compile any graph for a batch of 5 rows and
+    compiles the others with ``inner``: the FX graph run as is, or inductor
+    (whose kernels write buffers without a ``_version`` bump on torch 2.4)."""
+    from torch._dynamo import register_backend
+
+    name = f"nnx_test_batch_of_5_fails_{inner}"
+    if name not in torch._dynamo.list_backends(exclude_tags=()):
+
+        def backend(graph, example_inputs):
+            if any(isinstance(value, torch.Tensor) and value.dim() and value.shape[0] == 5 for value in example_inputs):
+                raise RuntimeError("the recompile for a batch of 5 exploded")
+            if inner == "inductor":
+                from torch._inductor.compile_fx import compile_fx
+
+                return compile_fx(graph, example_inputs)
+            return graph.forward
+
+        register_backend(name=name, compiler_fn=backend)
+    return name
+
+
+@pytest.mark.parametrize("inner", ["fx", "inductor"])
+def test_an_eager_restart_after_compiled_calls_starts_from_the_calls_buffers(inner):
+    """#576: a later compiled call fails (a recompile for a new batch shape)
+    and restarts eagerly: the buffer every earlier forward mutated is
+    restored to its value before that call — not to an older clone — so the
+    run matches an eager one, RNG draws included."""
+    backend = _register_new_shape_failure_backend(inner)
+    generator = torch.Generator().manual_seed(0)
+    batches = [(torch.randn(n, 4, generator=generator), torch.randint(0, 3, (n,), generator=generator)) for n in (8, 5)]
+    counted, reference = _feed_fwd(), _feed_fwd()
+    for model in (counted, reference):
+        model.net.register_buffer("calls", torch.zeros(()))
+
+        def bump(module, args):
+            module.calls += 1
+            torch.rand(1)  # an RNG draw
+
+        model.net.register_forward_pre_hook(bump)
+    run = counted.train(
+        params=_params(batches, n_epochs=2), compile=CompileSpec(backend=backend, dynamic=False, on_failure="eager")
+    )
+    assert run.compile.effective == "eager"
+    assert (run.compile.restart["stage"], run.compile.restart["batch"]) == ("forward", 1)
+    reference.train(params=_params(batches, n_epochs=2))
+    assert counted.net.calls.item() == reference.net.calls.item() == 4
+    _assert_same_weights(reference, counted)

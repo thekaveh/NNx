@@ -291,19 +291,67 @@ def _strict_recompiles(allowance: int) -> Any:
     return config.patch(**changes)
 
 
+#: One fit's buffer clones: ``id(buffer)`` → the buffer, the state it had
+#: when cloned (:func:`_buffer_state`), and the clone.
+_BufferClones = dict[int, tuple[torch.Tensor, Optional[tuple[int, int, torch.Size]], torch.Tensor]]
+
+
+def _compiled_writes_bump_versions() -> bool:
+    """Whether a compiled call's writes to a buffer bump its ``_version``,
+    so an unchanged version proves an unchanged buffer. From torch 2.5,
+    AOTAutograd bumps every input a graph mutates; torch 2.4's inductor
+    writes buffers in its kernels without a bump."""
+    return torch.__version__ >= "2.5"
+
+
+def _buffer_state(buffer: torch.Tensor) -> Optional[tuple[int, int, torch.Size]]:
+    """What changes when a buffer is written: its ``_version`` (bumped by
+    every in-place write autograd sees), and its storage and shape (moved
+    by a ``.data`` reassignment). ``None`` for a tensor without a version
+    or a storage (an inference tensor, a sparse one): always cloned."""
+    try:
+        return buffer._version, buffer.data_ptr(), buffer.shape
+    except RuntimeError:
+        return None
+
+
 class _Snapshot:
     """The global RNG streams and the module's buffers before a compiled
     call, restored before an eager re-run so the retry draws and mutates
-    exactly what an eager call would have."""
+    exactly what an eager call would have.
 
-    def __init__(self, net: torch.nn.Module) -> None:
+    With ``clones`` (one fit's cache, #576; torch >= 2.5) a buffer
+    unchanged since the previous compiled call — the same tensor, with the
+    same ``_version`` and storage — keeps the clone taken then, so a
+    read-only buffer (a ``TransformerNN`` layer's RoPE tables) is cloned
+    once per fit, and a buffer the forward mutates (BatchNorm statistics)
+    on every call. A write autograd does not see (through ``.data``)
+    leaves ``_version`` unchanged, so it would not be noticed."""
+
+    def __init__(self, net: torch.nn.Module, clones: Optional[_BufferClones] = None) -> None:
         self.cpu = torch.get_rng_state()
         self.cuda = (
             torch.cuda.get_rng_state_all() if torch.cuda.is_available() and torch.cuda.is_initialized() else None
         )
         # MPS draws (dropout on an MPS net) come from their own generator.
         self.mps = torch.mps.get_rng_state() if torch.backends.mps.is_available() else None
-        self.buffers = [(buffer, buffer.detach().clone()) for buffer in net.buffers()]
+        if clones is None:
+            self.buffers = [(buffer, buffer.detach().clone()) for buffer in net.buffers()]
+            return
+        self.buffers = []
+        current: _BufferClones = {}
+        for buffer in net.buffers():
+            state = _buffer_state(buffer)
+            cached = clones.get(id(buffer))
+            if cached is not None and cached[0] is buffer and state is not None and cached[1] == state:
+                saved = cached[2]
+            else:
+                saved = buffer.detach().clone()
+            current[id(buffer)] = (buffer, state, saved)
+            self.buffers.append((buffer, saved))
+        # Only the net's current buffers stay cached (a replaced one is dropped).
+        clones.clear()
+        clones.update(current)
 
     def restore(self) -> None:
         torch.set_rng_state(self.cpu)
@@ -336,6 +384,9 @@ class _CompileSession:
         )
         self._net = net
         self._compiled: Optional[Callable[..., Any]] = self._compile(net, spec)
+        # The snapshots' buffer clones, kept while unchanged; on older torch
+        # every compiled call clones every buffer.
+        self._clones: Optional[_BufferClones] = {} if _compiled_writes_bump_versions() else None
         self._backward_proven = False
         self._allowance = self._held_entries(net)
         self.where: Mapping[str, Any] = {}
@@ -350,13 +401,15 @@ class _CompileSession:
     def _fail(self, error: BaseException, **stage: Any) -> dict[str, Any]:
         restart = {**self.where, **stage, "error": type(error).__name__, "message": _message(error)}
         self._compiled = None
+        if self._clones is not None:
+            self._clones.clear()  # eager from here: no further snapshots
         return restart
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         compiled = self._compiled
         if compiled is None:  # restarted eager (or failed)
             return self._net(*args, **kwargs)
-        snapshot = _Snapshot(self._net)
+        snapshot = _Snapshot(self._net, self._clones)
         first = self.record.effective == "pending"
         graphs_before, breaks_before = _unique_graphs(), _counter("graph_break")
         try:
