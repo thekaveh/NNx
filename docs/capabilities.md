@@ -31,10 +31,16 @@ first trained model, see the [README](../README.md#2-install) and the
   step with your own function. Use it for autoencoders, VAEs, recommendation
   or other methods without changing NNx internals.
 - **Multi-optimizer `Trainer`.** `nnx.trainer.Trainer` parallels
-  `NNModel.train()` for disjoint optimizers, such as GAN generator and
+  `NNModel.train()` for several optimizers, such as GAN generator and
   discriminator or actor-critic. Each entry of its name-keyed optimizer
-  dictionary is scoped by an `NNParamGroupSpec`; the groups must partition the
-  parameters.
+  dictionary is scoped by an `NNParamGroupSpec`, and each optimizer owns only
+  the parameters its specs match. With two or more optimizers, every one must
+  be scoped. Objective and FP16 runs refuse optimizers that share a parameter.
+  A `trainer_step_fn` owns its updates: scopes may overlap, and every
+  optimizer it steps updates a shared parameter. Trainable parameters that no
+  optimizer owns draw a `RuntimeWarning`. See
+  [Concepts §6.5](concepts.md#65-objectives-and-the-shared-update-engine) and
+  [§8.1](concepts.md#81-strict-param-groups-semantics).
 - **Optimizers.** `Optims` provides SGD, Nesterov SGD, Adam, AMSGrad and AdamW.
   Any other `torch.optim.Optimizer` is a registered factory
   (`nnx.register_optimizer_factory` with `NNOptimFactoryParams`). `run.yaml`

@@ -1540,8 +1540,21 @@ print(evaluate_offline(student, held_out).text())               # agreement, imi
 - **Objective.** `alpha · KL(teacher ‖ student) + (1 − alpha) · CE(student, label)`, both at temperature 1. No logits are invented and no `T²` is applied. For example, `q = [0.75, 0.25]` against zero student logits gives `0.130812` and the gradient `p − q = [−0.25, 0.25]`. The objective detaches the teacher's probabilities and never steps.
 - **Labels and accumulation.** The two terms share one mask and one denominator per microbatch (its rows), so accumulation is exact. A partly labelled dataset or batch is refused, and `alpha < 1` needs every record labelled. Every batch carries its candidate order, which the objective and the evaluation check against their own.
 - **Identity.** The objective's identity (version, schema digest, `alpha` and the candidate alignment) is checkpointed component state. So a stateful resume with any of them changed is refused before the first resumed update. To record it in the run's provenance too, pass `objective.identity()` to `ExperimentManifest.for_model(objective=...)`.
-- **Reports** keep three things apart, each with its own denominator. **Teacher agreement** and **imitation loss** cover every record. **Labelled quality** (accuracy, NLL) covers the labelled records only: imitating a teacher is not being right. In the training loop, `dataset.eval_step()`'s record `loss` is the imitation loss whatever `alpha`. Monitor `label_accuracy` or `label_nll` by name to select or stop on quality.
+- **Reports** keep three things apart, each with its own denominator. **Teacher agreement** and **imitation loss** cover every record. **Labelled quality** (accuracy, NLL) covers the labelled records only: imitating a teacher is not being right. In the training loop, `dataset.eval_step()`'s record `loss` is the imitation loss whatever `alpha`. To select, schedule or stop on quality, declare the evaluation's metrics with `data.metric_specs()` and monitor `label_accuracy` or `label_nll` by name (see the snippet after this list).
+- **Named selection.** `data.metric_specs()` declares registered ids `offline.teacher_kl` (min), `offline.teacher_agreement` (max), `offline.label_accuracy` (max) and `offline.label_nll` (min), reported as `teacher_kl`, `teacher_agreement`, `label_accuracy` and `label_nll`. A monitor on one of them then drives BEST, plateau scheduling and `EarlyStopping`. Only `dataset.eval_step()` computes them; the default evaluation path refuses them. Without labelled validation records the label metrics are unavailable (`status="missing"`), so they never win BEST.
 - **Offline.** Records, inputs and the student are local: dataset iteration, training and evaluation reach no network. The live factories, `kd_objective` and `born_again_train` keep their logit / temperature contract and refuse these records.
+
+Selecting the BEST checkpoint on labelled quality, not imitation:
+
+```python
+from nnx import EarlyStopping, MonitorSpec
+
+params = NNTrainParams(train_loader=data.loader(32), val_loader=val.loader(256), ...,
+                       metrics=data.metric_specs(),                  # declares label_accuracy, label_nll, ...
+                       monitor=MonitorSpec("label_accuracy"))        # mode "max" comes from the registration
+student.train(params=params, objective=data.objective(alpha=0.7), eval_step_fn=data.eval_step(),
+              callbacks=[EarlyStopping(monitor=MonitorSpec("label_nll"), patience=3)])
+```
 
 See [`examples/offline_teacher_distillation.py`](https://github.com/thekaveh/NNx/blob/main/examples/offline_teacher_distillation.py) and [Typed decisions §9](decisions.md#9-offline-teacher-distributions).
 
