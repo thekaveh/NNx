@@ -214,7 +214,7 @@ The end-to-end flow:
     - The lines marked `x-release-please-version`: the `__version__` fallback in `src/nnx/__init__.py`, the `nnx.__version__` line of `docs/api.md` and the version line of `README.md` / `PYPI_README.md`.
     - The package's version in `uv.lock`, through a toml updater.
 
-    Each time the workflow creates or updates the Release PR, it dispatches the required CI and security checks on the release branch. The CHANGELOG on the release commit is not finalized: release-please's generated list sits above the curated `[Unreleased]` notes. When the release is created, the workflow publishes the curated notes as the release body (`scripts/release/finalize_changelog.py --release-notes`).
+    Each time the workflow creates or updates the Release PR, it dispatches the required CI and security checks on the release branch. The CHANGELOG on the release commit is not finalized: release-please's generated list sits above the curated `[Unreleased]` notes. `release.yml` publishes the curated notes as the release body (`scripts/release/finalize_changelog.py --release-notes`). It folds them from the CHANGELOG of the commit the tag names, so `[Unreleased]` entries that reach `main` after the release commit are never published with it.
 
     The post-release sync of `main` into `develop` finalizes the CHANGELOG against the one the release shipped:
 
@@ -227,14 +227,15 @@ The end-to-end flow:
 
     Some changes to `[Unreleased]` reach `main` only through hidden commit types (`docs:`, `chore:`, `test:`). Such a change does not refresh the Release PR until the next visible one.
 
-2. A maintainer reviews and merges the Release PR when ready to ship. Release Please then creates the tag and draft release. It publishes the curated notes as the release body. It then dispatches the top-level `release.yml` workflow with the immutable release commit and tag.
+2. A maintainer reviews and merges the Release PR when ready to ship. Release Please then creates the tag and draft release. It dispatches the top-level `release.yml` workflow with the immutable release commit and tag, even when an earlier step of its run failed. It publishes no release notes itself.
 3. `release.yml` runs these steps:
     - It verifies the Release Please commit belongs to `main`.
     - It runs the full test matrix and builds the package.
+    - It folds the curated release notes from the CHANGELOG of the release commit, after it checks that the tag names that commit and before anything is published. It refuses a CHANGELOG with two unfinalized release sections above `[Unreleased]`, and the release stops there (§7.2).
     - It smoke-tests the built artifacts per dependency profile, on the floor and current torch, before anything is published.
     - It publishes through PyPI trusted publishing, gated by the `pypi` GitHub Environment's approval rule.
     - It verifies `pip install thekaveh-nnx==X.Y.Z` from a clean environment.
-    - It uploads the verified distributions to the draft release, publishes it and verifies its attestation.
+    - It uploads the verified distributions to the draft release and replaces the draft's generated commit list with the curated notes. It then publishes the draft and verifies its attestation.
 
     Keeping trusted publishing in this top-level workflow ensures its OIDC token and package attestations carry the same PyPI-authorized workflow identity.
 
@@ -251,6 +252,31 @@ Moving to a new image is a deliberate pull request:
 3. Note the result.
 
 apt steps carry their own short `timeout-minutes`, so a package-mirror stall fails fast instead of consuming the job's budget.
+
+### 7.2. Recovering a failed release
+
+A release whose tag exists can be finished after a failure without a new release:
+
+- **`release.yml` failed**, in a test, a checkout or the notes publication, say: re-run its failed jobs. PyPI publishing skips files that are already uploaded, and a release that is already published is verified, not published again. The notes are published again before the draft is.
+- **`release.yml` never ran**, because its dispatch failed: a re-run of the Release Please run dispatches nothing. release-please has already labeled the Release PR `autorelease: tagged`, so the re-run reports no new release. Dispatch `release.yml` for the tag instead:
+
+    ```bash
+    gh workflow run release-please.yml --ref main -f tag_name=vX.Y.Z
+    ```
+
+    The run resolves the tag to its commit and dispatches `release.yml` with both. `release.yml` checks that the commit is on `main` and that the tag names it. A dispatch from any branch other than `main` fails, and it never replaces a pending push run.
+
+- **The notes were refused**, because the tagged CHANGELOG holds two unfinalized release sections: the tagged commit cannot change, so a re-run fails again. Fix a copy of that CHANGELOG by hand, publish its notes on the draft, and dispatch with `keep_draft_notes`. `release.yml` then publishes the draft's notes as they are:
+
+    ```bash
+    git show vX.Y.Z:CHANGELOG.md > /tmp/tagged-changelog.md
+    # Edit /tmp/tagged-changelog.md: remove or merge the stale release section.
+    python3 scripts/release/finalize_changelog.py /tmp/tagged-changelog.md --release-notes vX.Y.Z > /tmp/release-notes.md
+    gh release edit vX.Y.Z --notes-file /tmp/release-notes.md
+    gh workflow run release-please.yml --ref main -f tag_name=vX.Y.Z -f keep_draft_notes=true
+    ```
+
+`tests/test_release_finalize.py` simulates these paths against a local history and a stand-in `gh`. Only a real release shows that GitHub behaves as simulated.
 
 ## 8. Things we won't merge
 

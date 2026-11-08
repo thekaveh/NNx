@@ -6,20 +6,42 @@ name: Release Please
 # creates a draft vX.Y.Z release and its tag, then explicitly dispatches the top-level release
 # workflow. Trusted PyPI publishing cannot run from a reusable workflow because
 # its OIDC and attestation identities would name different workflow files.
+#
+# FIX-068: release.yml publishes the curated release notes, folded from the
+# tagged commit's CHANGELOG, before it publishes the draft; this workflow
+# only dispatches it. A re-run after the release exists outputs no
+# release_created (release-please has relabeled the PR "autorelease: tagged"),
+# so it dispatches nothing. To recover a release whose dispatch never ran, run
+# this workflow by hand with the tag (CONTRIBUTING §7.2):
+#   gh workflow run release-please.yml --ref main -f tag_name=vX.Y.Z
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing vX.Y.Z release tag to dispatch the release workflow for
+        required: true
+        type: string
+      keep_draft_notes:
+        description: Publish the draft's notes as they are (set by hand after a refused fold)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
+# A recovery dispatch has its own group, so it never replaces a pending push
+# run (at most one run per group may be pending), nor a push a pending dispatch.
 concurrency:
-  group: release-please-${{ github.ref }}
+  group: release-please-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   release-please:
     name: Prepare release
+    if: github.event_name == 'push'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     # release-please pushes its release branch and opens or updates a PR.
@@ -53,29 +75,11 @@ jobs:
             gh workflow run security.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
           done
 
-      - name: Checkout main for the release notes
-        # The push being handled (github.sha), whose CHANGELOG holds the
-        # released version's section: no ref taken from an action output.
-        if: steps.release.outputs.release_created == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Publish the curated release notes
-        # FIX-029: release-please drafts the release from its generated
-        # commit list; the curated [Unreleased] notes replace it (folded under
-        # the version heading as the post-release sync does, FIX-033).
-        if: steps.release.outputs.release_created == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
-        run: |
-          set -euo pipefail
-          python3 scripts/release/finalize_changelog.py CHANGELOG.md --release-notes "$RELEASE_TAG" > "$RUNNER_TEMP/notes.md"
-          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
-
       - name: Dispatch verified release workflow
-        if: steps.release.outputs.release_created == 'true'
+        # FIX-068: also after a failed step above. The action writes its
+        # release outputs before its PR phase, and a re-run cannot create the
+        # release again, so a release created in this run is dispatched here.
+        if: ${{ !cancelled() && steps.release.outputs.release_created == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_REF: ${{ steps.release.outputs.sha }}
@@ -84,3 +88,38 @@ jobs:
           gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref main \
             -f "release_ref=$RELEASE_REF" \
             -f "tag_name=$RELEASE_TAG"
+
+  dispatch-release:
+    # FIX-068: the recovery entry point for an existing tag (see the header).
+    # release.yml checks that the tag names the release commit on main, and a
+    # re-dispatch of a published version skips what is already published.
+    name: Dispatch the release workflow for an existing tag
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: write # Dispatch the release workflow.
+      contents: read # Resolve the tag to its commit.
+    steps:
+      - name: Dispatch verified release workflow for the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
+          KEEP_DRAFT_NOTES: ${{ inputs.keep_draft_notes }}
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          # Fail, not skip: a skipped run would read as a recovered release.
+          if [ "$DISPATCH_REF" != refs/heads/main ]; then
+            echo "::error::dispatch this workflow with --ref main, not $DISPATCH_REF"
+            exit 1
+          fi
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag_name must be a vX.Y.Z release tag, not '$RELEASE_TAG'"
+            exit 1
+          fi
+          release_ref="$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)"
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f "release_ref=$release_ref" \
+            -f "tag_name=$RELEASE_TAG" \
+            -f "keep_draft_notes=$KEEP_DRAFT_NOTES"
