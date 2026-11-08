@@ -193,3 +193,46 @@ def test_summary_places_batch_and_input_data_on_the_module_device(monkeypatch, k
         tensors += [*(input_data.values() if isinstance(input_data, dict) else input_data), *keywords.values()]
     assert len(seen) == 3 and len(tensors) == 3 and all(t.device.type == "meta" for t in tensors)
     assert isinstance(seen[0][0], dict) is keyword and isinstance(seen[1][0], dict) is keyword
+
+
+def test_summary_places_mixed_adapter_keywords_and_nested_namedtuples_on_the_module_device(monkeypatch):
+    """#556: an adapter that returns positional and keyword inputs leaves the keywords
+    in torchinfo's kwargs, and a namedtuple nested in input_data keeps its type; both
+    must reach the module's device too."""
+    from collections import namedtuple
+
+    import torch
+    import torchinfo
+
+    from nnx.models import BatchAdapter
+
+    class Scaled(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(4, 2)
+
+        def forward(self, x, *, scale):
+            return self.linear(x) * scale
+
+    class Mixed(BatchAdapter):
+        def split(self, batch):
+            x, scale, y = batch
+            return (x,), {"scale": scale}, y
+
+    seen = []
+
+    def spy(model, *, input_data=None, **kwargs):
+        seen.append((input_data, kwargs))
+        return "statistics"
+
+    monkeypatch.setattr(torchinfo, "summary", spy)
+    model = NNModel(module=Scaled(), params=NNModelParams(), batch_adapter=Mixed())
+    model.net.to("meta")
+    assert summary(model, batch=(torch.randn(3, 4), torch.ones(3, 1), torch.tensor([0, 1, 0]))) == "statistics"
+    (x,), keywords = seen[0]
+    assert x.device.type == "meta" and keywords["scale"].device.type == "meta"
+
+    Pair = namedtuple("Pair", "a b")
+    assert summary(model.net, input_data=[Pair(torch.randn(3, 4), torch.randn(3, 4))]) == "statistics"
+    (pair,), _ = seen[1]
+    assert type(pair) is Pair and all(t.device.type == "meta" for t in pair)
