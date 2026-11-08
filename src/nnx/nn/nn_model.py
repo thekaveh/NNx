@@ -26,6 +26,7 @@ from typing_extensions import Self
 
 from .._confusion import LabelCounts, label_counts, label_kind, record_scores
 from .._metrics import _resolve_metric_with_provenance, _resolve_scheduler_metric, classification_edp
+from .._optional import require_onnx
 from .._reparameterization import UNNAMED, legacy_reparameterizations
 from .._scheduler_clock import (
     HORIZON_KINDS,
@@ -3912,10 +3913,11 @@ class NNModel(_HubMixinBase):
             opset_version: ONNX opset to target. 17 is broadly supported
                 by current runtimes.
             dynamo: when False (default), uses the legacy TorchScript-based
-                `torch.onnx.export` path — plain `pip install onnx` is
-                enough. When True, dispatches to PyTorch's new
-                `torch.export`-based exporter (default in torch>=2.9,
-                supports >2 GB models via external data, faster). The
+                `torch.onnx.export` path, which needs the `onnx` package
+                (`pip install thekaveh-nnx[onnx]`). When True, dispatches
+                to PyTorch's new `torch.export`-based exporter (default in
+                torch>=2.9, supports >2 GB models via external data,
+                faster). The
                 dynamo path requires `onnxscript`; install via
                 `pip install thekaveh-nnx[onnx-dynamo]`.
 
@@ -3924,6 +3926,12 @@ class NNModel(_HubMixinBase):
         classifier) is refused before anything is written, and so is a
         mapping example: the export passes positional inputs only, so a
         keyword-input module (``KeywordInputs``) needs a positional wrapper.
+
+        Raises:
+            ImportError: ``dynamo=False`` without the ``onnx`` package, or
+                ``dynamo=True`` without ``onnxscript``; the message names
+                the extra (``thekaveh-nnx[onnx]`` / ``[onnx-dynamo]``) and
+                nothing is written.
         """
         unsupported = getattr(self.net, "onnx_export_unsupported", None)
         if unsupported:
@@ -3948,6 +3956,10 @@ class NNModel(_HubMixinBase):
                     "to_onnx(dynamo=True) requires the `onnxscript` package. "
                     "Install via `pip install thekaveh-nnx[onnx-dynamo]` (or `pip install onnxscript`)."
                 ) from e
+        else:
+            # Without `onnx` torch's legacy exporter raises a RuntimeError
+            # naming no extra: refuse first, with an ImportError that does.
+            require_onnx("to_onnx(dynamo=False)")
 
         # Normalize a single Tensor / np.ndarray to a length-1 tuple, then
         # coerce each element. Without the np.ndarray case in the singleton

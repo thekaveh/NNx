@@ -247,10 +247,11 @@ Args:
     opset_version: ONNX opset to target. 17 is broadly supported
         by current runtimes.
     dynamo: when False (default), uses the legacy TorchScript-based
-        `torch.onnx.export` path — plain `pip install onnx` is
-        enough. When True, dispatches to PyTorch's new
-        `torch.export`-based exporter (default in torch>=2.9,
-        supports >2 GB models via external data, faster). The
+        `torch.onnx.export` path, which needs the `onnx` package
+        (`pip install thekaveh-nnx[onnx]`). When True, dispatches
+        to PyTorch's new `torch.export`-based exporter (default in
+        torch>=2.9, supports >2 GB models via external data,
+        faster). The
         dynamo path requires `onnxscript`; install via
         `pip install thekaveh-nnx[onnx-dynamo]`.
 
@@ -259,6 +260,12 @@ A network that declares ``onnx_export_unsupported`` (a graph
 classifier) is refused before anything is written, and so is a
 mapping example: the export passes positional inputs only, so a
 keyword-input module (``KeywordInputs``) needs a positional wrapper.
+
+Raises:
+    ImportError: ``dynamo=False`` without the ``onnx`` package, or
+        ``dynamo=True`` without ``onnxscript``; the message names
+        the extra (``thekaveh-nnx[onnx]`` / ``[onnx-dynamo]``) and
+        nothing is written.
 ```
 
 ##### `nnx.nn.nn_model.NNModel.from_checkpoint`
@@ -18314,10 +18321,10 @@ Returns:
     The path written (matches `path` — handy when chaining).
 
 Raises:
-    ImportError: When `launch=True` and the `netron` package isn't
-        installed (checked before anything is written). The export
-        itself needs the `onnx` package (the `onnx` extra); without it
-        `torch.onnx` raises its own exporter error.
+    ImportError: When the `onnx` package isn't installed (the export
+        needs it; the message names `thekaveh-nnx[onnx]`), or when
+        `launch=True` and the `netron` package isn't installed. Both
+        are checked before anything is written.
     NotImplementedError: When the module declares
         `onnx_export_unsupported` (graph classifiers, link
         predictors); nothing is written.
