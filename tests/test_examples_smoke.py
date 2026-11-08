@@ -472,10 +472,13 @@ def test_the_compile_benchmark_example_runs_with_its_documented_arguments(tmp_pa
     assert os.listdir(tmp_path / "profile")
 
 
-def _torchrun(script: str, args: list[str], cwd: Path, timeout: float) -> subprocess.CompletedProcess:
+def _torchrun(
+    script: str, args: list[str], cwd: Path, timeout: float, launcher: Path | None = None
+) -> subprocess.CompletedProcess:
     """``torchrun --standalone --nproc_per_node=2 <script> <args>`` (on macOS
     the rendezvous and Gloo stay on loopback: hosts often resolve their own
-    name to an unreachable address)."""
+    name to an unreachable address). A ``launcher`` runs first on each rank
+    and then runs the example."""
     env = os.environ.copy()
     env["NNX_TQDM_DISABLE"] = "1"
     command = [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc_per_node=2"]
@@ -489,7 +492,7 @@ def _torchrun(script: str, args: list[str], cwd: Path, timeout: float) -> subpro
         command += [f"--master_port={port}", "--nproc_per_node=2"]
         env.setdefault("GLOO_SOCKET_IFNAME", "lo0")
     return subprocess.run(
-        [*command, str(ROOT / "examples" / script), *args],
+        [*command, *([str(launcher)] if launcher is not None else []), str(ROOT / "examples" / script), *args],
         cwd=cwd,
         env=env,
         capture_output=True,
@@ -498,13 +501,44 @@ def _torchrun(script: str, args: list[str], cwd: Path, timeout: float) -> subpro
     )
 
 
+# Runs the DDP example on one rank: it records each rank that calls
+# NNRun.save, and with NNX_SMOKE_WRITER_RANK set it moves the writer there.
+_DDP_LAUNCHER = """
+import dataclasses, os, runpy, sys
+from nnx import NNModel, NNRun
+
+def save(self, *args, _save=NNRun.save, **kwargs):
+    with open(os.path.join(os.environ["NNX_SMOKE_SAVERS"], f"rank{os.environ['RANK']}"), "a", encoding="utf-8") as fh:
+        fh.write("NNRun.save\\n")
+    return _save(self, *args, **kwargs)
+
+def train(self, *args, _train=NNModel.train, distributed=None, **kwargs):
+    if distributed is not None and "NNX_SMOKE_WRITER_RANK" in os.environ:
+        distributed = dataclasses.replace(distributed, writer_rank=int(os.environ["NNX_SMOKE_WRITER_RANK"]))
+    return _train(self, *args, distributed=distributed, **kwargs)
+
+NNRun.save, NNModel.train = save, train
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+
+
+@pytest.mark.parametrize("writer", [0, 1], ids=["writer-rank-0", "writer-rank-1"])
 @pytest.mark.xdist_group("torchrun")  # one torchrun launch at a time (FIX-031)
-def test_the_ddp_example_runs_under_torchrun_with_one_artifact_owner(tmp_path):
+def test_the_ddp_example_runs_under_torchrun_with_one_artifact_owner(tmp_path, monkeypatch, writer):
     """FEAT-030: two CPU ranks under ``torchrun --standalone``; exactly-once
-    validation ids, one run id, one artifact owner."""
+    validation ids, one run id, one artifact owner. #571: the owner the
+    example reports is the rank that saved the run, wherever the writer is."""
     out = tmp_path / "ddp-out"
+    savers = tmp_path / "savers"
+    savers.mkdir()
+    launcher = tmp_path / "launcher.py"
+    launcher.write_text(_DDP_LAUNCHER, encoding="utf-8")
+    monkeypatch.setenv("NNX_SMOKE_SAVERS", str(savers))
+    if writer:
+        monkeypatch.setenv("NNX_SMOKE_WRITER_RANK", str(writer))
     completed = _torchrun(
-        "ddp_supervised.py", ["--device", "cpu", "--epochs", "2", "--output", str(out)], tmp_path, 240
+        "ddp_supervised.py", ["--device", "cpu", "--epochs", "2", "--output", str(out)], tmp_path, 240, launcher
     )
     assert completed.returncode == 0, completed.stderr[-4000:]
     reports = [json.loads((out / f"report-rank{rank}.json").read_text(encoding="utf-8")) for rank in (0, 1)]
@@ -512,7 +546,10 @@ def test_the_ddp_example_runs_under_torchrun_with_one_artifact_owner(tmp_path):
     ids = [row for report in reports for row in report["validation_ids"]]
     assert sorted(ids) == list(range(6)) and len(ids) == 6  # every id exactly once
     assert len({report["run_id"] for report in reports}) == 1
-    assert [report["owns_artifacts"] for report in sorted(reports, key=lambda r: r["rank"])] == [True, False]
+    reports.sort(key=lambda report: report["rank"])
+    assert sorted(path.name for path in savers.iterdir()) == [f"rank{writer}"]  # only the writer saved the run
+    assert [report["owns_artifacts"] for report in reports] == [rank == writer for rank in (0, 1)]
+    assert [report["artifacts"] is not None for report in reports] == [rank == writer for rank in (0, 1)]
     # #570: the validation pass scores the training rows, and the report says so.
     assert all("val_accuracy" not in report and "train_rows_accuracy" in report for report in reports)
     runs = [name for name in os.listdir(out / "runs") if not name.startswith(".") and name != "best"]
