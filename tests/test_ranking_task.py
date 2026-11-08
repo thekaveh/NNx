@@ -794,7 +794,7 @@ def test_only_blocks_worth_it_are_recomputed_in_backward(monkeypatch):
     assert torch.allclose(every_grad, small_grad, rtol=1e-6, atol=1e-7)
 
 
-@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs an MPS device")
+@pytest.mark.mps
 def test_ranking_validation_scores_an_mps_model():
     # MPS has no float64: the scores widen on the CPU.
     task = RankingTask(k=(1,), max_relevance=2)
@@ -1181,7 +1181,7 @@ def test_the_pairwise_loss_matches_the_per_query_reference(monkeypatch, weightin
     assert 0 < counts[0][1] < counts[0][0]  # some blocks recomputed in backward, some kept
 
 
-@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs an MPS device")
+@pytest.mark.mps
 def test_the_pairwise_loss_on_mps_matches_the_cpu_with_relevance_on_either_device():
     scores, relevance, query_ids = _graded_queries()
     expected, denominator = pairwise_logistic_loss(scores, relevance, query_ids)

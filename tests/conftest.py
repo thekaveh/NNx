@@ -5,7 +5,8 @@ Today this file sets the OpenMP environment (``KMP_DUPLICATE_LIB_OK``,
 output so pytest's runs stay clean) and per-test env_snapshot cache resets
 so tests that chdir don't pollute each other's metadata.yaml, and provides
 the ``skip_on_dynamo_dispatch_error`` and ``rmsnorm_fp64_oracle`` fixtures
-shared by the compile and RMSNorm tests. When other
+shared by the compile and RMSNorm tests, and gates ``mps``-marked tests on an
+MPS device (``tests/_mps.py``). When other
 real shared fixtures emerge from repeated boilerplate across multiple
 tests, add them here. Don't add fixtures pre-emptively — unused fixtures
 are dead code that mislead future contributors about what's shared in
@@ -35,6 +36,15 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import pytest
+
+
+def pytest_runtest_setup(item):
+    """An ``mps``-marked test skips without an MPS device, and fails under
+    ``NNX_REQUIRE_MPS=1`` (the opt-in ``mps-evidence`` job, FEAT-050)."""
+    if item.get_closest_marker("mps") is not None:
+        from tests._mps import mps_or_skip
+
+        mps_or_skip()
 
 
 @pytest.fixture(autouse=True, scope="session")
