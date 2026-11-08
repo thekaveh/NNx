@@ -983,3 +983,25 @@ def test_a_link_after_a_quote_inside_an_item_is_projected(tmp_path: Path):
     source.write_text("", encoding="utf-8")
     with pytest.raises(ValueError, match="broken local documentation link"):
         rewrite_markdown(source, text, {})
+
+
+# #568: a tab after a list marker inside a blockquote expands from its column in
+# the line, so the item's content indent (6 here, as CommonMark reads it) keeps
+# a nested marker at 8 or 9 columns a list item.
+@pytest.mark.parametrize(
+    "text",
+    [
+        ">   -\tA\n>\n>         - see [x](missing.md)\n",
+        ">  -\tA\n>\n>         - see [x](missing.md)\n",
+        ">   -\tA\n>\n>          - see [x](missing.md)\n",
+    ],
+)
+def test_a_tab_after_a_quoted_marker_expands_from_its_line_column(tmp_path: Path, text: str):
+    from scripts.docs.build_wiki import markdown_blocks
+
+    (block,) = [block for block in markdown_blocks(text) if "see [x]" in block.text]
+    assert block.suppressed is False
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="broken local documentation link"):
+        rewrite_markdown(source, text, {})

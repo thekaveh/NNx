@@ -767,8 +767,10 @@ def _list_step(body: str, open_items: ListItems, quote_prefix: str = "") -> tupl
     list_item = NESTED_LIST_ITEM_RE.match(body)
     if list_item is not None and leading < content_indent + 4:
         prefix = list_item.group("prefix")
+        # A tab after a marker expands from its column in the line, past the quote prefix.
+        start = _prefix_columns(quote_prefix)
         opened = tuple(
-            (quote_depth, _prefix_columns(prefix[: marker.end()])) for marker in LIST_MARKER_RE.finditer(prefix)
+            (quote_depth, _prefix_columns(prefix[: marker.end()], start)) for marker in LIST_MARKER_RE.finditer(prefix)
         )
         return open_items + opened, list_item.group("content")
     return open_items, _strip_indent_columns(body, content_indent)
@@ -986,11 +988,12 @@ def _indent_columns(value: str) -> int:
     return columns
 
 
-def _prefix_columns(value: str) -> int:
-    columns = 0
+def _prefix_columns(value: str, start: int = 0) -> int:
+    """The columns ``value`` spans when it starts at column ``start``."""
+    columns = start
     for character in value:
         columns += 4 - (columns % 4) if character == "\t" else 1
-    return columns
+    return columns - start
 
 
 def _strip_indent_columns(value: str, required: int) -> str:
