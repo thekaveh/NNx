@@ -20,9 +20,14 @@ from tests._repo_files import repo_file
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = sorted(repo_file(".github", "workflows").glob("*.y*ml"))
 RUNNER = "ubuntu-26.04"
-# FEAT-043: the one job that needs hardware no hosted image has (CUDA); it
-# runs only on a registered self-hosted GPU runner, opted in by a variable.
-SELF_HOSTED = {("docs.yml", "gpu-evidence"): ["self-hosted", "linux", "x64", "gpu"]}
+# The jobs that need hardware no hosted image has. Each runs only on a
+# registered self-hosted runner, opted in by its repository variable:
+# FEAT-043 CUDA (NNX_GPU_RUNNER), FEAT-050 Apple-silicon MPS (NNX_MPS_RUNNER).
+SELF_HOSTED = {
+    ("docs.yml", "gpu-evidence"): ["self-hosted", "linux", "x64", "gpu"],
+    ("ci.yml", "mps-evidence"): ["self-hosted", "macos", "arm64"],
+}
+OPT_IN = {("docs.yml", "gpu-evidence"): "NNX_GPU_RUNNER", ("ci.yml", "mps-evidence"): "NNX_MPS_RUNNER"}
 APT_STEP_MINUTES = 5
 
 
@@ -52,11 +57,27 @@ def test_every_job_runs_on_the_pinned_image(workflow, job_name, job):
 
 def test_the_self_hosted_jobs_exist_and_are_opt_in():
     jobs = {(workflow, name): job for workflow, name, job in _jobs()}
+    assert OPT_IN.keys() == SELF_HOSTED.keys()
     for key in SELF_HOSTED:
         assert key in jobs, f"{key} is listed as self-hosted but does not exist"
-        # skipped unless a GPU runner is registered, and never for a fork's pull request
-        assert jobs[key]["if"].startswith("vars.NNX_GPU_RUNNER == 'true' && ")
+        # skipped unless its runner is registered, and never for a fork's pull request
+        assert jobs[key]["if"].startswith(f"vars.{OPT_IN[key]} == 'true' && ")
         assert "head.repo.full_name == github.repository" in jobs[key]["if"]
+
+
+def test_the_mps_job_runs_every_mps_test_and_cannot_pass_by_skipping():
+    """FEAT-050: the probe fails without a usable MPS device, the tests run
+    with NNX_REQUIRE_MPS=1 (an ``mps`` test then fails, not skips), and the
+    JUnit report must show tests and no skip."""
+    job = dict((name, job) for workflow, name, job in _jobs() if workflow == "ci.yml")["mps-evidence"]
+    steps = {step.get("name"): step for step in job["steps"]}
+    probe = steps["Probe the MPS device (fails without one)"]["run"]
+    assert "torch.backends.mps.is_built()" in probe and "torch.backends.mps.is_available()" in probe
+    assert "assert built and available" in probe
+    run = steps["Run the MPS tests (a missing device fails, never skips)"]
+    assert run["env"]["NNX_REQUIRE_MPS"] == "1"
+    assert "pytest tests -m mps " in run["run"]
+    assert "assert skipped == 0" in run["run"] and "assert tests > 0" in run["run"]
 
 
 def test_every_apt_step_has_its_own_short_timeout():

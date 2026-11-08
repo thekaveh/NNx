@@ -32,11 +32,11 @@ updates:
       # files updated by hand never holds back the other dependencies. A
       # dependency joins the first group that matches it, so this group comes
       # ahead of the catch-all. A ruff bump also needs the matching pre-commit
-      # rev (a joint update). A uv bump needs 13 hand edits:
+      # rev (a joint update). A uv bump needs 14 hand edits:
       # - docs/external-contracts.md: the uv pin of the "Maintenance tooling"
       #   and "Package publishing" rows (2);
       # - .github/workflows: the version input of every astral-sh/setup-uv
-      #   step (11: ci.yml 4, docs.yml 3, release.yml 3, security.yml 1).
+      #   step (12: ci.yml 5, docs.yml 3, release.yml 3, security.yml 1).
       pinned-tools:
         patterns:
           - "setuptools"
