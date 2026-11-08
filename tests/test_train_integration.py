@@ -1895,6 +1895,35 @@ def test_best_re_elected_after_best_overwrite(tmp_path, monkeypatch, best_pointe
     assert _read_best_pointer(best) == a.id
 
 
+def test_best_id_reads_the_best_pointer_in_both_layouts(tmp_path, monkeypatch, best_pointer_mode):
+    """#570: `NNRun.best_id` is the public read of `runs/best`, for the
+    symlink and for the POINTER.txt directory written where symlinks fail
+    (Windows without developer mode), which `NNRun.load("best")` cannot
+    open. No pointer, or one naming a deleted run, reads as None."""
+    import shutil
+
+    monkeypatch.chdir(tmp_path)
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    best = tmp_path / "runs" / "best"
+
+    assert NNRun.best_id() is None  # no runs/ yet
+    a = _completed_run(model, "A", 0.1)
+    b = _completed_run(model, "B", 0.2)
+    assert os.path.islink(best) == (best_pointer_mode == "symlink")
+    assert (best / "POINTER.txt").is_file() == (best_pointer_mode == "pointer_file")
+    assert NNRun.best_id() == a.id
+    assert NNRun.best_id(root=str(tmp_path)) == a.id
+    assert NNRun.best_id(root=str(tmp_path / "elsewhere")) is None
+
+    with a.writable_lease(overwrite=True):
+        _completed_run(model, "A", 0.9)
+    assert NNRun.best_id() == b.id
+
+    shutil.rmtree(tmp_path / "runs" / b.id)  # the pointer now names a deleted run
+    assert NNRun.best_id() is None
+
+
 @pytest.mark.parametrize(
     "entry_point",
     ["absent pointer", "dangling pointer", "ineligible incumbent", "saver turned ineligible", "overwrite"],

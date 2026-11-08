@@ -255,6 +255,24 @@ def test_bounded_example_helpers_execute(name, helper, tmp_path, monkeypatch):
         _skip_if_optional_extra_missing(exc, f"{name}:{helper}")
 
 
+def test_overwrite_best_recovery_reads_the_pointer_file_layout(tmp_path, monkeypatch):
+    """#570: example 02 reads ``runs/best`` through ``NNRun.best_id``, so
+    its re-election demo also runs where symlinks fail and ``runs/best``
+    is a directory holding POINTER.txt (Windows without developer mode)."""
+    from nnx.nn.params import nn_run as nn_run_mod
+
+    def _raise(*a, **kw):
+        raise OSError("symlink not supported (simulated)")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.setattr(nn_run_mod.os, "symlink", _raise)
+    namespace = runpy.run_path(str(ROOT / "examples" / "02_resume_training.py"), run_name="__nnx_example_smoke__")
+    summary = namespace["overwrite_best_recovery"]()
+    assert summary["winner_is_survivor"]
+    assert (tmp_path / "runs" / "best" / "POINTER.txt").is_file()
+
+
 # #570: helpers build models from the caller's RNG state; only main() and
 # the workflow or phase entry points below seed.
 SEEDING_HELPERS = [
