@@ -60,6 +60,12 @@ def summary(
             `input_size` / `input_data`, or when `input_size` is given for a model whose
             adapter takes keyword inputs (a synthetic tensor cannot describe them).
 
+    Inputs from `batch` and `input_data` go to the device of the module's first
+    parameter or buffer (a CPU loader batch reaches a CUDA or MPS module), through
+    lists, tuples and dicts; their dtypes are kept. The module itself is never moved.
+    The `input_size` dummy is built there too. For a module with no parameters or
+    buffers, given inputs stay where they are and the dummy is built on the CPU.
+
     The module's identity, state and every submodule's training mode are left as they
     were (torchinfo itself only restores the top-level mode).
     """
@@ -94,6 +100,15 @@ def summary(
             "pass batch= or input_data={name: tensor}"
         )
 
+    # torchinfo moves neither the module nor given inputs (it passes no device
+    # for input_data=), so the inputs go to the module's own device, as
+    # predict() / evaluate() place a batch. Passing torchinfo device= instead
+    # would call module.to(device) and collapse a multi-device module.
+    tensor = next(itertools.chain(model.parameters(), model.buffers()), None)
+    if tensor is not None:
+        input_data = _placed(input_data, tensor.device)
+        kwargs = _placed(kwargs, tensor.device)
+
     from ..peft.dora import _tool_hooks
     from ..utils import _capture_training_modes, _restore_training_modes
 
@@ -105,6 +120,19 @@ def summary(
             return _run_summary(_ti_summary, model, input_size, input_data, depth, col_names, kwargs)
     finally:
         _restore_training_modes(training_modes)
+
+
+def _placed(value: Any, device: torch.device) -> Any:
+    """``value`` with every tensor (or anything with ``.to``, e.g. a graph
+    batch) in it, through lists, tuples and dicts, on ``device``."""
+    from ..nn.nn_model import _to_device
+
+    if isinstance(value, dict):
+        return {name: _placed(item, device) for name, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        items = [_placed(item, device) for item in value]
+        return type(value)(*items) if hasattr(value, "_fields") else type(value)(items)  # a namedtuple too
+    return _to_device(value, device)
 
 
 def _run_summary(
