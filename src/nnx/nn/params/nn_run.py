@@ -1164,6 +1164,19 @@ class NNRun:
         return NNRun._load(id, root)
 
     @staticmethod
+    def best_id(root: Optional[str] = None) -> Optional[str]:
+        """The id of the run ``runs/best`` points at, or ``None`` when no run
+        holds the pointer (it is absent, or names no run: a deleted run, a
+        dot-name, the pointer itself, or a directory without ``run.yaml``,
+        by the rule `NNRun.all` uses). Reads both layouts: the symlink, and the
+        ``best/POINTER.txt`` file written where symlinks are unavailable
+        (Windows without developer mode). Reads only the pointer; load the
+        run with `NNRun.load` and its checkpoints by this id."""
+        runs_root = _runs_root(root)
+        id = _read_best_pointer(os.path.join(runs_root, _BEST_POINTER))
+        return id if id is not None and _is_run_entry(runs_root, id) else None
+
+    @staticmethod
     def _load(
         id: str,
         root: Optional[str] = None,

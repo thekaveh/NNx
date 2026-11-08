@@ -1,9 +1,13 @@
 """Export a trained NNModel to ONNX, and say exactly what was shown.
 
-Requires ``onnx`` to validate the result; ``onnxruntime`` additionally
-executes it:
+Requires ``onnx`` to export the model at all (``NNModel.to_onnx`` raises
+an ``ImportError`` naming ``thekaveh-nnx[onnx]`` without it) and to
+validate the result; ``onnxruntime`` additionally executes it:
     pip install "thekaveh-nnx[onnx]"            # checker-only
     pip install "thekaveh-nnx[onnx-runtime]"    # executed on CPU
+
+Without ``onnx``, ``main()`` trains the model, prints a skip message for
+each export and returns.
 
 Run:
     python examples/04_onnx_export.py
@@ -177,16 +181,15 @@ def main():
         # the dtype + shape from this; we mark batch dim dynamic so the
         # exported graph accepts any batch size at inference.
         example = torch.randn(2, 8)
-        model.to_onnx(onnx_path, example_input=example)
-
-        print(f"\nExported ONNX model: {onnx_path}")
-        print(f"  size on disk: {os.path.getsize(onnx_path):,} bytes")
-
-        # Label what was shown: checker-only, or executed in ONNX Runtime.
         try:
+            model.to_onnx(onnx_path, example_input=example)
+        except ImportError:  # to_onnx names the `onnx` extra it needs
+            print("  (install `onnx` to export the model and run onnx.checker; nothing was exported)")
+        else:
+            print(f"\nExported ONNX model: {onnx_path}")
+            print(f"  size on disk: {os.path.getsize(onnx_path):,} bytes")
+            # Label what was shown: checker-only, or executed in ONNX Runtime.
             print(describe(conformance(model, onnx_path, torch.randn(7, 8))))  # batch 7: the batch dim is dynamic
-        except ImportError:
-            print("  (install `onnx` to run onnx.checker.check_model; nothing was validated)")
 
     try:
         registered_module_variant()

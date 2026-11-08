@@ -132,6 +132,19 @@ def test_netron_export_launch_true_without_netron_raises(tmp_path, tiny_feedfwd,
     assert not out.exists()
 
 
+def test_netron_export_without_onnx_raises_an_import_error_naming_the_extra(tmp_path, tiny_feedfwd, monkeypatch):
+    # #570: torch's exporter raised a RuntimeError naming no extra; the
+    # ImportError names the onnx extra, before anything is written.
+    import re
+    import sys
+
+    monkeypatch.setitem(sys.modules, "onnx", None)
+    out = tmp_path / "missing_onnx.onnx"
+    with pytest.raises(ImportError, match=re.escape("pip install thekaveh-nnx[onnx]")):
+        netron_export(tiny_feedfwd, str(out), torch.randn(1, 4))
+    assert not out.exists()
+
+
 def test_netron_export_casts_a_numpy_float64_example_to_the_net_dtype(tmp_path):
     import numpy as np
 

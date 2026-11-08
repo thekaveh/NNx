@@ -85,7 +85,6 @@ from nnx import (
     Optims,
     set_seed,
 )
-from nnx.nn.params.nn_run import _read_best_pointer
 
 
 def _base_optim() -> NNOptimParams:
@@ -109,7 +108,7 @@ def _base_sched() -> NNSchedulerParams:
 
 def _make_model_and_loader():
     # No set_seed here — the caller does set_seed(...) in main() before
-    # each call, per the [[examples-seed-helper-override]] convention.
+    # each call: helpers consume the current RNG state; main() owns it.
     # Centralizing seed management in main() makes the reproducibility
     # contract visible at the entry point and avoids hidden re-seeding
     # inside helpers.
@@ -195,16 +194,16 @@ def overwrite_best_recovery() -> dict:
     model_b, _ = _make_model_and_loader()
     run_a = _commit_scored_run(model_a, "A", 0.1)
     run_b = _commit_scored_run(model_b, "B", 0.2)
-    best = os.path.join("runs", "best")
-    assert _read_best_pointer(best) == run_a.id
+    # NNRun.best_id() reads the runs/best pointer (symlink or POINTER.txt).
+    assert NNRun.best_id() == run_a.id
 
     with run_a.writable_lease(overwrite=True):
         # The winner's artifacts are gone; B was elected before they went.
-        assert _read_best_pointer(best) == run_b.id
+        assert NNRun.best_id() == run_b.id
         _commit_scored_run(model_a, "A", 0.9)
-    assert _read_best_pointer(best) == run_b.id, "worse replacement must not reclaim best"
+    assert NNRun.best_id() == run_b.id, "worse replacement must not reclaim best"
 
-    winner_id = _read_best_pointer(best)
+    winner_id = NNRun.best_id()
     assert winner_id is not None
     checkpoint = NNCheckpoint.load(run=winner_id, type=Checkpoints.BEST)
     assert checkpoint is not None

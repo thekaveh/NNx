@@ -6,7 +6,8 @@ none of them, and a feature that needs one imports it on use through
 :func:`require`, which names the extra to install when the package itself is
 missing. An ``ImportError`` raised from *inside* an installed package (one
 of its own dependencies missing or broken) propagates unchanged, with its
-cause.
+cause. :func:`require_onnx` does the same for the ``onnx`` extra before a
+legacy ONNX export.
 """
 
 from __future__ import annotations
@@ -48,6 +49,23 @@ def require(module: str, feature: str) -> ModuleType:
             # broken: keep its own error rather than claim it is absent
             raise
         raise ImportError(f"{feature} needs {package}: {install_hint(package)}") from error
+
+
+def require_onnx(feature: str) -> None:
+    """Refuse a legacy (TorchScript) ONNX export without the ``onnx`` package.
+
+    Without it torch's exporter raises a ``RuntimeError``
+    (``OnnxExporterError``: "Module onnx is not installed!") that names no
+    install command.
+
+    Raises:
+        ImportError: ``onnx`` is not installed; the message names
+            ``thekaveh-nnx[onnx]``.
+    """
+    if not available("onnx"):
+        raise ImportError(
+            f"{feature} requires the `onnx` package. Install via `pip install thekaveh-nnx[onnx]` (or `pip install onnx`)."
+        )
 
 
 def available(package: str) -> bool:

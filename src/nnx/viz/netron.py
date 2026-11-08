@@ -26,6 +26,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from .._optional import require_onnx
 from ..utils import _capture_training_modes, _restore_training_modes, _writable
 
 if TYPE_CHECKING:
@@ -61,10 +62,10 @@ def netron_export(
         The path written (matches `path` — handy when chaining).
 
     Raises:
-        ImportError: When `launch=True` and the `netron` package isn't
-            installed (checked before anything is written). The export
-            itself needs the `onnx` package (the `onnx` extra); without it
-            `torch.onnx` raises its own exporter error.
+        ImportError: When the `onnx` package isn't installed (the export
+            needs it; the message names `thekaveh-nnx[onnx]`), or when
+            `launch=True` and the `netron` package isn't installed. Both
+            are checked before anything is written.
         NotImplementedError: When the module declares
             `onnx_export_unsupported` (graph classifiers, link
             predictors); nothing is written.
@@ -109,6 +110,8 @@ def netron_export(
     out_names = ["output"]
     dynamic_axes = {n: {0: "batch"} for n in in_names + out_names} if dynamic_batch else None
 
+    # Without `onnx` torch's exporter raises a RuntimeError naming no extra.
+    require_onnx("netron_export()")
     netron = None
     if launch:
         # Lazy import — keeps `netron` out of required deps. Checked before

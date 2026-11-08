@@ -191,6 +191,7 @@ BOUNDED_EXAMPLE_HELPERS = [
     ("11_tinystories_lm.py", "lm_config_rejects_nonfinite"),
     ("11_tinystories_lm.py", "causal_lm_task_workflow"),
     ("12_quantize_int8.py", "quantized_generative_subtype"),
+    ("15_qat_classifier.py", "qat_reload_workflow"),
     ("16_ijepa_image_plumbing.py", "float64_vit_predictor_step"),
     ("20_low_rank_surgery_ffn.py", "surgery_freeze_roles"),
     ("20_low_rank_surgery_ffn.py", "widen_supported_workflow"),
@@ -252,6 +253,181 @@ def test_bounded_example_helpers_execute(name, helper, tmp_path, monkeypatch):
         # Helpers that need an optional extra raise ImportError naming it:
         # an explicit skip in a core-only environment, never a silent pass.
         _skip_if_optional_extra_missing(exc, f"{name}:{helper}")
+
+
+def test_overwrite_best_recovery_reads_the_pointer_file_layout(tmp_path, monkeypatch):
+    """#570: example 02 reads ``runs/best`` through ``NNRun.best_id``, so
+    its re-election demo also runs where symlinks fail and ``runs/best``
+    is a directory holding POINTER.txt (Windows without developer mode)."""
+    from nnx.nn.params import nn_run as nn_run_mod
+
+    def _raise(*a, **kw):
+        raise OSError("symlink not supported (simulated)")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    monkeypatch.setattr(nn_run_mod.os, "symlink", _raise)
+    namespace = runpy.run_path(str(ROOT / "examples" / "02_resume_training.py"), run_name="__nnx_example_smoke__")
+    summary = namespace["overwrite_best_recovery"]()
+    assert summary["winner_is_survivor"]
+    assert (tmp_path / "runs" / "best" / "POINTER.txt").is_file()
+
+
+# #570: helpers build models from the caller's RNG state; only main() and
+# the workflow or phase entry points below seed.
+SEEDING_HELPERS = [
+    ("prediction_stream.py", "_model"),
+    ("history_journal.py", "_model"),
+    ("scheduler_clocks.py", "_model"),
+    ("offline_teacher_distillation.py", "_student"),
+    ("ranking_offline.py", "_scorer"),
+    ("run_bundle.py", "_classifier"),
+    ("result_boundaries.py", "_bundle"),
+    ("ordered_logits_pipeline.py", "_generate"),
+]
+# Phase entry points that seed, besides main() and BOUNDED_EXAMPLE_HELPERS.
+SEEDING_PHASES = {
+    "benchmark_compile.py": {"run"},
+    "decision_model_pilot.py": {"run_mechanics"},
+    "run_bundle.py": {"built_in_classifier", "registered_module"},
+}
+_SEED_CALLS = {"set_seed", "torch.manual_seed", "torch.cuda.manual_seed", "torch.cuda.manual_seed_all"}
+_SEED_CALLS |= {"np.random.seed", "numpy.random.seed", "random.seed"}
+
+
+def _call_helper(name: str, helper: str, root: Path):
+    fn = runpy.run_path(str(ROOT / "examples" / name), run_name="__nnx_example_smoke__")[helper]
+    if helper == "_model" and name == "prediction_stream.py":
+        from nnx import Losses, TaskSpec
+
+        return fn(TaskSpec.regression(2), Losses.MEAN_SQUARED_ERROR)
+    return fn(str(root)) if helper == "_bundle" else fn()
+
+
+@pytest.mark.parametrize(("name", "helper"), SEEDING_HELPERS, ids=lambda value: value)
+def test_example_helpers_leave_the_callers_random_streams_alone(name, helper, tmp_path, monkeypatch):
+    """#570: after the caller's ``set_seed(42)`` a helper leaves torch's
+    seed at 42 and the NumPy and Python streams where the caller put them."""
+    import random
+
+    import numpy as np
+    import torch
+
+    from nnx import set_seed
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    set_seed(42)
+    numpy_state, python_state = np.random.get_state()[1].copy(), random.getstate()
+    try:
+        _call_helper(name, helper, tmp_path)
+    except ImportError as exc:
+        _skip_if_optional_extra_missing(exc, f"{name}:{helper}")
+    assert torch.initial_seed() == 42
+    assert np.array_equal(np.random.get_state()[1], numpy_state)
+    assert random.getstate() == python_state
+
+
+@pytest.mark.parametrize(("name", "helper"), SEEDING_HELPERS[:6], ids=lambda value: value)
+def test_example_model_helpers_build_from_the_callers_seed(name, helper, tmp_path, monkeypatch):
+    """#570: the caller's seed decides a helper's initial weights."""
+    import torch
+
+    from nnx import set_seed
+
+    monkeypatch.chdir(tmp_path)
+    states = []
+    for seed in (1, 2):
+        set_seed(seed)
+        states.append(_call_helper(name, helper, tmp_path).net.state_dict())
+    assert any(not torch.equal(tensor, states[1][key]) for key, tensor in states[0].items())
+
+
+def test_examples_seed_only_in_main_and_registered_entry_points():
+    """#570: no ``set_seed`` / ``torch.manual_seed`` / ``np.random.seed`` /
+    ``random.seed`` call outside ``main()``, a registered bounded helper or a
+    phase entry point (a local ``torch.Generator().manual_seed`` is fine)."""
+    import ast
+
+    registered: dict[str, set[str]] = {}
+    for name, helper in BOUNDED_EXAMPLE_HELPERS:
+        registered.setdefault(name, set()).add(helper)
+    offenders = []
+    for path in sorted((ROOT / "examples").glob("*.py")):
+        allowed = {"main"} | registered.get(path.name, set()) | SEEDING_PHASES.get(path.name, set())
+
+        def visit(node: ast.AST, function: str, path: Path = path, allowed: set[str] = allowed) -> None:
+            for child in ast.iter_child_nodes(node):
+                inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else function
+                if isinstance(child, ast.Call):
+                    called = ast.unparse(child.func)
+                    if (called in _SEED_CALLS or called.endswith(".set_seed")) and function not in allowed:
+                        offenders.append(f"{path.name}:{child.lineno}: {called} in {function}")
+                visit(child, inner)
+
+        visit(ast.parse(path.read_text(encoding="utf-8")), "<module>")
+    assert offenders == []
+
+
+def test_qat_reload_check_compares_logits_not_accuracy(tmp_path, monkeypatch):
+    """#570: example 15's reload check passes on the real LAST checkpoint and
+    fails when every ``scales`` tensor is scaled by 1.5 (on the old,
+    separable data that corruption kept the accuracy at 100%)."""
+    import dataclasses
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    namespace = runpy.run_path(str(ROOT / "examples" / "15_qat_classifier.py"), run_name="__nnx_example_smoke__")
+    try:
+        out = namespace["qat_reload_workflow"]()
+    except ImportError as exc:
+        _skip_if_optional_extra_missing(exc, "15_qat_classifier.py:qat_reload_workflow")
+        raise
+    check_reload, checkpoint = namespace["check_reload"], out["checkpoint"]
+    assert check_reload(out["model"], checkpoint, out["inputs"]) <= 1e-5
+    scaled = {key: value * 1.5 if key.endswith("scales") else value for key, value in checkpoint.net_state.items()}
+    assert scaled.keys() == checkpoint.net_state.keys() and any(key.endswith("scales") for key in scaled)
+    with pytest.raises(AssertionError, match=r"max \|logit diff\|"):
+        check_reload(out["model"], dataclasses.replace(checkpoint, net_state=scaled), out["inputs"])
+
+
+def test_quantization_examples_share_overlapping_class_data():
+    """#570: examples 12 and 15 share ``_loaders`` verbatim, and its classes
+    overlap: even the nearest-class-mean rule misses validation rows, so a
+    quantization delta can be non-zero."""
+    import ast
+
+    import torch
+
+    sources = []
+    for name in ("12_quantize_int8.py", "15_qat_classifier.py"):
+        text = (ROOT / "examples" / name).read_text(encoding="utf-8")
+        (node,) = [n for n in ast.parse(text).body if isinstance(n, ast.FunctionDef) and n.name == "_loaders"]
+        sources.append(ast.get_source_segment(text, node))
+    assert sources[0] == sources[1]
+    loaders = runpy.run_path(str(ROOT / "examples" / "12_quantize_int8.py"), run_name="__nnx_example_smoke__")
+    train, val = loaders["_loaders"](seed=0)
+    X, y = train.dataset.tensors
+    means = torch.stack([X[y == c].mean(dim=0) for c in range(3)])
+    X_val, y_val = val.dataset.tensors
+    nearest = (torch.cdist(X_val, means).argmin(dim=1) == y_val).float().mean().item()
+    assert 0.8 < nearest < 0.97, nearest
+
+
+def test_onnx_example_skips_its_exports_without_onnx(tmp_path, monkeypatch, capsys):
+    """#570: without the onnx packages, ``04_onnx_export.py``'s ``main()``
+    prints its skip messages and returns (``to_onnx`` raises an ImportError
+    naming the extra, which the example catches), and its docstring says
+    that export needs ``onnx``."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    for module in ("onnx", "onnxruntime", "onnxscript"):
+        monkeypatch.setitem(sys.modules, module, None)  # not installed
+    namespace = runpy.run_path(str(ROOT / "examples" / "04_onnx_export.py"), run_name="__nnx_example_smoke__")
+    assert "Requires ``onnx`` to export the model" in namespace["__doc__"]
+    namespace["main"]()
+    skipped = [line for line in capsys.readouterr().out.splitlines() if "(install `onnx`" in line]
+    assert len(skipped) == 2, skipped
 
 
 def test_the_compile_benchmark_example_runs_with_its_documented_arguments(tmp_path):
@@ -337,6 +513,8 @@ def test_the_ddp_example_runs_under_torchrun_with_one_artifact_owner(tmp_path):
     assert sorted(ids) == list(range(6)) and len(ids) == 6  # every id exactly once
     assert len({report["run_id"] for report in reports}) == 1
     assert [report["owns_artifacts"] for report in sorted(reports, key=lambda r: r["rank"])] == [True, False]
+    # #570: the validation pass scores the training rows, and the report says so.
+    assert all("val_accuracy" not in report and "train_rows_accuracy" in report for report in reports)
     runs = [name for name in os.listdir(out / "runs") if not name.startswith(".") and name != "best"]
     assert runs == [reports[0]["run_id"]]
 

@@ -157,8 +157,9 @@ def test_install_guidance_separates_the_release_from_the_current_source():
 
 
 def test_onnx_export_prerequisites_agree_across_surfaces():
-    """#472 NN-05: the legacy exporter needs the onnx package (torch raises
-    'Module onnx is not installed!' without it); dynamo also needs onnxscript."""
+    """#472 NN-05: the legacy exporter needs the onnx package (NNx raises an
+    ImportError naming thekaveh-nnx[onnx] without it, #570); dynamo also
+    needs onnxscript."""
     for path in ("README.md", "docs/capabilities.md"):
         text = (build_docs.ROOT / path).read_text(encoding="utf-8")
         assert "onnx` extra" in text or "thekaveh-nnx[onnx]" in text, path
@@ -177,6 +178,11 @@ def test_public_text_carries_no_private_knowledge_base_links():
         source = (build_docs.ROOT / "src" / "nnx" / "nn" / "params" / f"{name}.py").read_text(encoding="utf-8")
         assert not label.findall(source), name
     assert not label.findall((build_docs.ROOT / "docs" / "api.md").read_text(encoding="utf-8"))
+    # #570: the examples are public text too, scripts and README alike.
+    examples = sorted((build_docs.ROOT / "examples").glob("*.py")) + [build_docs.ROOT / "examples" / "README.md"]
+    assert len(examples) > 40
+    for path in examples:
+        assert not label.findall(path.read_text(encoding="utf-8")), path.name
 
 
 def test_primary_openers_place_product_poster_before_first_section():

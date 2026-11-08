@@ -133,8 +133,8 @@ def _batches(docs, doc_ids, queries, judgements, query_rows, positions, *, queri
     return batches
 
 
-def _scorer(seed: int = 0) -> NNModel:
-    torch.manual_seed(seed)
+def _scorer() -> NNModel:
+    # No seeding here: the workflow seeds before it builds the scorer.
     return NNModel(
         net_params=NNParams(
             input_dim=3 * DIM, output_dim=1, hidden_dims=[32], dropout_prob=0.0, activation=Activations.RELU
@@ -168,6 +168,7 @@ def ranking_offline_workflow(epochs: int = 6) -> dict:
     val = _batches(docs, doc_ids, queries, judgements, val_rows, positions)
 
     # 1-2. Train and select BEST by validation NDCG@5.
+    torch.manual_seed(0)
     run = _scorer().train(
         params=NNTrainParams(
             n_epochs=epochs,

@@ -19,7 +19,10 @@ schemes. The flow:
      the on-disk state carries the int4 scales/zeros, not the pre-convert
      FP32 tensors. ``NNModel.from_checkpoint`` reloads it: the checkpoint
      records the ``torchao_qat`` transform, and the loader replays the
-     same prepare→convert before it loads the quantized state dict.
+     same prepare→convert before it loads the quantized state dict,
+     and ``check_reload`` asserts that the reloaded model gives the
+     converted model's validation logits. Accuracy alone could not show
+     a broken reload: a corrupted checkpoint can keep every prediction.
 
 Compared to PTQ (``examples/12_quantize_int8.py``):
 
@@ -40,6 +43,9 @@ exporter); without it, Phase 6 is skipped:
 
 Run:
     python examples/15_qat_classifier.py
+
+The bounded ``qat_reload_workflow()`` helper (one QAT epoch, then the
+Phase-5 reload check) is executed by ``tests/test_examples_smoke.py``.
 """
 
 from __future__ import annotations
@@ -91,14 +97,18 @@ def _make_classifier() -> NNModel:
 
 
 def _loaders(seed: int = 0) -> tuple[DataLoader, DataLoader]:
-    """Separable 3-class Gaussian-mixture toy task — same shape as the
-    PTQ example so the two examples make a clean A/B comparison."""
+    """A 3-class Gaussian mixture whose classes overlap: the class means lie
+    about 3.3 noise standard deviations apart, so even the best rule (the
+    nearest class mean) misclassifies about one validation row in ten, and a
+    row near a class boundary can change its prediction when the weights are
+    quantized. Examples 12 (PTQ) and 15 (QAT) share this function verbatim,
+    so the two make a clean A/B comparison."""
     g = torch.Generator().manual_seed(seed)
-    means = torch.randn(3, 32, generator=g) * 2.0
+    means = torch.randn(3, 32, generator=g) * 0.4
 
     def _make(n: int):
         cls = torch.randint(0, 3, (n,), generator=g)
-        X = means[cls] + 0.5 * torch.randn(n, 32, generator=g)
+        X = means[cls] + torch.randn(n, 32, generator=g)
         return X, cls
 
     X_train, y_train = _make(512)
@@ -106,6 +116,30 @@ def _loaders(seed: int = 0) -> tuple[DataLoader, DataLoader]:
     train = DataLoader(TensorDataset(X_train, y_train), batch_size=32, shuffle=True)
     val = DataLoader(TensorDataset(X_val, y_val), batch_size=64, shuffle=False)
     return train, val
+
+
+def _train_params(n_epochs: int, train_loader: DataLoader, val_loader: DataLoader) -> NNTrainParams:
+    return NNTrainParams(
+        n_epochs=n_epochs,
+        # The QAT callback is not part of the run id: without its own
+        # data_id this run would share 12_quantize_int8.py's id.
+        data_id="qat-8da4w",
+        train_loader=train_loader,
+        val_loader=val_loader,
+        optim=NNOptimParams(
+            name=Optims.ADAM,
+            max_lr=1e-2,
+            momentum=(0.9, 0.999),
+            weight_decay=0.0,
+        ),
+        scheduler=NNSchedulerParams(
+            min_lr=1e-7,
+            factor=0.5,
+            patience=2,
+            cooldown=1,
+            threshold=1e-3,
+        ),
+    )
 
 
 def _val_accuracy(model: NNModel, val_loader: DataLoader) -> float:
@@ -120,6 +154,44 @@ def _val_accuracy(model: NNModel, val_loader: DataLoader) -> float:
             correct += int((pred == Y).sum().item())
             total += int(Y.size(0))
     return correct / total
+
+
+def check_reload(model: NNModel, checkpoint: NNCheckpoint, inputs: torch.Tensor) -> float:
+    """Phase 5's round-trip check: the model rebuilt from ``checkpoint``
+    must give the converted ``model``'s logits on ``inputs``. Logits, not
+    accuracy: a corrupted reload can keep every argmax. Returns the largest
+    absolute logit difference; raises ``AssertionError`` above 1e-5."""
+    reloaded = NNModel.from_checkpoint(checkpoint)
+    model.net.eval()
+    reloaded.net.eval()
+    with torch.no_grad():
+        expected, got = model.net(inputs), reloaded.net(inputs)
+    largest = (got - expected).abs().max().item()
+    assert torch.allclose(got, expected, rtol=0.0, atol=1e-5), (
+        f"reloaded quantized model differs from the converted one: max |logit diff| {largest:.4g}"
+    )
+    return largest
+
+
+def qat_reload_workflow(n_epochs: int = 1) -> dict:
+    """Bounded Phases 2 and 5: QAT-train for ``n_epochs``, load the LAST
+    checkpoint and run :func:`check_reload` on the validation inputs.
+    Returns the converted model, the checkpoint and the inputs so a caller
+    can repeat the check. Without ``torchao`` the QAT callback raises an
+    ``ImportError`` naming ``thekaveh-nnx[quantize]``."""
+    set_seed(0)
+    train_loader, val_loader = _loaders(seed=0)
+    model = _make_classifier()
+    run = model.train(
+        params=_train_params(n_epochs, train_loader, val_loader),
+        callbacks=[QATLifecycleCallback(qat_config="8da4w")],
+        train_step_fn=qat_train_step_factory(qat_config="8da4w"),
+    )
+    checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
+    assert checkpoint is not None
+    inputs = torch.cat([X for X, _ in val_loader])
+    check_reload(model, checkpoint, inputs)
+    return {"model": model, "checkpoint": checkpoint, "inputs": inputs}
 
 
 def main():
@@ -146,27 +218,7 @@ def main():
     print("Phase 2: training with QAT")
     print("=" * 60)
     run = model.train(
-        params=NNTrainParams(
-            n_epochs=6,
-            # The QAT callback is not part of the run id: without its own
-            # data_id this run would share 12_quantize_int8.py's id.
-            data_id="qat-8da4w",
-            train_loader=train_loader,
-            val_loader=val_loader,
-            optim=NNOptimParams(
-                name=Optims.ADAM,
-                max_lr=1e-2,
-                momentum=(0.9, 0.999),
-                weight_decay=0.0,
-            ),
-            scheduler=NNSchedulerParams(
-                min_lr=1e-7,
-                factor=0.5,
-                patience=2,
-                cooldown=1,
-                threshold=1e-3,
-            ),
-        ),
+        params=_train_params(6, train_loader, val_loader),
         callbacks=[callback],
         train_step_fn=step_fn,
     )
@@ -204,10 +256,8 @@ def main():
     print(f"quantized keys in the saved LAST checkpoint: {quant_keys}")
     assert quant_keys, "LAST must hold the converted int4 scales/zeros"
 
-    reloaded = NNModel.from_checkpoint(ckpt)
-    reloaded_acc = _val_accuracy(reloaded, val_loader)
-    print(f"reloaded val accuracy: {reloaded_acc * 100:.2f}%  (converted model: {acc * 100:.2f}%)")
-    assert reloaded_acc == acc, "reloaded quantized model should match the converted one"
+    largest = check_reload(model, ckpt, torch.cat([X for X, _ in val_loader]))
+    print(f"reloaded val logits == converted model's (max |diff| {largest:.2g})")
 
     # ---- Confirm ONNX export still works on the converted model.
     # The legacy TorchScript exporter trips on torchao's quantized
