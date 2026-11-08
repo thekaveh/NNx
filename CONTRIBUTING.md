@@ -264,7 +264,7 @@ A release whose tag exists can be finished after a failure without a new release
     gh workflow run release-please.yml --ref main -f tag_name=vX.Y.Z
     ```
 
-    The run resolves the tag to its commit and dispatches `release.yml` with both. `release.yml` checks that the commit is on `main` and that the tag names it.
+    The run resolves the tag to its commit and dispatches `release.yml` with both. `release.yml` checks that the commit is on `main` and that the tag names it. A dispatch from any branch other than `main` fails, and it never replaces a pending push run.
 
 - **The notes were refused**, because the tagged CHANGELOG holds two unfinalized release sections: the tagged commit cannot change, so a re-run fails again. Fix a copy of that CHANGELOG by hand, publish its notes on the draft, and dispatch with `keep_draft_notes`. `release.yml` then publishes the draft's notes as they are:
 

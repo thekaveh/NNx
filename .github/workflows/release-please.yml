@@ -32,8 +32,10 @@ on:
 permissions:
   contents: read
 
+# A recovery dispatch has its own group, so it never replaces a pending push
+# run (at most one run per group may be pending), nor a push a pending dispatch.
 concurrency:
-  group: release-please-${{ github.ref }}
+  group: release-please-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -92,7 +94,7 @@ jobs:
     # release.yml checks that the tag names the release commit on main, and a
     # re-dispatch of a published version skips what is already published.
     name: Dispatch the release workflow for an existing tag
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
@@ -104,8 +106,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag_name }}
           KEEP_DRAFT_NOTES: ${{ inputs.keep_draft_notes }}
+          DISPATCH_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
+          # Fail, not skip: a skipped run would read as a recovered release.
+          if [ "$DISPATCH_REF" != refs/heads/main ]; then
+            echo "::error::dispatch this workflow with --ref main, not $DISPATCH_REF"
+            exit 1
+          fi
           if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::tag_name must be a vX.Y.Z release tag, not '$RELEASE_TAG'"
             exit 1

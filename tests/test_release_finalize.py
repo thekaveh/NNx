@@ -441,9 +441,9 @@ class _ReleaseWorld:
             for job in _actions_sim.workflow(_RELEASE_PLEASE)["jobs"]
         }
 
-    def release_please_dispatch(self, **given: str) -> dict:
+    def release_please_dispatch(self, ref: str = "refs/heads/main", **given: str) -> dict:
         """A maintainer's ``gh workflow run release-please.yml --ref main -f ...``."""
-        github = {"event_name": "workflow_dispatch", "ref": "refs/heads/main", "sha": self.head, "token": "x"}
+        github = {"event_name": "workflow_dispatch", "ref": ref, "sha": self.head, "token": "x"}
         inputs = _actions_sim.dispatch_inputs(_RELEASE_PLEASE, given)
         return {
             job: self._run(_RELEASE_PLEASE, job, {"github": github, "inputs": inputs}, {})
@@ -570,6 +570,19 @@ def test_the_recovery_entry_point_refuses_a_name_that_is_not_a_release_tag(tmp_p
     assert not world.dispatches("release.yml")
 
 
+def test_a_recovery_dispatch_from_another_branch_fails_rather_than_skipping(tmp_path):
+    """A dispatch with --ref develop must not end green with nothing dispatched."""
+    world = _ReleaseWorld(tmp_path)
+    world.release_please_push(_released(world))
+    before = len(world.dispatches("release.yml"))
+    runs = world.release_please_dispatch(ref="refs/heads/develop", tag_name=_TAG)
+    assert runs["release-please"] is None
+    recovery = runs["dispatch-release"]
+    assert recovery is not None and not recovery.succeeded
+    assert "--ref main" in next(iter(recovery.steps.values())).log
+    assert len(world.dispatches("release.yml")) == before
+
+
 def test_the_release_please_workflow_only_dispatches_and_checks_nothing_out():
     """#535: release-please.yml checks out no code (the CodeQL alert closed by
     5f7ebe4), publishes no notes, and dispatches the release for the tag's
@@ -597,7 +610,12 @@ def test_the_release_please_workflow_only_dispatches_and_checks_nothing_out():
     assert dispatch["env"]["RELEASE_REF"] == "${{ steps.release.outputs.sha }}"
     assert dispatch["env"]["RELEASE_TAG"] == "${{ steps.release.outputs.tag_name }}"
     recovery = jobs["dispatch-release"]
-    assert recovery["if"] == "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'"
+    assert recovery["if"] == "github.event_name == 'workflow_dispatch'"
+    # A recovery dispatch never displaces a pending push run, nor a push a pending dispatch.
+    assert parsed["concurrency"] == {
+        "group": "release-please-${{ github.event_name }}-${{ github.ref }}",
+        "cancel-in-progress": False,
+    }
     assert recovery["permissions"] == {"actions": "write", "contents": "read"}
     (step,) = recovery["steps"]
     assert step["env"]["RELEASE_TAG"] == "${{ inputs.tag_name }}"
