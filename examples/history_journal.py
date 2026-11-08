@@ -33,6 +33,7 @@ directory.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 
 import pandas as pd
@@ -107,11 +108,15 @@ def history_journal_workflow() -> dict:
     assert _digest(source) == before
     assert child.id != parent.id and {r.epoch_idx for r in iter_history(child.id)} == {3, 4}
 
-    # 3. The summary reads per-epoch rows; load reads the committed tail.
+    # 3. The summary charts per-epoch rows; load reads the committed tail.
     loaded = NNRun.load(child.id)
     assert loaded.idps is not None and len(loaded.idps) == 3
     assert {r.epoch_idx for r in loaded.idps} == {4}  # the window: epoch 4's last three records
-    assert "<table" in loaded._repr_html_()
+    html = loaded._repr_html_()
+    assert "<table" in html
+    if importlib.util.find_spec("plotly") is not None:  # the chart needs the plots extra
+        # Charted from the journal: both epochs, though the window holds epoch 4 only.
+        assert "2 epochs" in html
     epochs = sorted({r.epoch_idx for r in iter_history(child.id)})  # the epochs the journal committed
     assert epochs == [3, 4], epochs
 
