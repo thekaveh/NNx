@@ -32,13 +32,21 @@ NUMPY_ERROR = (
 )
 
 
+def mps_skip_reason() -> str | None:
+    """Why an ``mps``-marked test cannot run here, or ``None`` with a device."""
+    if torch.backends.mps.is_available():
+        return None
+    return f"needs an MPS device (torch.backends.mps.is_built() is {torch.backends.mps.is_built()})"
+
+
 def mps_or_skip() -> None:
     """Skip an ``mps``-marked test without an MPS device (``conftest.py``
-    calls it); under ``NNX_REQUIRE_MPS=1`` fail it instead, so the
-    ``mps-evidence`` job cannot pass by skipping."""
-    if torch.backends.mps.is_available():
+    marks it at collection, so ``-rs`` names the test); under
+    ``NNX_REQUIRE_MPS=1`` fail it instead, so the ``mps-evidence`` job
+    cannot pass by skipping."""
+    reason = mps_skip_reason()
+    if reason is None:
         return
-    reason = f"needs an MPS device (torch.backends.mps.is_built() is {torch.backends.mps.is_built()})"
     if os.environ.get(REQUIRE_MPS) == "1":
         pytest.fail(f"{REQUIRE_MPS}=1 and {reason}", pytrace=False)
     pytest.skip(reason)
