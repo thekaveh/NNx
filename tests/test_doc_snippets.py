@@ -914,3 +914,84 @@ def test_no_reversed_metric_argument_order_in_docs():
     paths += [root / "README.md", root / "PYPI_README.md"]
     offenders = [str(p.relative_to(root)) for p in paths if pattern.search(p.read_text(encoding="utf-8"))]
     assert offenders == []
+
+
+def test_documented_trainer_optimizer_scope_rules(tmp_path, monkeypatch):
+    """#569: the capabilities page states the scope rules Concepts §6.5 and
+    §8.1 document, not a partition ``Trainer`` does not enforce: a step
+    function owns its updates (overlapping scopes step a shared parameter
+    once per optimizer), unowned trainables warn, and objective runs refuse
+    sharing."""
+    import warnings
+    from pathlib import Path
+
+    from nnx import NNOptimParams, NNParamGroupSpec, Optims
+    from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
+    from nnx.objectives import supervised_objective
+    from nnx.trainer import NNTrainerParams, Trainer
+
+    root = Path(__file__).resolve().parents[1]
+    page = " ".join((root / "docs" / "capabilities.md").read_text(encoding="utf-8").split())
+    assert "must partition" not in page and "groups must partition" not in page
+    for rule in (
+        "each optimizer owns only the parameters its specs match",
+        "With two or more optimizers, every one must be scoped",
+        "Objective and FP16 runs refuse optimizers that share a parameter",
+        "A `trainer_step_fn` owns its updates: scopes may overlap, and every optimizer it steps updates a shared parameter",
+        "Trainable parameters that no optimizer owns draw a `RuntimeWarning`",
+    ):
+        assert rule in page
+    example = " ".join((root / "examples" / "builder_branching.py").read_text(encoding="utf-8").split())
+    assert "must partition" not in example
+
+    monkeypatch.chdir(tmp_path)
+    generator = torch.Generator().manual_seed(0)
+    x, y = torch.randn(16, 4, generator=generator), torch.randint(0, 2, (16,), generator=generator)
+    loader = DataLoader(TensorDataset(x, y), batch_size=16)
+
+    def scoped(pattern):
+        return NNOptimParams(
+            name=Optims.SGD,
+            max_lr=0.1,
+            momentum=0.0,
+            weight_decay=0.0,
+            param_groups=[NNParamGroupSpec(name_pattern=pattern)],
+        )
+
+    def step(ctx):
+        xb, yb = ctx.batch
+        loss = F.cross_entropy(ctx.model.net(xb), yb)
+        for optimizer in ctx.optimizers.values():
+            optimizer.zero_grad()
+        loss.backward()
+        for optimizer in ctx.optimizers.values():
+            optimizer.step()
+        return NNEvaluationDataPoint(loss=float(loss))
+
+    def train(optims, **how):
+        torch.manual_seed(0)
+        model = _make_model(input_dim=4, output_dim=2, hidden=8)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            Trainer(model).train(
+                params=NNTrainerParams(n_epochs=1, train_loader=loader, optims=optims, overwrite_existing=True), **how
+            )
+        return model, [str(w.message) for w in caught if "no optimizer owns" in str(w.message)]
+
+    torch.manual_seed(0)
+    reference = _make_model(input_dim=4, output_dim=2, hidden=8)
+    F.cross_entropy(reference.net(x), y).backward()
+    weight = reference.net.layers[0].weight
+    overlap = {"a": scoped("*"), "b": scoped("layers.0.*")}
+    model, unowned = train(overlap, trainer_step_fn=step)
+    moved = (weight.detach() - model.net.layers[0].weight.detach()) / (0.1 * weight.grad)
+    assert unowned == [] and moved.median().item() == pytest.approx(2.0)  # stepped by both optimizers
+    _, unowned = train({"a": scoped("layers.0.weight"), "b": scoped("layers.1.weight")}, trainer_step_fn=step)
+    assert len(unowned) == 1 and "layers.0.bias" in unowned[0] and "layers.1.bias" in unowned[0]
+    with pytest.raises(ValueError, match="share a parameter"):
+        train(overlap, objective=supervised_objective())
+    with pytest.raises(ValueError, match="requires every optimizer to scope"):
+        train(
+            {"a": scoped("*"), "b": NNOptimParams(name=Optims.SGD, max_lr=0.1, momentum=0.0, weight_decay=0.0)},
+            trainer_step_fn=step,
+        )
