@@ -923,15 +923,14 @@ def test_documented_trainer_optimizer_scope_rules(tmp_path, monkeypatch):
     once per optimizer), unowned trainables warn, and objective runs refuse
     sharing."""
     import warnings
-    from pathlib import Path
 
     from nnx import NNOptimParams, NNParamGroupSpec, Optims
     from nnx.nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
     from nnx.objectives import supervised_objective
     from nnx.trainer import NNTrainerParams, Trainer
+    from tests._repo_files import repo_file
 
-    root = Path(__file__).resolve().parents[1]
-    page = " ".join((root / "docs" / "capabilities.md").read_text(encoding="utf-8").split())
+    page = " ".join(repo_file("docs", "capabilities.md").read_text(encoding="utf-8").split())
     assert "must partition" not in page and "groups must partition" not in page
     for rule in (
         "each optimizer owns only the parameters its specs match",
@@ -941,7 +940,7 @@ def test_documented_trainer_optimizer_scope_rules(tmp_path, monkeypatch):
         "Trainable parameters that no optimizer owns draw a `RuntimeWarning`",
     ):
         assert rule in page
-    example = " ".join((root / "examples" / "builder_branching.py").read_text(encoding="utf-8").split())
+    example = " ".join(repo_file("examples", "builder_branching.py").read_text(encoding="utf-8").split())
     assert "must partition" not in example
 
     monkeypatch.chdir(tmp_path)

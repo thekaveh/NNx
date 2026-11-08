@@ -20,15 +20,18 @@ Six labelled rows with stable ids (0-5) train a small classifier:
   2. ``model.train(params, distributed=DDP())`` — every update equals one
      process training on the ranks' union batch; every rank returns the
      same run id and the same global records.
-  3. Only the writer rank (0) holds the run lease and writes
-     ``<output>/runs/<id>/``; the other rank writes nothing under ``runs/``.
+  3. Only the writer rank (``DDP(writer_rank=0)`` by default) holds the run
+     lease and writes ``<output>/runs/<id>/``; the other rank writes nothing
+     under ``runs/``.
   4. ``nnx.distributed.shutdown()`` leaves the process group together: a
      bounded teardown barrier, then the group is destroyed.
 
 Each rank prints one JSON report (and writes it to
 ``<output>/report-rank<r>.json``): its rank, the run id, its validation ids
-(together they cover 0-5 exactly once), whether it owns the artifacts and
-``train_rows_accuracy``, the final epoch's accuracy on the validation pass.
+(together they cover 0-5 exactly once), whether it owns the artifacts (it
+is the writer rank NNx recorded in the run's LAST checkpoint, which both
+ranks read from the shared output directory) and ``train_rows_accuracy``,
+the final epoch's accuracy on the validation pass.
 The validation loader shards the same six rows the model trains on, which
 suits the sharding demonstration but makes that number a training-row
 accuracy, not a held-out one: the labels are row-id parity over random
@@ -52,7 +55,19 @@ import os
 
 import torch
 
-from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNOptimParams, NNParams, NNTrainParams
+from nnx import (
+    Activations,
+    Checkpoints,
+    Devices,
+    Losses,
+    Nets,
+    NNCheckpoint,
+    NNModel,
+    NNModelParams,
+    NNOptimParams,
+    NNParams,
+    NNTrainParams,
+)
 from nnx import distributed as nnx_dist
 from nnx.nn.callbacks import Callback
 
@@ -119,7 +134,10 @@ def main() -> None:
         callbacks=callbacks,
         distributed=nnx_dist.DDP(),
     )
-    owner = rank == 0
+    # The writer rank is configurable (DDP(writer_rank=...)): ask the run's
+    # LAST checkpoint which rank NNx made the writer, not a hard-coded rank 0.
+    writer_rank = NNCheckpoint.load_training_state(run.id, Checkpoints.LAST)["distributed"]["writer_rank"]
+    owner = rank == writer_rank
     report = {
         "rank": rank,
         "world_size": world_size,
