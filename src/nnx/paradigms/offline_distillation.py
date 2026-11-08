@@ -47,7 +47,9 @@ records directly, offline:
   (mean ``KL(teacher ‖ student)`` in nats, over every record) and
   **labelled quality** (accuracy and NLL on the labelled records only),
   each with its own denominator: agreeing with a teacher is not being
-  right.
+  right. :meth:`TeacherDataset.metric_specs` declares the evaluation's
+  metrics (registered ids ``offline.*``) so a ``MonitorSpec`` can select,
+  schedule or stop on them.
 
 Nothing here reaches the network: records, inputs and the student are
 local. Live distillation (``kd_train_step_factory``,
@@ -461,6 +463,22 @@ class TeacherDataset(torch.utils.data.Dataset):
         of this dataset's kind (see :class:`OfflineDistillationEval`)."""
         return OfflineDistillationEval(schema_digest=self.schema_digest, candidates=self.candidates)
 
+    def metric_specs(self) -> list[Any]:
+        """``MetricSpec``s declaring :meth:`eval_step`'s metrics — registered
+        ids ``offline.teacher_kl`` / ``offline.teacher_agreement`` /
+        ``offline.label_accuracy`` / ``offline.label_nll``, reported as
+        ``teacher_kl`` / ``teacher_agreement`` / ``label_accuracy`` /
+        ``label_nll`` — so a ``MonitorSpec`` can select, schedule or stop on
+        them (``NNTrainParams(metrics=data.metric_specs(),
+        monitor=MonitorSpec("label_accuracy"))``). Only :meth:`eval_step`
+        computes them; the default evaluation path refuses them. Without
+        labelled validation records the label metrics are unavailable, so
+        they never win BEST."""
+        from ..monitors import MetricSpec
+
+        _register_metrics()
+        return [MetricSpec(f"offline.{name}", name=name) for name in _METRICS]
+
 
 def _check_alpha(alpha: Any) -> float:
     if isinstance(alpha, bool) or not isinstance(alpha, numbers.Real):
@@ -759,9 +777,14 @@ class OfflineDistillationEval:
     The record's ``loss`` is the **imitation loss** (``teacher_kl``) whatever
     the objective's ``alpha``: it measures agreement with the teacher, not
     quality. A scheduler, early stopping or BEST selection that should
-    follow labelled quality must monitor ``label_accuracy`` or ``label_nll``
-    by name (``MonitorSpec``). Use :func:`evaluate_offline` for every
-    denominator."""
+    follow labelled quality declares these metrics with
+    :meth:`TeacherDataset.metric_specs` and monitors ``label_accuracy`` or
+    ``label_nll`` by name::
+
+        params = NNTrainParams(..., metrics=data.metric_specs(), monitor=MonitorSpec("label_accuracy"))
+        student.train(params=params, objective=data.objective(alpha=0.7), eval_step_fn=data.eval_step())
+
+    Use :func:`evaluate_offline` for every denominator."""
 
     def __init__(self, *, schema_digest: str, candidates: Sequence[str]) -> None:
         self.schema_digest = _text(schema_digest, "schema_digest")
@@ -779,6 +802,51 @@ class OfflineDistillationEval:
         }
         metrics = {name: m.value for name, m in measures.items() if m.value is not None}  # labelled ones may be absent
         return NNEvaluationDataPoint(loss=report.imitation_loss.value, metrics=metrics)
+
+
+# What OfflineDistillationEval reports, by name: (metric input, direction).
+_METRICS = {
+    "teacher_kl": ("probabilities", "min"),
+    "teacher_agreement": ("labels", "max"),
+    "label_accuracy": ("labels", "max"),
+    "label_nll": ("probabilities", "min"),
+}
+
+
+class _Unavailable:
+    """The default paths see batches, not this evaluation's denominators: a
+    declared offline-distillation metric is computed by
+    :class:`OfflineDistillationEval` only, and refuses anywhere else rather
+    than reporting another quantity under its name."""
+
+    def update(self, target: Any, prediction: Any) -> None:
+        raise TeacherRecordError(
+            "offline.teacher_kl / offline.teacher_agreement / offline.label_accuracy / offline.label_nll are computed "
+            "by the offline evaluation: pass eval_step_fn=TeacherDataset.eval_step() (and "
+            "objective=TeacherDataset.objective()) over loaders of teacher batches"
+        )
+
+    def result(self) -> Optional[float]:
+        return None
+
+
+def _no_config(config: Mapping[str, Any]) -> None:
+    if config:
+        raise ValueError(f"offline-distillation metrics take no options, got {sorted(config)}")
+
+
+def _register_metrics() -> None:
+    from ..monitors import register_metric, registered_metrics
+
+    known = set(registered_metrics())
+    for name, (kind, mode) in _METRICS.items():
+        if (f"offline.{name}", 1) not in known:
+            register_metric(
+                f"offline.{name}", 1, lambda config: _Unavailable(), input=kind, mode=mode, check_config=_no_config
+            )
+
+
+_register_metrics()
 
 
 def _is_teacher_records(value: Any) -> bool:

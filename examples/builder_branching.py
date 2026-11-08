@@ -79,7 +79,8 @@ def _model() -> NNModel:
         params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
     )
     # Head-only fine-tuning: the "head" optimizer's group is layers.1.*, so
-    # the body is frozen (a Trainer's groups must partition the trainables).
+    # the body is frozen (each Trainer optimizer owns only what its groups
+    # match, and a trainable parameter no optimizer owns draws a RuntimeWarning).
     model.freeze("layers.0.*")
     return model
 
