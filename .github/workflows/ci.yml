@@ -411,3 +411,69 @@ jobs:
             --ignore=tests/test_wiki_projection.py \
             --deselect tests/test_nn_graph_dataset_full_batch.py::test_full_batch_cora_parity \
             -p no:cacheprovider -q
+
+  mps-evidence:
+    # FEAT-050: the tests marked `mps` (MPS has no float64; the CPU hops and
+    # the MPS generator snapshots) on an Apple-silicon MPS device. Every other
+    # lane is Linux, where they skip; tests/test_mps_cpu_pins.py pins the
+    # same fixes there. Runs only where the repository has registered a
+    # self-hosted macOS arm64 runner and set the NNX_MPS_RUNNER variable to
+    # "true" (hosted macOS arm64 MPS is unverified: actions/runner-images#9254
+    # reports MPS allocation failures); otherwise it is skipped and
+    # docs/external-contracts.md §2.1 keeps the MPS row unverified in CI. A
+    # pull request from a fork never runs on the self-hosted machine. It
+    # cannot pass by skipping: the probe fails without MPS, and the tests
+    # run with NNX_REQUIRE_MPS=1, which fails an `mps` test without MPS.
+    name: MPS tests (self-hosted Apple silicon)
+    if: vars.NNX_MPS_RUNNER == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, macos, arm64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+          version: "0.13.0"
+
+      - name: Sync the extras from the frozen lock
+        run: uv sync --frozen --all-extras --python "3.12"
+
+      - name: Probe the MPS device (fails without one)
+        run: |
+          uv run --frozen --no-sync python - <<'PY'
+          import platform, torch
+          built, available = torch.backends.mps.is_built(), torch.backends.mps.is_available()
+          print("torch", torch.__version__, platform.platform(), "mps built:", built, "available:", available)
+          assert built and available, "this runner has no usable MPS device"
+          print("mps draw ok:", torch.rand(2, device="mps").cpu().tolist())
+          PY
+
+      - name: Run the MPS tests (a missing device fails, never skips)
+        env:
+          NNX_REQUIRE_MPS: "1"
+          NNX_TQDM_DISABLE: "1"
+        run: |
+          mkdir -p mps-evidence
+          uv run --frozen --no-sync pytest tests -m mps -p no:cacheprovider -rs -q --junitxml=mps-evidence/pytest.xml
+          uv run --frozen --no-sync python - <<'PY'
+          import xml.etree.ElementTree as ET
+          suite = ET.parse("mps-evidence/pytest.xml").getroot().find("testsuite")
+          tests, skipped = int(suite.get("tests", 0)), int(suite.get("skipped", 0))
+          print("tests:", tests, "skipped:", skipped)
+          assert tests > 0, "no test is marked mps"
+          assert skipped == 0, "an MPS test was skipped"
+          PY
+
+      - name: Keep the MPS evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mps-evidence
+          path: mps-evidence/
+          if-no-files-found: warn
+          retention-days: 30
