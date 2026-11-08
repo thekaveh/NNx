@@ -70,6 +70,8 @@ def test_the_mps_marker_skips_or_fails_a_collected_test_without_mps(required):
         assert result.returncode == 1 and "NNX_REQUIRE_MPS=1 and needs an MPS device" in result.stdout, result.stdout
     else:
         assert result.returncode == 0 and "1 skipped" in result.stdout, result.stdout
+        # -rs names the skipped test's own file, not the gate's
+        assert "SKIPPED [1] tests/test_mps_float64_paths.py:" in result.stdout, result.stdout
 
 
 def test_every_mps_test_is_gated_by_the_marker():

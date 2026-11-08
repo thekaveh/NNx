@@ -38,6 +38,20 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 import pytest
 
 
+def pytest_collection_modifyitems(config, items):
+    """Without an MPS device an ``mps``-marked test carries a skip mark, so
+    ``-rs`` reports it at its own location; ``NNX_REQUIRE_MPS=1`` leaves it
+    to fail in setup instead."""
+    from tests._mps import REQUIRE_MPS, mps_skip_reason
+
+    reason = mps_skip_reason()
+    if reason is None or os.environ.get(REQUIRE_MPS) == "1":
+        return
+    for item in items:
+        if item.get_closest_marker("mps") is not None:
+            item.add_marker(pytest.mark.skip(reason=reason))
+
+
 def pytest_runtest_setup(item):
     """An ``mps``-marked test skips without an MPS device, and fails under
     ``NNX_REQUIRE_MPS=1`` (the opt-in ``mps-evidence`` job, FEAT-050)."""
