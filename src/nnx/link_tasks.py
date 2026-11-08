@@ -1123,8 +1123,12 @@ class LinkTask:
         from .nn.nn_model import _to_device
 
         device = model.device
+        x = batch.x
+        parameter = next(model.net.parameters(), None)
+        if parameter is not None and x.is_floating_point() and x.dtype != parameter.dtype:
+            x = x.to(parameter.dtype)  # cast before the move (MPS has no float64); forward() casts direct calls
         out = model.net(
-            _to_device(batch.x, device),
+            _to_device(x, device),
             _to_device(batch.edge_index, device),
             _to_device(batch.edge_label_index, device),
         )

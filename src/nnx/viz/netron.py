@@ -88,23 +88,21 @@ def netron_export(
     if unsupported:  # refused before anything is written, NNModel or bare module alike
         raise NotImplementedError(f"netron_export(): {unsupported}")
 
-    if isinstance(example_input, torch.Tensor):
-        example_input = (example_input.to(device),)
-    elif isinstance(example_input, np.ndarray):
-        example_input = (torch.from_numpy(_writable(example_input)).to(device),)
-    else:
-        example_input = tuple(
-            (e.to(device) if isinstance(e, torch.Tensor) else torch.from_numpy(_writable(np.asarray(e))).to(device))
-            for e in example_input
-        )
-
     # As to_onnx / predict: floating inputs take the net's floating dtype
-    # (a NumPy float64 example would otherwise fail against float32 weights).
+    # (a NumPy float64 example would otherwise fail against float32 weights),
+    # cast before the move, since MPS has no float64.
     net_dtype = next((p.dtype for p in net.parameters() if p.is_floating_point()), None)
-    if net_dtype is not None:
-        example_input = tuple(
-            e.to(net_dtype) if e.is_floating_point() and e.dtype != net_dtype else e for e in example_input
-        )
+
+    def _placed(value: object) -> torch.Tensor:
+        tensor = value if isinstance(value, torch.Tensor) else torch.from_numpy(_writable(np.asarray(value)))
+        if net_dtype is not None and tensor.is_floating_point() and tensor.dtype != net_dtype:
+            tensor = tensor.to(net_dtype)
+        return tensor.to(device)
+
+    if isinstance(example_input, (torch.Tensor, np.ndarray)):
+        example_input = (_placed(example_input),)
+    else:
+        example_input = tuple(_placed(e) for e in example_input)
 
     in_names = [f"input_{i}" for i in range(len(example_input))]
     out_names = ["output"]

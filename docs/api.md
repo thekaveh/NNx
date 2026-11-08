@@ -18375,6 +18375,12 @@ Raises:
         `input_size` / `input_data`, or when `input_size` is given for a model whose
         adapter takes keyword inputs (a synthetic tensor cannot describe them).
 
+Inputs from `batch` and `input_data` go to the device of the module's first
+parameter or buffer (a CPU loader batch reaches a CUDA or MPS module), through
+lists, tuples and dicts; their dtypes are kept. The module itself is never moved.
+The `input_size` dummy is built there too. For a module with no parameters or
+buffers, given inputs stay where they are and the dummy is built on the CPU.
+
 The module's identity, state and every submodule's training mode are left as they
 were (torchinfo itself only restores the top-level mode).
 ```

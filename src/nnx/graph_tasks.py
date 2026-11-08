@@ -375,6 +375,9 @@ class GraphClassifier(nn.Module):
         x, edge_index, vector, ptr = check_graph_batch(batch)
         if self.input_dim is not None and x.shape[1] != self.input_dim:
             raise GraphTaskError(f"the batch has {x.shape[1]} node features; the classifier reads {self.input_dim}")
+        parameter = next(self.parameters(), None)
+        if parameter is not None and x.is_floating_point() and x.dtype != parameter.dtype:
+            x = x.to(parameter.dtype)  # cast before NNModel moves the batch: MPS has no float64
         return (x, edge_index, vector, ptr), _targets(batch, int(ptr.shape[0]) - 1)
 
     def sample_ids(self, batch: Any) -> torch.Tensor:
