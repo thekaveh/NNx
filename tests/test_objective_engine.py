@@ -27,6 +27,7 @@ from nnx import (
     Losses,
     Nets,
     NNCheckpoint,
+    NNConvParams,
     NNModel,
     NNModelParams,
     NNOptimParams,
@@ -867,7 +868,10 @@ def test_a_parameter_retyped_mid_window_finishes_the_window_as_before(case):
 class _OutOfPlaceEngine(UpdateEngine):
     """The engine's arithmetic before #576, as the bit-identity reference:
     every gradient from ``torch.autograd.grad``, microbatches and terms
-    summed out of place."""
+    summed out of place. ``contiguous`` stores each gradient row-major, as
+    the default step's ``.backward()`` stores a contiguous parameter's."""
+
+    contiguous = False
 
     def _backward(self, loss, active, grads, *, retain_graph):
         if self.scaler is not None:
@@ -877,7 +881,8 @@ class _OutOfPlaceEngine(UpdateEngine):
         )
         for j, grad in zip(active, fresh, strict=True):
             if grad is not None:
-                grads[j] = grad.detach() if grads[j] is None else grads[j] + grad.detach()
+                grad = grad.detach().contiguous() if self.contiguous else grad.detach()
+                grads[j] = grad if grads[j] is None else grads[j] + grad
 
     def _assign_gradients(self):
         for j, param in enumerate(self._params):
@@ -1032,6 +1037,76 @@ def test_objective_runs_match_the_out_of_place_engine_bit_for_bit(
         i.train_summary.loss for i in reference_run.idps if i.train_summary is not None
     ]
     assert [i.update_count for i in run.idps] == [i.update_count for i in reference_run.idps]
+    assert events == reference_events and len(events) > 2
+
+
+class _ContiguousOutOfPlaceEngine(_OutOfPlaceEngine):
+    contiguous = True
+
+
+def _conv(seed: int = 0) -> NNModel:
+    torch.manual_seed(seed)
+    return NNModel(
+        net_params=NNConvParams(
+            input_dim=3 * 16 * 16,
+            in_channels=3,
+            conv_channels=[8, 16],
+            kernel_size=3,
+            activation=Activations.RELU,
+            output_dim=4,
+            hidden_dims=[16],
+            dropout_prob=0.0,
+        ),
+        params=NNModelParams(net=Nets.CONV, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
+    )
+
+
+@pytest.mark.parametrize("accumulate", [1, 2], ids=["one-microbatch-windows", "accumulated-windows"])
+@pytest.mark.parametrize("objective", ["one-term", "two-terms"])
+def test_channels_last_conv_runs_store_each_gradient_in_its_parameters_layout(
+    tmp_path, monkeypatch, objective, accumulate
+):
+    """#576 review: a channels_last batch gives a conv weight a channels_last
+    gradient. The engine stores it in the parameter's (row-major) layout,
+    as the default step's ``.backward()`` does; before #576 it kept
+    autograd's. The values are equal, but the clip norm reduces in memory
+    order, so a clipped update can differ in the last bits from before. It
+    matches the out-of-place engine with row-major buffers bit for bit."""
+    import nnx._update_engine as engine_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NNX_TQDM_DISABLE", "1")
+    generator = torch.Generator().manual_seed(1)
+    images = torch.randn(24, 3, 16, 16, generator=generator).to(memory_format=torch.channels_last)
+    labels = torch.randint(0, 4, (24,), generator=generator)
+    batches = [(images[i : i + 4], labels[i : i + 4]) for i in range(0, 24, 4)]
+    probe = _conv()
+    weight = probe.net.convs[0].weight
+    (grad,) = torch.autograd.grad(probe.net(batches[0][0]).sum(), weight)
+    assert weight.is_contiguous() and not grad.is_contiguous()  # the layouts the case is about
+    fits = {}
+    for label, engine_class in (("reference", _ContiguousOutOfPlaceEngine), ("engine", UpdateEngine)):
+        monkeypatch.setattr(engine_module, "UpdateEngine", engine_class)
+        model, counter = _conv(), _Counter()
+        teacher = _conv(seed=1)
+        run = _fit(
+            model,
+            batches,
+            supervised_objective() if objective == "one-term" else kd_objective(teacher, alpha=0.3, temperature=2.0),
+            epochs=2,
+            optim=NNOptimParams.builder()
+            .sgd(max_lr=0.05, momentum=0.9)
+            .accumulate_grad(accumulate)
+            .grad_clip(0.5)
+            .build(),
+            callbacks=[counter],
+            data_id=label,
+        )
+        fits[label] = model, run, counter.events
+    (reference, reference_run, reference_events), (model, run, events) = fits["reference"], fits["engine"]
+    for key, value in reference.net.state_dict().items():
+        assert torch.equal(model.net.state_dict()[key], value), key
+    assert [i.train_edp.loss for i in run.idps] == [i.train_edp.loss for i in reference_run.idps]
     assert events == reference_events and len(events) > 2
 
 

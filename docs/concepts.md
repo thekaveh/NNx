@@ -1049,7 +1049,15 @@ parameter with a post-accumulate-grad hook
 (`Tensor.register_post_accumulate_grad_hook`) never sees these buffers: its
 window takes each term's gradients with `torch.autograd.grad`, which does not
 run the hook, and holds one more gradient set beside the buffers while it
-back-propagates.
+back-propagates. A hook registered on the parameter's `AccumulateGrad` node
+itself still runs, on the term buffer.
+
+Each buffer is stored in its parameter's memory layout, as the default
+step's `.backward()` stores `.grad`; earlier releases kept the layout
+autograd produced. When the two differ (a `channels_last` batch into a
+convolution, a parameter used transposed), the values are the same, but
+gradient clipping sums them in memory order, so a clipped update can differ
+from an earlier release's in the last bits.
 
 The update window is
 `accumulate_grad_batches` microbatches, or fewer when the epoch ends. At its
