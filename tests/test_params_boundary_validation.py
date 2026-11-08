@@ -531,12 +531,10 @@ def test_gate_scripts_parse_their_arguments_under_python_oo(script):
     """-OO strips docstrings; the argparse description must not need one."""
     import subprocess
     import sys
-    from pathlib import Path
 
-    root = Path(__file__).resolve().parents[1]
-    path = root / "scripts" / script
-    if not path.exists():
-        pytest.skip("repository scripts are not shipped in the sdist")
+    from tests._repo_files import repo_file
+
+    path = repo_file("scripts", script)
     done = subprocess.run([sys.executable, "-OO", str(path), "--help"], capture_output=True, text=True, timeout=300)
     assert done.returncode == 0, done.stderr
 
@@ -1852,13 +1850,27 @@ def test_born_again_refuses_a_single_output_runtime_module_before_generation_zer
 
 
 def test_train_contrastive_accepts_a_numpy_learning_rate():
+    """#571: a tiny real backbone trains with an ``np.float32`` lr, so a
+    refusal fails the test whatever its message or check order."""
     import numpy as np
+    import torch
 
     from nnx.embeddings import train_contrastive
 
-    with pytest.raises(Exception) as caught:  # object() is no backbone: fails after the lr check
-        train_contrastive(object(), [("a", "b"), ("c", "d")], lr=np.float32(1e-3))
-    assert "lr must be positive" not in str(caught.value)
+    class Embedder(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.table = torch.nn.Embedding(8, 4)
+
+        def forward(self, texts):
+            return self.table(torch.tensor([ord(text[0]) % 8 for text in texts]))
+
+    torch.manual_seed(0)
+    backbone = Embedder()
+    before = backbone.table.weight.detach().clone()
+    pairs = [("a", "b"), ("c", "d"), ("e", "f")]
+    trained = train_contrastive(backbone, pairs, n_epochs=2, batch_size=3, lr=np.float32(1e-2), shuffle=False)
+    assert trained is backbone and not torch.equal(before, backbone.table.weight)
 
 
 def test_loggers_name_a_declared_metric_that_shadows_a_record_field_apart():
