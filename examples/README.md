@@ -156,6 +156,7 @@ Notes for section 2.1:
 - Run `torchrun --standalone --nproc_per_node=2 examples/ddp_supervised.py --device cpu --epochs 2 --output ddp-out`. It trains six rows with stable ids (0-5) through `nnx.distributed.train_loader` / `validation_loader` and `train(distributed=DDP())`.
 - On macOS, if the host name resolves to an unreachable address, use the loopback instead: `GLOO_SOCKET_IFNAME=lo0 torchrun --nnodes=1 --nproc_per_node=2 --master_addr=127.0.0.1 --master_port=29500 examples/ddp_supervised.py --device cpu --epochs 2 --output ddp-out`.
 - Each rank prints its validation ids (together 0-5 exactly once), the shared run id and whether it owns the artifacts (rank 0 only). It then leaves the process group with `nnx.distributed.shutdown()`.
+- The validation loader shards the same six rows the model trains on, to show the exactly-once sharding. The report therefore names the final validation-pass accuracy `train_rows_accuracy`: it is a training-row accuracy, not a held-out one.
 - `--inject-failure` makes rank 1 raise in epoch 1. The launch exits non-zero within the process-group timeout, leaving no worker behind.
 - CUDA claims need a real two-GPU run.
 - Tests: unnumbered, so it is registered explicitly in `tests/test_examples_smoke.py` (imported, and run under torchrun with and without `--inject-failure`).
@@ -357,6 +358,7 @@ Notes for section 2.1:
 - The `conformance(model, path, X)` helper always runs `onnx.checker`. Without `onnxruntime` it reports `checker-only`: well formed, **no parity claimed**.
 - It reports `executed` when ONNX Runtime ran the graph on CPU and compared every output with the model at `rtol=1e-4, atol=1e-5`.
 - Bounded `registered_module_variant()` (also run by `main`; `tests/test_examples_smoke.py -k "registered_module_variant or onnx_sample"`, CPU): does the same for a model built from a registered factory (`ModelSpec`).
+- The export itself needs `onnx`: without it `to_onnx` raises an `ImportError` naming `thekaveh-nnx[onnx]`, and `main()` prints a skip message for each export and returns (`-k onnx_example_skips`).
 
 **`25_conv_classifier.py`**
 
@@ -427,8 +429,8 @@ Notes for section 2.4:
 
 | Example | What it demonstrates |
 |---|---|
-| `12_quantize_int8.py` | Post-training quantization (PTQ): train a feed-forward classifier, call `nnx.quantize.quantize_int8(model)` once, print the val-accuracy change and the state-dict sizes, and export the quantized model to ONNX. No calibration data, no retraining. Requires `pip install "thekaveh-nnx[quantize,onnx]"`. |
-| `15_qat_classifier.py` | Quantization-aware training (QAT 8da4w via torchao): combine `qat_train_step_factory` and `QATLifecycleCallback` to fake-quant during training, then real-quant on convert. Verifies the saved LAST checkpoint holds the CONVERTED int4 state (scales/zeros on disk) and reloads it with `NNModel.from_checkpoint`, which replays the recorded prepare→convert. Requires `pip install "thekaveh-nnx[quantize]"`; `[onnx-dynamo]` enables the optional Phase-6 ONNX export, which is skipped without it. |
+| `12_quantize_int8.py` | Post-training quantization (PTQ): train a feed-forward classifier, call `nnx.quantize.quantize_int8(model)` once, print the val-accuracy change, the number of changed predictions, the FP32-vs-INT8 logit difference and the state-dict sizes, and export the quantized model to ONNX. No calibration data, no retraining. Requires `pip install "thekaveh-nnx[quantize,onnx]"`. |
+| `15_qat_classifier.py` | Quantization-aware training (QAT 8da4w via torchao): combine `qat_train_step_factory` and `QATLifecycleCallback` to fake-quant during training, then real-quant on convert. Verifies the saved LAST checkpoint holds the CONVERTED int4 state (scales/zeros on disk) and reloads it with `NNModel.from_checkpoint`, which replays the recorded prepare→convert; the reload check compares the reloaded and converted logits, not accuracy. Requires `pip install "thekaveh-nnx[quantize]"`; `[onnx-dynamo]` enables the optional Phase-6 ONNX export, which is skipped without it. |
 
 Notes for section 2.5:
 
@@ -436,6 +438,11 @@ Notes for section 2.5:
 
 - Bounded `quantized_generative_subtype()` (executed by `tests/test_examples_smoke.py -k quantized_generative_subtype`; needs `[quantize,lm]`, skipped otherwise; no ONNX): quantizes a one-layer `GenerativeNNModel` with a locally trained BPE tokenizer.
 - It generates two tokens on the cached and full-recompute paths. `quantize_int8` returns the same class it was given.
+- Examples 12 and 15 share `_loaders` verbatim: a 3-class Gaussian mixture whose classes overlap, so the best possible validation accuracy is about 90% and a prediction near a class boundary can flip under quantization (`-k quantization_examples_share`).
+
+**`15_qat_classifier.py`**
+
+- Bounded `qat_reload_workflow()` (`tests/test_examples_smoke.py -k qat_reload`; needs `[quantize]`, skipped otherwise): one QAT epoch, then the Phase-5 `check_reload`, which compares the reloaded model's validation logits with the converted model's. Scaling every `scales` tensor of the checkpoint by 1.5 fails the check.
 
 ### 2.6. Embeddings + FAISS export
 

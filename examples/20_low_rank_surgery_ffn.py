@@ -414,13 +414,14 @@ def recipe_reconstruction_workflow() -> dict:
     )
 
     # Validation mutates nothing; an optimizer built before the recipe is refused.
+    plain_keys = list(model.net.state_dict())
     early = build_optimizer(model.net, optim)
     try:
         recipe.materialize(model, optimizers=[early])
         raise AssertionError("a stale optimizer must be refused")
     except RecipeError as exc:
         refused = str(exc)
-    assert "build the optimizer after" in refused and model._topology_transforms == ()
+    assert "build the optimizer after" in refused and list(model.net.state_dict()) == plain_keys
 
     recipe.materialize(model)
     optimizer = build_optimizer(model.net, optim)  # optimizer-after-transform order
@@ -441,13 +442,14 @@ def recipe_reconstruction_workflow() -> dict:
         model_params=model.params,
         net_params=model.net_params,
         net_state=model.net.state_dict(),
-        transforms=model._topology_transforms,
+        transforms=recipe.checkpoint_transforms(),  # the recipe materialized on the plain model
     )
     with tempfile.TemporaryDirectory() as directory:
         path = os.path.join(directory, "recipe.pt")
         checkpoint.to_file(path, format="pickle")
+        loaded = NNCheckpoint.from_file(path)
         with mock.patch("torch.linalg.svd", side_effect=AssertionError("SVD rerun during reload")):
-            rebuilt = NNModel.from_checkpoint(NNCheckpoint.from_file(path))
+            rebuilt = NNModel.from_checkpoint(loaded)
 
     model.net.eval()
     rebuilt.net.eval()
@@ -456,7 +458,7 @@ def recipe_reconstruction_workflow() -> dict:
     keys = list(rebuilt.net.state_dict()) == list(model.net.state_dict())
     flags = [p.requires_grad for p in rebuilt.net.parameters()] == [p.requires_grad for p in model.net.parameters()]
     assert same and keys and flags
-    summary = {"operations": [t.name for t in rebuilt._topology_transforms], "predictions_match": same}
+    summary = {"operations": [t.name for t in loaded.transforms], "predictions_match": same}
     print(f"recipe {summary['operations']} rebuilt from its checkpoint; predictions match: {same}")
     return summary
 

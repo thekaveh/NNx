@@ -103,7 +103,7 @@ def _params(n_epochs: int, data_id: str) -> NNTrainParams:
 
 
 def _classifier() -> NNModel:
-    torch.manual_seed(7)
+    # No seeding here: built_in_classifier() seeds before each build.
     return NNModel(
         net_params=NNParams(input_dim=4, output_dim=3, hidden_dims=[8], dropout_prob=0.1, activation=Activations.RELU),
         params=NNModelParams(
@@ -121,8 +121,10 @@ def _same_weights(left: NNModel, right: NNModel) -> bool:
 
 
 def built_in_classifier() -> dict:
+    torch.manual_seed(7)
     continuous = _classifier()
     continuous.train(params=_params(3, "continuous"))  # the uninterrupted reference
+    torch.manual_seed(7)
     first = _classifier()
     run = first.train(params=_params(2, "bundled"))
     fit = fit_temperature(

@@ -177,6 +177,11 @@ def test_public_text_carries_no_private_knowledge_base_links():
         source = (build_docs.ROOT / "src" / "nnx" / "nn" / "params" / f"{name}.py").read_text(encoding="utf-8")
         assert not label.findall(source), name
     assert not label.findall((build_docs.ROOT / "docs" / "api.md").read_text(encoding="utf-8"))
+    # #570: the examples are public text too, scripts and README alike.
+    examples = sorted((build_docs.ROOT / "examples").glob("*.py")) + [build_docs.ROOT / "examples" / "README.md"]
+    assert len(examples) > 40
+    for path in examples:
+        assert not label.findall(path.read_text(encoding="utf-8")), path.name
 
 
 def test_primary_openers_place_product_poster_before_first_section():
