@@ -262,6 +262,7 @@ addopts = "-v --tb=short"
 markers = [
     # pytest-xdist registers it too; listed so lanes without xdist (floor deps) know it.
     "xdist_group(name): run the marked tests on one pytest-xdist worker",
+    "mps: needs an MPS device; skips without one, fails under NNX_REQUIRE_MPS=1 (tests/_mps.py)",
 ]
 filterwarnings = [
     # Upstream deprecations we can't act on — silenced so pytest output

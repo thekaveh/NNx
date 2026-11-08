@@ -144,6 +144,38 @@ def test_lr_finder_restores_python_and_numpy_rng():
     assert np.random.random() == expected_numpy
 
 
+def test_lr_finder_restores_the_mps_generator(monkeypatch):
+    """FEAT-050: a CPU pin of the MPS branch. The sweep targets device mps
+    over a fake MPS generator; the batches stay on the CPU (a CPU-only host
+    cannot move them) and the model draws from the generator as MPS dropout
+    would."""
+    from tests._mps import fake_mps_generator
+
+    mps = fake_mps_generator(monkeypatch)
+
+    class Draws(nn.Linear):
+        def forward(self, x):
+            mps.draw()
+            return super().forward(x)
+
+    class Stays:
+        def __init__(self, tensor):
+            self.tensor = tensor
+
+        def to(self, device):
+            assert device == torch.device("mps")
+            return self.tensor
+
+    torch.manual_seed(0)
+    data = TensorDataset(torch.randn(16, 4), torch.randint(0, 3, (16,)))
+    loader = DataLoader(
+        data, batch_size=8, collate_fn=lambda rows: tuple(Stays(torch.stack(c)) for c in zip(*rows, strict=True))
+    )
+    before = mps.state.clone()
+    result = lr_finder(Draws(4, 3), loader, loss_fn=nn.functional.cross_entropy, num_iter=2, device=torch.device("mps"))
+    assert len(result.losses) == 2 and torch.equal(mps.state, before)
+
+
 def test_lr_finder_restores_existing_parameter_gradients():
     model, loader = _tiny_model_and_loader()
     parameters = list(model.parameters())

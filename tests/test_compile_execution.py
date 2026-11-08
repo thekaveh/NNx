@@ -717,7 +717,7 @@ def test_a_skipped_frame_under_on_failure_error_restores_buffers(monkeypatch):
         assert torch.equal(tensor, before[name]), name
 
 
-@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs an MPS device")
+@pytest.mark.mps
 def test_the_compile_snapshot_restores_the_mps_generator():
     from nnx.compilation import _Snapshot
 
@@ -725,6 +725,19 @@ def test_the_compile_snapshot_restores_the_mps_generator():
     first = torch.rand(3, device="mps")
     snapshot.restore()
     assert torch.equal(torch.rand(3, device="mps"), first)
+
+
+def test_the_compile_snapshot_restores_the_mps_generator_on_any_host(monkeypatch):
+    """FEAT-050: a CPU pin of the MPS branch, over a fake MPS generator."""
+    from nnx.compilation import _Snapshot
+    from tests._mps import fake_mps_generator
+
+    mps = fake_mps_generator(monkeypatch)
+    snapshot = _Snapshot(torch.nn.Linear(2, 2))
+    before = mps.state.clone()
+    mps.draw()  # the failed compiled call's MPS dropout
+    snapshot.restore()
+    assert torch.equal(mps.state, before)
 
 
 # ---------------- #576: buffer clones kept while unchanged ----------------

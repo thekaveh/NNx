@@ -434,6 +434,23 @@ def test_malformed_model_outputs_are_provider_failures():
         _provider(model=Ragged(), pair_batch_size=2).decide(Choice("Topic?", (SPORT, ECON, ("t-x", "x"))), [TEXT])
 
 
+def test_an_mps_model_s_logits_widen_on_the_cpu():
+    """FEAT-050: MPS has no float64, so the logits reach the CPU before they
+    widen. A CPU pin: the logits refuse float64 and NumPy as on MPS."""
+    from tests._mps import off_cpu
+
+    class OnMPS(OverlapNLI):
+        def forward(self, input_ids, token_type_ids, attention_mask):
+            output = super().forward(input_ids, token_type_ids, attention_mask)
+            output.logits = off_cpu(output.logits)
+            return output
+
+    choice = Choice("Topic?", (SPORT, ECON))
+    (on_mps,) = _provider(model=OnMPS()).decide(choice, [TEXT])
+    (reference,) = _provider().decide(choice, [TEXT])
+    assert on_mps.probabilities() == pytest.approx(reference.probabilities())
+
+
 def test_unknown_entailment_labels_never_reach_the_model():
     model = OverlapNLI()
     model.config.label2id = {"yes": 0, "no": 1}
