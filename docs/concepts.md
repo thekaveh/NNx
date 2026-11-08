@@ -1052,8 +1052,9 @@ run the hook, and holds one more gradient set beside the buffers while it
 back-propagates. A hook registered on the parameter's `AccumulateGrad` node
 itself still runs, on the term buffer.
 
-Each buffer is stored in its parameter's memory layout, as the default
-step's `.backward()` stores `.grad`; earlier releases kept the layout
+Each buffer, and a one-microbatch window's gradients, is stored in its
+parameter's memory layout, as the default step's `.backward()` stores
+`.grad`; earlier releases kept the layout
 autograd produced. When the two differ (a `channels_last` batch into a
 convolution, a parameter used transposed), the values are the same, but
 gradient clipping sums them in memory order, so a clipped update can differ
