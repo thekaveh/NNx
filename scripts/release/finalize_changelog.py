@@ -8,9 +8,10 @@ notes the generated list stays. A changelog whose first section is already
 ``[Unreleased]`` is left unchanged, so running it again is a no-op.
 
 Nothing commits to a release PR but release-please itself (FIX-033), so the
-release workflow publishes the folded notes (``--release-notes``) and the
-post-release sync of ``main`` into ``develop`` runs this to fold them into
-the file.
+release workflow (``release.yml``) publishes the folded notes
+(``--release-notes``), read from the commit the release tag names (FIX-068),
+and the post-release sync of ``main`` into ``develop`` runs this to fold them
+into the file.
 
 On ``develop`` the ``[Unreleased]`` notes can hold entries added after the
 release branched. ``--released FILE`` names the changelog the release

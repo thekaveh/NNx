@@ -11,6 +11,11 @@ on:
         description: Existing vX.Y.Z release tag
         required: true
         type: string
+      keep_draft_notes:
+        description: Publish the draft's notes as they are (set by hand after a refused fold)
+        required: false
+        default: false
+        type: boolean
 
 # Principle of least privilege, matching ci.yml: the workflow default is
 # read-only; jobs that need more (id-token for trusted publishing)
@@ -182,6 +187,33 @@ jobs:
             echo "::error::tag $RELEASE_TAG resolves to $actual, not the release commit $expected — aborting before publish."
             exit 1
           fi
+
+      - name: Fold the curated release notes from the tagged commit
+        # FIX-029, FIX-068: release-please drafts the release from its
+        # generated commit list; the curated [Unreleased] notes of the
+        # checked-out release commit (the one the tag names, asserted above)
+        # replace it, folded under the version heading as the post-release
+        # sync does (FIX-033). Folded before anything is published: a
+        # refusal (two unfinalized release sections) stops the release here.
+        # After one, publish hand-fixed notes on the draft and dispatch again
+        # with keep_draft_notes (CONTRIBUTING §7.2).
+        id: notes
+        if: inputs.tag_name != '' && !inputs.keep_draft_notes
+        env:
+          RELEASE_TAG: ${{ inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release-notes"
+          python3 scripts/release/finalize_changelog.py CHANGELOG.md --release-notes "$RELEASE_TAG" > "$RUNNER_TEMP/release-notes/notes.md"
+
+      - name: Upload the curated release notes
+        if: steps.notes.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes/notes.md
+          retention-days: 7
+          overwrite: true
 
       - name: Build reproducible sdist + wheel
         run: |
@@ -505,6 +537,13 @@ jobs:
           name: release-distributions
           path: dist
 
+      - name: Download the curated release notes
+        if: ${{ !inputs.keep_draft_notes }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes
+
       - name: Attach distributions or verify an already-published release
         id: release_state
         env:
@@ -562,6 +601,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag_name }}
         run: gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+
+      - name: Publish the curated release notes
+        # FIX-068: before the draft is published, so a re-run of this job
+        # after any failure publishes them again.
+        if: steps.release_state.outputs.already_published != 'true' && !inputs.keep_draft_notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
+        run: gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/release-notes/notes.md"
 
       - name: Publish Release Please draft
         if: steps.release_state.outputs.already_published != 'true'
