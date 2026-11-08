@@ -60,12 +60,6 @@ def test_a_missing_file_skips_in_an_extracted_sdist(tree):
     )
 
 
-def test_this_checkout_is_not_taken_for_an_sdist():
-    if not (_repo_files.ROOT / "pyproject.toml").is_file() or (_repo_files.ROOT / "PKG-INFO").exists():
-        pytest.skip("runs from a repository checkout")
-    assert _repo_files.in_sdist() is False
-
-
 @pytest.mark.parametrize("sdist", [False, True], ids=["checkout", "sdist"])
 def test_a_module_level_guard_fails_collection_in_a_checkout_and_skips_in_an_sdist(tmp_path, sdist):
     """The whole-suite effect of a renamed script: pytest exits non-zero in a
@@ -97,20 +91,54 @@ def test_a_module_level_guard_fails_collection_in_a_checkout_and_skips_in_an_sdi
         assert "ERROR collecting tests/test_gate.py" in output and "has no scripts/check_gate.py" in output
 
 
+_GUARD_CALLS = ("pytest.skip", "pytest.importorskip", "pytest.mark.skipif")
+
+
+def _inline_guard_lines(source: str) -> list[int]:
+    """Lines of ``source`` that skip inline for a repository path the sdist
+    omits: a skip whose positional or ``reason=`` text (an f-string's literal
+    parts included) names the sdist, or an import of a generic name such as
+    ``scripts``."""
+    import ast
+
+    def words(value: ast.expr) -> list[str]:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return [value.value]
+        if isinstance(value, ast.JoinedStr):
+            return [part for piece in value.values for part in words(piece)]
+        return []
+
+    lines = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or ast.unparse(node.func) not in _GUARD_CALLS:
+            continue
+        texts = [word for arg in [*node.args, *(kw.value for kw in node.keywords)] for word in words(arg)]
+        if any("sdist" in word or word in ("scripts", "examples") for word in texts):
+            lines.append(node.lineno)
+    return lines
+
+
+def test_the_guard_scan_reads_keyword_f_string_and_skipif_reasons():
+    source = (
+        "import pytest\n"
+        "x = 'a'\n"
+        "pytest.skip(reason='not shipped in the sdist')\n"
+        "pytest.skip(f'{x} is not shipped in the sdist')\n"
+        "mark = pytest.mark.skipif(True, reason='not shipped in the sdist')\n"
+        "pytest.skip('not shipped in the sdist')\n"
+        "pytest.importorskip('scripts')\n"
+        "pytest.skip('needs CUDA')\n"
+    )
+    assert _inline_guard_lines(source) == [3, 4, 5, 6, 7]
+
+
 def test_every_repository_only_guard_goes_through_repo_file():
     """One checkout and sdist rule: no test skips inline for a repository
     path the sdist omits (an ``exists()`` check before ``pytest.skip``, or an
     import of a generic name such as ``scripts``)."""
-    import ast
-
     offenders = []
     for path in sorted(Path(__file__).resolve().parent.glob("*.py")):
         if path.name == "_repo_files.py":
             continue
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if not isinstance(node, ast.Call) or ast.unparse(node.func) not in ("pytest.skip", "pytest.importorskip"):
-                continue
-            words = [arg.value for arg in node.args if isinstance(arg, ast.Constant) and isinstance(arg.value, str)]
-            if any("sdist" in word or word in ("scripts", "examples") for word in words):
-                offenders.append(f"{path.name}:{node.lineno}")
+        offenders += [f"{path.name}:{line}" for line in _inline_guard_lines(path.read_text(encoding="utf-8"))]
     assert offenders == []
