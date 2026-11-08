@@ -82,6 +82,31 @@ def test_a_summary_by_input_size_never_moves_a_cpu_model_on_a_cuda_host(monkeypa
     assert all(p.device.type == "cpu" for p in model.net.parameters())
 
 
+def test_a_summary_by_input_size_restores_an_mps_model_s_generator(monkeypatch):
+    """FEAT-050: a CPU pin of the MPS branch. The weight reports device mps,
+    the MPS generator is fake, and torchinfo (stubbed: a CPU-only host cannot
+    build the dummy on MPS) draws from it as its MPS dummy would."""
+    import torch
+    import torchinfo
+
+    from tests._mps import fake_mps_generator, reports_mps
+
+    mps = fake_mps_generator(monkeypatch)
+    seen = []
+
+    def stub(model, **kwargs):
+        seen.append(kwargs["device"])
+        mps.draw()
+        return "statistics"
+
+    monkeypatch.setattr(torchinfo, "summary", stub)
+    net = torch.nn.Linear(4, 2)
+    net.weight = torch.nn.Parameter(reports_mps(net.weight.detach().clone()))
+    before = mps.state.clone()
+    assert summary(net, input_size=(2, 4)) == "statistics"
+    assert seen == [torch.device("mps")] and torch.equal(mps.state, before)
+
+
 def test_a_summary_by_input_size_builds_a_double_dummy_for_a_double_model():
     import torch
 
