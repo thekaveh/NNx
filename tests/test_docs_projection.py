@@ -1091,6 +1091,81 @@ def test_broken_reference_link_definition_is_rejected(tmp_path: Path):
         validate_links(tmp_path, "site")
 
 
+# #568: definitions in nested list items and links in an outer item's paragraph
+# after a nested list are read and validated like their column-0 controls.
+NESTED_FULL_REFERENCE = "- Guides\n    - See [the guide][qs].\n\n        [qs]: {target}\n"
+
+
+@pytest.mark.parametrize(
+    ("surface", "target", "projected"),
+    [
+        ("wiki", "quickstart.md", "Quickstart"),
+        ("site", "quickstart.md", "Quickstart.md"),
+        ("wiki", "assets/training-lifecycle.png", "images/training-lifecycle.png"),
+    ],
+)
+def test_the_page_map_projects_nested_definitions_and_outer_item_links(surface: str, target: str, projected: str):
+    from scripts.docs.build_wiki import rewrite_markdown
+
+    text = (
+        NESTED_FULL_REFERENCE.format(target=target)
+        + f"- Guides\n    - A nested item.\n\n    Then read [the guide]({target}).\n"
+    )
+    rendered = rewrite_markdown(
+        build_docs.ROOT / "docs" / "concepts.md", text, build_docs._source_map(surface), surface=surface
+    )
+    assert f"\n        [qs]: {projected}\n" in rendered
+    assert rendered.endswith(f"\n    Then read [the guide]({projected}).\n")
+
+
+@pytest.mark.parametrize("surface", ["site", "wiki"])
+def test_a_full_reference_to_a_nested_definition_passes_validate_links(tmp_path: Path, surface: str):
+    (tmp_path / "Target.md").write_text("# Present\n", encoding="utf-8")
+    (tmp_path / "Page.md").write_text(NESTED_FULL_REFERENCE.format(target="Target.md#present"), encoding="utf-8")
+
+    validate_links(tmp_path, surface)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        NESTED_FULL_REFERENCE.format(target="Missing.md"),
+        "- Guides\n    - A nested item.\n\n    Then read [the guide](Missing.md).\n",
+    ],
+)
+def test_a_missing_nested_or_outer_item_target_fails_validate_links(tmp_path: Path, text: str):
+    (tmp_path / "Page.md").write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="broken site link"):
+        validate_links(tmp_path, "site")
+
+
+def test_a_full_reference_to_a_nested_definition_passes_repository_validation(tmp_path: Path):
+    source = tmp_path / "README.md"
+    target = tmp_path / "quickstart.md"
+    source.write_text(NESTED_FULL_REFERENCE.format(target="quickstart.md"), encoding="utf-8")
+    target.write_text("# Quickstart\n", encoding="utf-8")
+
+    build_docs.validate_repository_sources(tmp_path, [source], {source.resolve(), target.resolve()})
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        NESTED_FULL_REFERENCE.format(target="quikstart.md"),
+        "- Guides\n    - See [qs].\n\n        [qs]: quikstart.md\n",
+        "- Guides\n    - See [qs].\n\n    [qs]: quikstart.md\n",
+        "- Guides\n    - A nested item.\n\n    Then read [the guide](quikstart.md).\n",
+    ],
+)
+def test_a_missing_nested_or_outer_item_target_fails_repository_validation(tmp_path: Path, text: str):
+    source = tmp_path / "README.md"
+    source.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="broken repo link"):
+        build_docs.validate_repository_sources(tmp_path, [source], {source.resolve()})
+
+
 @pytest.mark.parametrize(
     "target",
     [

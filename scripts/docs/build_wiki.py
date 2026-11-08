@@ -21,8 +21,8 @@ ATTR_ID_RE = re.compile(r"(?:^|[ \t])#(?P<id>[A-Za-z0-9_.:-]+)(?=$|[ \t])")
 ATX_HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]+")
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
 MARKDOWN_ESCAPE_RE = re.compile(r"""\\([!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])""")
-LIST_ITEM_RE = re.compile(r"^(?P<prefix> {0,3}(?:[-+*]|\d+[.)])[ \t]+)(?P<content>.*)$")
 NESTED_LIST_ITEM_RE = re.compile(r"^(?P<prefix>[ \t]*(?:(?:[-+*]|\d+[.)])[ \t]+)+)(?P<content>.*)$")
+LIST_MARKER_RE = re.compile(r"(?:[-+*]|\d+[.)])[ \t]+")
 RAW_HTML_BLOCK_TAGS = {
     "address",
     "article",
@@ -318,10 +318,14 @@ def _srcset_candidates(value: str) -> list[tuple[str, str]]:
     return candidates
 
 
-def _code_span_ranges(text: str) -> list[tuple[int, int]]:
+def _code_span_ranges(text: str, open_items: tuple[int, ...] = ()) -> list[tuple[int, int]]:
+    """Inline code spans outside links and reference definitions;
+    ``open_items`` are the list items still open where ``text`` starts."""
     link_ranges = [(link.start, link.end) for link in iter_inline_links(text)]
     link_ranges.extend((usage.start, usage.end) for usage in iter_reference_usages(text))
-    link_ranges.extend((definition.start, definition.end) for definition in iter_reference_definitions(text))
+    link_ranges.extend(
+        (definition.start, definition.end) for definition in iter_reference_definitions(text, open_items)
+    )
     ranges: list[tuple[int, int]] = []
     cursor = 0
     while cursor < len(text):
@@ -354,8 +358,8 @@ def _code_span_ranges(text: str) -> list[tuple[int, int]]:
     return ranges
 
 
-def _inline_suppressed_blocks(text: str) -> list[MarkdownBlock]:
-    code_ranges = _code_span_ranges(text)
+def _inline_suppressed_blocks(text: str, open_items: tuple[int, ...] = ()) -> list[MarkdownBlock]:
+    code_ranges = _code_span_ranges(text, open_items)
     suppressed_ranges = list(code_ranges)
     cursor = 0
     while cursor < len(text):
@@ -400,13 +404,14 @@ def markdown_blocks(text: str) -> list[MarkdownBlock]:
     in_indented_code = False
     in_pre_block: int | None = None
     in_html_block: tuple[str, int, bool, int] | None = None
-    active_list_indent = 0
+    open_items: tuple[int, ...] = ()
+    prose_items: tuple[int, ...] = ()  # the list items open where the prose run starts
     literal_html_state: tuple[str, int, int] | None = None
     previous_blank = True
 
     def flush_prose() -> None:
         if prose:
-            for block in _inline_suppressed_blocks("".join(prose)):
+            for block in _inline_suppressed_blocks("".join(prose), prose_items):
                 _append_block(blocks, block.text, block.suppressed, block.html_processable)
             prose.clear()
 
@@ -415,22 +420,10 @@ def markdown_blocks(text: str) -> list[MarkdownBlock]:
         quote_prefix, container_content = _blockquote_parts(content)
         quote_depth = quote_prefix.count(">")
         blank = not container_content.strip()
-        previous_list_indent = active_list_indent
-        list_item = NESTED_LIST_ITEM_RE.match(container_content)
-        if list_item is not None:
-            list_indent = _prefix_columns(list_item.group("prefix"))
-            active_list_indent = list_indent
-            parser_content = list_item.group("content")
-        else:
-            leading = _indent_columns(container_content)
-            if active_list_indent and (blank or leading >= active_list_indent):
-                list_indent = active_list_indent
-                parser_content = _strip_indent_columns(container_content, active_list_indent) if not blank else ""
-            else:
-                if not blank:
-                    active_list_indent = 0
-                list_indent = 0
-                parser_content = container_content
+        previous_items = open_items
+        previous_list_indent = previous_items[-1] if previous_items else 0
+        open_items, parser_content = _list_step(container_content, open_items)
+        list_indent = open_items[-1] if open_items else 0
         if previous_list_indent and list_indent < previous_list_indent and not blank:
             flush_prose()
             in_html_block = None
@@ -570,6 +563,8 @@ def markdown_blocks(text: str) -> list[MarkdownBlock]:
             _append_block(blocks, line, True, False)
             in_indented_code = True
         else:
+            if not prose:
+                prose_items = previous_items
             prose.append(line)
         previous_blank = blank
 
@@ -714,9 +709,9 @@ def block_reference_definitions(blocks, texts: list[str] | None = None) -> dict[
     """Each unsuppressed block's reference definitions, offsets in its own
     text (or in ``texts[i]``, the block after an HTML rewrite). A definition
     only starts a line (CommonMark), so the rest of a line after an inline
-    code span holds none; an open list item carries across blocks."""
+    code span holds none; the open list items carry across blocks."""
     found: dict[int, list[ReferenceDefinition]] = {}
-    list_indent = 0
+    open_items: tuple[int, ...] = ()
     partial: str | None = None  # the start of a line split by an inline span
     for index, block in enumerate(blocks):
         text = block.text if texts is None else texts[index]
@@ -727,50 +722,64 @@ def block_reference_definitions(blocks, texts: list[str] | None = None) -> dict[
                 if not block.suppressed:
                     found[index] = []
                 continue
-            list_indent = _list_indent_after(partial + head, list_indent)  # the split line, read whole
+            open_items = _list_items_after(partial + head, open_items)  # the split line, read whole
         if not block.suppressed:
             shift = len(head) + len(newline)
             found[index] = [
                 replace(definition, start=definition.start + shift, end=definition.end + shift)
-                for definition in iter_reference_definitions(lines, list_indent)
+                for definition in iter_reference_definitions(lines, open_items)
             ]
         complete, _, rest = lines.rpartition("\n")
-        list_indent = _list_indent_after(complete, list_indent)
+        open_items = _list_items_after(complete, open_items)
         partial = rest or None
     return found
 
 
-def _list_step(body: str, active_list_indent: int) -> tuple[int, str]:
-    """One line's effect on the open list item's content indent, and the
-    line's body relative to that item."""
-    list_item = LIST_ITEM_RE.match(body)
+def _list_step(body: str, open_items: tuple[int, ...]) -> tuple[tuple[int, ...], str]:
+    """One line's effect on the content indents of the open list items
+    (outermost first), and the line's body relative to the deepest item that
+    holds it. A blank line keeps every item open; another line first closes
+    the items its indent does not reach, then each list marker on it opens a
+    nested item, so a paragraph after a nested list rejoins its outer item."""
+    if not body.strip():
+        return open_items, ""
+    leading = _indent_columns(body)
+    while open_items and leading < open_items[-1]:
+        open_items = open_items[:-1]
+    list_item = NESTED_LIST_ITEM_RE.match(body)
     if list_item is not None:
-        return _prefix_columns(list_item.group("prefix")), list_item.group("content")
-    if active_list_indent and _indent_columns(body) >= active_list_indent:
-        return active_list_indent, _strip_indent_columns(body, active_list_indent)
-    return (0 if body.strip() else active_list_indent), body
+        prefix = list_item.group("prefix")
+        opened = tuple(_prefix_columns(prefix[: marker.end()]) for marker in LIST_MARKER_RE.finditer(prefix))
+        return open_items + opened, list_item.group("content")
+    return open_items, _strip_indent_columns(body, open_items[-1]) if open_items else body
 
 
-def _list_indent_after(text: str, active_list_indent: int) -> int:
-    """The open list item's content indent after the lines of ``text``."""
+def _list_items_after(text: str, open_items: tuple[int, ...]) -> tuple[int, ...]:
+    """The open list items' content indents after the lines of ``text``."""
     for line in text.splitlines():
-        active_list_indent, _ = _list_step(_blockquote_parts(line)[1], active_list_indent)
-    return active_list_indent
+        open_items, _ = _list_step(_blockquote_parts(line)[1], open_items)
+    return open_items
 
 
-def iter_reference_definitions(text: str, list_indent: int = 0):
+def _list_indent_after(text: str, active_list_indent: int = 0) -> int:
+    """The deepest open list item's content indent after the lines of
+    ``text``, from one item open at ``active_list_indent`` (0: none)."""
+    open_items = _list_items_after(text, (active_list_indent,) if active_list_indent else ())
+    return open_items[-1] if open_items else 0
+
+
+def iter_reference_definitions(text: str, open_items: tuple[int, ...] = ()):
     """Yield single- and continuation-line reference definitions.
-    ``list_indent`` is the content indent of a list item still open where
-    ``text`` starts (a chunk after an inline code span)."""
+    ``open_items`` are the content indents of the list items still open
+    where ``text`` starts (a chunk after an inline code span)."""
     lines = text.splitlines(keepends=True)
     offset = 0
     index = 0
-    active_list_indent = list_indent
     while index < len(lines):
         line = lines[index]
         content = line.rstrip("\r\n")
         quote_prefix, body = _blockquote_parts(content)
-        active_list_indent, parse_body = _list_step(body, active_list_indent)
+        open_items, parse_body = _list_step(body, open_items)
         definition = parse_reference_definition(quote_prefix + parse_body)
         if definition is None:
             offset += len(line)
