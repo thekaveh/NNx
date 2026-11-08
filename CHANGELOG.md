@@ -235,6 +235,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
     - `netron_export` casts a NumPy float64 example to the net's dtype, as `to_onnx` does; `summary(input_size=)` builds its dummy in the model's floating dtype (a `.double()` model) and on its device even without parameters; benchmark coverage reasons count one fault across samples (messages no longer carry the sample id); the wiki and site builds no longer read prose after an inline code span (`` `x` [a]: ... ``) as a link reference definition.
     - `link_metrics` refuses a `(K, 1)` target column, one-hot targets, a `(K, 1)` score column, scalars and higher-rank scores, which broadcast into wrong `bce`, `nll` and `accuracy` or raised a raw NumPy / scikit-learn error.
     - The `TeacherBatch` refusal from `NNModel.train`, `predict` and `evaluate`, and the `--objective` help of examples 08 and 16, no longer cite an internal tracking id ([#575](https://github.com/thekaveh/NNx/issues/575)).
+    - The wiki, site and PyPI builds and the docs link validators read a link reference definition in a nested list item, and a paragraph that continues an outer item after a nested list, as Markdown renderers do: their links are now projected and checked instead of kept as written or read as code ([#568](https://github.com/thekaveh/NNx/issues/568)).
 
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)
 

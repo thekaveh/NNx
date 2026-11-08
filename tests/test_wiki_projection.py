@@ -796,3 +796,212 @@ def test_a_definition_after_an_html_rewrite_in_its_block_keeps_its_offsets(tmp_p
     text = 'See <a href="page-two.md">P</a> here.\n[ref]: page-two.md\n'
     rendered = rewrite_markdown(source, text, {target.resolve(): "Some-Long-Page-Name"})
     assert rendered == 'See <a href="Some-Long-Page-Name">P</a> here.\n[ref]: Some-Long-Page-Name\n'
+
+
+# #568: a definition or an outer item's paragraph after a nested list belongs to
+# the deepest open item its indent reaches, as markdown-it and Python-Markdown read it.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "- A\n    - x\n\n        [qs]: q.md\n",
+        "- A\n    - x\n\n      [qs]: q.md\n",
+        "- A\n    - [qs]: q.md\n",
+        "1. A\n    - x\n\n        [qs]: q.md\n",
+        "- A\n    - B\n        - x\n\n            [qs]: q.md\n",
+        "> - A\n>     - x\n>\n>         [qs]: q.md\n",
+        "- A\n    - x\n\n    [qs]: q.md\n",
+    ],
+)
+def test_a_definition_in_a_nested_list_item_is_found(text: str):
+    from scripts.docs.build_wiki import block_reference_definitions, markdown_blocks
+
+    blocks = markdown_blocks(text)
+    found = [(index, d) for index, ds in block_reference_definitions(blocks).items() for d in ds]
+    assert [(definition.label, definition.target) for _, definition in found] == [("qs", "q.md")]
+    ((index, definition),) = found
+    assert blocks[index].text[definition.start : definition.end].rstrip("\n").endswith("[qs]: q.md")
+
+
+def test_an_outer_item_paragraph_after_a_nested_list_is_prose():
+    from scripts.docs.build_wiki import markdown_blocks
+
+    text = "- Guides\n    - A nested item.\n\n    Then read [x](q.md).\n"
+    (block,) = [block for block in markdown_blocks(text) if "    Then read [x](q.md).\n" in block.text]
+    assert block.suppressed is False
+
+
+def test_the_list_indent_after_a_nested_item_is_its_content_indent():
+    assert build_wiki._list_indent_after("- Guides\n    - See [qs].\n", 0) == 6
+
+
+@pytest.mark.parametrize("text", ['- A\n    - x\n\n        [qs]: q.md "`t`"\n', '[qs]: q.md "`t`"\n'])
+def test_a_nested_definitions_backticked_title_is_not_a_code_span(text: str):
+    assert build_wiki._code_span_ranges(text) == []
+
+
+NESTED_DEFINITION = "- Guides\n    - See [the guide][qs].\n\n        [qs]: {target}\n"
+OUTER_CONTINUATION = "- Guides\n    - A nested item.\n\n    Then read [the guide]({target}).\n"
+
+
+def _projection_map(surface: str) -> dict[Path, str]:
+    """The entries ``build_docs._source_map`` and ``build_pypi_readme`` give
+    these targets (``build_docs`` needs the docs extras, so not imported)."""
+    from scripts.docs.build_pypi_readme import REPOSITORY_BLOB
+
+    docs = build_wiki.ROOT / "docs"
+    quickstart = {
+        "wiki": "Quickstart",
+        "site": "Quickstart.md",
+        "pypi": REPOSITORY_BLOB + "docs/quickstart.md",
+    }[surface]
+    return {
+        (docs / "quickstart.md").resolve(): quickstart,
+        (docs / "assets" / "training-lifecycle.png").resolve(): "images/training-lifecycle.png",
+    }
+
+
+@pytest.mark.parametrize(
+    ("template", "projected_line"),
+    [(NESTED_DEFINITION, "        [qs]: {}"), (OUTER_CONTINUATION, "    Then read [the guide]({}).")],
+)
+@pytest.mark.parametrize(
+    ("surface", "target", "projected"),
+    [
+        ("wiki", "quickstart.md", "Quickstart"),
+        ("site", "quickstart.md", "Quickstart.md"),
+        ("pypi", "quickstart.md", "https://github.com/thekaveh/NNx/blob/main/docs/quickstart.md"),
+        ("wiki", "assets/training-lifecycle.png", "images/training-lifecycle.png"),
+    ],
+)
+def test_nested_definitions_and_outer_item_links_are_projected(
+    template: str, projected_line: str, surface: str, target: str, projected: str
+):
+    source = build_wiki.ROOT / "docs" / "concepts.md"
+    rendered = rewrite_markdown(
+        source,
+        template.format(target=target),
+        _projection_map(surface),
+        surface="wiki" if surface == "wiki" else "site",
+    )
+    assert rendered.splitlines()[-1] == projected_line.format(projected)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        NESTED_DEFINITION.format(target="missing.md"),
+        "- Guides\n    - See [qs].\n\n        [qs]: missing.md\n",
+        "- Guides\n    - [qs]: missing.md\n",
+        OUTER_CONTINUATION.format(target="missing.md"),
+    ],
+)
+def test_a_missing_nested_or_outer_item_target_fails_projection(tmp_path: Path, text: str):
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="broken local documentation link"):
+        rewrite_markdown(source, text, {})
+
+
+def test_an_outer_item_definition_after_a_nested_list_keeps_its_backticked_title(tmp_path: Path):
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    text = '- A\n    - x\n\n    [qs]: page.md "`t`"\n'
+    rendered = rewrite_markdown(source, text, {source.resolve(): "Page"})
+    assert rendered.splitlines()[-1] == '    [qs]: Page "`t`"'
+
+
+# #568: a marker 4+ columns past the deepest open item's content (or the margin)
+# is indented code or paragraph text, not a nested item, as both renderers read it.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Para\n\n    - [qs]: missing.md\n",
+        "Para\n    - [qs]: missing.md\n",
+        "- A\n\n        - [qs]: missing.md\n",
+        "- A\n    - x\n\n          - [qs]: missing.md\n",
+    ],
+)
+def test_a_marker_four_columns_past_the_open_content_opens_no_item(tmp_path: Path, text: str):
+    from scripts.docs.build_wiki import block_reference_definitions, markdown_blocks
+
+    assert not any(block_reference_definitions(markdown_blocks(text)).values())
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    assert rewrite_markdown(source, text, {}) == text
+
+
+# #568: the list items a blockquote holds close when the blockquote ends, so a
+# 4-space line after it is indented code, not a continuation of a quoted item.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "> - A\n>     - x\n\n    see [x](missing.md)\n",
+        "> - A\n>     - x\n\n    [qs]: missing.md\n",
+        "> - A\n\n    [qs]: missing.md\n",
+    ],
+)
+def test_a_blockquotes_list_items_close_when_it_ends(tmp_path: Path, text: str):
+    from scripts.docs.build_wiki import block_reference_definitions, markdown_blocks
+
+    blocks = markdown_blocks(text)
+    assert blocks[-1] == build_wiki.MarkdownBlock(text.splitlines(keepends=True)[-1], True, False)
+    assert not any(block_reference_definitions(blocks).values())
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    assert rewrite_markdown(source, text, {}) == text
+
+
+# #568: a blockquote's '>' column decides which open list items hold it. A quote
+# at the margin closes an unquoted list, so a deep line in it is indented code.
+def test_a_quote_at_the_margin_closes_the_list_before_it(tmp_path: Path):
+    from scripts.docs.build_wiki import block_reference_definitions, markdown_blocks
+
+    text = "- a\n    - b\n\n>         [qs]: missing.md\n"
+    assert not any(block_reference_definitions(markdown_blocks(text)).values())
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    assert rewrite_markdown(source, text, {}) == text
+
+
+# #568: a quote indented to an item's content sits inside the item, so the item
+# stays open after it and a paragraph at its indent is still the item's.
+@pytest.mark.parametrize("text", ["- a\n\n   > - b\n\n    [qs]: q.md\n", "- a\n\n  > - b\n\n    [qs]: q.md\n"])
+def test_a_quote_inside_an_item_keeps_the_item_open(text: str):
+    from scripts.docs.build_wiki import block_reference_definitions, markdown_blocks
+
+    found = [d for ds in block_reference_definitions(markdown_blocks(text)).values() for d in ds]
+    assert [(definition.label, definition.target) for definition in found] == [("qs", "q.md")]
+
+
+def test_a_link_after_a_quote_inside_an_item_is_projected(tmp_path: Path):
+    from scripts.docs.build_wiki import markdown_blocks
+
+    text = "- a\n\n  > - b\n\n    see [y](missing.md)\n"
+    (block,) = [block for block in markdown_blocks(text) if "see [y]" in block.text]
+    assert block.suppressed is False
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="broken local documentation link"):
+        rewrite_markdown(source, text, {})
+
+
+# #568: a tab after a list marker inside a blockquote expands from its column in
+# the line, so the item's content indent (6 here, as CommonMark reads it) keeps
+# a nested marker at 8 or 9 columns a list item.
+@pytest.mark.parametrize(
+    "text",
+    [
+        ">   -\tA\n>\n>         - see [x](missing.md)\n",
+        ">  -\tA\n>\n>         - see [x](missing.md)\n",
+        ">   -\tA\n>\n>          - see [x](missing.md)\n",
+    ],
+)
+def test_a_tab_after_a_quoted_marker_expands_from_its_line_column(tmp_path: Path, text: str):
+    from scripts.docs.build_wiki import markdown_blocks
+
+    (block,) = [block for block in markdown_blocks(text) if "see [x]" in block.text]
+    assert block.suppressed is False
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="broken local documentation link"):
+        rewrite_markdown(source, text, {})
