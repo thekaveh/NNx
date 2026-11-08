@@ -25,9 +25,9 @@ RUNNER = "ubuntu-26.04"
 # FEAT-043 CUDA (NNX_GPU_RUNNER), FEAT-050 Apple-silicon MPS (NNX_MPS_RUNNER).
 SELF_HOSTED = {
     ("docs.yml", "gpu-evidence"): ["self-hosted", "linux", "x64", "gpu"],
-    ("ci.yml", "mps-evidence"): ["self-hosted", "macos", "arm64"],
+    ("mps.yml", "mps-evidence"): ["self-hosted", "macos", "arm64"],
 }
-OPT_IN = {("docs.yml", "gpu-evidence"): "NNX_GPU_RUNNER", ("ci.yml", "mps-evidence"): "NNX_MPS_RUNNER"}
+OPT_IN = {("docs.yml", "gpu-evidence"): "NNX_GPU_RUNNER", ("mps.yml", "mps-evidence"): "NNX_MPS_RUNNER"}
 APT_STEP_MINUTES = 5
 
 
@@ -41,6 +41,7 @@ def test_the_workflows_exist():
     assert {path.name for path in WORKFLOWS} >= {
         "ci.yml",
         "docs.yml",
+        "mps.yml",
         "release.yml",
         "release-please.yml",
         "security.yml",
@@ -69,7 +70,7 @@ def test_the_mps_job_runs_every_mps_test_and_cannot_pass_by_skipping():
     """FEAT-050: the probe fails without a usable MPS device, the tests run
     with NNX_REQUIRE_MPS=1 (an ``mps`` test then fails, not skips), and the
     JUnit report must show tests and no skip."""
-    job = dict((name, job) for workflow, name, job in _jobs() if workflow == "ci.yml")["mps-evidence"]
+    job = dict((name, job) for workflow, name, job in _jobs() if workflow == "mps.yml")["mps-evidence"]
     steps = {step.get("name"): step for step in job["steps"]}
     probe = steps["Probe the MPS device (fails without one)"]["run"]
     assert "torch.backends.mps.is_built()" in probe and "torch.backends.mps.is_available()" in probe
@@ -78,6 +79,20 @@ def test_the_mps_job_runs_every_mps_test_and_cannot_pass_by_skipping():
     assert run["env"]["NNX_REQUIRE_MPS"] == "1"
     assert "pytest tests -m mps " in run["run"]
     assert "assert skipped == 0" in run["run"] and "assert tests > 0" in run["run"]
+
+
+def test_a_stalled_mps_queue_never_holds_the_ci_run():
+    """FEAT-050: a run waits for an offline self-hosted runner up to GitHub's
+    24-hour queue limit. The MPS job has a workflow and concurrency group of
+    its own, where a newer commit replaces the waiting run, so CI's group
+    (which lets pushes finish) never waits behind it."""
+    workflows = {path.name: yaml.safe_load(path.read_text(encoding="utf-8")) for path in WORKFLOWS}
+    assert set(workflows["mps.yml"]["jobs"]) == {"mps-evidence"}
+    assert workflows["mps.yml"]["concurrency"] == {
+        "group": "mps-${{ github.workflow }}-${{ github.ref }}",
+        "cancel-in-progress": True,
+    }
+    assert not any("self-hosted" in str(job.get("runs-on")) for job in workflows["ci.yml"]["jobs"].values())
 
 
 def test_every_apt_step_has_its_own_short_timeout():
