@@ -56,7 +56,7 @@ from nnx.history import HistoryJournal, export_history_csv, iter_history
 
 
 def _model() -> NNModel:
-    torch.manual_seed(0)
+    # No seeding here: the workflow seeds before each phase builds a model.
     return NNModel(
         net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
         params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
@@ -92,6 +92,7 @@ def history_journal_workflow() -> dict:
     journal = HistoryJournal(retention=3, chunk_size=2)
 
     # 1. Train with a journal: a bounded window in memory, every record on disk.
+    torch.manual_seed(0)
     parent = _model().train(_params(3), history=journal)
     assert parent.idps is not None and len(parent.idps) == 3
     assert [(r.epoch_idx, r.batch_idx) for r in parent.idps] == [(2, 2), (2, 3), (2, 4)]
@@ -101,6 +102,7 @@ def history_journal_workflow() -> dict:
     before = _digest(source)
 
     # 2. Resume lazily: the continuation owns its files; the source is untouched.
+    torch.manual_seed(0)
     child = _model().train(_params(2, resume_from_run_id=parent.id), history=journal)
     assert _digest(source) == before
     assert child.id != parent.id and {r.epoch_idx for r in iter_history(child.id)} == {3, 4}
@@ -108,8 +110,9 @@ def history_journal_workflow() -> dict:
     # 3. The summary reads per-epoch rows; load reads the committed tail.
     loaded = NNRun.load(child.id)
     assert loaded.idps is not None and len(loaded.idps) == 3
+    assert {r.epoch_idx for r in loaded.idps} == {4}  # the window: epoch 4's last three records
     assert "<table" in loaded._repr_html_()
-    epochs = loaded._epoch_series()["epochs"]
+    epochs = sorted({r.epoch_idx for r in iter_history(child.id)})  # the epochs the journal committed
     assert epochs == [3, 4], epochs
 
     # 4. Export the legacy CSV layout, with and without the parent's prefix.

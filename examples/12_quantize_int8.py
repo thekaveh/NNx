@@ -4,21 +4,27 @@ Flow:
 
   1. Build a small classifier (FeedFwdNN with four Linear layers) and
      train it on a 3-class Gaussian-mixture toy task.
-  2. Snapshot FP32 validation accuracy and state-dict size.
+  2. Snapshot FP32 validation logits, accuracy and state-dict size.
   3. Quantize the trained model via ``nnx.quantize_int8`` — one call,
      no calibration data, no retraining.
   4. Compare:
 
      - Size of the pickled state-dict before vs. after.
-     - Validation accuracy before vs. after.
+     - Validation accuracy before vs. after, and how many validation
+       predictions changed.
+     - The largest and mean absolute difference between the FP32 and
+       INT8 validation logits.
 
   5. Export the quantized model to ONNX as a sanity check.
 
-The accuracy delta is typically a fraction of a percentage point for
-networks this small; at production scale (transformer / ResNet) the
-size win is closer to 4x and accuracy loss stays sub-percent for most
-classification tasks. The example demonstrates the *mechanism*; the
-real-world tradeoff is task-dependent.
+The classes overlap (the best possible validation accuracy is about 90%),
+so a prediction near a class boundary can flip and the accuracy delta can
+be non-zero. For a network this small it is usually zero or a fraction of
+a percentage point; the logit difference shows the change quantization
+made even when no prediction flips. At production scale (transformer /
+ResNet) the size win is closer to 4x and accuracy loss stays sub-percent
+for most classification tasks. The example demonstrates the *mechanism*;
+the real-world tradeoff is task-dependent.
 
 Requires the ``quantize`` extra (for ``torchao``) and the ``onnx`` extra
 (the step-5 sanity check calls ``NNModel.to_onnx`` on the quantized
@@ -85,15 +91,18 @@ def _make_classifier() -> NNModel:
 
 
 def _loaders(seed: int = 0) -> tuple[DataLoader, DataLoader]:
-    """A separable 3-class toy task — class means well-separated so the
-    network reaches a meaningful accuracy and the quantization delta is
-    measurable."""
+    """A 3-class Gaussian mixture whose classes overlap: the class means lie
+    about 3.3 noise standard deviations apart, so even the best rule (the
+    nearest class mean) misclassifies about one validation row in ten, and a
+    row near a class boundary can change its prediction when the weights are
+    quantized. Examples 12 (PTQ) and 15 (QAT) share this function verbatim,
+    so the two make a clean A/B comparison."""
     g = torch.Generator().manual_seed(seed)
-    means = torch.randn(3, 32, generator=g) * 2.0
+    means = torch.randn(3, 32, generator=g) * 0.4
 
     def _make(n: int):
         cls = torch.randint(0, 3, (n,), generator=g)
-        X = means[cls] + 0.5 * torch.randn(n, 32, generator=g)
+        X = means[cls] + torch.randn(n, 32, generator=g)
         return X, cls
 
     X_train, y_train = _make(512)
@@ -103,20 +112,20 @@ def _loaders(seed: int = 0) -> tuple[DataLoader, DataLoader]:
     return train, val
 
 
-def _val_accuracy(model: NNModel, val_loader: DataLoader) -> float:
-    """Run the model over val_loader and return mean argmax accuracy.
+def _val_logits(model: NNModel, val_loader: DataLoader) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run the model over val_loader and return its logits and the labels.
     Routes through model.net directly so the quantized weights are
     exercised (model.predict accepts a DataLoader and goes through the
     same forward, but we do it manually here for transparency)."""
     model.net.eval()
-    correct, total = 0, 0
     with torch.no_grad():
-        for X, Y in val_loader:
-            logits = model.net(X)
-            pred = logits.argmax(dim=1)
-            correct += int((pred == Y).sum().item())
-            total += int(Y.size(0))
-    return correct / total
+        batches = [(model.net(X), Y) for X, Y in val_loader]
+    return torch.cat([logits for logits, _ in batches]), torch.cat([Y for _, Y in batches])
+
+
+def _accuracy(logits: torch.Tensor, labels: torch.Tensor) -> float:
+    """Mean argmax accuracy."""
+    return (logits.argmax(dim=1) == labels).float().mean().item()
 
 
 def quantized_generative_subtype() -> dict:
@@ -227,7 +236,8 @@ def main():
     print("\n" + "=" * 60)
     print("Phase 2: measuring FP32 baseline")
     print("=" * 60)
-    fp_acc = _val_accuracy(model, val_loader)
+    fp_logits, labels = _val_logits(model, val_loader)
+    fp_acc = _accuracy(fp_logits, labels)
     fp_bytes = len(pickle.dumps(model.net.state_dict()))
     print(f"FP32 val accuracy:        {fp_acc * 100:.2f}%")
     print(f"FP32 state-dict (pickle): {fp_bytes:>9} bytes")
@@ -248,13 +258,18 @@ def main():
     print("\n" + "=" * 60)
     print("Phase 4: comparing FP32 vs INT8")
     print("=" * 60)
-    q_acc = _val_accuracy(model_q, val_loader)
+    q_logits, _ = _val_logits(model_q, val_loader)
+    q_acc = _accuracy(q_logits, labels)
     q_bytes = len(pickle.dumps(model_q.net.state_dict()))
+    flipped = int((q_logits.argmax(dim=1) != fp_logits.argmax(dim=1)).sum().item())
+    logit_diff = (q_logits - fp_logits).abs()
 
     print(f"INT8 val accuracy:        {q_acc * 100:.2f}%")
     print(f"INT8 state-dict (pickle): {q_bytes:>9} bytes")
     print()
     print(f"accuracy delta:           {(q_acc - fp_acc) * 100:+.2f} pp")
+    print(f"predictions changed:      {flipped} of {len(labels)}")
+    print(f"|FP32 - INT8| logit:      max {logit_diff.max().item():.4f}, mean {logit_diff.mean().item():.4f}")
     print(f"size ratio (INT8 / FP32): {q_bytes / fp_bytes * 100:.1f}%")
     print(f"size reduction:           {(1 - q_bytes / fp_bytes) * 100:.1f}%")
 

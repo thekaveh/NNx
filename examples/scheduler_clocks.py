@@ -52,8 +52,8 @@ from nnx.objectives import LossTerm, Objective, ObjectiveResult, supervised_obje
 _PLATEAU_FIELDS = {"min_lr": 0.0, "factor": 0.5, "patience": 0, "cooldown": 0, "threshold": 0.0}
 
 
-def _model(seed: int = 0) -> NNModel:
-    torch.manual_seed(seed)
+def _model() -> NNModel:
+    # No seeding here: the workflow seeds before each fit builds its model.
     return NNModel(
         net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[8], dropout_prob=0.0, activation=Activations.RELU),
         params=NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY),
@@ -67,7 +67,7 @@ def _batches(n: int = 5) -> list[tuple[torch.Tensor, torch.Tensor]]:
 
 def _train(scheduler: NNSchedulerParams, *, epochs: int = 2, objective=None, data_id: str, **train):
     monitor = LRMonitor()
-    run = _model(train.pop("seed", 0)).train(
+    run = _model().train(
         NNTrainParams(
             n_epochs=epochs,
             train_loader=_batches(),
@@ -106,13 +106,16 @@ def scheduler_clocks_workflow() -> dict:
         os.chdir(workdir)
         try:
             step = {"kind": Schedulers.STEP, "step_size": 1, **_PLATEAU_FIELDS}
+            torch.manual_seed(0)  # every fit starts from the same weights
             per_update, _ = _train(NNSchedulerParams(clock="optimizer_update", **step), data_id="updates")
+            torch.manual_seed(0)
             per_epoch, _ = _train(NNSchedulerParams(**step), data_id="epochs")
             assert [k for k, _ in per_update.update_history] == [1, 2, 3, 4, 5, 6]
             assert len(per_update.history) == len(per_epoch.history) == 2  # one LR per epoch either way
             assert per_epoch.update_history == []
             assert per_epoch.history[-1] == 0.1 * 0.5**2 and per_update.history[-1] == 0.1 * 0.5**6
 
+            torch.manual_seed(0)
             skipped, _ = _train(
                 NNSchedulerParams(clock="optimizer_update", **step), objective=_SkipOneWindow(), data_id="skip"
             )
@@ -121,9 +124,12 @@ def scheduler_clocks_workflow() -> dict:
             one_cycle = NNSchedulerParams(
                 kind=Schedulers.ONE_CYCLE, max_lr=0.5, total_steps=12, clock="optimizer_update", **_PLATEAU_FIELDS
             )
+            torch.manual_seed(0)
             whole, _ = _train(one_cycle, epochs=4, data_id="whole")
+            torch.manual_seed(0)
             first, parent = _train(one_cycle, epochs=2, data_id="split")
-            second, _ = _train(one_cycle, epochs=2, data_id="split", seed=7, resume_from_run_id=parent.id)
+            torch.manual_seed(7)  # other initial weights: the resume restores the checkpoint's
+            second, _ = _train(one_cycle, epochs=2, data_id="split", resume_from_run_id=parent.id)
             resumed = first.update_history + second.update_history
             assert [k for k, _ in resumed] == list(range(1, 13))
             assert all(abs(a[1] - b[1]) < 1e-12 for a, b in zip(resumed, whole.update_history, strict=True))

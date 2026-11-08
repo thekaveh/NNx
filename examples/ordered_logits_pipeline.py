@@ -106,6 +106,7 @@ def ordered_logits_pipeline_workflow() -> dict:
     assert torch.equal(restored(LOGITS, []), biased(LOGITS, []))
 
     # 4. Generation with a pipeline equals the explicit processor list.
+    torch.manual_seed(0)
     generated = _generate()
     return {"kept_finite": kept, "terminal_refused": terminal_refused, "state": state, "generated": generated}
 
@@ -118,7 +119,7 @@ def _generate() -> dict:
     tokenizer_model = train_bpe(files=None, texts=corpus, vocab_size=64, special_tokens=["<unk>", "<pad>"])
     with tempfile.TemporaryDirectory() as tmp:
         tokenizer = NNTokenizerParams.of(tokenizer=tokenizer_model, path=str(Path(tmp) / "tok.json"))
-        torch.manual_seed(0)
+        # No seeding here: the workflow seeds before it calls this step.
         model = GenerativeNNModel(
             net_params=NNTransformerParams(
                 input_dim=tokenizer.vocab_size,

@@ -62,7 +62,8 @@ X = torch.randn(5, 4, generator=DATA)
 
 
 def _model(task: TaskSpec, loss: Losses) -> NNModel:
-    set_seed(0)
+    # No seeding here: the workflow seeds before each phase, so a caller's
+    # seed decides the initial weights.
     width = task.num_outputs or 1
     return NNModel(
         net_params=NNParams(
@@ -74,6 +75,7 @@ def _model(task: TaskSpec, loss: Losses) -> NNModel:
 
 def prediction_stream_workflow() -> dict:
     # 1. Ordered streams: [2, 2, 1] rows, concatenating to the eager results.
+    set_seed(0)
     classes = TaskSpec.categorical(3, labels=("low", "mid", "high"))
     classifier = _model(classes, Losses.CROSS_ENTROPY)
     labels = torch.tensor([0, 2, 1, 2, 0])
@@ -120,8 +122,7 @@ def prediction_stream_workflow() -> dict:
     y = torch.tensor([[1.0, nan], [0.5, -1.0], [nan, nan], [2.0, 0.0], [0.0, nan]])
     batches = [(X[0:2], y[0:2]), (X[2:4], y[2:4]), (X[4:5], y[4:5])]
 
-    def fit(eval_step_fn=None, data_id=None):
-        model = _model(TaskSpec.regression(2), Losses.MEAN_SQUARED_ERROR)
+    def fit(model, eval_step_fn=None, data_id=None):
         params = NNTrainParams(
             n_epochs=3,
             data_id=data_id,  # the step is not part of the run id: keep the two runs apart
@@ -134,7 +135,15 @@ def prediction_stream_workflow() -> dict:
         )
         return model.train(params=params, eval_step_fn=eval_step_fn)
 
-    eager_run, streamed_run = fit(data_id="eager"), fit(streaming_eval_step, data_id="streamed")
+    # Both fits start from the same weights: seed before each model is built.
+    set_seed(0)
+    eager_model = _model(TaskSpec.regression(2), Losses.MEAN_SQUARED_ERROR)
+    set_seed(0)
+    streamed_model = _model(TaskSpec.regression(2), Losses.MEAN_SQUARED_ERROR)
+    start = streamed_model.net.state_dict()
+    assert all(torch.equal(tensor, start[name]) for name, tensor in eager_model.net.state_dict().items())
+    eager_run = fit(eager_model, data_id="eager")
+    streamed_run = fit(streamed_model, streaming_eval_step, data_id="streamed")
     eager_val = eager_run.idps[-1].val_edp
     streamed_val = streamed_run.idps[-1].val_edp
     assert eager_val is not None and streamed_val is not None

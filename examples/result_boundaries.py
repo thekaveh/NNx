@@ -93,14 +93,16 @@ def _bundle(root: str) -> str:
     from nnx.bundles import export_bundle
     from nnx.tasks import TaskSpec
 
-    torch.manual_seed(0)
+    # No seeding here: the workflow seeds before it builds the bundle, and
+    # the training rows come from a local generator.
     model = NNModel(
         net_params=NNParams(input_dim=4, output_dim=2, hidden_dims=[4], dropout_prob=0.0, activation=Activations.RELU),
         params=NNModelParams(
             net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, task=TaskSpec.categorical(2)
         ),
     )
-    X, y = torch.randn(8, 4), torch.randint(0, 2, (8,))
+    generator = torch.Generator().manual_seed(0)
+    X, y = torch.randn(8, 4, generator=generator), torch.randint(0, 2, (8,), generator=generator)
     # The run (runs/<id>/) and its bundle live in the temporary directory,
     # not the caller's working directory.
     previous = os.getcwd()
@@ -155,6 +157,7 @@ def result_boundaries_workflow() -> dict:
     assert result_outcomes[1:] == ["rejected: invalid_decision_request"] * 2
 
     with tempfile.TemporaryDirectory() as root:
+        torch.manual_seed(0)
         good = _bundle(root)
         broken = os.path.join(root, "broken")
         os.makedirs(broken)

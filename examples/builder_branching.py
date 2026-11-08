@@ -93,7 +93,12 @@ def builder_branching_workflow() -> None:
     sgd = base_optim.copy().sgd(max_lr=0.05).build()
     assert (adamw.name, sgd.name) == (Optims.ADAMW, Optims.SGD)
     assert adamw.grad_clip_norm == sgd.grad_clip_norm == 1.0
-    assert "name" not in base_optim._fields  # the partial base is untouched
+    try:
+        base_optim.build()  # the partial base is untouched: it still has no variant
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a branch's variant leaked into the shared base")
     # from_params rebuilds an equal builder that can then be varied.
     assert NNOptimParamsBuilder.from_params(adamw).build() == adamw
     assert NNOptimParamsBuilder.from_params(adamw).accumulate_grad(2).build().accumulate_grad_batches == 2

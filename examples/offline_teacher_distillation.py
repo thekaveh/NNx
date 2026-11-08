@@ -97,8 +97,8 @@ def _records(n: int, seed: int = 0) -> tuple[list[TeacherRecord], dict[str, torc
     return records, by_id
 
 
-def _student(seed: int = 0) -> NNModel:
-    torch.manual_seed(seed)
+def _student() -> NNModel:
+    # No seeding here: the workflow seeds before it builds the student.
     return NNModel(
         net_params=NNParams(
             input_dim=2, output_dim=len(CANDIDATES), hidden_dims=[16], dropout_prob=0.0, activation=Activations.RELU
@@ -116,6 +116,7 @@ def offline_teacher_distillation_workflow(n: int = 96, epochs: int = 8) -> dict:
     train = TeacherDataset(stored[:split], inputs, candidates=CANDIDATES, schema_digest=SCHEMA)
     val = TeacherDataset(stored[split:], inputs, candidates=CANDIDATES, schema_digest=SCHEMA)
 
+    torch.manual_seed(0)
     student = _student()
     objective = train.objective(alpha=0.7)
     run = student.train(
