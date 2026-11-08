@@ -145,3 +145,51 @@ def test_a_user_hook_on_a_dora_base_is_still_refused_after_and_inside_summary():
     assert isinstance(raised.value.__cause__, TypeError)
     handle.remove()
     net(x)
+
+
+@pytest.mark.parametrize("keyword", [False, True], ids=["positional", "keyword"])
+def test_summary_places_batch_and_input_data_on_the_module_device(monkeypatch, keyword):
+    """#556: summary(batch=) gave torchinfo the loader's CPU batch, which an MPS or CUDA
+    module refused. A meta-device module stands in for the accelerator, and a spy on
+    torchinfo's summary records where the inputs it is given live."""
+    import torch
+    import torchinfo
+
+    from nnx.models import KeywordInputs
+
+    class Keyword(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(4, 2)
+
+        def forward(self, *, features):
+            return self.linear(features)
+
+    seen = []
+
+    def spy(model, *, input_data=None, **kwargs):
+        seen.append((input_data, {name: value for name, value in kwargs.items() if isinstance(value, torch.Tensor)}))
+        return "statistics"
+
+    monkeypatch.setattr(torchinfo, "summary", spy)
+    if keyword:
+        model = NNModel(
+            module=Keyword(), params=NNModelParams(), batch_adapter=KeywordInputs(("features",), target="labels")
+        )
+        batch = {"features": torch.randn(3, 4), "labels": torch.tensor([0, 1, 0])}
+        given = {"features": torch.randn(3, 4)}
+    else:
+        model = _tiny()
+        batch = (torch.randn(3, 4), torch.tensor([0, 1, 0]))
+        given = [torch.randn(3, 4)]
+    model.net.to("meta")
+    assert summary(model, batch=batch) == "statistics"
+    assert summary(model, input_data=given) == "statistics"
+    assert summary(model.net, input_data=torch.randn(3, 4)) == "statistics"  # a bare tensor too
+    tensors = []
+    for input_data, keywords in seen:
+        if isinstance(input_data, torch.Tensor):
+            input_data = [input_data]
+        tensors += [*(input_data.values() if isinstance(input_data, dict) else input_data), *keywords.values()]
+    assert len(seen) == 3 and len(tensors) == 3 and all(t.device.type == "meta" for t in tensors)
+    assert isinstance(seen[0][0], dict) is keyword and isinstance(seen[1][0], dict) is keyword
