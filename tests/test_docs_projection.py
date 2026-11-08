@@ -157,8 +157,9 @@ def test_install_guidance_separates_the_release_from_the_current_source():
 
 
 def test_onnx_export_prerequisites_agree_across_surfaces():
-    """#472 NN-05: the legacy exporter needs the onnx package (torch raises
-    'Module onnx is not installed!' without it); dynamo also needs onnxscript."""
+    """#472 NN-05: the legacy exporter needs the onnx package (NNx raises an
+    ImportError naming thekaveh-nnx[onnx] without it, #570); dynamo also
+    needs onnxscript."""
     for path in ("README.md", "docs/capabilities.md"):
         text = (build_docs.ROOT / path).read_text(encoding="utf-8")
         assert "onnx` extra" in text or "thekaveh-nnx[onnx]" in text, path
