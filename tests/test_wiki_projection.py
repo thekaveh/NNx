@@ -949,3 +949,37 @@ def test_a_blockquotes_list_items_close_when_it_ends(tmp_path: Path, text: str):
     source = tmp_path / "page.md"
     source.write_text("", encoding="utf-8")
     assert rewrite_markdown(source, text, {}) == text
+
+
+# #568: a blockquote's '>' column decides which open list items hold it. A quote
+# at the margin closes an unquoted list, so a deep line in it is indented code.
+def test_a_quote_at_the_margin_closes_the_list_before_it(tmp_path: Path):
+    from scripts.docs.build_wiki import block_reference_definitions, markdown_blocks
+
+    text = "- a\n    - b\n\n>         [qs]: missing.md\n"
+    assert not any(block_reference_definitions(markdown_blocks(text)).values())
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    assert rewrite_markdown(source, text, {}) == text
+
+
+# #568: a quote indented to an item's content sits inside the item, so the item
+# stays open after it and a paragraph at its indent is still the item's.
+@pytest.mark.parametrize("text", ["- a\n\n   > - b\n\n    [qs]: q.md\n", "- a\n\n  > - b\n\n    [qs]: q.md\n"])
+def test_a_quote_inside_an_item_keeps_the_item_open(text: str):
+    from scripts.docs.build_wiki import block_reference_definitions, markdown_blocks
+
+    found = [d for ds in block_reference_definitions(markdown_blocks(text)).values() for d in ds]
+    assert [(definition.label, definition.target) for definition in found] == [("qs", "q.md")]
+
+
+def test_a_link_after_a_quote_inside_an_item_is_projected(tmp_path: Path):
+    from scripts.docs.build_wiki import markdown_blocks
+
+    text = "- a\n\n  > - b\n\n    see [y](missing.md)\n"
+    (block,) = [block for block in markdown_blocks(text) if "see [y]" in block.text]
+    assert block.suppressed is False
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="broken local documentation link"):
+        rewrite_markdown(source, text, {})

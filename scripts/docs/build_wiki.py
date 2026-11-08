@@ -23,6 +23,7 @@ SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
 MARKDOWN_ESCAPE_RE = re.compile(r"""\\([!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])""")
 NESTED_LIST_ITEM_RE = re.compile(r"^(?P<prefix>[ \t]*(?:(?:[-+*]|\d+[.)])[ \t]+)+)(?P<content>.*)$")
 LIST_MARKER_RE = re.compile(r"(?:[-+*]|\d+[.)])[ \t]+")
+QUOTE_MARKER_RE = re.compile(r" {0,3}>[ \t]?")
 # The open list items, outermost first: each one's blockquote depth and content indent.
 ListItems = tuple[tuple[int, int], ...]
 RAW_HTML_BLOCK_TAGS = {
@@ -424,8 +425,9 @@ def markdown_blocks(text: str) -> list[MarkdownBlock]:
         blank = not container_content.strip()
         previous_items = open_items
         previous_list_indent = previous_items[-1][1] if previous_items else 0
-        open_items, parser_content = _list_step(container_content, open_items, quote_depth)
-        list_indent = open_items[-1][1] if open_items else 0
+        open_items, parser_content = _list_step(container_content, open_items, quote_prefix)
+        # A blockquote inside the deepest item starts its body at column 0.
+        list_indent = open_items[-1][1] if open_items and open_items[-1][0] == quote_depth else 0
         if previous_list_indent and list_indent < previous_list_indent and not blank:
             flush_prose()
             in_html_block = None
@@ -737,22 +739,31 @@ def block_reference_definitions(blocks, texts: list[str] | None = None) -> dict[
     return found
 
 
-def _list_step(body: str, open_items: ListItems, quote_depth: int = 0) -> tuple[ListItems, str]:
+def _list_step(body: str, open_items: ListItems, quote_prefix: str = "") -> tuple[ListItems, str]:
     """One line's effect on the open list items, and the line's body relative
-    to the deepest item that holds it. A line outside a blockquote closes the
-    items opened inside it. A blank line keeps every other item open; another
-    line first closes the items its indent does not reach, then each list
-    marker on it opens a nested item, so a paragraph after a nested list
-    rejoins its outer item. A marker 4+ columns past the deepest item's
+    to the deepest item that holds it. A line closes the items opened inside a
+    blockquote it is outside of, and the items its indent does not reach: a
+    blank line reaches every item, and an item outside one of the line's
+    blockquotes is reached by the column of that blockquote's '>'. Each list
+    marker on the line then opens a nested item, so a paragraph after a nested
+    list rejoins its outer item. A marker 4+ columns past the deepest item's
     content (or the margin) is that item's text or indented code, not a list."""
-    while open_items and open_items[-1][0] > quote_depth:
-        open_items = open_items[:-1]
-    if not body.strip():
-        return open_items, ""
+    # Each '>' column, from the content of the blockquote outside it (or the margin).
+    quote_columns = [_indent_columns(marker) for marker in QUOTE_MARKER_RE.findall(quote_prefix)]
+    quote_depth = len(quote_columns)
+    blank = not body.strip()
     leading = _indent_columns(body)
-    while open_items and leading < open_items[-1][1]:
-        open_items = open_items[:-1]
-    content_indent = open_items[-1][1] if open_items else 0
+    for kept, (item_depth, item_indent) in enumerate(open_items):
+        if item_depth < quote_depth:
+            reached = quote_columns[item_depth] >= item_indent
+        else:
+            reached = item_depth == quote_depth and (blank or leading >= item_indent)
+        if not reached:
+            open_items = open_items[:kept]
+            break
+    if blank:
+        return open_items, ""
+    content_indent = open_items[-1][1] if open_items and open_items[-1][0] == quote_depth else 0
     list_item = NESTED_LIST_ITEM_RE.match(body)
     if list_item is not None and leading < content_indent + 4:
         prefix = list_item.group("prefix")
@@ -767,7 +778,7 @@ def _list_items_after(text: str, open_items: ListItems) -> ListItems:
     """The open list items after the lines of ``text``."""
     for line in text.splitlines():
         quote_prefix, body = _blockquote_parts(line)
-        open_items, _ = _list_step(body, open_items, quote_prefix.count(">"))
+        open_items, _ = _list_step(body, open_items, quote_prefix)
     return open_items
 
 
@@ -789,7 +800,7 @@ def iter_reference_definitions(text: str, open_items: ListItems = ()):
         line = lines[index]
         content = line.rstrip("\r\n")
         quote_prefix, body = _blockquote_parts(content)
-        open_items, parse_body = _list_step(body, open_items, quote_prefix.count(">"))
+        open_items, parse_body = _list_step(body, open_items, quote_prefix)
         definition = parse_reference_definition(quote_prefix + parse_body)
         if definition is None:
             offset += len(line)
