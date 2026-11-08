@@ -1924,6 +1924,26 @@ def test_best_id_reads_the_best_pointer_in_both_layouts(tmp_path, monkeypatch, b
     assert NNRun.best_id() is None
 
 
+@pytest.mark.parametrize("layout", ["symlink", "pointer_file"])
+@pytest.mark.parametrize("target", ["..", ".", "best", ".leases", "notarun"])
+def test_best_id_reads_a_pointer_naming_no_run_as_none(tmp_path, layout, target):
+    """#570: a damaged or hand-edited `runs/best` that names something other
+    than a run (a dot-name, the pointer itself, or a directory without
+    `run.yaml`) reads as None, by the rule `NNRun.all` and the election use."""
+    if layout == "symlink" and not hasattr(os, "symlink"):
+        pytest.skip("symlinks unavailable")
+    runs = tmp_path / "runs"
+    (runs / ".leases").mkdir(parents=True)
+    (runs / "notarun").mkdir()
+    best = runs / "best"
+    if layout == "symlink":
+        os.symlink(target, best, target_is_directory=True)
+    else:
+        best.mkdir()
+        (best / "POINTER.txt").write_text(target, encoding="utf-8")
+    assert NNRun.best_id(root=str(tmp_path)) is None
+
+
 @pytest.mark.parametrize(
     "entry_point",
     ["absent pointer", "dangling pointer", "ineligible incumbent", "saver turned ineligible", "overwrite"],

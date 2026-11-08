@@ -11532,7 +11532,7 @@ Load a saved run. Its history is ``idps.csv`` read whole — or, for a run with 
 nnx.nn.params.nn_run.NNRun.best_id(root: 'Optional[str]' = None) -> 'Optional[str]'
 ```
 
-The id of the run ``runs/best`` points at, or ``None`` when no run holds the pointer (it is absent, or names a run directory that no longer exists). Reads both layouts: the symlink, and the ``best/POINTER.txt`` file written where symlinks are unavailable (Windows without developer mode). Reads only the pointer; load the run with `NNRun.load` and its checkpoints by this id.
+The id of the run ``runs/best`` points at, or ``None`` when no run holds the pointer (it is absent, or names no run: a deleted run, a dot-name, the pointer itself, or a directory without ``run.yaml``, by the rule `NNRun.all` uses). Reads both layouts: the symlink, and the ``best/POINTER.txt`` file written where symlinks are unavailable (Windows without developer mode). Reads only the pointer; load the run with `NNRun.load` and its checkpoints by this id.
 
 ##### `nnx.nn.params.nn_run.NNRun.all`
 
