@@ -155,7 +155,7 @@ Notes for section 2.1:
 
 - Run `torchrun --standalone --nproc_per_node=2 examples/ddp_supervised.py --device cpu --epochs 2 --output ddp-out`. It trains six rows with stable ids (0-5) through `nnx.distributed.train_loader` / `validation_loader` and `train(distributed=DDP())`.
 - On macOS, if the host name resolves to an unreachable address, use the loopback instead: `GLOO_SOCKET_IFNAME=lo0 torchrun --nnodes=1 --nproc_per_node=2 --master_addr=127.0.0.1 --master_port=29500 examples/ddp_supervised.py --device cpu --epochs 2 --output ddp-out`.
-- Each rank prints its validation ids (together 0-5 exactly once), the shared run id and whether it owns the artifacts (rank 0 only). It then leaves the process group with `nnx.distributed.shutdown()`.
+- Each rank prints its validation ids (together 0-5 exactly once), the shared run id and whether it owns the artifacts: only the writer rank does (`DDP(writer_rank=0)` by default), as recorded in the run's LAST checkpoint. It then leaves the process group with `nnx.distributed.shutdown()`.
 - The validation loader shards the same six rows the model trains on, to show the exactly-once sharding. The report therefore names the final validation-pass accuracy `train_rows_accuracy`: it is a training-row accuracy, not a held-out one.
 - `--inject-failure` makes rank 1 raise in epoch 1. The launch exits non-zero within the process-group timeout, leaving no worker behind.
 - CUDA claims need a real two-GPU run.
