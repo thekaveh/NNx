@@ -23,6 +23,8 @@ SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
 MARKDOWN_ESCAPE_RE = re.compile(r"""\\([!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])""")
 NESTED_LIST_ITEM_RE = re.compile(r"^(?P<prefix>[ \t]*(?:(?:[-+*]|\d+[.)])[ \t]+)+)(?P<content>.*)$")
 LIST_MARKER_RE = re.compile(r"(?:[-+*]|\d+[.)])[ \t]+")
+# The open list items, outermost first: each one's blockquote depth and content indent.
+ListItems = tuple[tuple[int, int], ...]
 RAW_HTML_BLOCK_TAGS = {
     "address",
     "article",
@@ -318,7 +320,7 @@ def _srcset_candidates(value: str) -> list[tuple[str, str]]:
     return candidates
 
 
-def _code_span_ranges(text: str, open_items: tuple[int, ...] = ()) -> list[tuple[int, int]]:
+def _code_span_ranges(text: str, open_items: ListItems = ()) -> list[tuple[int, int]]:
     """Inline code spans outside links and reference definitions;
     ``open_items`` are the list items still open where ``text`` starts."""
     link_ranges = [(link.start, link.end) for link in iter_inline_links(text)]
@@ -358,7 +360,7 @@ def _code_span_ranges(text: str, open_items: tuple[int, ...] = ()) -> list[tuple
     return ranges
 
 
-def _inline_suppressed_blocks(text: str, open_items: tuple[int, ...] = ()) -> list[MarkdownBlock]:
+def _inline_suppressed_blocks(text: str, open_items: ListItems = ()) -> list[MarkdownBlock]:
     code_ranges = _code_span_ranges(text, open_items)
     suppressed_ranges = list(code_ranges)
     cursor = 0
@@ -404,8 +406,8 @@ def markdown_blocks(text: str) -> list[MarkdownBlock]:
     in_indented_code = False
     in_pre_block: int | None = None
     in_html_block: tuple[str, int, bool, int] | None = None
-    open_items: tuple[int, ...] = ()
-    prose_items: tuple[int, ...] = ()  # the list items open where the prose run starts
+    open_items: ListItems = ()
+    prose_items: ListItems = ()  # the list items open where the prose run starts
     literal_html_state: tuple[str, int, int] | None = None
     previous_blank = True
 
@@ -421,9 +423,9 @@ def markdown_blocks(text: str) -> list[MarkdownBlock]:
         quote_depth = quote_prefix.count(">")
         blank = not container_content.strip()
         previous_items = open_items
-        previous_list_indent = previous_items[-1] if previous_items else 0
-        open_items, parser_content = _list_step(container_content, open_items)
-        list_indent = open_items[-1] if open_items else 0
+        previous_list_indent = previous_items[-1][1] if previous_items else 0
+        open_items, parser_content = _list_step(container_content, open_items, quote_depth)
+        list_indent = open_items[-1][1] if open_items else 0
         if previous_list_indent and list_indent < previous_list_indent and not blank:
             flush_prose()
             in_html_block = None
@@ -711,7 +713,7 @@ def block_reference_definitions(blocks, texts: list[str] | None = None) -> dict[
     only starts a line (CommonMark), so the rest of a line after an inline
     code span holds none; the open list items carry across blocks."""
     found: dict[int, list[ReferenceDefinition]] = {}
-    open_items: tuple[int, ...] = ()
+    open_items: ListItems = ()
     partial: str | None = None  # the start of a line split by an inline span
     for index, block in enumerate(blocks):
         text = block.text if texts is None else texts[index]
@@ -735,43 +737,51 @@ def block_reference_definitions(blocks, texts: list[str] | None = None) -> dict[
     return found
 
 
-def _list_step(body: str, open_items: tuple[int, ...]) -> tuple[tuple[int, ...], str]:
-    """One line's effect on the content indents of the open list items
-    (outermost first), and the line's body relative to the deepest item that
-    holds it. A blank line keeps every item open; another line first closes
-    the items its indent does not reach, then each list marker on it opens a
-    nested item, so a paragraph after a nested list rejoins its outer item."""
+def _list_step(body: str, open_items: ListItems, quote_depth: int = 0) -> tuple[ListItems, str]:
+    """One line's effect on the open list items, and the line's body relative
+    to the deepest item that holds it. A line outside a blockquote closes the
+    items opened inside it. A blank line keeps every other item open; another
+    line first closes the items its indent does not reach, then each list
+    marker on it opens a nested item, so a paragraph after a nested list
+    rejoins its outer item. A marker 4+ columns past the deepest item's
+    content (or the margin) is that item's text or indented code, not a list."""
+    while open_items and open_items[-1][0] > quote_depth:
+        open_items = open_items[:-1]
     if not body.strip():
         return open_items, ""
     leading = _indent_columns(body)
-    while open_items and leading < open_items[-1]:
+    while open_items and leading < open_items[-1][1]:
         open_items = open_items[:-1]
+    content_indent = open_items[-1][1] if open_items else 0
     list_item = NESTED_LIST_ITEM_RE.match(body)
-    if list_item is not None:
+    if list_item is not None and leading < content_indent + 4:
         prefix = list_item.group("prefix")
-        opened = tuple(_prefix_columns(prefix[: marker.end()]) for marker in LIST_MARKER_RE.finditer(prefix))
+        opened = tuple(
+            (quote_depth, _prefix_columns(prefix[: marker.end()])) for marker in LIST_MARKER_RE.finditer(prefix)
+        )
         return open_items + opened, list_item.group("content")
-    return open_items, _strip_indent_columns(body, open_items[-1]) if open_items else body
+    return open_items, _strip_indent_columns(body, content_indent)
 
 
-def _list_items_after(text: str, open_items: tuple[int, ...]) -> tuple[int, ...]:
-    """The open list items' content indents after the lines of ``text``."""
+def _list_items_after(text: str, open_items: ListItems) -> ListItems:
+    """The open list items after the lines of ``text``."""
     for line in text.splitlines():
-        open_items, _ = _list_step(_blockquote_parts(line)[1], open_items)
+        quote_prefix, body = _blockquote_parts(line)
+        open_items, _ = _list_step(body, open_items, quote_prefix.count(">"))
     return open_items
 
 
 def _list_indent_after(text: str, active_list_indent: int = 0) -> int:
     """The deepest open list item's content indent after the lines of
     ``text``, from one item open at ``active_list_indent`` (0: none)."""
-    open_items = _list_items_after(text, (active_list_indent,) if active_list_indent else ())
-    return open_items[-1] if open_items else 0
+    open_items = _list_items_after(text, ((0, active_list_indent),) if active_list_indent else ())
+    return open_items[-1][1] if open_items else 0
 
 
-def iter_reference_definitions(text: str, open_items: tuple[int, ...] = ()):
+def iter_reference_definitions(text: str, open_items: ListItems = ()):
     """Yield single- and continuation-line reference definitions.
-    ``open_items`` are the content indents of the list items still open
-    where ``text`` starts (a chunk after an inline code span)."""
+    ``open_items`` are the list items still open where ``text`` starts
+    (a chunk after an inline code span)."""
     lines = text.splitlines(keepends=True)
     offset = 0
     index = 0
@@ -779,7 +789,7 @@ def iter_reference_definitions(text: str, open_items: tuple[int, ...] = ()):
         line = lines[index]
         content = line.rstrip("\r\n")
         quote_prefix, body = _blockquote_parts(content)
-        open_items, parse_body = _list_step(body, open_items)
+        open_items, parse_body = _list_step(body, open_items, quote_prefix.count(">"))
         definition = parse_reference_definition(quote_prefix + parse_body)
         if definition is None:
             offset += len(line)
