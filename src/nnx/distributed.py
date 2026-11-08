@@ -550,7 +550,7 @@ class _DDPSession:
         free what a live traceback reaches). DDP's own frames in such a
         traceback hold it as ``self``, so the session clears them where they
         raise (the wrapper's build, ``forward``). The session's
-        collectives (``gather``, ``sum``) keep working."""
+        collectives (``gather``) keep working."""
         self.module = cast(Any, None)
         self._net = cast(Any, None)
 
@@ -573,12 +573,6 @@ class _DDPSession:
         finally:
             self.in_step = False
 
-    def sum(self, *values: float) -> tuple[float, ...]:
-        """Every rank's ``values`` summed elementwise, in one collective."""
-        tensor = torch.tensor([float(value) for value in values], dtype=torch.float64, device=self._collective_device())
-        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
-        return tuple(float(total) for total in tensor.tolist())
-
     def gather(self, value: Any) -> list[Any]:
         return _send(value)
 
@@ -587,9 +581,6 @@ class _DDPSession:
 
     def barrier(self) -> None:
         dist.barrier()
-
-    def _collective_device(self) -> torch.device:
-        return self.device if dist.get_backend() == "nccl" else torch.device("cpu")
 
     def check_steps(self, n_batches: Optional[int], epoch: int) -> None:
         counts = self.gather(n_batches)

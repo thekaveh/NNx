@@ -2101,17 +2101,26 @@ def test_an_explicit_default_train_step_records_the_declared_training_metrics(tm
     assert summary is not None and "accuracy" in summary.metrics
 
 
+def _agreed_step_checks(ddp, target):
+    """The DDP step's agreed checks for a task-free MSE batch with a finite loss."""
+    import torch
+
+    from nnx.nn.nn_model import _agreed_step_checks, _StepLossTerms
+
+    loss = torch.tensor(0.5)
+    terms = _StepLossTerms(target, target, None, None, loss, loss, float(len(target)))
+    return _agreed_step_checks(ddp, terms, None, should_step=True, loss_fn=torch.nn.MSELoss())
+
+
 def test_an_unscorable_batch_on_one_rank_stops_every_rank():
     import torch
 
-    from nnx.nn.nn_model import _agreed_scorable_target
-
     class _OtherRankRefused:
         def gather(self, value):
-            return [value, True]  # rank 1 refused its batch
+            return [value, (False, True)]  # rank 1 refused its batch (its loss was finite)
 
     with pytest.raises(ValueError, match=r"rank\(s\) \[1\]"):
-        _agreed_scorable_target(_OtherRankRefused(), torch.nn.MSELoss(), torch.tensor([0.0, 1.0]))
+        _agreed_step_checks(_OtherRankRefused(), torch.tensor([0.0, 1.0]))
 
 
 @pytest.mark.parametrize("beta", [True, "0.1", None])
@@ -2164,14 +2173,12 @@ def test_surgery_refuses_a_parametrized_module_it_would_strip(kind):
 def test_the_rank_that_cannot_score_its_batch_raises_its_own_reason():
     import torch
 
-    from nnx.nn.nn_model import _agreed_scorable_target
-
     class _BothRanks:
         def gather(self, value):
-            return [value, False]
+            return [value, (False, False)]
 
     with pytest.raises(ValueError) as caught:
-        _agreed_scorable_target(_BothRanks(), torch.nn.MSELoss(), torch.tensor([0.5, 1.0]))
+        _agreed_step_checks(_BothRanks(), torch.tensor([0.5, 1.0]))
     # #565: distributed= refuses custom steps and objectives, so a task is the one remedy.
     assert str(caught.value) == (
         "the default steps score classification and cannot score MSELoss targets: "

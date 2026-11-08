@@ -410,6 +410,88 @@ def stock_forward_model(loss_fn: torch.nn.Module) -> NNModel:
 
 STOCK_FORWARD_LOSSES = {"mse": torch.nn.MSELoss, "my_mse": MyMSE}
 
+# #576: the Python-level collectives counted inside the default training step.
+COLLECTIVES = ("all_gather_object", "all_reduce", "all_gather", "broadcast", "barrier")
+# label: (a task model?, accumulate_grad_batches)
+COLLECTIVE_FITS = {"acc1": (False, 1), "acc2": (False, 2), "task_acc1": (True, 1), "task_acc2": (True, 2)}
+
+
+class CountedCollectives:
+    """Counts each ``torch.distributed`` collective called from inside
+    ``default_train_step`` while it is entered (the gradient all-reduce
+    runs in DDP's C++ reducer and is not one of them)."""
+
+    def __enter__(self) -> CountedCollectives:
+        self.counts = dict.fromkeys(COLLECTIVES, 0)
+        self._originals = {name: getattr(torch.distributed, name) for name in COLLECTIVES}
+        for name, original in self._originals.items():
+            setattr(torch.distributed, name, self._counted(name, original))
+        return self
+
+    def _counted(self, name: str, original):
+        def collective(*args, **kwargs):
+            frame = sys._getframe(1)
+            while frame is not None and frame.f_code.co_name != "default_train_step":
+                frame = frame.f_back
+            if frame is not None:
+                self.counts[name] += 1
+            return original(*args, **kwargs)
+
+        return collective
+
+    def __exit__(self, *exc) -> None:
+        for name, original in self._originals.items():
+            setattr(torch.distributed, name, original)
+
+
+def collective_fit(task: bool, accumulate: int) -> tuple[NNModel, NNTrainParams]:
+    """A one-epoch fit of ``train_set()`` (three steps per rank), for a
+    task-free model or one with a categorical task."""
+    m = model()
+    if task:
+        torch.manual_seed(0)
+        m = NNModel(
+            net_params=NNParams(
+                input_dim=FEATURES, output_dim=CLASSES, hidden_dims=[6], dropout_prob=0.0, activation=Activations.RELU
+            ),
+            params=NNModelParams(
+                net=Nets.FEED_FWD,
+                device=_device(),
+                loss=Losses.CROSS_ENTROPY,
+                task=TaskSpec.categorical(CLASSES, ignore_index=IGNORE),
+            ),
+        )
+    loader = nnx_dist.train_loader(train_set(), batch_size=2, seed=3)
+    return m, params(loader, accumulate=accumulate, n_epochs=1, data_id=f"collectives-{task}-{accumulate}")
+
+
+def verdict_rows(nan: tuple[int, ...] = (), unscorable: tuple[int, ...] = ()) -> torch.utils.data.Dataset:
+    """Four regression rows with class-valued targets: unshuffled batches of
+    2 give rank 0 rows 0 and 2, rank 1 rows 1 and 3. ``nan`` rows hold NaN
+    features (a non-finite loss), ``unscorable`` rows a fractional target."""
+    from torch.utils.data import TensorDataset
+
+    X = torch.randn(4, FEATURES, generator=torch.Generator().manual_seed(3))
+    y = torch.tensor([[0.0], [1.0], [1.0], [0.0]])
+    for row in nan:
+        X[row] = float("nan")
+    for row in unscorable:
+        y[row] = 0.5
+    return TensorDataset(X, y)
+
+
+# #576: which rank fails which step agreement (rows of verdict_rows), and for
+# a task model (no target check) or not.
+VERDICT_CASES = {
+    "nan_rank0": (False, {"nan": (0,)}),
+    "nan_both": (False, {"nan": (0, 1)}),
+    "unscorable_rank1": (False, {"unscorable": (1,)}),
+    "unscorable_both": (False, {"unscorable": (0, 1)}),
+    "nan_rank0_unscorable_rank1": (False, {"nan": (0,), "unscorable": (1,)}),
+    "nan_and_unscorable_rank0": (False, {"nan": (0,), "unscorable": (0,)}),
+    "task_nan_rank1": (True, {"nan": (1,)}),
+}
+
 
 def scenario(name: str, rank: int, world_size: int) -> dict:
     out: dict = {"rank": rank, "world_size": world_size}
@@ -735,6 +817,7 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             out["error"] = None
         except BaseException as error:  # noqa: BLE001
             out["error"] = type(error).__name__
+            out["message"] = str(error)
     elif name == "sum_masked_windows":
         # #503: every SUM_LOSSES x SUM_MASK_CASES fit, monitored on the train loss.
         out["cases"] = {}
@@ -1117,6 +1200,59 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             out["hard_exit"] = True  # and ends with os._exit: its C++ teardown can abort the rank
         if name == "resume_writer_begin_fails":
             out["shutdown"] = _leave_together()
+    elif name == "collectives":
+        # #576: the collectives per default training step, and the window
+        # weight each committed update scales the gradients by (world / W).
+        import nnx.nn.nn_model as nn_model_module
+
+        out["cases"] = {}
+        scale = nn_model_module._scale_gradients
+        for label, (task, accumulate) in COLLECTIVE_FITS.items():
+            scales: list[float] = []
+
+            def recorded(net, factor, scales=scales):
+                scales.append(factor)
+                return scale(net, factor)
+
+            m, fit_params = collective_fit(task, accumulate)
+            nn_model_module._scale_gradients = recorded
+            try:
+                with CountedCollectives() as counted:
+                    run = m.train(params=fit_params, distributed=nnx_dist.DDP())
+            finally:
+                nn_model_module._scale_gradients = scale
+            steps = len(run.idps)  # one record per training step
+            out["cases"][label] = {
+                "per_step": {name: count / steps for name, count in counted.counts.items()},
+                "scales": scales,
+                "state": {k: v.clone() for k, v in m.net.state_dict().items()},
+            }
+    elif name == "verdict_order":
+        # #576: the step agreements on a non-finite loss and an unscorable
+        # target, each rank's error type and message.
+        out["cases"] = {}
+        for label, (task, rows) in VERDICT_CASES.items():
+            torch.manual_seed(0)
+            regression = NNModel(
+                net_params=NNParams(
+                    input_dim=FEATURES, output_dim=1, hidden_dims=[6], dropout_prob=0.0, activation=Activations.RELU
+                ),
+                params=NNModelParams(
+                    net=Nets.FEED_FWD,
+                    device=_device(),
+                    loss=Losses.MEAN_SQUARED_ERROR,
+                    task=TaskSpec.regression(1) if task else None,
+                ),
+            )
+            loader = nnx_dist.train_loader(verdict_rows(**rows), batch_size=2, shuffle=False)
+            try:
+                regression.train(
+                    params=params(loader, accumulate=1, n_epochs=1, data_id=f"verdict-{label}"),
+                    distributed=nnx_dist.DDP(),
+                )
+                out["cases"][label] = None
+            except BaseException as error:  # noqa: BLE001 - recorded for the test
+                out["cases"][label] = (type(error).__name__, str(error))
     elif name == "parked":
         # #478: rank 1 parks while rank 0 waits at a barrier, so the scenario
         # hangs; its faulthandler dump must name where rank 1 is.
