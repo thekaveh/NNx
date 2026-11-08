@@ -63,6 +63,7 @@ hardware evidence says so.
 | `< 2.3` | — | not run | `torch.amp.GradScaler` does not exist; the CUDA AMP factory would raise `AttributeError`. | **Unsupported** — excluded by metadata. |
 | CPU BF16 (`PrecisionPolicy("bf16")` on a CPU device) on the CI rows | 3.10 – 3.14 | the CI `lint-and-test` and `floor-deps` lanes (CPU) | `tests/test_precision_execution.py`: seeded classification and KD fixtures with accumulation stay within `nnx.precision.REFERENCE_TOLERANCES["bf16"]` of their FP32 reference. Also checked: bf16 autocast without a scaler, the backward outside autocast, float32 parameters, and the finite-gradient check before clipping. | **Tested — CPU** (`precision_support()` reports it `"verified"`). |
 | CUDA FP16 / BF16 (`PrecisionPolicy("fp16" / "bf16")`, or `mixed_precision=True`, on a CUDA device) on any row | — | no CUDA hardware in the local or CI environments used for this matrix | Stubs and CPU simulation only; the CUDA evidence tests have not run yet. See **CUDA precision evidence** below the table. | **Unverified** — control-flow coverage, not hardware execution. |
+| MPS (Apple silicon, `Devices.MPS`) on the current row | 3.12 | no MPS device in CI: every hosted lane is Linux, where the `mps` tests skip. A local macOS arm64 run on 2026-11-08. The opt-in self-hosted `mps-evidence` job (CONTRIBUTING §5.2) has not run yet | The `mps`-marked tests (`pytest tests -m mps` with `NNX_REQUIRE_MPS=1`: 22 passed locally). On Linux, CPU pins fail when an MPS fix is reverted; see **MPS evidence** below the table. | **Unverified in CI** — CPU pins and a local hardware run, not a CI lane. |
 
 **CUDA precision evidence.** Resolution is
 covered by stubs (`tests/test_precision_policy.py`, and
@@ -80,6 +81,26 @@ branch only when `torch.cuda.is_available()`.
 FP16 / BF16 and a two-GPU NCCL run on CUDA. It is evidence only from a `cuda`
 evidence-profile report (CONTRIBUTING §5.1, "GPU evidence"), and none has run
 yet.
+
+**MPS evidence.** MPS has no float64 and its own generator.
+`tests/test_mps_cpu_pins.py` hands the float64 sites a CPU tensor that
+refuses float64 and NumPy as an MPS tensor does (`tests/_mps.py`). Removing a
+`.cpu()` hop then raises the MPS `TypeError` on Linux: `tasks.py` (the
+regression accumulator), `lm_tasks.py` (the causal LM NLL), `preprocessing.py`
+(`Standardizer`), `diffusion/objective.py` (the schedule fingerprint),
+`surgery/low_rank.py` (its weight reports device `mps`),
+`paradigms/offline_distillation.py` (KL and NLL sums) and `decisions/nli.py`
+(`tests/test_decision_nli.py`). The MPS generator branches run over a fake
+`torch.mps` generator: the compile snapshot (`tests/test_compile_execution.py`),
+`nnx.viz.summary` (`tests/test_viz_summary.py`), `lr_finder`
+(`tests/test_lr_finder.py`) and the scoped seed and its restore
+(`tests/test_seeding.py`). Not pinned on the CPU: paths that build a tensor on
+the MPS device. That is the input placement and casts of `netron_export`,
+graph classifiers, `LinkTask` and `summary(batch=)`, `compare_compile`'s
+chunked diff, the Bernoulli NLL, MPS autocast, the low-rank factors placed on
+the device and the pairwise ranking loss with grades on either device (the
+ranking validation scores have a CPU pin). Only the `mps` tests run them, on
+an MPS device.
 
 Optional extras carry their own constraints and are *not* part of the floor
 lane. `torchao` (`[quantize]`) is validated only against the frozen torch
@@ -109,5 +130,10 @@ recreated; PyPI remains the artifact source for that version.
    or published configuration change.
 2. Prefer tests against the frozen public API. Use a mock only for credentials,
    hardware, daemons, or network boundaries, and record the gate here.
+   MPS (FEAT-050): the CPU pins above stand in for the device (a tensor
+   that refuses float64 and NumPy, a fake `torch.mps` generator). The tests
+   marked `mps` need the device: they skip without it, and fail instead
+   under `NNX_REQUIRE_MPS=1`, which the opt-in `mps-evidence` job sets
+   (CONTRIBUTING §5.2).
 3. Document tolerated upstream skew together with the condition for removing its
    compatibility guard or skip.
