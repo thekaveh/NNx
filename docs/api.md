@@ -15844,7 +15844,9 @@ records directly, offline:
   (mean ``KL(teacher ‖ student)`` in nats, over every record) and
   **labelled quality** (accuracy and NLL on the labelled records only),
   each with its own denominator: agreeing with a teacher is not being
-  right.
+  right. :meth:`TeacherDataset.metric_specs` declares the evaluation's
+  metrics (registered ids ``offline.*``) so a ``MonitorSpec`` can select,
+  schedule or stop on them.
 
 Nothing here reaches the network: records, inputs and the student are
 local. Live distillation (``kd_train_step_factory``,
@@ -15956,6 +15958,14 @@ nnx.paradigms.offline_distillation.TeacherDataset.eval_step(self) -> 'OfflineDis
 
 An ``eval_step_fn`` for ``NNModel.train`` over a validation loader of this dataset's kind (see `OfflineDistillationEval`).
 
+##### `nnx.paradigms.offline_distillation.TeacherDataset.metric_specs`
+
+```python
+nnx.paradigms.offline_distillation.TeacherDataset.metric_specs(self) -> 'list[Any]'
+```
+
+``MetricSpec``s declaring `eval_step`'s metrics — registered ids ``offline.teacher_kl`` / ``offline.teacher_agreement`` / ``offline.label_accuracy`` / ``offline.label_nll``, reported as ``teacher_kl`` / ``teacher_agreement`` / ``label_accuracy`` / ``label_nll`` — so a ``MonitorSpec`` can select, schedule or stop on them (``NNTrainParams(metrics=data.metric_specs(), monitor=MonitorSpec("label_accuracy"))``). Only `eval_step` computes them; the default evaluation path refuses them. Without labelled validation records the label metrics are unavailable, so they never win BEST.
+
 
 #### `nnx.paradigms.offline_distillation.TeacherBatch`
 
@@ -16038,9 +16048,14 @@ An ``eval_step_fn`` (``NNModel.train(eval_step_fn=...)``) over a validation load
 The record's ``loss`` is the **imitation loss** (``teacher_kl``) whatever
 the objective's ``alpha``: it measures agreement with the teacher, not
 quality. A scheduler, early stopping or BEST selection that should
-follow labelled quality must monitor ``label_accuracy`` or ``label_nll``
-by name (``MonitorSpec``). Use :func:`evaluate_offline` for every
-denominator.
+follow labelled quality declares these metrics with
+:meth:`TeacherDataset.metric_specs` and monitors ``label_accuracy`` or
+``label_nll`` by name::
+
+    params = NNTrainParams(..., metrics=data.metric_specs(), monitor=MonitorSpec("label_accuracy"))
+    student.train(params=params, objective=data.objective(alpha=0.7), eval_step_fn=data.eval_step())
+
+Use :func:`evaluate_offline` for every denominator.
 ```
 
 

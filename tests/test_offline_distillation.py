@@ -16,9 +16,14 @@ from torch import nn
 
 from nnx import (
     Activations,
+    Checkpoints,
     Devices,
+    EarlyStopping,
     Losses,
+    MetricSpec,
+    MonitorSpec,
     Nets,
+    NNCheckpoint,
     NNModel,
     NNModelParams,
     NNParams,
@@ -585,3 +590,121 @@ def test_a_teacher_dataset_takes_read_only_and_reversed_numpy_inputs():
         warnings.simplefilter("error")
         dataset = TeacherDataset(records, inputs, candidates=CANDIDATES, schema_digest=SCHEMA)
     assert len(dataset) == 2
+
+
+# ------------------------------------------------------------------ #569: monitoring the label metrics
+
+
+def _misled(n: int = 8) -> TeacherDataset:
+    """A teacher that contradicts every label: imitating it lowers the
+    imitation loss while labelled quality falls, so BEST on the loss and BEST
+    on labelled quality pick different epochs."""
+    records, inputs = [], {}
+    for i in range(n):
+        label = CANDIDATES[i % 2]
+        records.append(_record(f"s{i}", (0.1, 0.9) if label == "cat" else (0.9, 0.1), label=label))
+        inputs[f"s{i}"] = torch.eye(2)[i % 2] * (1.0 + 0.1 * i)
+    return TeacherDataset(records, inputs, candidates=CANDIDATES, schema_digest=SCHEMA)
+
+
+def _fit_misled(data: TeacherDataset, *, epochs: int = 6, callbacks=None, **overrides):
+    model = _model(zero=True)
+    with torch.no_grad():
+        model.net.layers[0].weight.copy_(torch.eye(2))  # starts by predicting every label
+    params = NNTrainParams(
+        n_epochs=epochs,
+        train_loader=data.loader(4),
+        val_loader=data.loader(8),
+        optim=NNOptimParams(name=Optims.SGD, max_lr=0.5, momentum=0.0, weight_decay=0.0),
+        metrics=data.metric_specs(),
+        overwrite_existing=True,
+        **overrides,
+    )
+    return model.train(
+        params=params, objective=data.objective(alpha=1.0), eval_step_fn=data.eval_step(), callbacks=callbacks
+    )
+
+
+def _epochs(run) -> list:
+    return [idp for idp in run.idps if idp.val_edp is not None]
+
+
+@pytest.mark.parametrize("metric, mode", [("label_accuracy", "max"), ("label_nll", "min")])
+def test_a_declared_label_metric_drives_best(metric, mode):
+    data = _misled()
+    run = _fit_misled(data, monitor=MonitorSpec(metric))
+    selection = run.idps[-1].selection
+    assert selection.monitor.key == f"val.{metric}" and selection.monitor.mode == mode and selection.status == "ok"
+    epochs = _epochs(run)
+    values = [idp.val_edp.metrics[metric] for idp in epochs]
+    assert selection.value == values[-1]
+    best_so_far, expected = None, []
+    for value in values:
+        better = best_so_far is None or (value > best_so_far if mode == "max" else value < best_so_far)
+        expected.append(better)
+        best_so_far = value if better else best_so_far
+    assert [idp.selection.improved for idp in epochs] == expected
+    best = NNCheckpoint.load(run=run.id, type=Checkpoints.BEST)
+    assert best is not None and best.idp.val_edp.metrics[metric] == (max(values) if mode == "max" else min(values))
+    # The record's loss (imitation) keeps falling: BEST on it would be the last epoch, not this one.
+    losses = [idp.val_edp.loss for idp in epochs]
+    assert losses.index(min(losses)) == len(losses) - 1 and best.idp.epoch_idx == 0
+
+
+@pytest.mark.parametrize("metric", ["label_accuracy", "label_nll"])
+def test_a_declared_label_metric_drives_early_stopping(metric):
+    data = _misled()
+    run = _fit_misled(data, callbacks=[EarlyStopping(monitor=MonitorSpec(metric), patience=1)])
+    assert [idp.epoch_idx for idp in _epochs(run)] == [0, 1]  # quality peaked at epoch 0
+    # Stopping on the imitation loss would run every epoch.
+    full = _fit_misled(data, callbacks=[EarlyStopping(monitor=MonitorSpec("loss"), patience=1)])
+    assert len(_epochs(full)) == 6
+
+
+def test_the_metric_specs_declare_every_evaluation_metric():
+    data = _misled()
+    specs = data.metric_specs()
+    assert [spec.label for spec in specs] == ["teacher_kl", "teacher_agreement", "label_accuracy", "label_nll"]
+    assert [spec.id for spec in specs] == [f"offline.{spec.label}" for spec in specs]
+    assert [spec.mode for spec in specs] == ["min", "max", "max", "min"]
+    run = _fit_misled(data, epochs=2, monitor=MonitorSpec("teacher_agreement"))
+    selections = [idp.selection for idp in _epochs(run)]
+    assert [(s.status, s.value, s.improved) for s in selections] == [("ok", 0.0, True), ("ok", 1.0, True)]
+    with pytest.raises(ValueError, match="take no options"):
+        MetricSpec("offline.label_nll", config={"eps": 1e-12}).check()
+    # Without labelled records the label metrics are missing, so they never win BEST.
+    unlabelled = _dataset(4, labelled=False)
+    with pytest.warns(RuntimeWarning, match="'val.label_accuracy' has no value"):
+        run = _model().train(
+            params=_params(
+                unlabelled.loader(4),
+                epochs=2,
+                val_loader=unlabelled.loader(4),
+                metrics=unlabelled.metric_specs(),
+                monitor=MonitorSpec("label_accuracy"),
+            ),
+            objective=unlabelled.objective(alpha=1.0),
+            eval_step_fn=unlabelled.eval_step(),
+        )
+    assert all(idp.selection.status == "missing" and not idp.selection.improved for idp in _epochs(run))
+
+
+def test_the_offline_metrics_refuse_the_default_evaluation_path():
+    from torch.utils.data import DataLoader, TensorDataset
+
+    data = _misled()
+    generator = torch.Generator().manual_seed(0)
+    loader = DataLoader(
+        TensorDataset(torch.randn(8, 2, generator=generator), torch.randint(0, 2, (8,), generator=generator)),
+        batch_size=4,
+    )
+    model = _model()
+    with pytest.raises(TeacherRecordError, match="eval_step_fn=TeacherDataset.eval_step"):
+        model.evaluate(loader, metrics=data.metric_specs())
+    # In training, with the default steps: refused on the first batch it would score.
+    with pytest.raises(TeacherRecordError, match="eval_step_fn=TeacherDataset.eval_step"):
+        _model().train(
+            params=_params(
+                loader, val_loader=loader, metrics=data.metric_specs(), monitor=MonitorSpec("label_accuracy")
+            )
+        )
