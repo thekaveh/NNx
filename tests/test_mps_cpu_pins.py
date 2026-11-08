@@ -192,3 +192,32 @@ def test_offline_distillation_sums_an_mps_student_on_the_cpu():
     assert (on_mps.rows, on_mps.agree, on_mps.labelled, on_mps.correct) == (3, 3, 2, 1)
     assert on_mps.kl == pytest.approx(reference.kl, rel=1e-12) and on_mps.kl > 0
     assert on_mps.nll == pytest.approx(reference.nll, rel=1e-12) and on_mps.nll > 0
+
+
+def test_a_bernoulli_nll_widens_an_mps_logit_on_the_cpu():
+    """#518: the sigmoid runs in float64 on the host, so a logit past ~16.6
+    keeps a target-0 probability below 1."""
+    from nnx.monitors import _batch_inputs
+
+    logits = torch.tensor([-20.0, -1.0, 0.0, 2.0, 20.0])
+    targets = torch.tensor([0.0, 1.0, 0.0, 1.0, 0.0])
+    needed = frozenset({"labels", "probabilities"})
+    truth, inputs = _batch_inputs("bernoulli", off_cpu(targets), off_cpu(logits), None, None, needed)
+    expected_truth, expected = _batch_inputs("bernoulli", targets, logits, None, None, needed)
+    assert inputs["probabilities"].dtype == np.float64 and inputs["probabilities"][-1] < 1.0
+    np.testing.assert_array_equal(inputs["probabilities"], expected["probabilities"])
+    np.testing.assert_array_equal(inputs["labels"], expected["labels"])
+    np.testing.assert_array_equal(truth, expected_truth)
+
+
+def test_compare_compile_widens_every_mps_chunk_on_the_cpu(monkeypatch):
+    import nnx.benchmarking as benchmarking
+
+    monkeypatch.setattr(benchmarking, "_DIFF_CHUNK", 4)  # three chunks
+    a = torch.arange(10, dtype=torch.float32)
+    b = a.clone()
+    b[-1] += 2
+    b[1] = float("nan")
+    assert benchmarking._abs_diff(reports_mps(a), reports_mps(b)) == benchmarking._abs_diff(a, b) == float("inf")
+    b[1] = a[1]
+    assert benchmarking._abs_diff(reports_mps(a), reports_mps(b)) == 2.0
