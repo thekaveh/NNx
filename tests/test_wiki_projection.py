@@ -796,3 +796,115 @@ def test_a_definition_after_an_html_rewrite_in_its_block_keeps_its_offsets(tmp_p
     text = 'See <a href="page-two.md">P</a> here.\n[ref]: page-two.md\n'
     rendered = rewrite_markdown(source, text, {target.resolve(): "Some-Long-Page-Name"})
     assert rendered == 'See <a href="Some-Long-Page-Name">P</a> here.\n[ref]: Some-Long-Page-Name\n'
+
+
+# #568: a definition or an outer item's paragraph after a nested list belongs to
+# the deepest open item its indent reaches, as markdown-it and Python-Markdown read it.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "- A\n    - x\n\n        [qs]: q.md\n",
+        "- A\n    - x\n\n      [qs]: q.md\n",
+        "- A\n    - [qs]: q.md\n",
+        "1. A\n    - x\n\n        [qs]: q.md\n",
+        "- A\n    - B\n        - x\n\n            [qs]: q.md\n",
+        "> - A\n>     - x\n>\n>         [qs]: q.md\n",
+        "- A\n    - x\n\n    [qs]: q.md\n",
+    ],
+)
+def test_a_definition_in_a_nested_list_item_is_found(text: str):
+    from scripts.docs.build_wiki import block_reference_definitions, markdown_blocks
+
+    blocks = markdown_blocks(text)
+    found = [(index, d) for index, ds in block_reference_definitions(blocks).items() for d in ds]
+    assert [(definition.label, definition.target) for _, definition in found] == [("qs", "q.md")]
+    ((index, definition),) = found
+    assert blocks[index].text[definition.start : definition.end].rstrip("\n").endswith("[qs]: q.md")
+
+
+def test_an_outer_item_paragraph_after_a_nested_list_is_prose():
+    from scripts.docs.build_wiki import markdown_blocks
+
+    text = "- Guides\n    - A nested item.\n\n    Then read [x](q.md).\n"
+    (block,) = [block for block in markdown_blocks(text) if "    Then read [x](q.md).\n" in block.text]
+    assert block.suppressed is False
+
+
+def test_the_list_indent_after_a_nested_item_is_its_content_indent():
+    assert build_wiki._list_indent_after("- Guides\n    - See [qs].\n", 0) == 6
+
+
+@pytest.mark.parametrize("text", ['- A\n    - x\n\n        [qs]: q.md "`t`"\n', '[qs]: q.md "`t`"\n'])
+def test_a_nested_definitions_backticked_title_is_not_a_code_span(text: str):
+    assert build_wiki._code_span_ranges(text) == []
+
+
+NESTED_DEFINITION = "- Guides\n    - See [the guide][qs].\n\n        [qs]: {target}\n"
+OUTER_CONTINUATION = "- Guides\n    - A nested item.\n\n    Then read [the guide]({target}).\n"
+
+
+def _projection_map(surface: str) -> dict[Path, str]:
+    """The entries ``build_docs._source_map`` and ``build_pypi_readme`` give
+    these targets (``build_docs`` needs the docs extras, so not imported)."""
+    from scripts.docs.build_pypi_readme import REPOSITORY_BLOB
+
+    docs = build_wiki.ROOT / "docs"
+    quickstart = {
+        "wiki": "Quickstart",
+        "site": "Quickstart.md",
+        "pypi": REPOSITORY_BLOB + "docs/quickstart.md",
+    }[surface]
+    return {
+        (docs / "quickstart.md").resolve(): quickstart,
+        (docs / "assets" / "training-lifecycle.png").resolve(): "images/training-lifecycle.png",
+    }
+
+
+@pytest.mark.parametrize(
+    ("template", "projected_line"),
+    [(NESTED_DEFINITION, "        [qs]: {}"), (OUTER_CONTINUATION, "    Then read [the guide]({}).")],
+)
+@pytest.mark.parametrize(
+    ("surface", "target", "projected"),
+    [
+        ("wiki", "quickstart.md", "Quickstart"),
+        ("site", "quickstart.md", "Quickstart.md"),
+        ("pypi", "quickstart.md", "https://github.com/thekaveh/NNx/blob/main/docs/quickstart.md"),
+        ("wiki", "assets/training-lifecycle.png", "images/training-lifecycle.png"),
+    ],
+)
+def test_nested_definitions_and_outer_item_links_are_projected(
+    template: str, projected_line: str, surface: str, target: str, projected: str
+):
+    source = build_wiki.ROOT / "docs" / "concepts.md"
+    rendered = rewrite_markdown(
+        source,
+        template.format(target=target),
+        _projection_map(surface),
+        surface="wiki" if surface == "wiki" else "site",
+    )
+    assert rendered.splitlines()[-1] == projected_line.format(projected)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        NESTED_DEFINITION.format(target="missing.md"),
+        "- Guides\n    - See [qs].\n\n        [qs]: missing.md\n",
+        "- Guides\n    - [qs]: missing.md\n",
+        OUTER_CONTINUATION.format(target="missing.md"),
+    ],
+)
+def test_a_missing_nested_or_outer_item_target_fails_projection(tmp_path: Path, text: str):
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="broken local documentation link"):
+        rewrite_markdown(source, text, {})
+
+
+def test_an_outer_item_definition_after_a_nested_list_keeps_its_backticked_title(tmp_path: Path):
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    text = '- A\n    - x\n\n    [qs]: page.md "`t`"\n'
+    rendered = rewrite_markdown(source, text, {source.resolve(): "Page"})
+    assert rendered.splitlines()[-1] == '    [qs]: Page "`t`"'
