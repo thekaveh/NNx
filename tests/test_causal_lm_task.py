@@ -872,7 +872,7 @@ def test_confident_tokens_keep_e69fd74s_nll_at_a_realistic_vocabulary(margin, no
     assert torch.allclose(grad, grad_ref, rtol=rtol, atol=2e-4)
 
 
-@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs an MPS device")
+@pytest.mark.mps
 @pytest.mark.parametrize("half", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
 def test_mps_autocast_keeps_the_loss_and_the_nll_in_float32(half):
     import warnings

@@ -1,6 +1,10 @@
 """MPS has no float64: every float64 sum or copy NNx makes from a tensor that
 may live on the model's device widens on the CPU. Each test covers one path
-that crashed with "Cannot convert a MPS Tensor to float64 dtype"."""
+that crashed with "Cannot convert a MPS Tensor to float64 dtype".
+
+They skip without an MPS device, so every hosted CI lane skips them; the
+opt-in ``mps-evidence`` job runs them (CONTRIBUTING §5.2), and
+``test_mps_cpu_pins.py`` pins the same fixes on the CPU."""
 
 from __future__ import annotations
 
@@ -9,7 +13,7 @@ import math
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(not torch.backends.mps.is_available(), reason="needs an MPS device")
+pytestmark = pytest.mark.mps  # skips without an MPS device; fails under NNX_REQUIRE_MPS=1 (tests/_mps.py)
 
 
 def test_low_rank_factorize_keeps_the_factors_on_mps():

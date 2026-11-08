@@ -148,6 +148,42 @@ their tests skip and the page shows them *unverified*. To produce that report:
 Change `docs/external-contracts.md` and the matrix rows only from executed
 evidence: a CUDA report whose listed tests passed in every phase.
 
+### 5.2. MPS tests
+
+MPS (Apple silicon) has no float64 and its own random-number generator. The
+tests that need the device are marked `@pytest.mark.mps` (never a bare
+`skipif` on `torch.backends.mps.is_available()`). Without an MPS device they
+skip, so every hosted CI lane skips them. With `NNX_REQUIRE_MPS=1` they fail
+instead.
+
+Each MPS fix also has a CPU pin that runs on every lane, in
+`tests/test_mps_cpu_pins.py` or beside the code's other tests. Hand the fixed
+code an `OffCPU` / `ReportsMPS` tensor, or install `fake_mps_generator`, from
+`tests/_mps.py`. The pin must fail when the fix is reverted. A path that
+builds a tensor on the MPS device has no CPU pin; an `mps` test covers it.
+
+- **MPS runner:** register a self-hosted runner labelled `self-hosted, macos,
+  arm64` on an Apple-silicon Mac, then set the repository variable
+  `NNX_MPS_RUNNER` to `true`. The `MPS tests` job of the `MPS` workflow
+  (`.github/workflows/mps.yml`) then probes
+  `torch.backends.mps.is_built()` and `is_available()` and fails without a
+  usable device. It runs `pytest tests -m mps` with `NNX_REQUIRE_MPS=1` and
+  fails on any skip. Pull requests from forks never run on it. While the
+  runner is offline, a run waits in its queue; it is a workflow of its own,
+  so the CI run is not held, and a newer commit replaces the waiting run.
+  Unset the variable to stop queuing runs. Hosted macOS
+  arm64 runners are not used: their MPS support is unverified
+  (actions/runner-images#9254 reports MPS allocation failures).
+- **Manual run** on an Apple-silicon Mac:
+
+    ```bash
+    uv sync --frozen --all-extras --python 3.12
+    NNX_REQUIRE_MPS=1 uv run pytest tests -m mps -rs
+    ```
+
+Change the MPS row of `docs/external-contracts.md` §2.1 only from executed
+evidence: a run of that job (or the manual run) with no failure or skip.
+
 ## 6. Submitting a PR
 
 - Push to your fork and open a PR against `develop`.
@@ -206,7 +242,7 @@ The `[project]` version is intentionally static and managed by release-please. *
 
 ### 7.1. CI runner image
 
-Every workflow job runs on one pinned GitHub-hosted image, `ubuntu-26.04` (`tests/test_ci_runner_image.py` checks it). The exception is the opt-in self-hosted GPU evidence job (§5.1). Jobs never run on a moving label such as `ubuntu-latest`. GitHub re-points such a label to new Ubuntu releases without a change in this repository.
+Every workflow job runs on one pinned GitHub-hosted image, `ubuntu-26.04` (`tests/test_ci_runner_image.py` checks it). The exceptions are the opt-in self-hosted jobs for hardware no hosted image has: the GPU evidence job (§5.1, `self-hosted, linux, x64, gpu`) and the MPS tests job (§5.2, `self-hosted, macos, arm64`). Jobs never run on a moving label such as `ubuntu-latest`. GitHub re-points such a label to new Ubuntu releases without a change in this repository.
 
 Moving to a new image is a deliberate pull request:
 
