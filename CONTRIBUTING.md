@@ -164,10 +164,14 @@ builds a tensor on the MPS device has no CPU pin; an `mps` test covers it.
 
 - **MPS runner:** register a self-hosted runner labelled `self-hosted, macos,
   arm64` on an Apple-silicon Mac, then set the repository variable
-  `NNX_MPS_RUNNER` to `true`. The CI workflow's `MPS tests` job then probes
+  `NNX_MPS_RUNNER` to `true`. The `MPS tests` job of the `MPS` workflow
+  (`.github/workflows/mps.yml`) then probes
   `torch.backends.mps.is_built()` and `is_available()` and fails without a
   usable device. It runs `pytest tests -m mps` with `NNX_REQUIRE_MPS=1` and
-  fails on any skip. Pull requests from forks never run on it. Hosted macOS
+  fails on any skip. Pull requests from forks never run on it. While the
+  runner is offline, a run waits in its queue; it is a workflow of its own,
+  so the CI run is not held, and a newer commit replaces the waiting run.
+  Unset the variable to stop queuing runs. Hosted macOS
   arm64 runners are not used: their MPS support is unverified
   (actions/runner-images#9254 reports MPS allocation failures).
 - **Manual run** on an Apple-silicon Mac:
