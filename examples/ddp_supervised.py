@@ -28,7 +28,12 @@ Six labelled rows with stable ids (0-5) train a small classifier:
 Each rank prints one JSON report (and writes it to
 ``<output>/report-rank<r>.json``): its rank, the run id, its validation ids
 (together they cover 0-5 exactly once), whether it owns the artifacts and
-its final validation accuracy.
+``train_rows_accuracy``, the final epoch's accuracy on the validation pass.
+The validation loader shards the same six rows the model trains on, which
+suits the sharding demonstration but makes that number a training-row
+accuracy, not a held-out one: the labels are row-id parity over random
+features, so nothing here can generalize. For a real validation set, give
+``validation_loader`` rows the model does not train on.
 
 ``--inject-failure`` makes rank 1 raise in epoch 1: torchrun stops the
 other rank and the launch exits non-zero within the process group's
@@ -122,7 +127,8 @@ def main() -> None:
         "validation_ids": validation.ids(),
         "owns_artifacts": owner,
         "artifacts": os.path.join(args.output, "runs", run.id) if owner else None,
-        "val_accuracy": run.idps[-1].val_edp.accuracy if run.idps[-1].val_edp is not None else None,
+        # The validation pass scores the training rows: not a held-out accuracy.
+        "train_rows_accuracy": run.idps[-1].val_edp.accuracy if run.idps[-1].val_edp is not None else None,
     }
     # Each rank writes its report to the shared output too: the ranks' stdout
     # streams interleave under torchrun.

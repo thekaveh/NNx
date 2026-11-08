@@ -15,6 +15,8 @@ two inputs of shape ``(4,)`` instead of one input of shape ``(2, 4)``.
 from __future__ import annotations
 
 import os
+import re
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -186,3 +188,17 @@ def test_registered_tensor_output_modules_export_and_match_onnx_runtime(tmp_path
         assert onnx_out.shape == (7, 3)  # the batch dimension stayed dynamic
     finally:
         unregister_model_factory("tests.onnx_toy", 1)
+
+
+def test_to_onnx_without_onnx_raises_an_import_error_naming_the_extra(tmp_path, monkeypatch):
+    """#570: without `onnx`, torch's legacy exporter raised a RuntimeError
+    (``OnnxExporterError: Module onnx is not installed!``) naming no extra.
+    ``to_onnx(dynamo=False)`` refuses first with an ImportError naming
+    ``thekaveh-nnx[onnx]``; nothing is written and the training mode stays."""
+    monkeypatch.setitem(sys.modules, "onnx", None)  # not installed
+    model = _model()
+    model.net.train()
+    out = tmp_path / "missing_onnx.onnx"
+    with pytest.raises(ImportError, match=re.escape("pip install thekaveh-nnx[onnx]")):
+        model.to_onnx(str(out), example_input=torch.randn(2, 4))
+    assert not out.exists() and model.net.training
