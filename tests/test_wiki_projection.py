@@ -908,3 +908,44 @@ def test_an_outer_item_definition_after_a_nested_list_keeps_its_backticked_title
     text = '- A\n    - x\n\n    [qs]: page.md "`t`"\n'
     rendered = rewrite_markdown(source, text, {source.resolve(): "Page"})
     assert rendered.splitlines()[-1] == '    [qs]: Page "`t`"'
+
+
+# #568: a marker 4+ columns past the deepest open item's content (or the margin)
+# is indented code or paragraph text, not a nested item, as both renderers read it.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Para\n\n    - [qs]: missing.md\n",
+        "Para\n    - [qs]: missing.md\n",
+        "- A\n\n        - [qs]: missing.md\n",
+        "- A\n    - x\n\n          - [qs]: missing.md\n",
+    ],
+)
+def test_a_marker_four_columns_past_the_open_content_opens_no_item(tmp_path: Path, text: str):
+    from scripts.docs.build_wiki import block_reference_definitions, markdown_blocks
+
+    assert not any(block_reference_definitions(markdown_blocks(text)).values())
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    assert rewrite_markdown(source, text, {}) == text
+
+
+# #568: the list items a blockquote holds close when the blockquote ends, so a
+# 4-space line after it is indented code, not a continuation of a quoted item.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "> - A\n>     - x\n\n    see [x](missing.md)\n",
+        "> - A\n>     - x\n\n    [qs]: missing.md\n",
+        "> - A\n\n    [qs]: missing.md\n",
+    ],
+)
+def test_a_blockquotes_list_items_close_when_it_ends(tmp_path: Path, text: str):
+    from scripts.docs.build_wiki import block_reference_definitions, markdown_blocks
+
+    blocks = markdown_blocks(text)
+    assert blocks[-1] == build_wiki.MarkdownBlock(text.splitlines(keepends=True)[-1], True, False)
+    assert not any(block_reference_definitions(blocks).values())
+    source = tmp_path / "page.md"
+    source.write_text("", encoding="utf-8")
+    assert rewrite_markdown(source, text, {}) == text
