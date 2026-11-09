@@ -1517,7 +1517,7 @@ step_fn = kd_train_step_factory(teacher, alpha=0.5, temperature=4.0)
 student.train(params=train_params, train_step_fn=step_fn)
 ```
 
-The factory **freezes the teacher's parameters and sets its net to eval mode** on call. So teacher weights are guaranteed not to drift during student training. The loss is `α · KL(softmax(t/T) || softmax(s/T)) · T² + (1-α) · L_hard`. That is the standard Hinton direction (teacher first), implemented via `F.kl_div(log_softmax(student/T), softmax(teacher/T))`.
+The factory **freezes the teacher's parameters and sets its net to eval mode** on call. So teacher weights are guaranteed not to drift during student training. Every step also puts the teacher back in eval mode before its forward, so a teacher registered under the student's net (which `student.net.train()` reaches) or switched to train mode by a callback still gives its eval-mode soft targets. The loss is `α · KL(softmax(t/T) || softmax(s/T)) · T² + (1-α) · L_hard`. That is the standard Hinton direction (teacher first), implemented via `F.kl_div(log_softmax(student/T), softmax(teacher/T))`.
 
 The hard-label term uses the student's `loss_fn`. Native NLL gets the same internal log-softmax adaptation as the supervised loop, so CE and NLL students train identically from the same weights. The soft KL term always works on raw logits. EDP reports the combined loss and student top-1 error.
 

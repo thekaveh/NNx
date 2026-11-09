@@ -2651,10 +2651,11 @@ the student's loss on the labels with its own denominator (weight
 ``1 − alpha``). Over a window this is exactly
 ``alpha · KL_batchmean + (1 − alpha) · loss`` of the full batch, however
 the rows are split into microbatches or targets are ignored. The teacher
-is frozen and put in eval mode once, as ``kd_train_step_factory`` does,
-and never updated. At ``alpha=0`` only the ``"supervised"`` term is
-returned, and at ``alpha=1`` only the ``"distillation"`` term (the
-labels are not scored, so placeholder labels train as with
+is frozen once and never updated, and is put back in eval mode before
+every teacher forward, as ``kd_train_step_factory`` does. At
+``alpha=0`` only the ``"supervised"`` term is returned, and at
+``alpha=1`` only the ``"distillation"`` term (the labels are not
+scored, so placeholder labels train as with
 ``kd_train_step_factory(alpha=1)``). An all-masked microbatch at
 ``alpha=0`` records like :class:`SupervisedObjective`'s, never NaN.
 
@@ -15627,7 +15628,10 @@ Args:
     teacher: a fully-trained :class:`NNModel` whose net produces
         logits of the same shape as the student's. The teacher's
         parameters are frozen (``requires_grad=False``) and its
-        net is set to eval mode on factory call.
+        net is set to eval mode on factory call, and put back in
+        eval mode before every teacher forward (a teacher under the
+        student's net, or one a callback switches to train mode,
+        would otherwise run its dropout and BatchNorm in train mode).
     alpha: weight on the distillation (soft) loss. The hard-label
         loss gets ``1 − α``. ``α=1.0`` is pure distillation (the
         labels are not scored); ``α=0.0`` collapses to standard
@@ -15690,8 +15694,9 @@ Args:
     teacher: a fully-trained :class:`NNModel` whose net produces
         logits of the same shape as the student's. The teacher's
         parameters are frozen (``requires_grad=False``) and its
-        net is set to eval mode on factory call — same guarantee
-        as :func:`kd_train_step_factory`.
+        net is set to eval mode on factory call and before every
+        teacher forward — same guarantee as
+        :func:`kd_train_step_factory`.
     auxiliary_layers: dict mapping ``teacher_layer_name ->
         student_layer_name`` for each (teacher, student) pair to
         match. Names are dotted paths resolved via
@@ -16814,8 +16819,12 @@ Args:
     ref_model: a frozen reference policy — typically a copy of the
         SFT checkpoint that the trainable policy was initialized
         from. Its ``net`` is set to eval mode and every parameter
-        has ``requires_grad`` cleared on factory call. Must share
-        ``vocab_size`` and tokenization with the policy.
+        has ``requires_grad`` cleared on factory call; every step
+        puts the net back in eval mode before its forward (a
+        reference under the policy's net, or one a callback
+        switches to train mode, would otherwise run its dropout in
+        train mode). Must share ``vocab_size`` and tokenization
+        with the policy.
     beta: strength of the reference-policy constraint (the scale of
         the implicit reward). Larger ``beta`` keeps the policy closer
         to the reference; smaller ``beta`` lets it deviate more. The

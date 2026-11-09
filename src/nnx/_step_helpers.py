@@ -86,6 +86,16 @@ def full_precision(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.float() if tensor.dtype in (torch.float16, torch.bfloat16) else tensor
 
 
+def pin_eval(module: torch.nn.Module) -> None:
+    """Put a frozen model's net (a KD teacher, a DPO reference) back in eval
+    mode before its forward. ``model.net.train()`` switches one registered
+    under the trained net to train mode, and a callback or user code may
+    too; its dropout and BatchNorm would then change its outputs. A module
+    already in eval mode throughout is left untouched."""
+    if any(sub.training for sub in module.modules()):
+        module.eval()
+
+
 def imperative_step(step: _StepT, *, paradigm: str) -> _StepT:
     """Mark ``step`` as an imperative ``paradigm`` step (see
     :data:`IMPERATIVE_STEP`) and return it."""
