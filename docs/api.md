@@ -5093,15 +5093,17 @@ Gloo, a peer can otherwise abort: "terminate called without an active
 exception"). With Gloo the wait is bounded by ``timeout_seconds``: when a
 rank does not arrive in time the others raise ``RuntimeError`` instead of
 blocking in the call, and leave the group to process exit (destroying it
-then could block on the missing rank). The timed-out barrier stays queued,
-so the process itself may still wait at exit until the missing rank
-arrives (its barrier then completes against the queued one) or the
-group's own timeout (``init_process_group(timeout_seconds=...)``) expires.
-With NCCL, older torch releases ignore ``timeout_seconds`` unless
-``TORCH_NCCL_BLOCKING_WAIT=1`` is set, so the wait is bounded by the
-group's timeout instead. Without a process group, or after a successful
-call, it does nothing; after a failed call the group is still
-initialized (``init_process_group()`` returns it as is), so exit.
+then could block on the missing rank). The timed-out barrier stays queued
+while the process lives: a rank arriving then completes against it. Up to
+torch 2.13 the process also waits at exit until the missing rank arrives
+or the group's own timeout (``init_process_group(timeout_seconds=...)``)
+expires; from torch 2.14 it exits at once, so a rank arriving after that
+raises in its own call within its timeout. With NCCL, older torch
+releases ignore ``timeout_seconds`` unless ``TORCH_NCCL_BLOCKING_WAIT=1``
+is set, so the wait is bounded by the group's timeout instead. Without a
+process group, or after a successful call, it does nothing; after a
+failed call the group is still initialized (``init_process_group()``
+returns it as is), so exit.
 ```
 
 

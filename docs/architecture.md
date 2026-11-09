@@ -116,9 +116,11 @@ No rank therefore tears down its connections while a peer still uses them.
 The wait is bounded with Gloo; with NCCL on older torch, it is bounded by the
 group's own timeout. A rank that does not arrive in time makes the others
 raise `RuntimeError` instead of blocking in the call. The group is then left
-for process exit. The process may still wait at exit until the missing rank
-arrives or the group's timeout expires. Without a process group, or after a
-successful call, it does nothing.
+for process exit. Up to torch 2.13 the process may still wait at exit until
+the missing rank arrives or the group's timeout expires. From torch 2.14 it
+exits at once, and a rank that arrives after that raises within its own
+timeout too. Without a process group, or after a successful call, it does
+nothing.
 
 **Partitions.** `nnx.distributed.train_loader(dataset, batch_size, policy=, seed=)`
 deals each epoch's permutation (seeded by `(seed + epoch) % 2**64`, for a
