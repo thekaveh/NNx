@@ -847,7 +847,10 @@ def test_feat020_streaming_eval_step_matches_the_eager_validation_record(tmp_pat
         assert actual.count == (6 if case == "regression" else 3)  # masked targets are not counted
         assert actual.loss == pytest.approx(expected.loss, rel=1e-12)  # summed numerators / summed denominators
         for field in ("accuracy", "f1", "recall", "precision", "error"):
-            assert getattr(actual, field) == pytest.approx(getattr(expected, field), rel=1e-12)
+            # None for a regression task: compared directly, since pytest 9.2's
+            # approx refuses None as the expected value once rel= is set.
+            value = getattr(expected, field)
+            assert getattr(actual, field) == (value if value is None else pytest.approx(value, rel=1e-12))
         assert dict(actual.metrics) == pytest.approx(dict(expected.metrics), rel=1e-12)
     selections = [(idp.selection.value, idp.selection.improved) for idp in eager.idps if idp.selection is not None]
     streamed = [(idp.selection.value, idp.selection.improved) for idp in stream.idps if idp.selection is not None]
