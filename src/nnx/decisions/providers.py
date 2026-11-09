@@ -187,12 +187,28 @@ def _batch(inputs: Any) -> tuple[str, int]:
     )
 
 
+def _refuse_hinge(loss_fn: Any) -> None:
+    """Raise :class:`UnsupportedCapability` for a hinge ``loss_fn``, with or
+    without a task: no loss_fn or TaskSpec turns a margin score into a
+    probability, so the refusal names no remedy."""
+    import torch
+
+    nn = torch.nn
+    if isinstance(loss_fn, (nn.MultiLabelMarginLoss, nn.MultiMarginLoss)):
+        hinge = "multilabel" if isinstance(loss_fn, nn.MultiLabelMarginLoss) else "multi-class"
+        raise UnsupportedCapability(
+            f"a {type(loss_fn).__name__} head is a {hinge} hinge: its outputs are margin scores, not logits, so no "
+            "softmax or sigmoid of them is a probability and it justifies no decision primitive"
+        )
+
+
 def _taskless_head_kind(loss_fn: Any) -> str:
     """The head kind a loss trains when the model declares no task —
     ``"categorical"``, ``"multilabel"`` or ``"regression"``, as a task's kind.
     Only the losses below name one: any other raises
     :class:`UnsupportedCapability` (#530), since nothing says what its
-    outputs mean and a softmax of them is no distribution the head gives."""
+    outputs mean and a softmax of them is no distribution the head gives.
+    The hinges are refused before this, by :func:`_refuse_hinge`."""
     import torch
 
     nn = torch.nn
@@ -205,14 +221,6 @@ def _taskless_head_kind(loss_fn: Any) -> str:
     regression = (nn.MSELoss, nn.L1Loss, nn.SmoothL1Loss, nn.HuberLoss, nn.PoissonNLLLoss, nn.GaussianNLLLoss)
     if isinstance(loss_fn, regression):
         return "regression"
-    # Hinges: no loss_fn or TaskSpec turns a margin score into a probability,
-    # so the refusal names no remedy.
-    if isinstance(loss_fn, (nn.MultiLabelMarginLoss, nn.MultiMarginLoss)):
-        hinge = "multilabel" if isinstance(loss_fn, nn.MultiLabelMarginLoss) else "multi-class"
-        raise UnsupportedCapability(
-            f"a {type(loss_fn).__name__} head is a {hinge} hinge: its outputs are margin scores, not logits, so no "
-            "softmax or sigmoid of them is a probability and it justifies no decision primitive"
-        )
     raise UnsupportedCapability(
         f"without a task, a {type(loss_fn).__name__} head's outputs have no known meaning: FixedHeadProvider reads "
         "softmax logits from a CrossEntropyLoss or NLLLoss head and sigmoid logits from a BCEWithLogitsLoss, "
@@ -255,14 +263,14 @@ class FixedHeadProvider:
     ``MSELoss``, ``L1Loss``, ``SmoothL1Loss``, ``HuberLoss``,
     ``PoissonNLLLoss`` and ``GaussianNLLLoss`` a regression one. Any other
     task-less loss raises :class:`UnsupportedCapability` at construction
-    instead of being served as a softmax. That covers the hinges
-    ``MultiMarginLoss`` and ``MultiLabelMarginLoss`` (whose margin scores are
-    no probabilities) and custom losses. For logits trained with a custom loss
-    (a focal loss, say), set ``model.loss_fn`` to the matching
-    ``CrossEntropyLoss``, ``NLLLoss`` or ``BCEWithLogitsLoss``. A declared
-    ``TaskSpec`` also names the head's kind, but that task's ``train()`` and
-    ``evaluate()`` accept only its own losses. A ``BCELoss`` head outputs
-    probabilities, not logits, and is refused with or without a task.
+    instead of being served as a softmax. That covers custom losses: for
+    logits trained with one (a focal loss, say), set ``model.loss_fn`` to the
+    matching ``CrossEntropyLoss``, ``NLLLoss`` or ``BCEWithLogitsLoss``. A
+    declared ``TaskSpec`` also names the head's kind, but that task's
+    ``train()`` and ``evaluate()`` accept only its own losses. Two kinds of
+    head are refused with or without a task: a ``BCELoss`` head, which
+    outputs probabilities, not logits, and a hinge (``MultiMarginLoss`` or
+    ``MultiLabelMarginLoss``) head, whose margin scores are no probabilities.
 
     Probabilities come from the model's ``predict_proba``,
     which evaluates in eval mode and restores every submodule's
@@ -324,6 +332,9 @@ class FixedHeadProvider:
                 "a BCELoss head outputs probabilities, not logits, so no softmax or sigmoid of them is a probability "
                 "it gives: wrap the net without its final sigmoid and set a BCEWithLogitsLoss loss_fn"
             )
+        # Also with a task, whose loss check refuses a hinge at train() and
+        # evaluate() but not one set on model.loss_fn after training.
+        _refuse_hinge(self.model.loss_fn)
         if kind is None:
             kind = _taskless_head_kind(self.model.loss_fn)
         if kind == "regression":

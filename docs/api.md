@@ -3344,14 +3344,14 @@ The model's ``TaskSpec`` names the head's kind. Without one,
 ``MSELoss``, ``L1Loss``, ``SmoothL1Loss``, ``HuberLoss``,
 ``PoissonNLLLoss`` and ``GaussianNLLLoss`` a regression one. Any other
 task-less loss raises :class:`UnsupportedCapability` at construction
-instead of being served as a softmax. That covers the hinges
-``MultiMarginLoss`` and ``MultiLabelMarginLoss`` (whose margin scores are
-no probabilities) and custom losses. For logits trained with a custom loss
-(a focal loss, say), set ``model.loss_fn`` to the matching
-``CrossEntropyLoss``, ``NLLLoss`` or ``BCEWithLogitsLoss``. A declared
-``TaskSpec`` also names the head's kind, but that task's ``train()`` and
-``evaluate()`` accept only its own losses. A ``BCELoss`` head outputs
-probabilities, not logits, and is refused with or without a task.
+instead of being served as a softmax. That covers custom losses: for
+logits trained with one (a focal loss, say), set ``model.loss_fn`` to the
+matching ``CrossEntropyLoss``, ``NLLLoss`` or ``BCEWithLogitsLoss``. A
+declared ``TaskSpec`` also names the head's kind, but that task's
+``train()`` and ``evaluate()`` accept only its own losses. Two kinds of
+head are refused with or without a task: a ``BCELoss`` head, which
+outputs probabilities, not logits, and a hinge (``MultiMarginLoss`` or
+``MultiLabelMarginLoss``) head, whose margin scores are no probabilities.
 
 Probabilities come from the model's ``predict_proba``,
 which evaluates in eval mode and restores every submodule's
