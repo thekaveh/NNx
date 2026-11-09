@@ -17,8 +17,8 @@ prompt ``x`` plus a chosen response ``y_w`` and a rejected response
 — i.e., minimize the negative log-sigmoid of the policy-vs-reference
 log-ratio margin between chosen and rejected. The reference's
 parameters are frozen on factory call (``requires_grad=False``) and
-its net is pinned to eval mode; the policy is the only module whose
-weights move.
+its net is pinned to eval mode, again before every reference forward;
+the policy is the only module whose weights move.
 
 Scope: this is the bare DPO objective for the small-LM experimentation
 NNx is sized for. It is **not** a production RLHF replacement —
@@ -34,7 +34,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
-from .._step_helpers import finalize_step, imperative_step
+from .._step_helpers import finalize_step, imperative_step, pin_eval
 from .._validation import require_count, require_finite_real, shown
 from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -53,8 +53,12 @@ def dpo_train_step_factory(
         ref_model: a frozen reference policy — typically a copy of the
             SFT checkpoint that the trainable policy was initialized
             from. Its ``net`` is set to eval mode and every parameter
-            has ``requires_grad`` cleared on factory call. Must share
-            ``vocab_size`` and tokenization with the policy.
+            has ``requires_grad`` cleared on factory call; every step
+            puts the net back in eval mode before its forward (a
+            reference under the policy's net, or one a callback
+            switches to train mode, would otherwise run its dropout in
+            train mode). Must share ``vocab_size`` and tokenization
+            with the policy.
         beta: strength of the reference-policy constraint (the scale of
             the implicit reward). Larger ``beta`` keeps the policy closer
             to the reference; smaller ``beta`` lets it deviate more. The
@@ -132,6 +136,7 @@ def dpo_train_step_factory(
 
         # Reference log-probs — no gradient, but move tensors through
         # ref_model's device frame in case it lives elsewhere.
+        pin_eval(ref_model.net)  # m.net.train() or a callback may have switched it to train mode
         with torch.no_grad():
             ref_chosen_logp = _response_logprob(
                 ref_model.net,

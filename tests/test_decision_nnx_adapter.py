@@ -22,7 +22,9 @@ from nnx import (
     Nets,
     NNModel,
     NNModelParams,
+    NNOptimParams,
     NNParams,
+    NNTrainParams,
     TaskSpec,
 )
 from nnx.decisions import (
@@ -552,6 +554,53 @@ def test_a_taskless_hinge_loss_is_refused_without_a_remedy(loss_fn, hinge, outpu
     model, calls = _taskless(loss_fn, output_dim)
     with pytest.raises(UnsupportedCapability, match=f"a {_name(loss_fn)} head is a {hinge} hinge") as caught:
         FixedHeadProvider(model, labels=LABELS[:output_dim])
+    assert "TaskSpec" not in str(caught.value) and "loss_fn" not in str(caught.value)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("task", "output_dim", "loss", "settings"),
+    [
+        pytest.param(TaskSpec.categorical(3, labels=LABELS), 3, Losses.CROSS_ENTROPY, {}, id="categorical-task"),
+        pytest.param(
+            TaskSpec.multilabel(1),
+            1,
+            Losses.BINARY_CROSS_ENTROPY,
+            {"question": Boolean("Is it a cat?")},
+            id="multilabel-task",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("loss_fn", "hinge"),
+    [(torch.nn.MultiMarginLoss(), "multi-class"), (torch.nn.MultiLabelMarginLoss(), "multilabel")],
+    ids=["MultiMarginLoss", "MultiLabelMarginLoss"],
+)
+def test_a_hinge_loss_is_refused_with_a_declared_task_too(
+    tmp_path, monkeypatch, loss_fn, hinge, task, output_dim, loss, settings
+):
+    """A declared task names the head's kind, but no task makes a margin
+    score a probability: a hinge loss_fn reassigned after training (the
+    task's own loss check refuses it at train() and evaluate()) is refused
+    like a task-less one, with no remedy."""
+    monkeypatch.chdir(tmp_path)
+    model = _classifier(output_dim, loss, task=task)
+    generator = torch.Generator().manual_seed(0)
+    inputs = torch.randn(6, 2, generator=generator)
+    targets = torch.randint(0, 3, (6,), generator=generator) if output_dim == 3 else torch.ones(6, 1)
+    model.train(
+        params=NNTrainParams(
+            n_epochs=1,
+            data_id="hinge",
+            train_loader=[(inputs, targets)],
+            optim=NNOptimParams.builder().adam(max_lr=0.01).build(),
+        )
+    )
+    model.loss_fn = loss_fn
+    calls: list[int] = []
+    model.net.register_forward_pre_hook(lambda module, args: calls.append(1))
+    with pytest.raises(UnsupportedCapability, match=f"a {_name(loss_fn)} head is a {hinge} hinge") as caught:
+        FixedHeadProvider(model, **settings)
     assert "TaskSpec" not in str(caught.value) and "loss_fn" not in str(caught.value)
     assert calls == []
 

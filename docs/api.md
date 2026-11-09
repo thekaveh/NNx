@@ -2651,10 +2651,11 @@ the student's loss on the labels with its own denominator (weight
 ``1 − alpha``). Over a window this is exactly
 ``alpha · KL_batchmean + (1 − alpha) · loss`` of the full batch, however
 the rows are split into microbatches or targets are ignored. The teacher
-is frozen and put in eval mode once, as ``kd_train_step_factory`` does,
-and never updated. At ``alpha=0`` only the ``"supervised"`` term is
-returned, and at ``alpha=1`` only the ``"distillation"`` term (the
-labels are not scored, so placeholder labels train as with
+is frozen once and never updated, and is put back in eval mode before
+every teacher forward, as ``kd_train_step_factory`` does. At
+``alpha=0`` only the ``"supervised"`` term is returned, and at
+``alpha=1`` only the ``"distillation"`` term (the labels are not
+scored, so placeholder labels train as with
 ``kd_train_step_factory(alpha=1)``). An all-masked microbatch at
 ``alpha=0`` records like :class:`SupervisedObjective`'s, never NaN.
 
@@ -3343,14 +3344,14 @@ The model's ``TaskSpec`` names the head's kind. Without one,
 ``MSELoss``, ``L1Loss``, ``SmoothL1Loss``, ``HuberLoss``,
 ``PoissonNLLLoss`` and ``GaussianNLLLoss`` a regression one. Any other
 task-less loss raises :class:`UnsupportedCapability` at construction
-instead of being served as a softmax. That covers the hinges
-``MultiMarginLoss`` and ``MultiLabelMarginLoss`` (whose margin scores are
-no probabilities) and custom losses. For logits trained with a custom loss
-(a focal loss, say), set ``model.loss_fn`` to the matching
-``CrossEntropyLoss``, ``NLLLoss`` or ``BCEWithLogitsLoss``. A declared
-``TaskSpec`` also names the head's kind, but that task's ``train()`` and
-``evaluate()`` accept only its own losses. A ``BCELoss`` head outputs
-probabilities, not logits, and is refused with or without a task.
+instead of being served as a softmax. That covers custom losses: for
+logits trained with one (a focal loss, say), set ``model.loss_fn`` to the
+matching ``CrossEntropyLoss``, ``NLLLoss`` or ``BCEWithLogitsLoss``. A
+declared ``TaskSpec`` also names the head's kind, but that task's
+``train()`` and ``evaluate()`` accept only its own losses. Two kinds of
+head are refused with or without a task: a ``BCELoss`` head, which
+outputs probabilities, not logits, and a hinge (``MultiMarginLoss`` or
+``MultiLabelMarginLoss``) head, whose margin scores are no probabilities.
 
 Probabilities come from the model's ``predict_proba``,
 which evaluates in eval mode and restores every submodule's
@@ -5093,15 +5094,17 @@ Gloo, a peer can otherwise abort: "terminate called without an active
 exception"). With Gloo the wait is bounded by ``timeout_seconds``: when a
 rank does not arrive in time the others raise ``RuntimeError`` instead of
 blocking in the call, and leave the group to process exit (destroying it
-then could block on the missing rank). The timed-out barrier stays queued,
-so the process itself may still wait at exit until the missing rank
-arrives (its barrier then completes against the queued one) or the
-group's own timeout (``init_process_group(timeout_seconds=...)``) expires.
-With NCCL, older torch releases ignore ``timeout_seconds`` unless
-``TORCH_NCCL_BLOCKING_WAIT=1`` is set, so the wait is bounded by the
-group's timeout instead. Without a process group, or after a successful
-call, it does nothing; after a failed call the group is still
-initialized (``init_process_group()`` returns it as is), so exit.
+then could block on the missing rank). The timed-out barrier stays queued
+while the process lives: a rank arriving then completes against it. Up to
+torch 2.13 the process also waits at exit until the missing rank arrives
+or the group's own timeout (``init_process_group(timeout_seconds=...)``)
+expires; from torch 2.14 it exits at once, so a rank arriving after that
+raises in its own call within its timeout. With NCCL, older torch
+releases ignore ``timeout_seconds`` unless ``TORCH_NCCL_BLOCKING_WAIT=1``
+is set, so the wait is bounded by the group's timeout instead. Without a
+process group, or after a successful call, it does nothing; after a
+failed call the group is still initialized (``init_process_group()``
+returns it as is), so exit.
 ```
 
 
@@ -15625,7 +15628,10 @@ Args:
     teacher: a fully-trained :class:`NNModel` whose net produces
         logits of the same shape as the student's. The teacher's
         parameters are frozen (``requires_grad=False``) and its
-        net is set to eval mode on factory call.
+        net is set to eval mode on factory call, and put back in
+        eval mode before every teacher forward (a teacher under the
+        student's net, or one a callback switches to train mode,
+        would otherwise run its dropout and BatchNorm in train mode).
     alpha: weight on the distillation (soft) loss. The hard-label
         loss gets ``1 − α``. ``α=1.0`` is pure distillation (the
         labels are not scored); ``α=0.0`` collapses to standard
@@ -15688,8 +15694,9 @@ Args:
     teacher: a fully-trained :class:`NNModel` whose net produces
         logits of the same shape as the student's. The teacher's
         parameters are frozen (``requires_grad=False``) and its
-        net is set to eval mode on factory call — same guarantee
-        as :func:`kd_train_step_factory`.
+        net is set to eval mode on factory call and before every
+        teacher forward — same guarantee as
+        :func:`kd_train_step_factory`.
     auxiliary_layers: dict mapping ``teacher_layer_name ->
         student_layer_name`` for each (teacher, student) pair to
         match. Names are dotted paths resolved via
@@ -16812,8 +16819,12 @@ Args:
     ref_model: a frozen reference policy — typically a copy of the
         SFT checkpoint that the trainable policy was initialized
         from. Its ``net`` is set to eval mode and every parameter
-        has ``requires_grad`` cleared on factory call. Must share
-        ``vocab_size`` and tokenization with the policy.
+        has ``requires_grad`` cleared on factory call; every step
+        puts the net back in eval mode before its forward (a
+        reference under the policy's net, or one a callback
+        switches to train mode, would otherwise run its dropout in
+        train mode). Must share ``vocab_size`` and tokenization
+        with the policy.
     beta: strength of the reference-policy constraint (the scale of
         the implicit reward). Larger ``beta`` keeps the policy closer
         to the reference; smaller ``beta`` lets it deviate more. The
@@ -17189,6 +17200,18 @@ Raises:
         (``torch.nn.utils.remove_weight_norm`` /
         ``remove_spectral_norm``) or use their
         ``torch.nn.utils.parametrizations`` forms, which export reads.
+        Also when the embeddings are tied but the ``lm_head`` no
+        longer reads the embedding's weight: the ``lm_head`` or
+        ``tok_embed`` weight is parametrized
+        (``torch.nn.utils.parametrize``), or ``lm_head.weight`` is
+        another tensor with different values (reassigned, or left
+        untied by ``remove_parametrizations``). The tied head's one
+        GGUF slot, ``token_embd``, cannot hold both weights. To keep
+        the outputs, copy the weights the forward reads into a model
+        built with ``tie_embeddings=False`` and export that; removing
+        the parametrization and re-tying the head
+        (``net.lm_head.weight = net.tok_embed.weight``) keeps only one
+        of the two weights and changes the outputs.
         Nothing is written, and no directory is created; the same holds
         for a tokenizer that cannot be read (its own error propagates).
 ```
@@ -17224,7 +17247,9 @@ Raises:
     TypeError: when the network carries a PEFT adapter, a projection
         is not a plain ``nn.Linear``, or any module carries an unbaked
         prune mask or a legacy ``weight_norm`` / ``spectral_norm``
-        hook (see :func:`nnx.interop.gguf.write_gguf`).
+        hook, or the embeddings are tied but the ``lm_head`` no longer
+        reads the embedding's weight (see
+        :func:`nnx.interop.gguf.write_gguf`).
 ```
 
 
@@ -17281,7 +17306,13 @@ Raises:
         ``magnitude_prune(bake=True)``; remove the legacy norms with
         ``torch.nn.utils.remove_weight_norm`` /
         ``remove_spectral_norm`` or use their
-        ``torch.nn.utils.parametrizations`` forms).
+        ``torch.nn.utils.parametrizations`` forms), or, with tied
+        embeddings, an ``lm_head`` that no longer reads the
+        embedding's weight: a parametrized ``lm_head`` or ``tok_embed``
+        weight, or an ``lm_head.weight`` reassigned to different values
+        (copy the weights the forward reads into a model built with
+        ``tie_embeddings=False`` and export that; re-tying the head
+        changes the outputs).
     ImportError: when ``gguf`` is not installed, or the quantization
         needs ``llama-quantize``.
 ```
@@ -17385,7 +17416,7 @@ No public description is currently available.
 nnx.export_conformance.run_profile(profile: 'Union[str, Profile]', directory: 'Union[str, os.PathLike[str]]', *, source_revision: 'Optional[str]' = None) -> 'dict[str, Any]'
 ```
 
-Run one profile, writing its artifacts into ``directory/<name>/`` (which must not exist or be an empty directory, and must not be a symlink; ``directory`` itself may be one), and return its record (see the module docstring). An unknown name, a tested name with other settings, or a folder that is not new or empty (a symlink, dangling or not, or a folder that cannot be read) raises `ConformanceError` before anything is written. Never raises for a failing stage: every outcome is classified in the record.
+Run one profile, writing its artifacts into ``directory/<name>/`` (which must not exist or be an empty directory, and must not be a symlink; ``directory`` itself may be one), and return its record (see the module docstring). An unknown name, a tested name with other settings, or a folder that is not new or empty (a symlink, dangling or not, or a folder that cannot be read) or that cannot be created raises `ConformanceError` before anything is written. Never raises for a failing stage: every outcome is classified in the record.
 
 
 #### `nnx.export_conformance.run_profiles`
@@ -17394,7 +17425,7 @@ Run one profile, writing its artifacts into ``directory/<name>/`` (which must no
 nnx.export_conformance.run_profiles(directory: 'Union[str, os.PathLike[str]]', names: 'Optional[Sequence[str]]' = None, *, source_revision: 'Optional[str]' = None) -> 'dict[str, Any]'
 ```
 
-Run ``names`` (every tested profile by default) under ``directory``; the report's ``status`` is ``passed`` only when every profile passed. Every name and profile folder is checked before the first profile runs: an unknown name, a tested name whose settings changed, or a ``directory/<name>/`` that is not new or an empty directory (a symlink, dangling or not, or a folder that cannot be read) raises `ConformanceError` before anything is written, so no earlier profile's artifacts are left to block the retry.
+Run ``names`` (every tested profile by default) under ``directory``; the report's ``status`` is ``passed`` only when every profile passed. Every name and profile folder is checked before the first profile runs: an unknown name, a tested name whose settings changed, or a ``directory/<name>/`` that is not new or an empty directory (a symlink, dangling or not, or a folder that cannot be read) raises `ConformanceError` before anything is written, so no earlier profile's artifacts are left to block the retry. Every folder is then created before the first profile runs: one that cannot be created raises `ConformanceError`, leaving at most empty folders, which do not block the retry.
 
 
 #### `nnx.export_conformance.execute`

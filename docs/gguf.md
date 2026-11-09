@@ -50,7 +50,8 @@ metadata, and stable tensor names. The fused QKV projection is split into
 separate gate, up, and down tensors.
 
 The writer reads each module's stored weight; it does not call the module.
-Bake or remove forward-pre-hook reparameterizations before exporting:
+Bake or remove forward-pre-hook reparameterizations before exporting, and
+export a tied net whose head or embedding is parametrized as an untied copy:
 
 - An unbaked prune mask (`magnitude_prune(bake=False)` or a
   `torch.nn.utils.prune` method) recomputes `.weight` from `weight_orig` and
@@ -64,14 +65,50 @@ Bake or remove forward-pre-hook reparameterizations before exporting:
   `remove_spectral_norm`, or use the `torch.nn.utils.parametrizations` forms,
   which compute the weight on every read. Export a `spectral_norm`
   parametrization in eval mode: in training mode, each read takes one more
-  power-iteration step. A tied `lm_head` must have its norm removed: a
-  parametrization unties it, and its one GGUF slot, `token_embd`, holds only
-  the embedding.
+  power-iteration step. A norm on a tied `lm_head` unties it, removed or
+  parametrized: export an untied copy (next item).
+- With tied embeddings (`tie_embeddings=True`, the default), the `lm_head`
+  has no GGUF slot of its own: readers take it from `token_embd`, and no
+  `output.weight` is written, so the head must still read the embedding's
+  weight. A `torch.nn.utils.parametrize` parametrization on the `lm_head` or
+  `tok_embed` weight computes that module's weight while the other still
+  reads the raw tensor, and an `lm_head.weight` reassigned to another tensor
+  (or left untied by `remove_parametrizations`) holds its own values; either
+  way the file would drop the head's weight. A distinct tensor with the
+  embedding's exact values, as `load_state_dict(assign=True)` leaves, still
+  exports. To keep the outputs the model computes, export an untied copy
+  (below). Removing a parametrization and re-tying the head
+  (`net.lm_head.weight = net.tok_embed.weight`) also exports, but keeps only
+  one of the two weights, so the exported model's outputs change. An untied
+  model exports a parametrized head or embedding as its forward reads it.
 
-`write_gguf` and `export_ollama_modelfile` refuse such a hook on any module
-with a `TypeError` that names the affected tensors and the fix.
+`write_gguf` and `export_ollama_modelfile` refuse such a hook on any module,
+and a tied head that no longer reads the embedding's weight, with a
+`TypeError` that names the affected tensors and the fix.
 They also refuse PEFT adapters and factorized projections. A refused export
 writes no `.gguf`, `model.gguf` or Modelfile.
+
+An untied copy of a tied net holds both of its weights, so its file computes
+what the net computes. Copy in the weights the net's forward reads (a
+parametrized module's `.weight` is the computed one); `net` is left as it
+was. Remove a legacy norm, and bake a prune mask, first.
+
+```python
+import operator
+
+import torch
+
+from nnx import NNTransformerParams, TransformerNN
+
+net.eval()  # a spectral_norm parametrization steps on each read in training mode
+untied = TransformerNN(
+    params=NNTransformerParams.from_state({**net.params.state(), "tie_embeddings": False})
+)
+with torch.no_grad():
+    for name, tensor in untied.state_dict().items():
+        tensor.copy_(operator.attrgetter(name)(net))
+write_gguf(untied, tokenizer, "out/model.gguf")  # output.weight holds the head
+```
 
 The upstream Python reader can inspect the resulting container:
 

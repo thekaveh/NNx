@@ -54,7 +54,15 @@ files, unless `--force` clears it. It also exits `2`, even with `--force`,
 for a profile folder that is a symlink (to an empty or a filled folder, or
 dangling) or that cannot be read: `--force` never touches a link or its
 target. Every folder is checked before any is cleared. The artifact root
-itself may be a symlink.
+itself may be a symlink. It exits `2` too for a profile folder that cannot
+be created (the artifact root a dangling symlink, or not writable), and
+for an `--output` that is a directory, that is, holds or lies inside a profile folder,
+or whose parent cannot be created; the output is checked before `--force` clears anything. A folder that
+`--force` cannot clear (one holding a read-only subfolder, say) also exits
+`2`, and may be left partly cleared: fix its permissions and run again.
+An `--output` folder that exists but cannot be written in is found only
+once the profiles ran: that also exits `2`, keeps the artifacts, and needs
+`--force` on the next run.
 
 Or from Python:
 
@@ -77,8 +85,11 @@ again = execute(record, "artifacts/")    # re-runs load + parity; hashes checked
   cannot be read (or looked up, when its parent cannot be searched).
 
 So a typo or a stale folder in a later entry leaves no earlier profile's
-artifacts behind to block the retry. `run_profile` makes the same checks for
-its one profile.
+artifacts behind to block the retry. Every profile folder is then created
+before the first profile runs, and one that cannot be created (the artifact
+root a dangling symlink, or not writable) raises `ConformanceError`,
+leaving at most empty folders. `run_profile` makes the same checks for its
+one profile.
 
 Nothing is downloaded. `import nnx` and `import nnx.export_conformance` need
 neither `onnx` nor `onnxruntime`; a profile run without them is a
@@ -153,7 +164,7 @@ first profile runs, by `run_profiles` (which takes names only):
 - a tested name whose settings were changed in place, or, for
   `run_profile`, a `Profile` reusing a tested name with other settings;
 - a profile folder that is not new or empty, a symlinked, dangling or
-  unreadable one included.
+  unreadable one included, or that cannot be created.
 
 A symlinked artifact or artifact folder never verifies. A folder replaced
 by a link after the export is a `hash-mismatch` when the record is

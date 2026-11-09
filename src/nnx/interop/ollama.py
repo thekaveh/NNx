@@ -131,7 +131,13 @@ def export_ollama_modelfile(
             ``magnitude_prune(bake=True)``; remove the legacy norms with
             ``torch.nn.utils.remove_weight_norm`` /
             ``remove_spectral_norm`` or use their
-            ``torch.nn.utils.parametrizations`` forms).
+            ``torch.nn.utils.parametrizations`` forms), or, with tied
+            embeddings, an ``lm_head`` that no longer reads the
+            embedding's weight: a parametrized ``lm_head`` or ``tok_embed``
+            weight, or an ``lm_head.weight`` reassigned to different values
+            (copy the weights the forward reads into a model built with
+            ``tie_embeddings=False`` and export that; re-tying the head
+            changes the outputs).
         ImportError: when ``gguf`` is not installed, or the quantization
             needs ``llama-quantize``.
     """
