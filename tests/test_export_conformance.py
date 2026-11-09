@@ -1236,6 +1236,29 @@ def test_the_script_refuses_an_output_inside_a_profile_folder_before_any_profile
         assert not os.path.lexists(folder.parent)  # nothing was created or exported
 
 
+@pytest.mark.parametrize("target", ["profile-folder", "artifacts-root"])
+def test_the_script_refuses_an_output_that_is_a_profile_folder_or_holds_one_before_any_profile_runs(
+    tmp_path, capsys, target
+):
+    artifacts = tmp_path / "artifacts"
+    output = artifacts / "feedfwd-fp32-torchscript" if target == "profile-folder" else artifacts
+    args = ["--output", str(output), "--artifacts", str(artifacts), "--profile", "feedfwd-fp32-torchscript"]
+    with pytest.raises(SystemExit) as refused:
+        _script().main([*args, "--source-revision", "test"])
+    assert refused.value.code == 2 and "or holds it" in capsys.readouterr().err  # a usage error
+    assert not os.path.lexists(artifacts)  # nothing was created or exported
+
+
+def test_the_script_refuses_an_output_under_a_symlink_loop_with_a_message(tmp_path, capsys):
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    args = ["--output", str(loop / "c.json"), "--artifacts", str(tmp_path / "artifacts"), "--source-revision", "test"]
+    with pytest.raises(SystemExit) as refused:
+        _script().main(args)
+    assert refused.value.code == 2 and "cannot be created" in capsys.readouterr().err
+    assert not os.path.lexists(tmp_path / "artifacts")
+
+
 @_POSIX_USER
 def test_the_script_reports_an_output_folder_it_cannot_write_in_without_a_traceback(tmp_path, capsys):
     locked = tmp_path / "locked"

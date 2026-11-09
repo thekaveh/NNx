@@ -56,7 +56,7 @@ dangling) or that cannot be read: `--force` never touches a link or its
 target. Every folder is checked before any is cleared. The artifact root
 itself may be a symlink. It exits `2` too for a profile folder that cannot
 be created (the artifact root a dangling symlink, or not writable), and
-for an `--output` that is a directory, that lies inside a profile folder,
+for an `--output` that is a directory, that is, holds or lies inside a profile folder,
 or whose parent cannot be created; the output is checked before `--force` clears anything. A folder that
 `--force` cannot clear (one holding a read-only subfolder, say) also exits
 `2`, and may be left partly cleared: fix its permissions and run again.
