@@ -57,10 +57,13 @@ def _end_tree(process: subprocess.Popen, grace: float) -> None:
     they are empty (or after another ``grace`` seconds, if a member somehow
     survives SIGKILL). The descendants are listed before each signal, and the
     first list is kept: once their parent is gone they are reparented to init
-    and a fresh walk from ``process`` no longer finds them."""
-    groups = {process.pid}
+    and a fresh walk from ``process`` no longer finds them. The walk runs only
+    while ``process`` is unreaped (alive or a zombie still holding its pid),
+    so it never follows a pid that has since gone to another process."""
+    groups: set[int] = set()
     for sig in (signal.SIGTERM, signal.SIGKILL):
-        groups |= _descendant_groups(process.pid)
+        if process.returncode is None:
+            groups |= {process.pid} | _descendant_groups(process.pid)
         for pgid in groups:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pgid, sig)
@@ -96,17 +99,17 @@ def _descendant_groups(root: int) -> set[int]:
 
 def _any_alive(process: subprocess.Popen, groups: set[int]) -> bool:
     """Whether any process is left in ``groups`` (reaping ``process`` first,
-    so it does not linger as a zombie member)."""
+    so it does not linger as a zombie member). A group found empty is dropped
+    from ``groups``: its id is free for reuse, so it is never signalled again."""
     process.poll()
-    for pgid in groups:
+    for pgid in list(groups):
         try:
             os.killpg(pgid, 0)
         except ProcessLookupError:
-            continue
+            groups.discard(pgid)
         except PermissionError:  # macOS says so for a group of unreaped zombies: poll again
             pass
-        return True
-    return False
+    return bool(groups)
 
 
 def _decoded(output: bytes | str | None) -> str:

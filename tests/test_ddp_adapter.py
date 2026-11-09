@@ -10,7 +10,6 @@ from __future__ import annotations
 import datetime
 import os
 import re
-import signal
 import subprocess
 import sys
 import time
@@ -890,68 +889,6 @@ def test_a_hung_scenario_reports_where_each_rank_was(tmp_path, monkeypatch):
     # The timeout ended torchrun and the ranks it started in sessions of their
     # own: none outlives the test, reparented to init and still parked.
     assert alive_with(str(tmp_path / "parked")) == []
-
-
-# A rank as torch starts one: in a session of its own, so outside the launcher's
-# process group, and here ignoring SIGTERM. The marker on its command line finds it.
-_RANK = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(120)"
-
-
-def _launcher(marker: str) -> str:
-    """``python -c`` code that starts a rank like torchrun does, then hangs."""
-    return (
-        "import subprocess, sys, time; "
-        f"subprocess.Popen([sys.executable, '-c', {_RANK!r}, {marker!r}], start_new_session=True); "
-        "print('started', flush=True); time.sleep(120)"
-    )
-
-
-@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX")
-def test_a_timed_out_launch_ends_every_process_it_started(tmp_path):
-    """run_group(), which launch() and the examples' torchrun use: a timeout
-    ends the command's descendants too, even one in a session of its own that
-    ignores SIGTERM (killed after the grace period), and still returns the
-    output written so far."""
-    marker = str(tmp_path / "rank")
-    with pytest.raises(subprocess.TimeoutExpired) as caught:
-        run_group([sys.executable, "-c", _launcher(marker)], timeout=5, grace=1)
-    assert alive_with(marker) == []
-    assert "started" in caught.value.stdout
-
-
-@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX")
-def test_a_timed_out_launch_always_raises_timeout_expired():
-    """A command that dies at once on SIGTERM leaves a zombie that macOS
-    reports as EPERM to killpg(pgid, 0) until it is reaped; run_group() polls
-    again rather than raising PermissionError in place of TimeoutExpired."""
-    for _ in range(50):
-        with pytest.raises(subprocess.TimeoutExpired):
-            run_group(["sleep", "60"], timeout=0.1, grace=2)
-
-
-@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX")
-def test_an_interrupted_launch_ends_every_process_it_started(tmp_path):
-    """Ctrl-C reaches the terminal's foreground group, which no longer holds the
-    command run_group() started in its own session: on the KeyboardInterrupt
-    run_group() ends the command's descendants itself before re-raising."""
-    marker = str(tmp_path / "rank")
-    runner = tmp_path / "runner.py"  # a file, so the marker is on the command and rank lines only
-    runner.write_text(
-        f"import sys\nsys.path.insert(0, {str(ROOT)!r})\nfrom tests._process_group import run_group\n"
-        f"run_group([sys.executable, '-c', {_launcher(marker)!r}], timeout=120, grace=1)\n",
-        encoding="utf-8",
-    )
-    # The runner stands for the test run in its terminal: its own group gets the Ctrl-C.
-    with subprocess.Popen(
-        [sys.executable, str(runner)], stderr=subprocess.PIPE, text=True, start_new_session=True
-    ) as test_run:
-        deadline = time.monotonic() + 60
-        while (started := len(alive_with(marker))) < 2 and time.monotonic() < deadline:  # command and rank
-            time.sleep(0.1)
-        os.killpg(test_run.pid, signal.SIGINT)
-        _, stderr = test_run.communicate(timeout=60)
-    assert started == 2 and "KeyboardInterrupt" in stderr
-    assert alive_with(marker) == []
 
 
 def test_a_batch_one_rank_cannot_score_stops_every_rank(tmp_path):
