@@ -122,6 +122,13 @@ exits at once, and a rank that arrives after that raises within its own
 timeout too. Without a process group, or after a successful call, it does
 nothing.
 
+A Gloo group that `init_process_group()` formed and that is still
+initialized at interpreter exit is destroyed then, before the interpreter
+finalizes. A failed `train()` or `shutdown()` leaves it that way. Exit then
+waits for a collective still in flight. Otherwise a Gloo worker thread could
+release that collective during finalization and abort the process with
+`std::terminate` (exit -6).
+
 **Partitions.** `nnx.distributed.train_loader(dataset, batch_size, policy=, seed=)`
 deals each epoch's permutation (seeded by `(seed + epoch) % 2**64`, for a
 `seed` in `[0, 2**64 - 1]`) to the ranks. It

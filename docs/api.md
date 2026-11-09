@@ -5076,6 +5076,17 @@ nnx.distributed.init_process_group(backend: 'Optional[str]' = None, *, timeout_s
 
 Join the process group ``torchrun`` described in the environment (``env://``) and return ``(rank, world_size)``. ``backend`` defaults to ``nccl`` when CUDA is available, else ``gloo``; ``timeout_seconds`` bounds every collective, so a rank that dies cannot hang the others forever (at most ``3e9`` s, about 95 years: torch's nanosecond deadlines hold no more on every platform). Under ``nccl`` each process takes ``cuda:LOCAL_RANK`` (``torch.cuda.set_device``); any other backend selects no device, so a CUDA model under ``gloo`` needs ``torch.cuda.set_device(local_rank)`` before it is built (otherwise every rank's model sits on ``cuda:0``).
 
+**Details**
+
+```text
+A Gloo group it formed that is still initialized when the interpreter
+exits (a failed ``train()`` or :func:`shutdown` left it) is destroyed
+then, before the interpreter finalizes: exit waits for a collective
+still in flight (until the missing rank arrives or the group's timeout
+expires) instead of the process aborting with ``std::terminate``
+(exit -6).
+```
+
 
 #### `nnx.distributed.shutdown`
 
@@ -5099,7 +5110,9 @@ while the process lives: a rank arriving then completes against it. Up to
 torch 2.13 the process also waits at exit until the missing rank arrives
 or the group's own timeout (``init_process_group(timeout_seconds=...)``)
 expires; from torch 2.14 it exits at once, so a rank arriving after that
-raises in its own call within its timeout. With NCCL, older torch
+raises in its own call within its timeout. The Gloo default group of a
+process that called :func:`init_process_group` is destroyed at exit,
+before the interpreter finalizes. With NCCL, older torch
 releases ignore ``timeout_seconds`` unless ``TORCH_NCCL_BLOCKING_WAIT=1``
 is set, so the wait is bounded by the group's timeout instead. Without a
 process group, or after a successful call, it does nothing; after a

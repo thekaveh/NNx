@@ -93,9 +93,11 @@ Recipe::
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import datetime
 import gc
+import importlib
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -163,7 +165,9 @@ def shutdown(*, timeout_seconds: float = 60.0) -> None:
     torch 2.13 the process also waits at exit until the missing rank arrives
     or the group's own timeout (``init_process_group(timeout_seconds=...)``)
     expires; from torch 2.14 it exits at once, so a rank arriving after that
-    raises in its own call within its timeout. With NCCL, older torch
+    raises in its own call within its timeout. The Gloo default group of a
+    process that called :func:`init_process_group` is destroyed at exit,
+    before the interpreter finalizes. With NCCL, older torch
     releases ignore ``timeout_seconds`` unless ``TORCH_NCCL_BLOCKING_WAIT=1``
     is set, so the wait is bounded by the group's timeout instead. Without a
     process group, or after a successful call, it does nothing; after a
@@ -238,7 +242,14 @@ def init_process_group(backend: Optional[str] = None, *, timeout_seconds: float 
     takes ``cuda:LOCAL_RANK`` (``torch.cuda.set_device``); any other
     backend selects no device, so a CUDA model under ``gloo`` needs
     ``torch.cuda.set_device(local_rank)`` before it is built (otherwise
-    every rank's model sits on ``cuda:0``)."""
+    every rank's model sits on ``cuda:0``).
+
+    A Gloo group it formed that is still initialized when the interpreter
+    exits (a failed ``train()`` or :func:`shutdown` left it) is destroyed
+    then, before the interpreter finalizes: exit waits for a collective
+    still in flight (until the missing rank arrives or the group's timeout
+    expires) instead of the process aborting with ``std::terminate``
+    (exit -6)."""
     timeout_seconds = _check_timeout(timeout_seconds)
     if not dist.is_available():
         raise RuntimeError("this torch build has no torch.distributed")
@@ -253,8 +264,35 @@ def init_process_group(backend: Optional[str] = None, *, timeout_seconds: float 
     chosen = backend or ("nccl" if torch.cuda.is_available() else "gloo")
     if chosen == "nccl":
         torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
+    # torch.distributed.nn.functional binds group.WORLD as a default argument
+    # when first imported (DDP's construction imports it): imported after the
+    # group exists, it keeps the group alive past destroy_process_group().
+    importlib.import_module("torch.distributed.nn")
     dist.init_process_group(backend=chosen, timeout=datetime.timedelta(seconds=timeout_seconds))
+    global _exit_hook_registered
+    if not _exit_hook_registered:
+        atexit.register(_destroy_left_group)
+        _exit_hook_registered = True
     return dist.get_rank(), dist.get_world_size()
+
+
+_exit_hook_registered = False
+
+
+def _destroy_left_group() -> None:
+    """At interpreter exit, destroy a Gloo group still initialized (a failed
+    ``train()`` or :func:`shutdown` left it, say), before the interpreter
+    finalizes. A Gloo worker thread can release a failed collective after
+    Python has seen it fail, and releasing its tensors takes the GIL; a
+    thread that does so while the interpreter finalizes calls
+    ``std::terminate`` (exit -6, "terminate called without an active
+    exception"). Destroying the group joins its worker threads first, so
+    exit waits for a collective still in flight (the missing rank, or the
+    group's timeout)."""
+    if not dist.is_available() or not dist.is_initialized() or dist.get_backend() != "gloo":
+        return
+    gc.collect()  # a DDP wrapper only garbage reaches holds the group (#478)
+    dist.destroy_process_group()
 
 
 # --- partitions ---------------------------------------------------------------------------------
