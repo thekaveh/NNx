@@ -329,28 +329,39 @@ def _submodule_at(module: nn.Module, name: str) -> Optional[nn.Module]:
 
 # _module_registrations' stamp: a token of this process's own (a stamp copied
 # or unpickled with a model never equals one taken here) and the count. Then
-# the hook that counts, once installed.
-_REGISTRATIONS: list[Any] = [object(), 0]
+# whether a registration was made while tracing, and the hook, once installed.
+_REGISTRATIONS: list[Any] = [object(), 0, False]
 _REGISTRATION_HOOK: list[Any] = []
 
 
 def _count_registration(parent: nn.Module, name: str, sub: Optional[nn.Module]) -> None:
-    # Not while dynamo traces: a compiled forward that builds a container
-    # (slicing a ModuleList, say) would guard on the count and recompile at
-    # every call. A plain increment under the GIL: the stamp only has to change.
-    if not torch.compiler.is_compiling():
+    # While dynamo or export traces, a constant store only: reading the count
+    # there would make a compiled forward that builds a container (slicing a
+    # ModuleList, say) guard on it and recompile at every call. The registration
+    # may still land on the real module, so _module_registrations counts it at
+    # its next call. Out of tracing, only a registration that brings a pending
+    # lazy layer counts: any other can add none. A plain increment under the
+    # GIL: the stamp only has to change.
+    if torch.compiler.is_compiling():
+        _REGISTRATIONS[2] = True
+    elif sub is not None and any(_is_pending_lazy(m) for m in sub.modules()):
         _REGISTRATIONS[1] += 1
 
 
 def _module_registrations() -> tuple[object, int]:
     """A stamp that changes at every submodule registration in this
-    process (``setattr``, ``add_module`` / ``register_module`` and the
-    containers' ``__setitem__`` / ``append``), counted by torch's global
-    module registration hook, installed at the first call. The hook
+    process that brings a pending lazy layer (``setattr``, ``add_module`` /
+    ``register_module`` and the containers' ``__setitem__`` / ``append`` of
+    a module whose subtree holds one), and after any registration made
+    while ``torch.compile`` or ``torch.export`` traced. Torch's global
+    module registration hook counts them, installed at the first call; it
     returns ``None``, so it changes no module. A write straight into
     ``_modules`` (``insert``, hand-written code) leaves the stamp as it was."""
     if not _REGISTRATION_HOOK:
         _REGISTRATION_HOOK.append(register_module_module_registration_hook(_count_registration))
+    if _REGISTRATIONS[2]:
+        _REGISTRATIONS[2] = False
+        _REGISTRATIONS[1] += 1
     return (_REGISTRATIONS[0], _REGISTRATIONS[1])
 
 

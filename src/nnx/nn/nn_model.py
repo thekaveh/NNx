@@ -3695,8 +3695,8 @@ class NNModel(_HubMixinBase):
             # Those layers by the names a walk found them at, which a params
             # read checks instead of walking the module (_refresh_lazy_descriptor).
             self._lazy_places: dict[str, torch.nn.Module] = dict(pending)
-            # The registration stamp after that walk: a module registered
-            # since (a lazy layer swapped in elsewhere) makes a read walk again.
+            # The registration stamp after that walk: a pending lazy layer
+            # registered since (swapped in elsewhere) makes a read walk again.
             self._lazy_stamp: Optional[tuple[object, int]] = _module_registrations() if pending else None
             # The module those keys describe: a model given another net (a
             # copy made by quantize_int8, say) keeps its descriptor.
@@ -3773,8 +3773,9 @@ class NNModel(_HubMixinBase):
         names it found them at: one still pending there means the walk would
         find it too. The module is walked again once none is pending, once
         another module sits at one of those names (a layer re-created after
-        the wrap), or once a submodule was registered anywhere since that
-        walk (a lazy layer swapped in at another name: _module_registrations)."""
+        the wrap), or once a module holding a pending lazy layer was
+        registered anywhere since that walk (a lazy layer swapped in at
+        another name: _module_registrations)."""
         keys = getattr(self, "_lazy_wrap_keys", None)
         module = getattr(self, "net", None)
         if keys is None or module is None:
