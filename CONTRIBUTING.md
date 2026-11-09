@@ -128,7 +128,12 @@ their tests skip and the page shows them *unverified*. To produce that report:
   x64, gpu`. TC-11 needs two CUDA devices. Then set the repository variable
   `NNX_GPU_RUNNER` to `true`. The docs workflow's `GPU composition
   evidence` job then runs the scenarios on it, and the docs build renders the
-  page from both reports.
+  page from both reports. While the runner is offline, the docs build, the
+  Pages deploy and the wiki publish wait with that job: the build needs it.
+  A run waits up to GitHub's 24-hour queue limit, and the docs workflow's
+  concurrency group holds the next run on the same branch behind it. Unset
+  `NNX_GPU_RUNNER` while the runner is offline; the job is then skipped and
+  the page shows the CUDA rows *unverified*.
 - **Manual run** on a Linux machine with Python 3.12 and CUDA:
 
     ```bash
