@@ -651,12 +651,12 @@ def _refused_net(case: str) -> tuple[TransformerNN, str, tuple[str, ...]]:
         "weight_norm": ("weight_norm", "blocks.0.ffn.w1"),
         "spectral_norm": ("spectral_norm", "blocks.1.attn.w_o"),
         "embedding-weight_norm": ("weight_norm", "tok_embed"),  # not a projection
-        "tied-head-weight_norm": ("weight_norm", "lm_head"),  # a parametrization would untie it
+        "tied-head-weight_norm": ("weight_norm", "lm_head"),  # removing or parametrizing it unties it
     }[case]
     net = _legacy_normed(1, norm, path)
     net.load_state_dict(_legacy_normed(0, norm, path).state_dict())
     if case == "tied-head-weight_norm":
-        return net, "tied lm_head must have its norm removed, not parametrized", _NORM_FIX
+        return net, "The norm unties the tied lm_head", (*_NORM_FIX, "tie_embeddings=False")
     return net, f"{path}.weight", _NORM_FIX
 
 
@@ -801,6 +801,8 @@ def _rebuilt_from_gguf(path, params: NNTransformerParams) -> TransformerNN:
         put(b.ffn.w2, f"blk.{i}.ffn_down.weight")
         put(b.ffn.w3, f"blk.{i}.ffn_up.weight")
     put(net.norm_out, "output_norm.weight")
+    if not params.tie_embeddings:
+        put(net.lm_head, "output.weight")
     return net.eval()
 
 
@@ -841,3 +843,206 @@ def test_baked_and_parametrized_nets_still_export_the_weights_the_forward_uses(t
     x = torch.randint(0, 64, (2, 8), generator=torch.Generator().manual_seed(0))
     with torch.no_grad():
         assert torch.equal(rebuilt(x), net(x))
+
+
+# A tied lm_head has no GGUF slot of its own: readers take it from
+# token_embd.weight. A torch.nn.utils.parametrize parametrization on the
+# head's or the embedding's weight, or a head reassigned to another tensor
+# with different values, makes the two hold different weights, so export
+# refuses it instead of dropping the head's weight.
+
+_TIED_PARAMETRIZED = {
+    "lm_head-weight_norm": ("lm_head", "weight_norm", "_WeightNorm"),
+    "lm_head-spectral_norm": ("lm_head", "spectral_norm", "_SpectralNorm"),
+    "tok_embed-weight_norm": ("tok_embed", "weight_norm", "_WeightNorm"),
+}
+
+# The fix that keeps the outputs, and the warning that re-tying does not.
+_UNTIED_EXPORT_FIX = ("tie_embeddings=False", "state_dict()", "re-tying the head", "outputs change")
+
+
+def _with_tie(tie_embeddings: bool) -> TransformerNN:
+    import torch
+
+    torch.manual_seed(0)
+    params = _tiny_transformer().params
+    return TransformerNN(params=NNTransformerParams.from_state({**params.state(), "tie_embeddings": tie_embeddings}))
+
+
+def _parametrized(path: str, norm: str, *, tie_embeddings: bool = True) -> TransformerNN:
+    import torch
+    from torch.nn.utils import parametrizations
+
+    net = _with_tie(tie_embeddings)
+    module = net.get_submodule(path)
+    getattr(parametrizations, norm)(module)
+    if norm == "weight_norm":
+        with torch.no_grad():  # the head's weight moves off the embedding's
+            module.parametrizations.weight.original0.mul_(3.0)
+    return net.eval()
+
+
+def _export(exporter: str, net: TransformerNN, tokenizer, out) -> None:
+    from nnx.interop.gguf import write_gguf
+    from nnx.interop.gguf.tensor_name_map import map_tensors
+    from nnx.interop.ollama import export_ollama_modelfile
+
+    if exporter == "map_tensors":
+        map_tensors(net)
+    elif exporter == "write_gguf":
+        write_gguf(net, tokenizer, out / "model.gguf")
+    else:
+        export_ollama_modelfile(net, tokenizer, out)
+
+
+@pytest.mark.parametrize("exporter", ["map_tensors", "write_gguf", "export_ollama_modelfile"])
+@pytest.mark.parametrize("case", list(_TIED_PARAMETRIZED))
+def test_a_parametrized_tied_head_or_embedding_is_refused_before_anything_is_written(tmp_path, case, exporter):
+    """The file held only token_embd.weight, so a parametrized tied head's
+    own weight was dropped with no error (a weight_norm head's logits came
+    out 3x too small). Each exporter now raises TypeError naming the tensor,
+    its parametrization and the fix, and leaves nothing behind."""
+    import torch
+
+    path, norm, kind = _TIED_PARAMETRIZED[case]
+    net = _parametrized(path, norm)
+    assert not torch.equal(net.lm_head.weight, net.tok_embed.weight)
+    out = tmp_path / "out"
+    with pytest.raises(TypeError, match="tied lm_head") as info:
+        _export(exporter, net, _tiny_tokenizer(tmp_path), out)
+    message = str(info.value)
+    assert f"{path}.weight is parametrized by {kind}" in message
+    assert all(fix in message for fix in _UNTIED_EXPORT_FIX), message
+    assert not out.exists()
+
+
+def _untied_by_hand(case: str) -> TransformerNN:
+    """A tied net whose lm_head.weight is another tensor with other values."""
+    import torch
+    from torch.nn.utils import parametrize
+
+    if case == "reassigned":
+        net = _with_tie(True)
+        net.lm_head.weight = torch.nn.Parameter(net.tok_embed.weight.detach() * 3.0)
+        return net.eval()
+    path = {"lm_head-removed": "lm_head", "tok_embed-removed": "tok_embed"}[case]
+    net = _parametrized(path, "weight_norm")
+    # The first half of the old advice: the computed weight stays, the tie does not.
+    parametrize.remove_parametrizations(net.get_submodule(path), "weight")
+    return net
+
+
+_UNTIED_BY_HAND = ["reassigned", "lm_head-removed", "tok_embed-removed"]
+
+
+@pytest.mark.parametrize("exporter", ["map_tensors", "write_gguf", "export_ollama_modelfile"])
+@pytest.mark.parametrize("case", _UNTIED_BY_HAND)
+def test_a_tied_head_with_its_own_different_weight_is_refused_before_anything_is_written(tmp_path, case, exporter):
+    """A tied net whose head was reassigned, or whose parametrization was
+    removed without re-tying, exported without output.weight and without an
+    error, so the head's weight was lost. Each exporter now refuses it."""
+    import torch
+
+    net = _untied_by_hand(case)
+    assert net.lm_head.weight is not net.tok_embed.weight
+    assert not torch.equal(net.lm_head.weight, net.tok_embed.weight)
+    out = tmp_path / "out"
+    with pytest.raises(TypeError, match="lm_head.weight is no longer tok_embed.weight") as info:
+        _export(exporter, net, _tiny_tokenizer(tmp_path), out)
+    assert all(fix in str(info.value) for fix in _UNTIED_EXPORT_FIX), str(info.value)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("case", ["clone", "assign=True", "nan"])
+def test_a_tied_head_with_its_own_equal_weight_still_exports(tmp_path, case):
+    """A distinct tensor with the embedding's exact values (NaN in the same
+    places counts as equal) loses nothing, so it exports as before: no
+    output.weight, and the file computes the net's logits."""
+    import torch
+
+    from nnx.interop.gguf import write_gguf
+
+    net = _with_tie(True).eval()
+    if case == "clone":
+        net.lm_head.weight = torch.nn.Parameter(net.tok_embed.weight.detach().clone())
+    elif case == "assign=True":
+        net.load_state_dict({k: v.clone() for k, v in _with_tie(True).state_dict().items()}, assign=True)
+    else:
+        with torch.no_grad():
+            net.tok_embed.weight[3, 5] = float("nan")
+        net.lm_head.weight = torch.nn.Parameter(net.tok_embed.weight.detach().clone())
+    assert net.lm_head.weight is not net.tok_embed.weight
+    path = write_gguf(net, _tiny_tokenizer(tmp_path), tmp_path / "model.gguf", quantization="F32")
+    rebuilt = _rebuilt_from_gguf(path, net.params)
+    import gguf
+
+    assert "output.weight" not in {t.name for t in gguf.GGUFReader(str(path)).tensors}
+    x = torch.randint(0, 64, (2, 8), generator=torch.Generator().manual_seed(0))
+    with torch.no_grad():
+        torch.testing.assert_close(rebuilt(x), net(x), rtol=0, atol=0, equal_nan=True)
+
+
+def test_the_tied_weight_comparison_counts_a_shape_dtype_or_device_mismatch_as_different():
+    import torch
+
+    from nnx.interop.gguf.tensor_name_map import _same_weight
+
+    a = torch.tensor([[1.0, float("nan")], [3.0, 4.0]])
+    assert _same_weight(a, a.clone())
+    assert not _same_weight(a, torch.tensor([[1.0, 2.0], [3.0, 4.0]]))  # NaN only on one side
+    assert not _same_weight(a, a.clone().reshape(4))
+    assert not _same_weight(a, a.double())
+    assert not _same_weight(a, torch.empty_like(a, device="meta"))
+
+
+@pytest.mark.parametrize("case", [*_TIED_PARAMETRIZED, "reassigned"])
+def test_the_untied_export_the_refusal_advises_keeps_the_outputs_and_re_tying_does_not(tmp_path, case):
+    """The refusal's fix (copy the weights the forward reads into a
+    tie_embeddings=False model, as docs/gguf.md shows) writes a file that
+    computes the net's logits exactly and leaves the net as it was;
+    removing the parametrization and re-tying the head, which the refusal
+    warns about, changes them."""
+    import operator
+
+    import torch
+    from torch.nn.utils import parametrize
+
+    from nnx.interop.gguf import write_gguf
+
+    net = _untied_by_hand(case) if case == "reassigned" else _parametrized(*_TIED_PARAMETRIZED[case][:2])
+    x = torch.randint(0, 64, (2, 8), generator=torch.Generator().manual_seed(0))
+    with torch.no_grad():
+        expected = net(x)
+        untied = TransformerNN(params=NNTransformerParams.from_state({**net.params.state(), "tie_embeddings": False}))
+        for name, tensor in untied.state_dict().items():
+            tensor.copy_(operator.attrgetter(name)(net))
+    path = write_gguf(untied.eval(), _tiny_tokenizer(tmp_path), tmp_path / "model.gguf", quantization="F32")
+    with torch.no_grad():
+        assert torch.equal(_rebuilt_from_gguf(path, untied.params)(x), expected)
+        assert torch.equal(net(x), expected)
+    for module in (net.lm_head, net.tok_embed):
+        if parametrize.is_parametrized(module, "weight"):
+            parametrize.remove_parametrizations(module, "weight")
+    net.lm_head.weight = net.tok_embed.weight
+    with torch.no_grad():
+        assert not torch.allclose(net(x), expected)
+
+
+@pytest.mark.parametrize("case", list(_TIED_PARAMETRIZED))
+def test_an_untied_parametrized_head_or_embedding_still_exports_its_weight(tmp_path, case):
+    """Untied, the head has its own output.weight slot, so a parametrized
+    head or embedding exports the weight its forward reads."""
+    import gguf
+    import numpy as np
+    import torch
+
+    from nnx.interop.gguf import write_gguf
+
+    path, norm, _ = _TIED_PARAMETRIZED[case]
+    net = _parametrized(path, norm, tie_embeddings=False)
+    out = write_gguf(net, _tiny_tokenizer(tmp_path), tmp_path / "model.gguf", quantization="F32")
+    stored = {t.name: np.array(t.data) for t in gguf.GGUFReader(str(out)).tensors}
+    for name, module in (("output.weight", net.lm_head), ("token_embd.weight", net.tok_embed)):
+        with torch.no_grad():
+            expected = module.weight.detach().numpy()
+        np.testing.assert_array_equal(stored[name].reshape(expected.shape), expected)

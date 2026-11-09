@@ -1095,3 +1095,201 @@ def test_the_script_checks_every_folder_before_force_clears_any(tmp_path, capsys
         _script().main(["--output", str(tmp_path / "c.json"), "--artifacts", str(artifacts), "--force"])
     assert refused.value.code == 2 and "is a symlink" in capsys.readouterr().err
     assert os.listdir(artifacts / "feedfwd-fp32-torchscript") == ["old.onnx"]  # nothing was cleared
+
+
+# --- an artifacts root that cannot be created or written is refused, not a raw OSError ----------------------------
+
+_POSIX_USER = pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0, reason="a read-only folder is writable by root"
+)
+
+
+@pytest.fixture
+def unusable_root(tmp_path, request):
+    """An artifacts root that is a dangling symlink, or a read-only folder
+    (its mode restored afterwards, so ``tmp_path`` can be cleaned)."""
+    root = tmp_path / "artifacts"
+    if request.param == "dangling":
+        root.symlink_to(tmp_path / "gone", target_is_directory=True)
+        yield root, "FileNotFoundError"
+        assert root.is_symlink() and not os.path.lexists(tmp_path / "gone")  # nothing was written
+        return
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        pytest.skip("a read-only folder is writable by root")
+    root.mkdir()
+    root.chmod(0o555)
+    try:
+        yield root, "PermissionError"
+        assert os.listdir(root) == []  # nothing was written
+    finally:
+        root.chmod(0o755)
+
+
+@pytest.mark.parametrize("unusable_root", ["dangling", "read-only"], indirect=True)
+def test_an_artifacts_root_that_cannot_be_created_is_a_refusal_not_a_raw_error(unusable_root):
+    root, cause = unusable_root
+    name = "feedfwd-fp32-torchscript"
+    with pytest.raises(ConformanceError, match=f"{name}' cannot be created: {cause}") as refused:
+        run_profile(name, root, source_revision="test")
+    assert isinstance(refused.value.__cause__, OSError)
+    with pytest.raises(ConformanceError, match=f"{name}' cannot be created: {cause}"):
+        run_profiles(root, [name], source_revision="test")
+
+
+@_POSIX_USER
+def test_a_later_profile_folder_that_cannot_be_created_is_refused_before_any_profile_runs(tmp_path):
+    """An empty first folder in a read-only root passes every check; the
+    later folder that cannot be created is refused before the first runs."""
+    first = tmp_path / "feedfwd-fp32-torchscript"
+    first.mkdir()
+    tmp_path.chmod(0o555)
+    try:
+        with pytest.raises(ConformanceError, match="feedfwd-fp32-dynamo' cannot be created: PermissionError"):
+            run_profiles(tmp_path, source_revision="test")  # the default names: the torchscript profile comes first
+    finally:
+        tmp_path.chmod(0o755)
+    assert os.listdir(tmp_path) == [first.name] and os.listdir(first) == []  # no artifact was written
+
+
+@pytest.mark.parametrize("unusable_root", ["dangling", "read-only"], indirect=True)
+def test_the_script_refuses_an_artifacts_root_that_cannot_be_created(tmp_path, capsys, unusable_root):
+    root, cause = unusable_root
+    output = tmp_path / "out" / "c.json"
+    args = ["--output", str(output), "--artifacts", str(root), "--profile", "feedfwd-fp32-torchscript"]
+    with pytest.raises(SystemExit) as refused:
+        _script().main([*args, "--source-revision", "test"])
+    assert refused.value.code == 2 and f"cannot be created: {cause}" in capsys.readouterr().err  # a usage error
+    assert not output.exists()
+
+
+# --- an --output, or a folder --force clears, that the script cannot use is refused with exit 2 -------------------
+
+
+def _filled_folder(tmp_path):
+    """A profile folder holding an earlier artifact, as ``--force`` finds it."""
+    folder = tmp_path / "artifacts" / "feedfwd-fp32-torchscript"
+    folder.mkdir(parents=True)
+    (folder / "old.onnx").write_bytes(b"old")
+    return folder
+
+
+@pytest.fixture
+def uncreatable_parent(tmp_path, request):
+    """An ``--output`` whose parent cannot be created: under a regular file,
+    a read-only folder or one that cannot be searched (its mode restored
+    afterwards)."""
+    if request.param == "under-a-file":
+        (tmp_path / "afile").write_bytes(b"")
+        yield tmp_path / "afile" / "out" / "c.json", "NotADirectoryError"
+        return
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        pytest.skip("a read-only folder is writable by root")
+    locked = tmp_path / "ro"
+    locked.mkdir()
+    locked.chmod(0o555 if request.param == "read-only" else 0o000)
+    try:
+        yield locked / "out" / "c.json", "PermissionError"
+    finally:
+        locked.chmod(0o755)
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("uncreatable_parent", ["under-a-file", "read-only", "unsearchable"], indirect=True)
+def test_the_script_refuses_an_output_whose_parent_cannot_be_created(tmp_path, capsys, uncreatable_parent, force):
+    output, cause = uncreatable_parent
+    name = "feedfwd-fp32-torchscript"
+    folder = _filled_folder(tmp_path) if force else tmp_path / "artifacts" / name
+    args = ["--output", str(output), "--artifacts", str(folder.parent), "--profile", name, "--source-revision", "test"]
+    with pytest.raises(SystemExit) as refused:
+        _script().main([*args, "--force"] if force else args)
+    err = capsys.readouterr().err
+    assert refused.value.code == 2 and f"{output.parent} cannot be created: {cause}" in err  # a usage error
+    if force:
+        assert os.listdir(folder) == ["old.onnx"]  # checked before --force cleared anything
+    else:
+        assert not os.path.lexists(folder.parent)  # refused before any profile ran
+
+
+def test_the_script_refuses_an_output_that_is_a_directory_before_any_profile_runs(tmp_path, capsys):
+    output = tmp_path / "report"
+    output.mkdir()
+    artifacts = tmp_path / "artifacts"
+    args = ["--output", str(output), "--artifacts", str(artifacts), "--profile", "feedfwd-fp32-torchscript"]
+    with pytest.raises(SystemExit) as refused:
+        _script().main([*args, "--source-revision", "test"])
+    assert refused.value.code == 2 and f"{output} is a directory" in capsys.readouterr().err
+    assert not os.path.lexists(artifacts) and os.listdir(output) == []  # nothing was exported or written
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("inside", [".", "sub"])
+def test_the_script_refuses_an_output_inside_a_profile_folder_before_any_profile_runs(tmp_path, capsys, inside, force):
+    folder = _filled_folder(tmp_path) if force else tmp_path / "artifacts" / "feedfwd-fp32-torchscript"
+    output = folder / inside / "c.json"
+    args = ["--output", str(output), "--artifacts", str(folder.parent), "--source-revision", "test"]
+    with pytest.raises(SystemExit) as refused:
+        _script().main([*args, "--force"] if force else args)
+    assert refused.value.code == 2 and "is inside the profile folder" in capsys.readouterr().err  # a usage error
+    if force:
+        assert os.listdir(folder) == ["old.onnx"]  # nothing was cleared, created or exported
+    else:
+        assert not os.path.lexists(folder.parent)  # nothing was created or exported
+
+
+@pytest.mark.parametrize("target", ["profile-folder", "artifacts-root"])
+def test_the_script_refuses_an_output_that_is_a_profile_folder_or_holds_one_before_any_profile_runs(
+    tmp_path, capsys, target
+):
+    artifacts = tmp_path / "artifacts"
+    output = artifacts / "feedfwd-fp32-torchscript" if target == "profile-folder" else artifacts
+    args = ["--output", str(output), "--artifacts", str(artifacts), "--profile", "feedfwd-fp32-torchscript"]
+    with pytest.raises(SystemExit) as refused:
+        _script().main([*args, "--source-revision", "test"])
+    assert refused.value.code == 2 and "or holds it" in capsys.readouterr().err  # a usage error
+    assert not os.path.lexists(artifacts)  # nothing was created or exported
+
+
+def test_the_script_refuses_an_output_under_a_symlink_loop_with_a_message(tmp_path, capsys):
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    args = ["--output", str(loop / "c.json"), "--artifacts", str(tmp_path / "artifacts"), "--source-revision", "test"]
+    with pytest.raises(SystemExit) as refused:
+        _script().main(args)
+    assert refused.value.code == 2 and "cannot be created" in capsys.readouterr().err
+    assert not os.path.lexists(tmp_path / "artifacts")
+
+
+@_POSIX_USER
+def test_the_script_reports_an_output_folder_it_cannot_write_in_without_a_traceback(tmp_path, capsys):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    artifacts = tmp_path / "artifacts"
+    args = ["--output", str(locked / "c.json"), "--artifacts", str(artifacts), "--profile", "feedfwd-fp32-torchscript"]
+    locked.chmod(0o500)
+    try:
+        with pytest.raises(SystemExit) as refused:
+            _script().main([*args, "--source-revision", "test"])
+    finally:
+        locked.chmod(0o700)
+    error = capsys.readouterr().err
+    assert refused.value.code == 2 and "c.json cannot be written: PermissionError" in error and "--force" in error
+    assert os.listdir(locked) == [] and os.listdir(artifacts / "feedfwd-fp32-torchscript")  # the artifacts are kept
+
+
+@_POSIX_USER
+def test_the_script_refuses_a_folder_force_cannot_clear(tmp_path, capsys):
+    folder = _filled_folder(tmp_path)
+    locked = folder / "sub"
+    locked.mkdir()
+    (locked / "x.onnx").write_bytes(b"old")
+    locked.chmod(0o555)
+    output = tmp_path / "c.json"
+    args = ["--output", str(output), "--artifacts", str(folder.parent), "--profile", folder.name, "--force"]
+    try:
+        with pytest.raises(SystemExit) as refused:
+            _script().main([*args, "--source-revision", "test"])
+    finally:
+        locked.chmod(0o755)
+    err = capsys.readouterr().err
+    assert refused.value.code == 2 and f"{folder} cannot be cleared: PermissionError" in err  # a usage error
+    assert "sub" in os.listdir(folder) and not output.exists()  # perhaps partly cleared; nothing written

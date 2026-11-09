@@ -13,6 +13,7 @@ import json
 import math
 import os
 import types
+import warnings
 from collections import OrderedDict
 
 import numpy as np
@@ -163,6 +164,71 @@ def test_typed_json_round_trips_tuples_integer_keys_tensors_and_non_finite_float
 def test_unsupported_state_is_refused_with_its_path(value, message):
     with pytest.raises(BundleError, match=message):
         _encode(value, {}, "training_state")
+
+
+def _timedelta64(*args):
+    with warnings.catch_warnings():  # NumPy 2.x deprecates the generic (unit-less) duration
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return np.timedelta64(*args)
+
+
+@pytest.mark.parametrize("unit", [None, "as", "fs", "ps", "ns", "us", "ms", "s", "m", "h", "D", "W", "M", "Y"])
+def test_a_numpy_timedelta64_of_any_unit_is_refused_with_its_path(unit):
+    """A ``timedelta64`` is an ``np.integer`` whose unit ``.item()`` drops:
+    a unit-less, sub-microsecond, ``M`` or ``Y`` one was stored as the bare
+    count (5) and NaT as ``null``, a ``us`` to ``W`` one failed as a
+    ``datetime.timedelta``. Every unit, and NaT, is refused by name, as a
+    safetensors checkpoint refuses it."""
+    for value in (_timedelta64(5) if unit is None else _timedelta64(5, unit), _timedelta64("NaT")):
+        with pytest.raises(BundleError, match=r"unsupported state at training_state\.elapsed: timedelta64$"):
+            _encode({"elapsed": value}, {}, "training_state")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        np.bool_(True),
+        np.int8(-3),
+        np.uint64(2**64 - 1),
+        np.float16(0.5),
+        np.float32(0.25),
+        np.float64(1.5),
+        np.longdouble(1.5),
+        _timedelta64(5),
+        _timedelta64(5, "ns"),
+        _timedelta64(5, "s"),
+        np.datetime64("2020-01-01"),
+        np.complex64(1 + 2j),
+    ],
+    ids=[
+        "bool",
+        "int8",
+        "uint64",
+        "float16",
+        "float32",
+        "float64",
+        "longdouble",
+        "timedelta64-generic",
+        "timedelta64-ns",
+        "timedelta64-s",
+        "datetime64",
+        "complex64",
+    ],
+)
+def test_bundles_and_safetensors_checkpoints_store_the_same_numpy_scalars(value):
+    """A run bundle and a safetensors checkpoint's metadata accept the same
+    NumPy scalars (a bool, integer or float, as the Python number it holds)
+    and refuse the same ones (a ``timedelta64``, ``datetime64``, ``longdouble``,
+    whose ``.item()`` is a ``longdouble`` again, or complex)."""
+    if isinstance(value, (np.timedelta64, np.datetime64, np.longdouble, np.complexfloating)):
+        with pytest.raises(TypeError, match=f"cannot store a {type(value).__name__}"):
+            nn_checkpoint._metadata_json(value)
+        with pytest.raises(BundleError, match=f"unsupported state at state: {type(value).__name__}"):
+            _encode(value, {}, "state")
+    else:
+        stored = json.loads(nn_checkpoint._metadata_json(value))
+        encoded = _encode(value, {}, "state")
+        assert encoded == stored == value.item() and type(encoded) is type(stored)
 
 
 # --- a built-in classifier -------------------------------------------------------------------

@@ -26,6 +26,7 @@ from nnx import (  # noqa: E402
     set_seed,
     train_bpe,
 )
+from tests._frozen_modes import TrainModeAtEpochStart, record_forward_modes, record_mode_switches  # noqa: E402
 
 # ---------- helpers ----------
 
@@ -56,7 +57,7 @@ def _make_tokenizer(tmp_path):
     return NNTokenizerParams.of(tokenizer=tk, path=str(path))
 
 
-def _make_model(tokenizer: NNTokenizerParams) -> GenerativeNNModel:
+def _make_model(tokenizer: NNTokenizerParams, resid_dropout: float = 0.0) -> GenerativeNNModel:
     net_params = NNTransformerParams(
         input_dim=tokenizer.vocab_size,
         output_dim=tokenizer.vocab_size,
@@ -67,6 +68,7 @@ def _make_model(tokenizer: NNTokenizerParams) -> GenerativeNNModel:
         d_model=16,
         ffn_mult=2,
         max_seq_len=64,
+        resid_dropout=resid_dropout,
     )
     model_params = NNModelParams(net=Nets.TRANSFORMER, device=Devices.CPU, loss=Losses.CROSS_ENTROPY)
     return GenerativeNNModel(net_params=net_params, params=model_params, tokenizer=tokenizer)
@@ -546,3 +548,52 @@ def test_dpo_reward_accuracy_matches_manual_computation(tmp_path, monkeypatch):
     # reward_chosen/rejected are batch means of the same manual tensors.
     assert edp.extra["reward_chosen"] == pytest.approx(float(reward_chosen.mean()))
     assert edp.extra["reward_rejected"] == pytest.approx(float(reward_rejected.mean()))
+
+
+# ---------- the reference runs in eval mode at every step ----------
+
+
+def _dpo_fit(policy: GenerativeNNModel, loader, step_fn, callbacks=()) -> None:
+    policy.train(
+        params=NNTrainParams(
+            n_epochs=2,
+            train_loader=loader,
+            optim=NNOptimParams(name=Optims.SGD, max_lr=0.05, momentum=0.0, weight_decay=0.0),
+        ),
+        callbacks=list(callbacks),
+        train_step_fn=step_fn,
+    )
+
+
+@pytest.mark.parametrize("layout", ["under_policy_net", "switched_by_callback"])
+def test_every_reference_forward_runs_in_eval_mode(layout, tmp_path, monkeypatch):
+    """A dropout reference that the policy's ``net.train()`` or a callback
+    switches to train mode is put back in eval mode before every forward:
+    its log-probs equal its eval-mode ones at every step."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    tokenizer = _make_tokenizer(tmp_path)
+    ref_model = _make_model(tokenizer, resid_dropout=0.5)
+    policy = _make_model(tokenizer)
+    callbacks = []
+    if layout == "under_policy_net":
+        policy.net.add_module("_dpo_reference", ref_model.net)  # policy.net.train() reaches it
+    else:
+        callbacks.append(TrainModeAtEpochStart(ref_model.net))
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
+    seen = record_forward_modes(ref_model.net)
+    _dpo_fit(policy, _preference_loader(tokenizer, n_pairs=4, batch_size=2), step_fn, callbacks)
+    assert seen == [(False, True)] * 8  # 2 epochs x 2 batches x (chosen, rejected)
+
+
+def test_a_reference_left_in_eval_mode_is_not_switched_again(tmp_path, monkeypatch):
+    """The per-step re-pin only acts on a reference that left eval mode."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    tokenizer = _make_tokenizer(tmp_path)
+    ref_model = _make_model(tokenizer, resid_dropout=0.5)
+    policy = _make_model(tokenizer)
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
+    switches = record_mode_switches(monkeypatch, ref_model.net)
+    _dpo_fit(policy, _preference_loader(tokenizer, n_pairs=4, batch_size=2), step_fn)
+    assert switches == [] and not ref_model.net.training

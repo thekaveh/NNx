@@ -12,6 +12,7 @@ assertion was tautological). The named-symbol check additionally
 catches a regression that empties `__all__` or drops a public export.
 """
 
+import json
 import subprocess
 import sys
 
@@ -69,12 +70,14 @@ import sys
 
 class BlockSDK(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname in ("typesafe_sdk", "httpx2") or fullname.startswith(("typesafe_sdk.", "httpx2.")):
+        if fullname == "typesafe_sdk" or fullname.startswith("typesafe_sdk."):
             raise ModuleNotFoundError("blocked typesafe_sdk for test")
         return None
 
 sys.meta_path.insert(0, BlockSDK())
 import nnx
+import nnx.nn.nn_model as nn_model
+hub_available = nn_model._HUB_AVAILABLE
 from nnx.decisions import Boolean, JevProvider
 assert "JevProvider" in nnx.decisions.__all__
 assert "typesafe_sdk" not in sys.modules
@@ -96,6 +99,7 @@ except RuntimeError as exc:
     assert str(exc) == "offline"
 else:
     raise AssertionError("the injected client was not called")
+assert nn_model._HUB_AVAILABLE == hub_available  # the jev extra is all that is missing
 """
     subprocess.run([sys.executable, "-c", code], check=True)
 
@@ -485,11 +489,36 @@ def test_every_train_step_factory_is_top_level():
     assert not missing_all, f"missing from nnx.__all__: {missing_all}"
 
 
+# The hosted model SDKs that importing nnx.decisions must not load. Generic
+# HTTP clients (httpx, httpx2) are not among them: huggingface_hub, which
+# `import nnx` loads when installed, imports one of them, as does the Jev SDK
+# (whose own package, typesafe_sdk, is listed).
+_HOSTED_SDK_ROOTS = frozenset({"openai", "anthropic", "typesafe_sdk", "cohere", "mistralai", "groq"})
+_HOSTED_SDK_PREFIXES = ("google.generativeai", "google.genai")
+
+
+def _hosted_sdk_modules(names) -> list[str]:
+    return sorted(
+        name for name in names if name.split(".")[0] in _HOSTED_SDK_ROOTS or name.startswith(_HOSTED_SDK_PREFIXES)
+    )
+
+
+def test_hosted_sdk_sentinel_flags_provider_sdks_but_not_generic_http_clients():
+    """huggingface_hub imports httpx2 now (httpx before it), so an HTTP client
+    alone is no hosted SDK; every provider SDK, the Jev one included, still is."""
+    generic = ["httpx", "httpx._client", "httpx2", "httpx2._models", "huggingface_hub", "google.protobuf"]
+    assert _hosted_sdk_modules(generic) == []
+    sdks = ["anthropic._client", "cohere", "google.genai.types", "google.generativeai", "groq", "mistralai.client"]
+    sdks += ["openai", "typesafe_sdk"]
+    assert _hosted_sdk_modules([*generic, *sdks]) == sorted(sdks)
+
+
 def test_decisions_import_starts_no_provider_backend_or_hosted_sdk():
     """FEAT-009: importing nnx and nnx.decisions in a fresh process builds no
     provider or model, starts no thread and loads no hosted-SDK package."""
     code = r"""
 import gc
+import json
 import sys
 import threading
 
@@ -499,16 +528,16 @@ from nnx import decisions
 from nnx.decisions import FixedHeadProvider
 
 assert "decisions" in nnx.__all__ and nnx.decisions is decisions
-hosted = sorted(
-    name for name in sys.modules
-    if name.split(".")[0] in {"openai", "anthropic", "typesafe_sdk", "httpx2", "cohere", "mistralai", "groq"}
-    or name.startswith(("google.generativeai", "google.genai"))
-)
-assert hosted == [], hosted
 assert not any(isinstance(obj, (nnx.NNModel, FixedHeadProvider)) for obj in gc.get_objects())
 assert threading.active_count() == before, threading.enumerate()
+print("modules=" + json.dumps(sorted(sys.modules)))
 """
-    subprocess.run([sys.executable, "-c", code], check=True)
+    completed = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr[-4000:]
+    (line,) = [line for line in completed.stdout.splitlines() if line.startswith("modules=")]
+    loaded = json.loads(line.removeprefix("modules="))
+    assert "nnx.decisions" in loaded
+    assert _hosted_sdk_modules(loaded) == []
 
 
 def test_importing_nnx_never_imports_optuna_or_creates_a_study():

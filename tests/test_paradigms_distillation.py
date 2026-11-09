@@ -21,20 +21,23 @@ from nnx import (
     Optims,
     TaskSpec,
     TaskValidationError,
+    feature_kd_train_step_factory,
+    kd_objective,
     kd_train_step_factory,
     set_seed,
 )
 from nnx._step_helpers import softened_kl
 from tests import _task_steps as tasks
+from tests._frozen_modes import TrainModeAtEpochStart, record_forward_modes, record_mode_switches
 
 
-def _make_classifier(hidden: int) -> NNModel:
+def _make_classifier(hidden: int, dropout_prob: float = 0.0) -> NNModel:
     return NNModel(
         net_params=NNParams(
             input_dim=8,
             output_dim=3,
             hidden_dims=[hidden],
-            dropout_prob=0.0,
+            dropout_prob=dropout_prob,
             activation=Activations.RELU,
         ),
         params=NNModelParams(
@@ -402,3 +405,62 @@ def test_kd_refuses_a_regression_task_before_any_run(tmp_path, monkeypatch):
     assert "kd_train_step_factory" in message and "regression task" in message
     assert "declare the task" not in message and "NNModelParams(task=" not in message
     assert tasks.no_run_left(tmp_path)
+
+
+# ---------- the teacher runs in eval mode at every step ----------
+
+
+def _kd_step(kind: str, teacher: NNModel) -> dict:
+    if kind == "kd":
+        return {"train_step_fn": kd_train_step_factory(teacher, alpha=0.5, temperature=4.0)}
+    if kind == "feature_kd":
+        pairs = {"layers.0": "layers.0"}
+        return {"train_step_fn": feature_kd_train_step_factory(teacher, auxiliary_layers=pairs)}
+    return {"objective": kd_objective(teacher, alpha=0.5, temperature=4.0)}
+
+
+def _distill(student: NNModel, step: dict, callbacks=()) -> None:
+    student.train(
+        params=NNTrainParams(
+            n_epochs=2,
+            train_loader=_classification_loader(n=32, batch_size=16),
+            optim=NNOptimParams(name=Optims.SGD, max_lr=0.05, momentum=0.0, weight_decay=0.0),
+        ),
+        callbacks=list(callbacks),
+        **step,
+    )
+
+
+@pytest.mark.parametrize("layout", ["under_student_net", "switched_by_callback"])
+@pytest.mark.parametrize("kind", ["kd", "feature_kd", "kd_objective"])
+def test_every_teacher_forward_runs_in_eval_mode(kind, layout, tmp_path, monkeypatch):
+    """A dropout teacher that the student's ``net.train()`` or a callback
+    switches to train mode is put back in eval mode before every forward:
+    its soft targets equal its eval-mode output at every step."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    teacher = _make_classifier(32, dropout_prob=0.5)
+    student = _make_classifier(32)
+    callbacks = []
+    if layout == "under_student_net":
+        student.net.add_module("_kd_teacher", teacher.net)  # student.net.train() reaches it
+    else:
+        callbacks.append(TrainModeAtEpochStart(teacher.net))
+    step = _kd_step(kind, teacher)
+    seen = record_forward_modes(teacher.net)
+    _distill(student, step, callbacks)
+    assert seen == [(False, True)] * 4  # 2 epochs x 2 batches
+
+
+@pytest.mark.parametrize("kind", ["kd", "feature_kd", "kd_objective"])
+def test_a_teacher_left_in_eval_mode_is_not_switched_again(kind, tmp_path, monkeypatch):
+    """The per-step re-pin only acts on a teacher that left eval mode: one
+    that stays in it is never switched again."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    teacher = _make_classifier(32, dropout_prob=0.5)
+    student = _make_classifier(32)
+    step = _kd_step(kind, teacher)
+    switches = record_mode_switches(monkeypatch, teacher.net)
+    _distill(student, step)
+    assert switches == [] and not teacher.net.training

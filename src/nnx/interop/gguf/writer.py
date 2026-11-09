@@ -193,6 +193,18 @@ def write_gguf(
             (``torch.nn.utils.remove_weight_norm`` /
             ``remove_spectral_norm``) or use their
             ``torch.nn.utils.parametrizations`` forms, which export reads.
+            Also when the embeddings are tied but the ``lm_head`` no
+            longer reads the embedding's weight: the ``lm_head`` or
+            ``tok_embed`` weight is parametrized
+            (``torch.nn.utils.parametrize``), or ``lm_head.weight`` is
+            another tensor with different values (reassigned, or left
+            untied by ``remove_parametrizations``). The tied head's one
+            GGUF slot, ``token_embd``, cannot hold both weights. To keep
+            the outputs, copy the weights the forward reads into a model
+            built with ``tie_embeddings=False`` and export that; removing
+            the parametrization and re-tying the head
+            (``net.lm_head.weight = net.tok_embed.weight``) keeps only one
+            of the two weights and changes the outputs.
             Nothing is written, and no directory is created; the same holds
             for a tokenizer that cannot be read (its own error propagates).
     """
@@ -224,8 +236,9 @@ def write_gguf(
     feed_forward_length = int(2 * params.ffn_mult * params.d_model / 3)
     head_dim = params.d_model // n_heads
     # Read the network (which refuses a PEFT adapter, a factorized
-    # projection, an unbaked prune mask or a legacy weight_norm /
-    # spectral_norm hook) and the tokenizer before anything touches the disk.
+    # projection, an unbaked prune mask, a legacy weight_norm /
+    # spectral_norm hook, or a tied lm_head that no longer reads the
+    # embedding's weight) and the tokenizer before anything touches the disk.
     tensors = map_tensors(transformer_nn)
     vocab = _tokenizer_vocab(tokenizer)
 
