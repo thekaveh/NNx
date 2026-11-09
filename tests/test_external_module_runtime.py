@@ -1717,3 +1717,19 @@ def test_a_parametrized_runtime_module_trains_and_resumes():
     run = model.train(params=_params(_loader()))
     warm = model.train(params=_params(_loader(), epochs=3, resume_from_run_id=run.id, resume_mode="stateful"))
     assert warm.resume_status is not None and warm.resume_status.mode == "stateful"
+
+
+def test_registering_a_half_built_module_after_a_lazy_wrap_does_not_raise():
+    """The registration hook runs at every registration in the process, so it
+    must not raise where torch alone accepts one: a module whose __init__
+    never ran nn.Module.__init__ has no _modules to scan."""
+    from nnx.models import _module_registrations
+
+    class Half(nn.Module):
+        def __init__(self):  # deliberately skips nn.Module.__init__
+            pass
+
+    _module_registrations()  # installs the hook, as a pending lazy wrap does
+    before = _module_registrations()
+    nn.Module().half = Half()
+    assert _module_registrations() != before  # counted, since NNx cannot tell
