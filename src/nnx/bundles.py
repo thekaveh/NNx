@@ -286,7 +286,12 @@ def _encode(value: Any, tensors: Optional[dict[str, torch.Tensor]], path: str) -
     non-finite floats ``$float``. Anything else is refused."""
     if isinstance(value, str):
         return str(value)  # a str subclass (NumPy's str_ included) is stored as the plain string
-    if isinstance(value, np.generic) and not isinstance(value, (np.bool_, np.integer, np.floating)):
+    # A timedelta64 is an np.integer whose unit .item() drops (or turns into
+    # a datetime.timedelta), so it is refused, as a safetensors checkpoint's
+    # metadata refuses it.
+    if isinstance(value, np.generic) and (
+        not isinstance(value, (np.bool_, np.integer, np.floating)) or isinstance(value, np.timedelta64)
+    ):
         raise BundleError(f"unsupported state at {path}: {type(value).__name__}")
     if isinstance(value, np.generic):
         value = value.item()  # NumPy scalars are stored as the Python number they hold
