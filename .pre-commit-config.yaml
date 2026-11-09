@@ -9,9 +9,13 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.17.4
     hooks:
+      # Python only, as CI runs ruff: the hooks also match Markdown, and
+      # would reformat README.md and the generated docs pages.
       - id: ruff
         args: [--fix]
+        types_or: [python, pyi]
       - id: ruff-format
+        types_or: [python, pyi]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
