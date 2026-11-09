@@ -111,8 +111,10 @@ from .params.nn_params import NNParams
 from .params.nn_run import (
     NNRun,
     _best_err,
+    _names_best_pointer,
     _print_run_saved,
     _recorded_attempt_token,
+    _resolve_run_id,
     _runs_root,
     _validate_run_id,
 )
@@ -354,6 +356,9 @@ class _ResumeSource:
     manifest: Optional[dict[str, Any]] = None
     # #553: the attempt the resume reads from (ResumeStatus.source_attempt_token).
     attempt: Optional[str] = None
+    # The run read: resume_from_run_id itself, or the run runs/best named
+    # (_resume_source_id). The recorded lineage keeps resume_from_run_id.
+    run_id: str = ""
 
 
 def _new_attempt_token() -> str:
@@ -370,10 +375,11 @@ _IN_MEMORY_RESUME: contextvars.ContextVar[Optional[tuple[str, str, NNCheckpoint,
     contextvars.ContextVar("nnx_in_memory_resume", default=None)
 )
 
-# Told (source run id, checkpoint) once a resume has read its source, for one
-# train() call recording an attempt: its parent is that checkpoint (#537).
-_RESUME_SOURCE_LISTENER: contextvars.ContextVar[Optional[Callable[[str, NNCheckpoint], None]]] = contextvars.ContextVar(
-    "nnx_resume_source_listener", default=None
+# Told (source run id, checkpoint, the run read) once a resume has read its
+# source, for one train() call recording an attempt: its parent is that
+# checkpoint (#537). The run read differs from the source run id for runs/best.
+_RESUME_SOURCE_LISTENER: contextvars.ContextVar[Optional[Callable[[str, NNCheckpoint, str], None]]] = (
+    contextvars.ContextVar("nnx_resume_source_listener", default=None)
 )
 
 
@@ -466,6 +472,38 @@ def _verified_resume_point(run_id: str, ckpt_type: Any, ddp: Any) -> Optional[di
     raise DistributedFailure(f"verifying the resume point failed on rank {ddp.spec.writer_rank}: {kind}: {message}")
 
 
+def _resume_source_id(run_id: str, ddp: Any) -> Optional[str]:
+    """The run a resume from ``run_id`` reads: ``run_id`` itself, or for the
+    ``runs/best`` pointer the run it names (``None`` when no run holds it),
+    resolved once, so the source attempt, the verified point, its load and
+    the recorded hyperparameters all read one run, in the symlink and the
+    ``best/POINTER.txt`` layout alike. The recorded lineage keeps
+    ``run_id``. Under DDP the writer rank resolves the pointer and shares
+    the id or its failure (``ddp.gather``), so a repoint between two ranks'
+    reads cannot split them; an invalid run id fails alike on every rank,
+    as itself."""
+    if ddp is None or not _names_best_pointer(_validate_run_id(run_id)):
+        return _resolve_run_id(run_id, None)
+    from ..distributed import DistributedFailure
+
+    failure: Optional[BaseException] = None
+    verdict: Any = None
+    if ddp.writer:
+        try:
+            verdict = ("resolved", _resolve_run_id(run_id, None))
+        except Exception as error:  # shared below, then raised on every rank
+            failure = error
+            verdict = ("refused", type(error).__name__, str(error))
+    verdict = ddp.gather(verdict)[ddp.spec.writer_rank]
+    if verdict[0] == "resolved":
+        return verdict[1]
+    if failure is not None:
+        raise failure
+    raise DistributedFailure(
+        f"resolving the runs/best pointer failed on rank {ddp.spec.writer_rank}: {verdict[1]}: {verdict[2]}"
+    )
+
+
 def _load_verified_resume_point(run_id: str, ckpt_type: Any, manifest: dict[str, Any], ddp: Any) -> tuple[Any, Any]:
     """Load the verified resume point (``NNCheckpoint._load_resume_point``,
     #537). Under DDP every rank loads it itself, so a republish landing
@@ -507,32 +545,36 @@ def _load_resume_source(
     and ``Trainer.train`` — and reject, before anything is mutated, a
     missing checkpoint, a transformed one without pre-transform state, and
     a bundle ``resume_mode`` cannot use. Under DDP (``ddp``, the fit's
-    session) only the writer rank verifies the point (FEAT-046)."""
+    session) only the writer rank verifies the point (FEAT-046), and
+    ``runs/best`` is resolved once (:func:`_resume_source_id`)."""
     ckpt_type = _resume_checkpoint_type(checkpoint)
     in_memory = _IN_MEMORY_RESUME.get()
     manifest: Optional[dict[str, Any]] = None
+    missing = f"resume_from_run_id={run_id!r}/{ckpt_type} not found on disk"
+    source_id = run_id
     if in_memory is not None and in_memory[:2] == (run_id, str(ckpt_type)):
         ckpt, training_state = in_memory[2], in_memory[3]
         attempt: Optional[str] = f"{_BUNDLE_ATTEMPT_PREFIX}{ckpt.training_state_id or 'unknown'}"
     else:
+        resolved = _resume_source_id(run_id, ddp)
+        if resolved is None:  # no run holds runs/best: on every rank alike
+            raise ValueError(missing)
+        source_id = resolved
         # #553: the source's attempt, read before its checkpoint: a source
         # retrained in place in between is then recorded as the earlier
         # attempt, which its lineage no longer stitches.
-        try:
-            attempt = _recorded_attempt_token(os.path.join(_runs_root(), _validate_run_id(run_id)))
-        except ValueError:  # an invalid run id is refused below, as itself
-            attempt = None
+        attempt = _recorded_attempt_token(os.path.join(_runs_root(), source_id))
         # #394: a torn, mixed or corrupted resume point is refused here, with
         # its reason, before anything is restored from it — and #537: one
         # published again since it was verified, on every rank (the load
         # compares the verified generation in its own lock hold).
-        manifest = _verified_resume_point(run_id, cast(Any, ckpt_type), ddp)
+        manifest = _verified_resume_point(source_id, cast(Any, ckpt_type), ddp)
         if manifest is None:  # a checkpoint without a manifest loads as before
-            ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=cast(Any, ckpt_type))
+            ckpt, training_state = NNCheckpoint.load_with_training_state(run=source_id, type=cast(Any, ckpt_type))
         else:
-            ckpt, training_state = _load_verified_resume_point(run_id, cast(Any, ckpt_type), manifest, ddp)
+            ckpt, training_state = _load_verified_resume_point(source_id, cast(Any, ckpt_type), manifest, ddp)
     if ckpt is None:
-        raise ValueError(f"resume_from_run_id={run_id!r}/{ckpt_type} not found on disk")
+        raise ValueError(missing)
     resume_net_state = training_state.get("model") if training_state is not None else None
     # FEAT-016: the resuming model must carry exactly the recipe the source
     # was trained with (ids, versions, targets and config) — its weights
@@ -558,8 +600,8 @@ def _load_resume_source(
     training_state = _resume_training_state(training_state, mode, f"{run_id}/{label}", trainer=trainer)
     listener = _RESUME_SOURCE_LISTENER.get()
     if listener is not None:  # the attempt's parent is the checkpoint read here (#537)
-        listener(run_id, ckpt)
-    return _ResumeSource(ckpt, training_state, resume_net_state or ckpt.net_state, label, manifest, attempt)
+        listener(run_id, ckpt, source_id)
+    return _ResumeSource(ckpt, training_state, resume_net_state or ckpt.net_state, label, manifest, attempt, source_id)
 
 
 def _rollback_resume(
@@ -921,7 +963,7 @@ def _resume_fit(
     _check_resume_hyperparameters(
         _saved_hyperparameters(
             training_state,
-            run_id,
+            source.run_id,
             optimization.schedulers,
             trainer=optimization.named,
             default_scheduler=default_scheduler,
