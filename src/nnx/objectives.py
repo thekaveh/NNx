@@ -347,10 +347,11 @@ class KDObjective(Objective):
     ``1 − alpha``). Over a window this is exactly
     ``alpha · KL_batchmean + (1 − alpha) · loss`` of the full batch, however
     the rows are split into microbatches or targets are ignored. The teacher
-    is frozen and put in eval mode once, as ``kd_train_step_factory`` does,
-    and never updated. At ``alpha=0`` only the ``"supervised"`` term is
-    returned, and at ``alpha=1`` only the ``"distillation"`` term (the
-    labels are not scored, so placeholder labels train as with
+    is frozen once and never updated, and is put back in eval mode before
+    every teacher forward, as ``kd_train_step_factory`` does. At
+    ``alpha=0`` only the ``"supervised"`` term is returned, and at
+    ``alpha=1`` only the ``"distillation"`` term (the labels are not
+    scored, so placeholder labels train as with
     ``kd_train_step_factory(alpha=1)``). An all-masked microbatch at
     ``alpha=0`` records like :class:`SupervisedObjective`'s, never NaN.
 
@@ -377,7 +378,7 @@ class KDObjective(Objective):
         _freeze_teacher(teacher)
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
-        from ._step_helpers import predicted_labels, require_row_logits, softened_kl
+        from ._step_helpers import pin_eval, predicted_labels, require_row_logits, softened_kl
         from .nn.nn_model import _KD_OBJECTIVE_SCORING, _classification_edp_for_loss, _single_input_batch
 
         model = ctx.model
@@ -385,6 +386,7 @@ class KDObjective(Objective):
         X, Y = _single_input_batch(model, ctx.batch, who="kd_objective")
         student = ctx.full_precision(model._net_forward((X,), {}))
         require_row_logits(student, "kd_objective")
+        pin_eval(self.teacher.net)  # model.net.train() or a callback may have switched it to train mode
         with torch.no_grad(), _own_precision(ctx, self.teacher) as teacher_precision:
             teacher_logits = ctx.full_precision(
                 teacher_precision.output(self.teacher._net_forward((X.to(self.teacher.device),), {})).to(model.device)

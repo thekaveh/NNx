@@ -21,7 +21,9 @@ into :meth:`NNModel.train` via the ``train_step_fn=`` hook. The
 teacher's parameters are frozen on factory call so subsequent training
 can never drift the teacher's weights; restored on tear-down would be
 tidy but unnecessary in practice — once a teacher is a teacher, it
-stays one.
+stays one. Every step puts the teacher back in eval mode before its
+forward, so a teacher that the student's ``net.train()`` or a callback
+switched to train mode still gives its eval-mode soft targets.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from .._step_helpers import (
     finalize_step,
     finalize_task_step,
     imperative_step,
+    pin_eval,
     predicted_labels,
     require_row_logits,
     softened_kl,
@@ -99,7 +102,10 @@ def kd_train_step_factory(
         teacher: a fully-trained :class:`NNModel` whose net produces
             logits of the same shape as the student's. The teacher's
             parameters are frozen (``requires_grad=False``) and its
-            net is set to eval mode on factory call.
+            net is set to eval mode on factory call, and put back in
+            eval mode before every teacher forward (a teacher under the
+            student's net, or one a callback switches to train mode,
+            would otherwise run its dropout and BatchNorm in train mode).
         alpha: weight on the distillation (soft) loss. The hard-label
             loss gets ``1 − α``. ``α=1.0`` is pure distillation (the
             labels are not scored); ``α=0.0`` collapses to standard
@@ -150,6 +156,7 @@ def kd_train_step_factory(
 
         student_logits = m._net_forward((X,), {})
         require_row_logits(student_logits, "distillation")
+        pin_eval(teacher.net)  # model.net.train() or a callback may have switched it to train mode
         with torch.no_grad():
             # Teacher might live on a different device; migrate the
             # input into its frame for the forward pass. Cheap when
@@ -212,8 +219,9 @@ def feature_kd_train_step_factory(
         teacher: a fully-trained :class:`NNModel` whose net produces
             logits of the same shape as the student's. The teacher's
             parameters are frozen (``requires_grad=False``) and its
-            net is set to eval mode on factory call — same guarantee
-            as :func:`kd_train_step_factory`.
+            net is set to eval mode on factory call and before every
+            teacher forward — same guarantee as
+            :func:`kd_train_step_factory`.
         auxiliary_layers: dict mapping ``teacher_layer_name ->
             student_layer_name`` for each (teacher, student) pair to
             match. Names are dotted paths resolved via
@@ -311,6 +319,7 @@ def feature_kd_train_step_factory(
 
             student_logits = m._net_forward((X,), {})
             require_row_logits(student_logits, "feature distillation")
+            pin_eval(teacher.net)  # as kd_train_step_factory: eval mode at every teacher forward
             with torch.no_grad():
                 # Teacher might live on a different device; migrate the
                 # input into its frame for the forward pass.
