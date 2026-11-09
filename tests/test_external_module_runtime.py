@@ -1142,13 +1142,10 @@ def test_a_loaded_lazy_layer_swapped_in_where_none_was_lazy_is_settled_by_the_ne
     assert model.params.net == RuntimeModule.of(model.net)
 
 
-def test_training_with_a_lazy_layer_the_forward_never_reaches_walks_the_module_at_no_batch(monkeypatch):
-    """train() reads params about twice per batch: none of those reads walks
-    the module, since nothing is registered per batch."""
+def _count_walks(monkeypatch) -> list[int]:
+    """Count the walks of a module for pending lazy layers from here on."""
     import nnx.nn.nn_model as nn_model
 
-    model = NNModel(module=_Deep(2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
-    model.predict(torch.randn(3, 4))
     walks = [0]
     pending = nn_model._pending_lazy_modules
 
@@ -1157,8 +1154,125 @@ def test_training_with_a_lazy_layer_the_forward_never_reaches_walks_the_module_a
         return pending(module)
 
     monkeypatch.setattr(nn_model, "_pending_lazy_modules", counted)
+    return walks
+
+
+def test_training_with_a_lazy_layer_the_forward_never_reaches_walks_the_module_at_no_batch(monkeypatch):
+    """train() reads params about twice per batch: none of those reads walks
+    the module, since nothing is registered per batch."""
+    model = NNModel(module=_Deep(2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    model.predict(torch.randn(3, 4))
+    walks = _count_walks(monkeypatch)
     run = model.train(params=_params(_loader()))
     assert len(run.idps) == 6 and walks[0] == 0
+
+
+class _Slicing(nn.Module):
+    """A forward that slices a ModuleList, which registers its layers in a new
+    ModuleList at every call, and a lazy layer the forward never reaches."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.layers = nn.ModuleList(nn.Linear(4, 4) for _ in range(3))
+        self.out, self.unused = nn.LazyLinear(2), nn.LazyLinear(3)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for layer in self.layers[:-1]:
+            x = layer(x)
+        return self.out(self.layers[-1](x))
+
+
+def test_a_forward_that_slices_a_module_list_walks_the_module_at_no_batch(monkeypatch):
+    """Only a registration that brings a pending lazy layer makes a read walk
+    the module again: the dense layers a slice registers bring none."""
+    model = NNModel(module=_Slicing(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    wrap_time = model.params.net
+    model.predict(torch.randn(3, 4))
+    walks = _count_walks(monkeypatch)
+    run = model.train(params=_params(_loader()))
+    assert len(run.idps) == 6 and walks[0] == 0
+    assert model.params.net == wrap_time  # `unused` stays pending
+
+
+def test_a_loaded_lazy_layer_swapped_in_inside_torch_compile_is_settled_when_reached_later():
+    """A registration traced by torch.compile lands on the module without a
+    count dynamo could guard on: it still makes the next read walk the module,
+    so the swapped-in lazy conv is seen pending and settled (#562)."""
+    model = NNModel(module=_SwapNet(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    X = torch.randn(3, 2, 6)
+    model.predict(X)  # head materializes; extra stays pending
+    layer = nn.LazyConv1d(4, 3)
+    layer.load_state_dict({"weight": torch.randn(4, 2, 3), "bias": torch.zeros(4)})
+
+    @torch.compile(backend="eager")
+    def swap(net: nn.Module, layer: nn.Module, x: torch.Tensor) -> torch.Tensor:
+        net.conv = layer
+        return x + 1
+
+    try:
+        swap(model.net, layer, torch.zeros(1))
+    finally:
+        torch._dynamo.reset()
+    assert model.net.conv is layer
+    model.predict(X)  # conv materializes alone; extra stays pending
+    model.net.reach = True
+    model.predict(X)
+    assert model.net.conv.in_channels == 2  # torch's forward on loaded weights leaves 0
+    assert model.params.net == RuntimeModule.of(model.net)
+
+
+def test_the_registration_hook_is_installed_only_for_a_pending_lazy_module():
+    """NNx counts module registrations with a process-wide torch hook only once
+    it wraps a module with a pending lazy layer: a fresh interpreter that trains,
+    predicts with and copies a dense and a dry-run lazy model has none."""
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import copy, os, pickle, tempfile
+        import torch
+        import torch.nn.modules.module as torch_module
+        from torch import nn
+        from torch.utils.data import DataLoader, TensorDataset
+        import nnx.models
+        from nnx import Losses, NNModel, NNModelParams, NNOptimParams, NNTrainParams
+
+        os.chdir(tempfile.mkdtemp())
+        X = torch.randn(8, 4)
+        loader = DataLoader(TensorDataset(X, (X[:, 0] > 0).long()), batch_size=4)
+        dry_run = nn.Sequential(nn.LazyLinear(2))
+        dry_run(X)
+        for module in (nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2)), dry_run):
+            model = NNModel(module=module, params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+            assert model.params.net is not None
+            model.predict(X)
+            model.train(
+                params=NNTrainParams(
+                    n_epochs=1,
+                    train_loader=loader,
+                    optim=NNOptimParams.builder().sgd(max_lr=0.05).build(),
+                    save_phase_checkpoints=False,
+                )
+            )
+            assert pickle.loads(pickle.dumps(model)).params == copy.deepcopy(model).params
+        assert nnx.models._REGISTRATION_HOOK == [], nnx.models._REGISTRATION_HOOK
+        assert not torch_module._global_module_registration_hooks
+        NNModel(module=nn.Sequential(nn.LazyLinear(2)), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+        assert nnx.models._REGISTRATION_HOOK and torch_module._global_module_registration_hooks
+        """
+    )
+    run = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+        env={**os.environ, "NNX_TQDM_DISABLE": "1"},
+    )
+    assert run.returncode == 0, run.stderr
 
 
 def test_the_wrap_adds_no_hook_to_a_lazy_module():
