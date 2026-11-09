@@ -1261,6 +1261,7 @@ def test_the_script_refuses_an_output_under_a_symlink_loop_with_a_message(tmp_pa
 
 @_POSIX_USER
 def test_the_script_reports_an_output_folder_it_cannot_write_in_without_a_traceback(tmp_path, capsys):
+    _runtime()  # the profile must export before the report is written
     locked = tmp_path / "locked"
     locked.mkdir()
     artifacts = tmp_path / "artifacts"
