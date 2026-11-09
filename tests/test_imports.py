@@ -70,12 +70,14 @@ import sys
 
 class BlockSDK(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname in ("typesafe_sdk", "httpx2") or fullname.startswith(("typesafe_sdk.", "httpx2.")):
+        if fullname == "typesafe_sdk" or fullname.startswith("typesafe_sdk."):
             raise ModuleNotFoundError("blocked typesafe_sdk for test")
         return None
 
 sys.meta_path.insert(0, BlockSDK())
 import nnx
+import nnx.nn.nn_model as nn_model
+hub_available = nn_model._HUB_AVAILABLE
 from nnx.decisions import Boolean, JevProvider
 assert "JevProvider" in nnx.decisions.__all__
 assert "typesafe_sdk" not in sys.modules
@@ -97,6 +99,7 @@ except RuntimeError as exc:
     assert str(exc) == "offline"
 else:
     raise AssertionError("the injected client was not called")
+assert nn_model._HUB_AVAILABLE == hub_available  # the jev extra is all that is missing
 """
     subprocess.run([sys.executable, "-c", code], check=True)
 
