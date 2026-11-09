@@ -1201,4 +1201,17 @@ class NNCheckpoint:
         root: Optional[str] = None,
         map_location: Any = "cpu",
     ) -> Optional[NNCheckpoint]:
-        return NNCheckpoint.from_file(path=_checkpoint_path(run, type, root=root), map_location=map_location)
+        """Load run ``run``'s ``type`` checkpoint, or ``None`` when it is
+        absent. ``run="best"`` reads the run `NNRun.best_id` names, in the
+        symlink and the ``best/POINTER.txt`` layout alike, and returns
+        ``None`` when no run holds the pointer."""
+        from .nn_run import _BEST_POINTER, _resolve_best_pointer
+
+        path = _checkpoint_path(run, type, root=root)  # validates run and type first
+        if run == _BEST_POINTER:
+            try:
+                run = _resolve_best_pointer(root)
+            except FileNotFoundError:
+                return None
+            path = _checkpoint_path(run, type, root=root)
+        return NNCheckpoint.from_file(path=path, map_location=map_location)
