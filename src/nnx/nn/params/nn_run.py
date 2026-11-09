@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import html
 import io
@@ -492,6 +493,19 @@ def _read_best_pointer(best_run_path: str) -> Optional[str]:
             target = f.read().strip()
         return os.path.basename(target.rstrip(os.sep)) or None
     return None
+
+
+def _resolve_best_pointer(root: Optional[str]) -> str:
+    """The id of the run ``runs/best`` points at, for ``NNRun.load("best")``
+    and ``NNCheckpoint.load(run="best")``. It is read by ``NNRun.best_id``'s
+    rule, so the POINTER.txt layout loads like the symlink, and a pointer
+    naming no run (a deleted run, a dot-name, ``..``) is never followed out
+    of the runs root. Raises ``FileNotFoundError`` when no run holds it."""
+    run_id = NNRun.best_id(root)
+    if run_id is None:
+        best_path = os.path.join(_runs_root(root), _BEST_POINTER)
+        raise FileNotFoundError(errno.ENOENT, "no saved run holds the runs/best pointer", best_path)
+    return _validate_run_id(run_id)
 
 
 def _best_err(checkpoint: Optional[NNCheckpoint]) -> float:
@@ -1160,7 +1174,12 @@ class NNRun:
         way records past the LAST checkpoint's epoch are left out. A run
         interrupted before its first commit (no LAST, no ``idps.csv``) loads
         with an empty history; a committed or legacy run without
-        ``idps.csv`` raises ``ValueError`` naming the file."""
+        ``idps.csv`` raises ``ValueError`` naming the file.
+
+        ``id="best"`` loads the run `NNRun.best_id` names, in the symlink
+        and the ``best/POINTER.txt`` layout alike, and raises
+        ``FileNotFoundError`` when no run holds the pointer, as for an
+        absent run."""
         return NNRun._load(id, root)
 
     @staticmethod
@@ -1193,6 +1212,8 @@ class NNRun:
         # md5 hex (always safe), so this is a defense-in-depth guard on
         # the public API surface.
         id = _validate_run_id(id)
+        if id == _BEST_POINTER:
+            id = _resolve_best_pointer(root)
         run_path = os.path.join(_runs_root(root), id)
         yaml_path = os.path.join(run_path, "run.yaml")
 

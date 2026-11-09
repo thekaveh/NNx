@@ -11529,6 +11529,15 @@ nnx.nn.params.nn_run.NNRun.load(id: 'str', root: 'Optional[str]' = None) -> 'NNR
 
 Load a saved run. Its history is ``idps.csv`` read whole — or, for a run with a history journal, the journal's committed tail: the last ``retention`` records, from the chunks that hold them. Either way records past the LAST checkpoint's epoch are left out. A run interrupted before its first commit (no LAST, no ``idps.csv``) loads with an empty history; a committed or legacy run without ``idps.csv`` raises ``ValueError`` naming the file.
 
+**Details**
+
+```text
+``id="best"`` loads the run `NNRun.best_id` names, in the symlink
+and the ``best/POINTER.txt`` layout alike, and raises
+``FileNotFoundError`` when no run holds the pointer, as for an
+absent run.
+```
+
 ##### `nnx.nn.params.nn_run.NNRun.best_id`
 
 ```python
@@ -11812,7 +11821,7 @@ arbitrary-code path.
 nnx.nn.params.nn_checkpoint.NNCheckpoint.load(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, map_location: 'Any' = 'cpu') -> 'Optional[NNCheckpoint]'
 ```
 
-No public description is currently available.
+Load run ``run``'s ``type`` checkpoint, or ``None`` when it is absent. ``run="best"`` reads the run `NNRun.best_id` names, in the symlink and the ``best/POINTER.txt`` layout alike, and returns ``None`` when no run holds the pointer.
 
 
 #### `nnx.nn.params.nn_checkpoint.ResumePointError`

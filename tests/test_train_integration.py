@@ -1898,8 +1898,8 @@ def test_best_re_elected_after_best_overwrite(tmp_path, monkeypatch, best_pointe
 def test_best_id_reads_the_best_pointer_in_both_layouts(tmp_path, monkeypatch, best_pointer_mode):
     """#570: `NNRun.best_id` is the public read of `runs/best`, for the
     symlink and for the POINTER.txt directory written where symlinks fail
-    (Windows without developer mode), which `NNRun.load("best")` cannot
-    open. No pointer, or one naming a deleted run, reads as None."""
+    (Windows without developer mode). No pointer, or one naming a deleted
+    run, reads as None."""
     import shutil
 
     monkeypatch.chdir(tmp_path)
@@ -1942,6 +1942,71 @@ def test_best_id_reads_a_pointer_naming_no_run_as_none(tmp_path, layout, target)
         best.mkdir()
         (best / "POINTER.txt").write_text(target, encoding="utf-8")
     assert NNRun.best_id(root=str(tmp_path)) is None
+
+
+def test_load_best_follows_the_best_pointer_in_both_layouts(tmp_path, monkeypatch, best_pointer_mode):
+    """`NNRun.load("best")` and `NNCheckpoint.load(run="best")` load the run
+    `NNRun.best_id` names, through the symlink and through the POINTER.txt
+    directory written where symlinks fail (Windows without developer mode),
+    with and without `root=`."""
+    monkeypatch.chdir(tmp_path)
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    a = _completed_run(model, "A", 0.1)
+    b = _completed_run(model, "B", 0.2)
+    assert (tmp_path / "runs" / "best" / "POINTER.txt").is_file() == (best_pointer_mode == "pointer_file")
+
+    for root in (None, str(tmp_path)):
+        assert NNRun.load("best", root=root).id == NNRun.best_id(root) == a.id
+        checkpoint = NNCheckpoint.load(run="best", type=Checkpoints.BEST, root=root)
+        assert checkpoint is not None and checkpoint.idp.train_edp.error == 0.1
+
+    with a.writable_lease(overwrite=True):
+        _completed_run(model, "A", 0.9)
+    assert NNRun.load("best").id == b.id
+    assert NNCheckpoint.load(run="best", type=Checkpoints.LAST).idp.train_edp.error == 0.2
+
+
+@pytest.mark.parametrize("layout", ["absent", "symlink", "pointer_file"])
+@pytest.mark.parametrize("target", ["..", ".", "best", ".leases", "notarun", "deleted"])
+def test_load_best_refuses_a_pointer_naming_no_run(tmp_path, layout, target):
+    """With no `runs/best`, or one naming no run (a deleted run, a dot-name,
+    `..`, the pointer itself, a directory without `run.yaml`),
+    `NNRun.load("best")` raises `FileNotFoundError` and
+    `NNCheckpoint.load(run="best")` returns None, as for any absent run. A
+    symlink to `..` used to be followed out of the runs root, to the
+    `run.yaml` and `checkpoints/` beside `runs/`."""
+    from nnx import NNEvaluationDataPoint, NNIterationDataPoint
+
+    if layout == "absent" and target != "..":
+        pytest.skip("one absent-pointer case is enough")
+    if layout == "symlink" and not hasattr(os, "symlink"):
+        pytest.skip("symlinks unavailable")
+    net_params, model_params = _make_params()
+    model = NNModel(net_params=net_params, params=model_params)
+    runs = tmp_path / "runs"
+    (runs / ".leases").mkdir(parents=True)
+    (runs / "notarun").mkdir()
+    # What a pointer to ".." reached: a run.yaml and a BEST beside runs/.
+    (tmp_path / "run.yaml").write_text("not: a run\n", encoding="utf-8")
+    edp = NNEvaluationDataPoint(f1=0.0, recall=0.0, accuracy=0.0, precision=0.0, loss=1.0, error=0.5)
+    NNCheckpoint(
+        net_params=model.net_params,
+        model_params=model.params,
+        net_state=model.net.state_dict(),
+        idp=NNIterationDataPoint(lr=0.01, iter_idx=0, epoch_idx=0, batch_idx=0, train_edp=edp),
+    ).save(run="outside", type=Checkpoints.BEST, root=str(tmp_path / "scratch"))
+    os.replace(tmp_path / "scratch" / "runs" / "outside" / "checkpoints", tmp_path / "checkpoints")
+    best = runs / "best"
+    if layout == "symlink":
+        os.symlink(target, best, target_is_directory=True)
+    elif layout == "pointer_file":
+        best.mkdir()
+        (best / "POINTER.txt").write_text(target, encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="runs/best"):
+        NNRun.load("best", root=str(tmp_path))
+    assert NNCheckpoint.load(run="best", type=Checkpoints.BEST, root=str(tmp_path)) is None
 
 
 @pytest.mark.parametrize(
