@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ import torch
 
 from nnx import NNTrainParams
 from nnx.distributed import RankPartition
+from tests._process_group import alive_with, run_group
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -43,7 +45,7 @@ def launch(
     command = [sys.executable, "-m", "torch.distributed.run", *_single_node_flags(env), f"--nproc_per_node={nproc}"]
     command += [str(ROOT / "tests" / "ddp_scenarios.py"), scenario, str(out)]
     try:
-        completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=timeout)
+        completed = run_group(command, env=env, timeout=timeout)  # a timeout ends every rank too
     except subprocess.TimeoutExpired as expired:  # say where it hung
         raise AssertionError(
             f"torchrun {scenario} timed out after {timeout:.0f} s:\n{_text(expired.stdout)[-4000:]}\n"
@@ -823,8 +825,6 @@ def test_shutdown_is_bounded_when_a_rank_never_arrives(tmp_path):
     queued, so it leaves cleanly; once rank 0's process has exited (torch
     2.14), the late rank's shutdown raises within its own timeout. Either way
     the launch neither hangs nor aborts."""
-    import time
-
     out = tmp_path / "shutdown-missing"
     start = time.monotonic()
     completed = launch("shutdown_missing", out, check=False, timeout=120)
@@ -839,6 +839,28 @@ def test_shutdown_is_bounded_when_a_rank_never_arrives(tmp_path):
     else:
         assert late["error"].startswith("RuntimeError: ") and "teardown barrier within 3s" in late["error"], late
         assert late["initialized_after"] is True
+
+
+@pytest.mark.parametrize("failure", ["fetch", "stall"])
+def test_a_group_left_by_a_failed_fit_is_destroyed_before_the_interpreter_finalizes(failure, tmp_path, monkeypatch):
+    """Rank 1's first fetch fails, at once or once rank 0's first step has
+    timed out; each rank catches the error and returns without shutdown().
+    NNx's exit hook destroys the Gloo group before the interpreter
+    finalizes, and nothing holds it after (DDP's import of
+    torch.distributed.nn did, so its worker threads outlived the destroy):
+    a worker thread that releases a failed collective's tensors during
+    finalization calls std::terminate (exit -6, "terminate called without
+    an active exception"; seen on Linux under load, not on macOS)."""
+    monkeypatch.setenv("NNX_DDP_FAILURE", failure)
+    monkeypatch.setenv("NNX_DDP_TIMEOUT", "15")
+    out = tmp_path / f"rank-fails-{failure}"
+    completed = launch("rank_fails_mid_fit", out, check=False, timeout=120)
+    assert completed.returncode == 0 and "terminate called" not in completed.stderr, completed.stderr[-4000:]
+    waiting, failing = results(out)
+    assert failing["error"].startswith("OSError: cannot read sample"), failing
+    assert waiting["error"] is not None and "OSError" not in waiting["error"], waiting
+    for rank in range(2):
+        assert (out / f"exit-rank{rank}.txt").read_text(encoding="utf-8") == "destroyed"
 
 
 def test_single_process_entry_points_refuse_a_multi_rank_group(tmp_path):
@@ -886,6 +908,9 @@ def test_a_hung_scenario_reports_where_each_rank_was(tmp_path, monkeypatch):
     assert "timed out after 30 s" in message and "rank stacks:" in message
     assert "_parked_for_diagnostics" in message  # the parked rank's own frame
     assert message.count("joined the group: parked") == 2  # each rank's last phase
+    # The timeout ended torchrun and the ranks it started in sessions of their
+    # own: none outlives the test, reparented to init and still parked.
+    assert alive_with(str(tmp_path / "parked")) == []
 
 
 def test_a_batch_one_rank_cannot_score_stops_every_rank(tmp_path):

@@ -349,6 +349,16 @@ def test_external_contract_tool_versions_match_automation_sources():
     # input of every setup-uv step.
 
 
+def test_pinned_uv_includes_the_ca_store_fix():
+    """GHSA-hq85-5cpj-mr62: uv before 0.13.4 bundles a CA store that trusts an
+    emSign root whose intermediate keys are compromised. Automation installs
+    the uv that requirements-tools.txt pins (the ledger and every setup-uv
+    input are held to it), so that pin must carry the fix."""
+    requirements = (build_docs.ROOT / "requirements-tools.txt").read_text(encoding="utf-8")
+    (uv,) = (line.split("==", 1)[1].strip() for line in requirements.splitlines() if line.startswith("uv=="))
+    assert tuple(int(part) for part in uv.split(".")) >= (0, 13, 4), uv
+
+
 def _dependabot_groups(ecosystem: str) -> dict:
     config = yaml.safe_load((build_docs.ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
     (update,) = (update for update in config["updates"] if update["package-ecosystem"] == ecosystem)

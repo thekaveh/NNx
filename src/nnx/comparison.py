@@ -1048,10 +1048,11 @@ def _resume_mode(run_path: str, run_id: str) -> Optional[str]:
 def _resolvable(run_id: str, root: Optional[str]) -> bool:
     """Whether ``run_id`` names a run directory (not an alias, a malformed id
     or a deleted run). A directory whose files cannot be read is resolvable:
-    reading it then raises."""
-    from .nn.params.nn_run import _runs_root, _validate_run_id
+    reading it then raises. A recorded ``"BEST"`` the filesystem opens as
+    ``runs/best`` is the alias (``nn_run._addresses_best_pointer``)."""
+    from .nn.params.nn_run import _addresses_best_pointer, _runs_root, _validate_run_id
 
-    if run_id in ALIASES:
+    if run_id in ALIASES or _addresses_best_pointer(run_id, root):
         return False
     try:
         path = os.path.join(_runs_root(root), _validate_run_id(run_id))
@@ -1407,6 +1408,24 @@ def _cached_provenance(files: dict[Any, Any], run_id: str, root: Optional[str]) 
     return files[key]
 
 
+def _observed_run_id(run_id: str, root: Optional[str]) -> str:
+    """The run ``observations_from_runs`` reads for ``run_id``: itself, or
+    the run the ``runs/best`` pointer names, resolved once per run id, so
+    its ``run.yaml``, history and provenance are one run's. A missing
+    pointer is refused as a missing run is."""
+    from .nn.params.nn_run import _resolve_run_id
+
+    try:
+        resolved = _resolve_run_id(run_id, root)
+    except (TypeError, ValueError) as error:
+        raise ComparisonError(f"not a run id: {run_id!r} ({error})") from error
+    except OSError as error:
+        raise ComparisonError(f"run {run_id}: run.yaml is missing or unreadable: {error}") from error
+    if resolved is None:
+        raise ComparisonError(f"run {run_id}: run.yaml is missing or unreadable: no saved run holds the pointer")
+    return resolved
+
+
 def _read_run_state(run_id: str, root: Optional[str]) -> tuple[Mapping[str, Any], str]:
     """A run's ``run.yaml`` and its directory."""
     import yaml
@@ -1560,7 +1579,11 @@ def observations_from_runs(
     is never read. A legacy run (no commit marker) keeps its value,
     but its status is unknown, so it is never counted in a group's ``n``.
     A NaN metric is read back as missing: ``idps.csv`` writes NaN as an
-    empty cell.
+    empty cell. A run id ``"best"`` (or a case variant the filesystem opens
+    as ``runs/best``) reads the run the ``runs/best`` pointer names, in the
+    symlink and the ``best/POINTER.txt`` layout alike, observed under that
+    run's own id; when no run holds the pointer it is refused as a missing
+    run.
     """
     if not isinstance(metric, Metric):
         raise ComparisonError(f"metric must be a Metric, got {type(metric).__name__}")
@@ -1587,7 +1610,8 @@ def observations_from_runs(
     observations = []
     identities: dict[str, tuple[str, int]] = {}  # run id -> (identity with its parents', ancestor count)
     files: dict[Any, Any] = {}  # every run.yaml / provenance read in this call, read once
-    for run_id in run_ids:
+    for given in run_ids:
+        run_id = _observed_run_id(given, root)
         run_state, idps, recorded, provenance, committed, known, run_path = _read_run(run_id, root, files)
         source = "history journal" if has_journal(run_path) else "idps.csv"
         attempt = None if provenance is None else provenance.attempt
@@ -1670,7 +1694,7 @@ def observations_from_runs(
                 split=split,
                 selection=rule,
                 config=(
-                    config[run_id]
+                    config[given]
                     if config is not None
                     else _run_identity(run_id, root, identities, known=(run_state, run_path), provenances=files)
                 ),

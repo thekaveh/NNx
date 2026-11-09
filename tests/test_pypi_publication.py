@@ -32,6 +32,7 @@ import urllib.error
 import urllib.request
 
 import pytest
+import yaml
 
 import nnx
 from tests._repo_files import repo_file
@@ -161,6 +162,15 @@ def test_pre_commit_ruff_version_matches_frozen_ci_version():
     )
     assert match is not None
     assert match.group(1) == ruff_packages[0]["version"]
+
+
+def test_pre_commit_ruff_hooks_touch_python_files_only_as_ci_does():
+    config = yaml.safe_load(repo_file(*_PRE_COMMIT_CONFIG).read_text(encoding="utf-8"))
+    (ruff_repo,) = [repo for repo in config["repos"] if repo["repo"].endswith("/ruff-pre-commit")]
+    assert {hook["id"]: hook.get("types_or") for hook in ruff_repo["hooks"]} == {
+        "ruff": ["python", "pyi"],
+        "ruff-format": ["python", "pyi"],
+    }
 
 
 def test_package_uses_fresh_absolute_link_pypi_readme():

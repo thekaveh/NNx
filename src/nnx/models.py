@@ -46,6 +46,7 @@ from typing import Any, Optional, cast
 import torch
 from torch import nn
 from torch.nn.modules.lazy import LazyModuleMixin
+from torch.nn.modules.module import register_module_module_registration_hook
 
 from ._config import _SLUG, _freeze_config, _thaw_config
 from ._validation import plain_str, require_count
@@ -308,11 +309,65 @@ def _fingerprint(tensors: Mapping[str, torch.Tensor], shapes: Mapping[str, Any],
 def _pending_lazy_modules(module: nn.Module) -> list[tuple[str, nn.Module]]:
     """The lazy submodules still waiting for their first forward: torch
     removes their initialization hook when they materialize."""
-    return [
-        (name, cast(nn.Module, sub))
-        for name, sub in module.named_modules()
-        if isinstance(sub, LazyModuleMixin) and hasattr(sub, "_initialize_hook")
-    ]
+    return [(name, cast(nn.Module, sub)) for name, sub in module.named_modules() if _is_pending_lazy(sub)]
+
+
+def _is_pending_lazy(sub: nn.Module) -> bool:
+    """Whether ``sub`` is a lazy layer still waiting for its first forward."""
+    return isinstance(sub, LazyModuleMixin) and hasattr(sub, "_initialize_hook")
+
+
+def _submodule_at(module: nn.Module, name: str) -> Optional[nn.Module]:
+    """The submodule of ``module`` that ``named_modules`` names ``name``
+    (``""``: ``module`` itself), looked up along that path only: ``None``
+    when no module is there."""
+    found: Optional[nn.Module] = module
+    for atom in name.split(".") if name else ():
+        found = None if found is None else found._modules.get(atom)
+    return found
+
+
+# _module_registrations' stamp: a token of this process's own (a stamp copied
+# or unpickled with a model never equals one taken here) and the count. Then
+# whether a registration was made while tracing, and the hook, once installed.
+_REGISTRATIONS: list[Any] = [object(), 0, False]
+_REGISTRATION_HOOK: list[Any] = []
+
+
+def _count_registration(parent: nn.Module, name: str, sub: Optional[nn.Module]) -> None:
+    # While dynamo or export traces, a constant store only: reading the count
+    # there would make a compiled forward that builds a container (slicing a
+    # ModuleList, say) guard on it and recompile at every call. The registration
+    # may still land on the real module, so _module_registrations counts it at
+    # its next call. Out of tracing, only a registration that brings a pending
+    # lazy layer counts: any other can add none. A plain increment under the
+    # GIL: the stamp only has to change.
+    if torch.compiler.is_compiling():
+        _REGISTRATIONS[2] = True
+        return
+    try:
+        brings = sub is not None and any(_is_pending_lazy(m) for m in sub.modules())
+    except Exception:  # a hook on every registration in the process never raises; count when unsure
+        brings = True
+    if brings:
+        _REGISTRATIONS[1] += 1
+
+
+def _module_registrations() -> tuple[object, int]:
+    """A stamp that changes at every submodule registration in this
+    process that brings a pending lazy layer (``setattr``, ``add_module`` /
+    ``register_module`` and the containers' ``__setitem__`` / ``append`` of
+    a module whose subtree holds one), and after any registration made
+    while ``torch.compile`` or ``torch.export`` traced. Torch's global
+    module registration hook counts them, installed at the first call; it
+    returns ``None``, so it changes no module. A write straight into
+    ``_modules`` (``insert``, hand-written code) leaves the stamp as it was."""
+    if not _REGISTRATION_HOOK:
+        _REGISTRATION_HOOK.append(register_module_module_registration_hook(_count_registration))
+    if _REGISTRATIONS[2]:
+        _REGISTRATIONS[2] = False
+        _REGISTRATIONS[1] += 1
+    return (_REGISTRATIONS[0], _REGISTRATIONS[1])
 
 
 def _has_pending_lazy(module: nn.Module) -> bool:
