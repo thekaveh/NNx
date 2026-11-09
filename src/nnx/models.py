@@ -308,11 +308,22 @@ def _fingerprint(tensors: Mapping[str, torch.Tensor], shapes: Mapping[str, Any],
 def _pending_lazy_modules(module: nn.Module) -> list[tuple[str, nn.Module]]:
     """The lazy submodules still waiting for their first forward: torch
     removes their initialization hook when they materialize."""
-    return [
-        (name, cast(nn.Module, sub))
-        for name, sub in module.named_modules()
-        if isinstance(sub, LazyModuleMixin) and hasattr(sub, "_initialize_hook")
-    ]
+    return [(name, cast(nn.Module, sub)) for name, sub in module.named_modules() if _is_pending_lazy(sub)]
+
+
+def _is_pending_lazy(sub: nn.Module) -> bool:
+    """Whether ``sub`` is a lazy layer still waiting for its first forward."""
+    return isinstance(sub, LazyModuleMixin) and hasattr(sub, "_initialize_hook")
+
+
+def _submodule_at(module: nn.Module, name: str) -> Optional[nn.Module]:
+    """The submodule of ``module`` that ``named_modules`` names ``name``
+    (``""``: ``module`` itself), looked up along that path only: ``None``
+    when no module is there."""
+    found: Optional[nn.Module] = module
+    for atom in name.split(".") if name else ():
+        found = None if found is None else found._modules.get(atom)
+    return found
 
 
 def _has_pending_lazy(module: nn.Module) -> bool:

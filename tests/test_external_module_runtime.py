@@ -1008,6 +1008,93 @@ def test_a_replaced_lazy_conv_loaded_after_the_wrap_reloads_into_fresh_instances
     np.testing.assert_allclose(reloaded.predict(X).logits, model.predict(X).logits, rtol=1e-6, atol=1e-6)
 
 
+class _Deep(nn.Module):
+    """``depth`` dense layers on the forward path, a lazy head, and a lazy
+    layer the forward reaches only once ``reach`` is set."""
+
+    def __init__(self, depth: int) -> None:
+        super().__init__()
+        self.body = nn.Sequential(*(nn.Linear(4, 4) for _ in range(depth)))
+        self.out = nn.LazyLinear(2)
+        self.unused = nn.LazyLinear(3)
+        self.reach = False
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.body(x)
+        return self.out(h) + self.unused(h)[:, :2] if self.reach else self.out(h)
+
+
+@pytest.mark.parametrize("depth", [2, 200])
+def test_a_params_read_with_a_lazy_layer_the_forward_never_reaches_visits_no_module(monkeypatch, depth):
+    """While a lazy layer stays pending, a params read checks only the lazy
+    layers NNx saw, at their places: its work does not grow with the module."""
+    model = NNModel(module=_Deep(depth), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    wrap_time = model.params.net
+    model.predict(torch.randn(3, 4))
+    visits = [0]
+    named_modules = nn.Module.named_modules
+
+    def counted(self, *args, **kwargs):
+        for item in named_modules(self, *args, **kwargs):
+            visits[0] += 1
+            yield item
+
+    monkeypatch.setattr(nn.Module, "named_modules", counted)
+    for _ in range(50):
+        assert model.params.net == wrap_time
+    assert visits[0] == 0
+
+
+def test_a_lazy_layer_reached_after_reads_that_skipped_the_walk_refreshes_the_descriptor():
+    model = NNModel(module=_Deep(2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    wrap_time = model.params.net
+    model.predict(torch.randn(3, 4))
+    assert model.params.net == wrap_time
+    model.net.reach = True
+    model.predict(torch.randn(3, 4))
+    assert model.params.net == RuntimeModule.of(model.net) != wrap_time
+
+
+def test_a_pending_lazy_layer_replaced_after_reads_that_skipped_the_walk_is_seen():
+    """A layer put in place of a lazy layer NNx saw pending is seen at the
+    next read, as a walk of the module sees it."""
+    model = NNModel(module=_Deep(2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    wrap_time = model.params.net
+    model.predict(torch.randn(3, 4))
+    assert model.params.net == wrap_time  # `unused` stays pending
+    model.net.unused = nn.Linear(4, 3)  # the same state keys, and nothing pending now
+    assert model.params.net == RuntimeModule.of(model.net) != wrap_time
+
+
+def test_a_loaded_lazy_conv_put_in_place_of_a_materialized_one_is_settled():
+    """A lazy layer re-created where one had materialized, after a walk that
+    found other layers pending, is still seen and settled (#562)."""
+
+    class Net(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.conv, self.flat = nn.LazyConv1d(4, 3), nn.Flatten()
+            self.head, self.extra = nn.LazyLinear(2), nn.LazyLinear(2)
+            self.reach = False
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            h = self.flat(self.conv(x))
+            return self.head(h) + self.extra(h) if self.reach else self.head(h)
+
+    model = NNModel(module=Net(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    X = torch.randn(3, 2, 6)
+    model.predict(X)  # conv and head materialize; extra stays pending
+    model.net.head = nn.Linear(16, 2)  # the same state keys: the next read walks the module
+    assert model.params.net is not None
+    model.net.conv = nn.LazyConv1d(4, 3)  # where a materialized lazy layer was
+    model.net.conv.load_state_dict({"weight": torch.randn(4, 2, 3), "bias": torch.zeros(4)})
+    assert model.params.net is not None  # a read before its first forward
+    model.net.reach = True
+    model.predict(X)  # torch's forward on loaded weights leaves in_channels at 0
+    assert model.net.conv.in_channels == 2  # settled as a dry run sets it
+    assert model.params.net == RuntimeModule.of(model.net)
+
+
 def test_the_wrap_adds_no_hook_to_a_lazy_module():
     """Nothing of NNx is put on a caller's module (#562): it scripts, compiles
     and pickles as torch alone leaves it."""
