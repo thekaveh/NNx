@@ -213,6 +213,24 @@ def test_a_graph_break_is_partial_capture_but_fullgraph_rejects_it():
     _assert_same_weights(_feed_fwd(), strict)
 
 
+def test_a_lazy_model_in_the_process_adds_no_guard_or_recompile_to_a_compiled_fit():
+    """Wrapping a pending lazy module installs NNx's process-wide count of
+    module registrations. A compiled forward that builds a container
+    (FeedFwd slices its ModuleList) traces past it: no guard on the count,
+    so no recompile at each call."""
+    from nnx.models import _REGISTRATION_HOOK
+
+    lazy = NNModel(module=torch.nn.Sequential(torch.nn.LazyLinear(3)), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    assert lazy.params.net is not None and _REGISTRATION_HOOK
+    generator = torch.Generator().manual_seed(0)
+    batches = [
+        (torch.randn(8, 4, generator=generator), torch.randint(0, 3, (8,), generator=generator)) for _ in range(4)
+    ]
+    spec = CompileSpec(backend="aot_eager", fullgraph=True)
+    run = _feed_fwd().train(params=_params(batches, n_epochs=3), compile=spec)
+    assert run.compile.effective == "compiled" and run.compile.capture == "full" and run.compile.graph_breaks == 0
+
+
 def test_restart_eager_reruns_only_the_forward_and_records_it():
     eager, restarted = _feed_fwd(), _feed_fwd()
     _break_graph(restarted)

@@ -5076,6 +5076,17 @@ nnx.distributed.init_process_group(backend: 'Optional[str]' = None, *, timeout_s
 
 Join the process group ``torchrun`` described in the environment (``env://``) and return ``(rank, world_size)``. ``backend`` defaults to ``nccl`` when CUDA is available, else ``gloo``; ``timeout_seconds`` bounds every collective, so a rank that dies cannot hang the others forever (at most ``3e9`` s, about 95 years: torch's nanosecond deadlines hold no more on every platform). Under ``nccl`` each process takes ``cuda:LOCAL_RANK`` (``torch.cuda.set_device``); any other backend selects no device, so a CUDA model under ``gloo`` needs ``torch.cuda.set_device(local_rank)`` before it is built (otherwise every rank's model sits on ``cuda:0``).
 
+**Details**
+
+```text
+The Gloo default group still initialized when the interpreter exits, in
+a process that called this function (a failed ``train()`` or :func:`shutdown` left it) is destroyed
+then, before the interpreter finalizes: exit waits for a collective
+still in flight (until the missing rank arrives or the group's timeout
+expires) instead of the process aborting with ``std::terminate``
+(exit -6).
+```
+
 
 #### `nnx.distributed.shutdown`
 
@@ -5099,7 +5110,9 @@ while the process lives: a rank arriving then completes against it. Up to
 torch 2.13 the process also waits at exit until the missing rank arrives
 or the group's own timeout (``init_process_group(timeout_seconds=...)``)
 expires; from torch 2.14 it exits at once, so a rank arriving after that
-raises in its own call within its timeout. With NCCL, older torch
+raises in its own call within its timeout. The Gloo default group of a
+process that called :func:`init_process_group` is destroyed at exit,
+before the interpreter finalizes. With NCCL, older torch
 releases ignore ``timeout_seconds`` unless ``TORCH_NCCL_BLOCKING_WAIT=1``
 is set, so the wait is bounded by the group's timeout instead. Without a
 process group, or after a successful call, it does nothing; after a
@@ -5704,7 +5717,7 @@ A run's provenance: the declared manifest, its fingerprint and the attempt that 
 nnx.provenance.load_provenance(run_id: 'str', root: 'Optional[str]' = None) -> 'Optional[ProvenanceRecord]'
 ```
 
-Read a run's provenance files; ``None`` when it has none (absent). Raises ``ValueError`` for an unsupported format, a fingerprint that does not match its manifest, or JSON nested too deeply to read; a malformed entry (a missing key, a non-object entry) raises ``KeyError`` or ``TypeError``.
+Read a run's provenance files; ``None`` when it has none (absent). Raises ``ValueError`` for an unsupported format, a fingerprint that does not match its manifest, or JSON nested too deeply to read; a malformed entry (a missing key, a non-object entry) raises ``KeyError`` or ``TypeError``. ``run_id="best"`` (or a case variant the filesystem opens as ``runs/best``) reads the run the ``runs/best`` pointer names, in the symlink and the ``best/POINTER.txt`` layout alike; ``None`` when no run holds it.
 
 
 #### `nnx.provenance.compare`
@@ -9157,7 +9170,11 @@ only up to it — not at all while it is unknown, so an uncommitted tail
 is never read. A legacy run (no commit marker) keeps its value,
 but its status is unknown, so it is never counted in a group's ``n``.
 A NaN metric is read back as missing: ``idps.csv`` writes NaN as an
-empty cell.
+empty cell. A run id ``"best"`` (or a case variant the filesystem opens
+as ``runs/best``) reads the run the ``runs/best`` pointer names, in the
+symlink and the ``best/POINTER.txt`` layout alike, observed under that
+run's own id; when no run holds the pointer it is refused as a missing
+run.
 ```
 
 
@@ -11529,6 +11546,16 @@ nnx.nn.params.nn_run.NNRun.load(id: 'str', root: 'Optional[str]' = None) -> 'NNR
 
 Load a saved run. Its history is ``idps.csv`` read whole — or, for a run with a history journal, the journal's committed tail: the last ``retention`` records, from the chunks that hold them. Either way records past the LAST checkpoint's epoch are left out. A run interrupted before its first commit (no LAST, no ``idps.csv``) loads with an empty history; a committed or legacy run without ``idps.csv`` raises ``ValueError`` naming the file.
 
+**Details**
+
+```text
+``id="best"`` (or a case variant the filesystem opens as
+``runs/best``) loads the run `NNRun.best_id` names, in the symlink
+and the ``best/POINTER.txt`` layout alike, and raises
+``FileNotFoundError`` when no run holds the pointer, as for an
+absent run.
+```
+
 ##### `nnx.nn.params.nn_run.NNRun.best_id`
 
 ```python
@@ -11696,7 +11723,7 @@ between replacements leaves the previous generation resumable.
 nnx.nn.params.nn_checkpoint.NNCheckpoint.resume_point(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None) -> 'Optional[dict[str, Any]]'
 ```
 
-The manifest stamping this checkpoint's resume point — ``generation``, ``checkpoint_id``, ``completed_epoch``, ``global_step``, ``committed_updates``, ``planned_n_epochs`` and the ``files`` with their SHA-256 — or ``None`` for a checkpoint without a manifest. Read as is: after an interrupted publish the live manifest may name the previous checkpoint while a staged one describes the published files — `verify` checks both and returns the one that matches.
+The manifest stamping this checkpoint's resume point — ``generation``, ``checkpoint_id``, ``completed_epoch``, ``global_step``, ``committed_updates``, ``planned_n_epochs`` and the ``files`` with their SHA-256 — or ``None`` for a checkpoint without a manifest. Read as is: after an interrupted publish the live manifest may name the previous checkpoint while a staged one describes the published files — `verify` checks both and returns the one that matches. ``run="best"`` reads the run the ``runs/best`` pointer names (``None`` when no run holds it), as `load` does.
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.verify`
 
@@ -11704,7 +11731,7 @@ The manifest stamping this checkpoint's resume point — ``generation``, ``check
 nnx.nn.params.nn_checkpoint.NNCheckpoint.verify(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None) -> 'Optional[dict[str, Any]]'
 ```
 
-Check a resume point before anything is restored from it and return its manifest (``None`` for a checkpoint without one, which loads as before). Raises `ResumePointError` naming the reason: a listed file missing or a manifest naming another checkpoint (*torn*), files of different generations (*mixed*), or a file whose SHA-256 differs (*digest mismatch*). Every listed file is hashed; only the matching training-state sidecar is deserialized, with ``torch.load(weights_only=True)``, to compare its generation; no checkpoint data is written (only the checkpoint's lock file is taken, created when missing): a point whose writer stopped between publishing the checkpoint and its live manifest is recognized by its staged manifest — every digest matching — and that manifest is returned (the writer's next save makes it live).
+Check a resume point before anything is restored from it and return its manifest (``None`` for a checkpoint without one, which loads as before). Raises `ResumePointError` naming the reason: a listed file missing or a manifest naming another checkpoint (*torn*), files of different generations (*mixed*), or a file whose SHA-256 differs (*digest mismatch*). Every listed file is hashed; only the matching training-state sidecar is deserialized, with ``torch.load(weights_only=True)``, to compare its generation; no checkpoint data is written (only the checkpoint's lock file is taken, created when missing): a point whose writer stopped between publishing the checkpoint and its live manifest is recognized by its staged manifest — every digest matching — and that manifest is returned (the writer's next save makes it live). ``run="best"`` checks the run the ``runs/best`` pointer names (``None`` when no run holds it), as `load` does.
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.load_training_state`
 
@@ -11722,6 +11749,8 @@ checkpoints written by older NNx versions remain resumable.
 
 Returns ``None`` — without creating ``runs/<run>/`` — when the run
 directory does not exist; the run ID is still validated first.
+``run="best"`` reads the run the ``runs/best`` pointer names
+(``None`` when no run holds it), as :meth:`load` does.
 ```
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.load_with_training_state`
@@ -11737,6 +11766,8 @@ Atomically load a checkpoint and its matching training-state bundle.
 ```text
 Returns ``(None, None)`` — without creating ``runs/<run>/`` — when
 the run directory does not exist; the run ID is still validated.
+``run="best"`` reads the run the ``runs/best`` pointer names
+(``(None, None)`` when no run holds it), as :meth:`load` does.
 ```
 
 ##### `nnx.nn.params.nn_checkpoint.NNCheckpoint.load_optimizer_state`
@@ -11745,7 +11776,7 @@ the run directory does not exist; the run ID is still validated.
 nnx.nn.params.nn_checkpoint.NNCheckpoint.load_optimizer_state(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None) -> 'Optional[dict[str, Any]]'
 ```
 
-Load the optimizer state sidecar for a checkpoint. Returns None when no sidecar exists (e.g., checkpoints written without resume support).
+Load the optimizer state sidecar for a checkpoint. Returns None when no sidecar exists (e.g., checkpoints written without resume support), or when ``run="best"`` and no run holds the ``runs/best`` pointer.
 
 **Details**
 
@@ -11812,7 +11843,7 @@ arbitrary-code path.
 nnx.nn.params.nn_checkpoint.NNCheckpoint.load(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, map_location: 'Any' = 'cpu') -> 'Optional[NNCheckpoint]'
 ```
 
-No public description is currently available.
+Load run ``run``'s ``type`` checkpoint, or ``None`` when it is absent. ``run="best"`` (or a case variant the filesystem opens as ``runs/best``) reads the run `NNRun.best_id` names, in the symlink and the ``best/POINTER.txt`` layout alike, and returns ``None`` when no run holds the pointer.
 
 
 #### `nnx.nn.params.nn_checkpoint.ResumePointError`
@@ -12087,6 +12118,11 @@ holding the parent's id. Lineage follows resumes: a run that started
 fresh (a born-again generation naming its teacher's run as
 ``parent_run_id``, say) starts its own epochs, and its lineage is its
 own history.
+
+``run_id="best"`` (or a case variant the filesystem opens as
+``runs/best``) streams the run the ``runs/best`` pointer names, in the
+symlink and the ``best/POINTER.txt`` layout alike, and raises
+``ValueError`` when no run holds it, as for an absent run.
 ```
 
 

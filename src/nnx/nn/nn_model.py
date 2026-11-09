@@ -58,12 +58,15 @@ from ..models import (
     _dry_run_materialization,
     _finish_materialization,
     _has_pending_lazy,
+    _is_pending_lazy,
     _lazy_layers_emulable,
     _materialized_class_name,
     _materialized_topology,
+    _module_registrations,
     _pending_lazy_modules,
     _same_class_once_materialized,
     _settle_loaded_lazy_layers,
+    _submodule_at,
     _unmaterialized_topology,
     _UnpackBatch,
     build_module,
@@ -111,8 +114,10 @@ from .params.nn_params import NNParams
 from .params.nn_run import (
     NNRun,
     _best_err,
+    _may_name_best_pointer,
     _print_run_saved,
     _recorded_attempt_token,
+    _resolve_run_id,
     _runs_root,
     _validate_run_id,
 )
@@ -354,6 +359,9 @@ class _ResumeSource:
     manifest: Optional[dict[str, Any]] = None
     # #553: the attempt the resume reads from (ResumeStatus.source_attempt_token).
     attempt: Optional[str] = None
+    # The run read: resume_from_run_id itself, or the run runs/best named
+    # (_resume_source_id). The recorded lineage keeps resume_from_run_id.
+    run_id: str = ""
 
 
 def _new_attempt_token() -> str:
@@ -370,10 +378,11 @@ _IN_MEMORY_RESUME: contextvars.ContextVar[Optional[tuple[str, str, NNCheckpoint,
     contextvars.ContextVar("nnx_in_memory_resume", default=None)
 )
 
-# Told (source run id, checkpoint) once a resume has read its source, for one
-# train() call recording an attempt: its parent is that checkpoint (#537).
-_RESUME_SOURCE_LISTENER: contextvars.ContextVar[Optional[Callable[[str, NNCheckpoint], None]]] = contextvars.ContextVar(
-    "nnx_resume_source_listener", default=None
+# Told (source run id, checkpoint, the run read) once a resume has read its
+# source, for one train() call recording an attempt: its parent is that
+# checkpoint (#537). The run read differs from the source run id for runs/best.
+_RESUME_SOURCE_LISTENER: contextvars.ContextVar[Optional[Callable[[str, NNCheckpoint, str], None]]] = (
+    contextvars.ContextVar("nnx_resume_source_listener", default=None)
 )
 
 
@@ -466,6 +475,40 @@ def _verified_resume_point(run_id: str, ckpt_type: Any, ddp: Any) -> Optional[di
     raise DistributedFailure(f"verifying the resume point failed on rank {ddp.spec.writer_rank}: {kind}: {message}")
 
 
+def _resume_source_id(run_id: str, ddp: Any) -> Optional[str]:
+    """The run a resume from ``run_id`` reads: ``run_id`` itself, or for the
+    ``runs/best`` pointer the run it names (``None`` when no run holds it),
+    resolved once, so the source attempt, the verified point, its load and
+    the recorded hyperparameters all read one run, in the symlink and the
+    ``best/POINTER.txt`` layout alike. The recorded lineage keeps
+    ``run_id``. Under DDP a run id that is ``"best"`` in some case (decided
+    from the string, alike on every rank) is resolved by the writer rank,
+    which also decides whether a case variant addresses the pointer, and
+    shares the id or its failure (``ddp.gather``), so a repoint between two
+    ranks' reads cannot split them; an invalid run id fails alike on every
+    rank, as itself."""
+    if ddp is None or not _may_name_best_pointer(_validate_run_id(run_id)):
+        return _resolve_run_id(run_id, None)
+    from ..distributed import DistributedFailure
+
+    failure: Optional[BaseException] = None
+    verdict: Any = None
+    if ddp.writer:
+        try:
+            verdict = ("resolved", _resolve_run_id(run_id, None))
+        except Exception as error:  # shared below, then raised on every rank
+            failure = error
+            verdict = ("refused", type(error).__name__, str(error))
+    verdict = ddp.gather(verdict)[ddp.spec.writer_rank]
+    if verdict[0] == "resolved":
+        return verdict[1]
+    if failure is not None:
+        raise failure
+    raise DistributedFailure(
+        f"resolving the runs/best pointer failed on rank {ddp.spec.writer_rank}: {verdict[1]}: {verdict[2]}"
+    )
+
+
 def _load_verified_resume_point(run_id: str, ckpt_type: Any, manifest: dict[str, Any], ddp: Any) -> tuple[Any, Any]:
     """Load the verified resume point (``NNCheckpoint._load_resume_point``,
     #537). Under DDP every rank loads it itself, so a republish landing
@@ -507,32 +550,39 @@ def _load_resume_source(
     and ``Trainer.train`` — and reject, before anything is mutated, a
     missing checkpoint, a transformed one without pre-transform state, and
     a bundle ``resume_mode`` cannot use. Under DDP (``ddp``, the fit's
-    session) only the writer rank verifies the point (FEAT-046)."""
+    session) only the writer rank verifies the point (FEAT-046), and
+    ``runs/best`` is resolved once (:func:`_resume_source_id`)."""
     ckpt_type = _resume_checkpoint_type(checkpoint)
     in_memory = _IN_MEMORY_RESUME.get()
     manifest: Optional[dict[str, Any]] = None
+    missing = f"resume_from_run_id={run_id!r}/{ckpt_type} not found on disk"
+    source_id = run_id
     if in_memory is not None and in_memory[:2] == (run_id, str(ckpt_type)):
         ckpt, training_state = in_memory[2], in_memory[3]
         attempt: Optional[str] = f"{_BUNDLE_ATTEMPT_PREFIX}{ckpt.training_state_id or 'unknown'}"
     else:
+        resolved = _resume_source_id(run_id, ddp)
+        if resolved is None:  # no run holds runs/best: on every rank alike
+            raise ValueError(missing)
+        source_id = resolved
         # #553: the source's attempt, read before its checkpoint: a source
         # retrained in place in between is then recorded as the earlier
         # attempt, which its lineage no longer stitches.
         try:
-            attempt = _recorded_attempt_token(os.path.join(_runs_root(), _validate_run_id(run_id)))
-        except ValueError:  # an invalid run id is refused below, as itself
+            attempt = _recorded_attempt_token(os.path.join(_runs_root(), source_id))
+        except ValueError:  # a metadata.yaml that is not UTF-8: no recorded attempt
             attempt = None
         # #394: a torn, mixed or corrupted resume point is refused here, with
         # its reason, before anything is restored from it — and #537: one
         # published again since it was verified, on every rank (the load
         # compares the verified generation in its own lock hold).
-        manifest = _verified_resume_point(run_id, cast(Any, ckpt_type), ddp)
+        manifest = _verified_resume_point(source_id, cast(Any, ckpt_type), ddp)
         if manifest is None:  # a checkpoint without a manifest loads as before
-            ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=cast(Any, ckpt_type))
+            ckpt, training_state = NNCheckpoint.load_with_training_state(run=source_id, type=cast(Any, ckpt_type))
         else:
-            ckpt, training_state = _load_verified_resume_point(run_id, cast(Any, ckpt_type), manifest, ddp)
+            ckpt, training_state = _load_verified_resume_point(source_id, cast(Any, ckpt_type), manifest, ddp)
     if ckpt is None:
-        raise ValueError(f"resume_from_run_id={run_id!r}/{ckpt_type} not found on disk")
+        raise ValueError(missing)
     resume_net_state = training_state.get("model") if training_state is not None else None
     # FEAT-016: the resuming model must carry exactly the recipe the source
     # was trained with (ids, versions, targets and config) — its weights
@@ -558,8 +608,8 @@ def _load_resume_source(
     training_state = _resume_training_state(training_state, mode, f"{run_id}/{label}", trainer=trainer)
     listener = _RESUME_SOURCE_LISTENER.get()
     if listener is not None:  # the attempt's parent is the checkpoint read here (#537)
-        listener(run_id, ckpt)
-    return _ResumeSource(ckpt, training_state, resume_net_state or ckpt.net_state, label, manifest, attempt)
+        listener(run_id, ckpt, source_id)
+    return _ResumeSource(ckpt, training_state, resume_net_state or ckpt.net_state, label, manifest, attempt, source_id)
 
 
 def _rollback_resume(
@@ -921,7 +971,7 @@ def _resume_fit(
     _check_resume_hyperparameters(
         _saved_hyperparameters(
             training_state,
-            run_id,
+            source.run_id,
             optimization.schedulers,
             trainer=optimization.named,
             default_scheduler=default_scheduler,
@@ -3638,11 +3688,16 @@ class NNModel(_HubMixinBase):
                 if _has_pending_lazy(module) and _lazy_layers_emulable(module)
                 else None
             )
-            # The lazy layers seen pending, at the wrap and at each params read
-            # until none is: the only layers the refresh settles.
-            self._lazy_layers: list[torch.nn.Module] = (
-                [layer for _, layer in _pending_lazy_modules(module)] if self._lazy_wrap_keys is not None else []
-            )
+            # The lazy layers seen pending, at the wrap and at each walk of the
+            # module until none is: the only layers the refresh settles.
+            pending = _pending_lazy_modules(module) if self._lazy_wrap_keys is not None else []
+            self._lazy_layers: list[torch.nn.Module] = [layer for _, layer in pending]
+            # Those layers by the names a walk found them at, which a params
+            # read checks instead of walking the module (_refresh_lazy_descriptor).
+            self._lazy_places: dict[str, torch.nn.Module] = dict(pending)
+            # The registration stamp after that walk: a pending lazy layer
+            # registered since (swapped in elsewhere) makes a read walk again.
+            self._lazy_stamp: Optional[tuple[object, int]] = _module_registrations() if pending else None
             # The module those keys describe: a model given another net (a
             # copy made by quantize_int8, say) keeps its descriptor.
             self._lazy_wrapped: Optional[torch.nn.Module] = module if self._lazy_wrap_keys is not None else None
@@ -3711,7 +3766,16 @@ class NNModel(_HubMixinBase):
         ``from_checkpoint``'s load of its weights), so ``params``, checkpoints
         and later runs describe the module as it now is (#562). A run already
         reserved keeps its id; nothing changes for any other module, or when
-        anything but materialization changed the module's state keys."""
+        anything but materialization changed the module's state keys.
+
+        While a lazy layer stays pending (one the forward never reaches), a
+        read checks only the lazy layers a walk of the module found, at the
+        names it found them at: one still pending there means the walk would
+        find it too. The module is walked again once none is pending, once
+        another module sits at one of those names (a layer re-created after
+        the wrap), or once a module holding a pending lazy layer was
+        registered anywhere since that walk (a lazy layer swapped in at
+        another name: _module_registrations)."""
         keys = getattr(self, "_lazy_wrap_keys", None)
         module = getattr(self, "net", None)
         if keys is None or module is None:
@@ -3721,11 +3785,26 @@ class NNModel(_HubMixinBase):
             # take afresh here.
             self._lazy_wrap_keys = None
             return
-        pending = [layer for _, layer in _pending_lazy_modules(module)]
+        # getattr: a model pickled before the places were kept walks once.
+        places: dict[str, torch.nn.Module] = getattr(self, "_lazy_places", {})
+        stamp = _module_registrations()
+        if (
+            getattr(self, "_lazy_stamp", None) == stamp
+            and any(_is_pending_lazy(layer) for layer in places.values())
+            and all(_submodule_at(module, name) is layer for name, layer in places.items())
+        ):
+            return
+        pending = _pending_lazy_modules(module)
         if pending:
             seen = getattr(self, "_lazy_layers", [])
-            seen.extend(layer for layer in pending if all(layer is not other for other in seen))
+            seen.extend(layer for _, layer in pending if all(layer is not other for other in seen))
             self._lazy_layers = seen
+            # The places still holding their layer, materialized ones
+            # included, so a layer put in place of one is seen; then the
+            # pending ones found now.
+            kept = {name: layer for name, layer in places.items() if _submodule_at(module, name) is layer}
+            self._lazy_places = {**kept, **dict(pending)}
+            self._lazy_stamp = stamp
             return
         self._lazy_wrap_keys = None
         net = self.__dict__["params"].net

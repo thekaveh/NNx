@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._process_group import run_group
 from tests._repo_files import repo_file
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -491,12 +492,10 @@ def _torchrun(
         command = [sys.executable, "-m", "torch.distributed.run", "--nnodes=1", "--master_addr=127.0.0.1"]
         command += [f"--master_port={port}", "--nproc_per_node=2"]
         env.setdefault("GLOO_SOCKET_IFNAME", "lo0")
-    return subprocess.run(
+    return run_group(  # a timeout ends every rank too, not only torchrun
         [*command, *([str(launcher)] if launcher is not None else []), str(ROOT / "examples" / script), *args],
         cwd=cwd,
         env=env,
-        capture_output=True,
-        text=True,
         timeout=timeout,
     )
 
