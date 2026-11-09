@@ -25,8 +25,8 @@ profile's files is refused unless ``--force`` clears it, and a profile
 folder that is a symlink (dangling or not), or that cannot be read, is
 refused even with ``--force``, which never touches a link or its target,
 and so is one that cannot be created (``--artifacts`` a dangling symlink
-or not writable, say). An ``--output`` that is a directory, or whose
-parent cannot be created, is refused too. Every folder, and the output,
+or not writable, say). An ``--output`` that is a directory, that lies
+inside a profile folder, or whose parent cannot be created, is refused too. Every folder, and the output,
 is checked before any folder is cleared or written. A folder ``--force``
 cannot clear (one holding a read-only subfolder, say) is refused, and may
 be left partly cleared. Nothing is downloaded. Needs ``thekaveh-nnx[onnx-runtime,onnx-dynamo]``.
@@ -35,6 +35,7 @@ be left partly cleared. Nothing is downloaded. Needs ``thekaveh-nnx[onnx-runtime
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import stat
 import sys
@@ -79,8 +80,13 @@ def main(argv: list[str] | None = None) -> int:
             if not args.force:
                 parser.error(f"{folder} already holds artifacts: pass --force to clear it, or a new --artifacts folder")
             held.append(folder)
-    if args.output.is_dir():  # refused before --force clears anything, not when the report is saved
+    if os.path.isdir(args.output):  # refused before --force clears anything; any OSError is left to the mkdir below
         parser.error(f"{args.output} is a directory: pass the path of the JSON report to write")
+    parent = args.output.parent.resolve()
+    for name in names:  # a report inside a profile folder would be cleared, or mixed with the artifacts
+        folder = (Path(artifacts) / name).resolve()
+        if parent == folder or folder in parent.parents:
+            parser.error(f"{args.output} is inside the profile folder {folder}: write the report outside it")
     try:
         args.output.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:
