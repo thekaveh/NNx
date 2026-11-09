@@ -691,6 +691,8 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         # FEAT-042: rank 1 never reaches the teardown; rank 0's shutdown is bounded.
         import time
 
+        pids = [None] * world_size
+        torch.distributed.all_gather_object(pids, os.getpid())
         if rank == 0:
             start = time.monotonic()
             try:
@@ -702,10 +704,16 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             out["initialized_after"] = torch.distributed.is_initialized()
             out["teardown_done"] = True  # the group is left for process exit
         else:
-            # Arrives after rank 0's wait timed out: rank 0 has raised (its
-            # process stays at exit, its barrier still queued), so this
-            # barrier completes against the queued one.
+            # Arrives after rank 0's wait timed out and rank 0 has raised. Up
+            # to torch 2.13 rank 0's process then waits at exit with its
+            # barrier queued, and this barrier completes against it; from
+            # torch 2.14 it exits at once, so this rank's wait is bounded too.
             time.sleep(6)
+            try:
+                os.kill(pids[0], 0)
+                out["peer_waiting_at_exit"] = True
+            except ProcessLookupError:
+                out["peer_waiting_at_exit"] = False
             start = time.monotonic()
             try:
                 nnx_dist.shutdown(timeout_seconds=3)
@@ -714,6 +722,7 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
                 out["error"] = f"{type(error).__name__}: {error}"
             out["seconds"] = time.monotonic() - start
             out["initialized_after"] = torch.distributed.is_initialized()
+            out["teardown_done"] = True  # left for process exit when the wait failed
 
     elif name == "single_process_entries":
         # FIX-028: the single-process entry points refuse a multi-rank group

@@ -818,20 +818,27 @@ def test_the_longest_timeout_forms_a_real_gloo_group(tmp_path, monkeypatch):
 def test_shutdown_is_bounded_when_a_rank_never_arrives(tmp_path):
     """Rank 1 reaches the teardown only after rank 0's wait timed out: rank 0's
     shutdown raises within its timeout instead of blocking (leaving the group
-    to process exit), and the late rank's barrier completes against the one
-    rank 0 left queued, so it leaves cleanly; the launch neither hangs nor
-    aborts."""
+    to process exit). While rank 0's process still waits at exit (torch 2.13
+    and older), the late rank's barrier completes against the one rank 0 left
+    queued, so it leaves cleanly; once rank 0's process has exited (torch
+    2.14), the late rank's shutdown raises within its own timeout. Either way
+    the launch neither hangs nor aborts."""
     import time
 
     out = tmp_path / "shutdown-missing"
     start = time.monotonic()
     completed = launch("shutdown_missing", out, check=False, timeout=120)
     assert time.monotonic() - start < 90
-    assert completed.returncode == 0 and "terminate called" not in completed.stderr
+    assert completed.returncode == 0 and "terminate called" not in completed.stderr, completed.stderr[-6000:]
     first, late = results(out)
     assert first["error"].startswith("RuntimeError: ") and "teardown barrier within 3s" in first["error"], first
     assert first["seconds"] < 6 and first["initialized_after"] is True
-    assert late["error"] is None and late["seconds"] < 6 and late["initialized_after"] is False
+    assert late["seconds"] < 6, late
+    if late["peer_waiting_at_exit"]:
+        assert late["error"] is None and late["initialized_after"] is False, late
+    else:
+        assert late["error"].startswith("RuntimeError: ") and "teardown barrier within 3s" in late["error"], late
+        assert late["initialized_after"] is True
 
 
 def test_single_process_entry_points_refuse_a_multi_rank_group(tmp_path):
