@@ -28,8 +28,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import torch
+from torch.nn.utils import parametrize
 
-from ..._reparameterization import UNNAMED, legacy_reparameterizations
+from ..._reparameterization import UNNAMED, legacy_reparameterizations, weight_reparameterization
 
 if TYPE_CHECKING:
     # Type-only import — same rationale as in writer.py.
@@ -102,7 +103,8 @@ def _refuse_reparameterized(net: torch.nn.Module) -> None:
     holds the unmasked embedding). Every module is checked, by hook type
     (``nnx._reparameterization``), never by parameter names. The
     ``torch.nn.utils.parametrize`` forms compute ``.weight`` on every read,
-    so they export."""
+    so they export, except on a tied head or embedding
+    (:func:`_refuse_parametrized_tied_weights`)."""
     masked: list[str] = []
     normed: list[str] = []
     for path, module in net.named_modules():
@@ -143,6 +145,31 @@ def _refuse_reparameterized(net: torch.nn.Module) -> None:
     )
 
 
+def _refuse_parametrized_tied_weights(net: torch.nn.Module) -> None:
+    """A tied ``lm_head`` has no GGUF slot of its own: readers take it from
+    ``token_embd.weight``. A ``torch.nn.utils.parametrize`` parametrization
+    on the head's or the embedding's ``weight`` computes that one module's
+    weight, while the other still reads the raw tensor, so the file would
+    silently drop the head's weight. Untied, both have a slot and export."""
+    if not getattr(getattr(net, "params", None), "tie_embeddings", False):
+        return
+    parametrized = [
+        f"{path}.weight is {reparameterization}"
+        for path in ("lm_head", "tok_embed")
+        if (module := getattr(net, path, None)) is not None
+        and parametrize.is_parametrized(module, "weight")
+        and (reparameterization := weight_reparameterization(module)) is not None
+    ]
+    if parametrized:
+        raise TypeError(
+            f"GGUF export stores a tied lm_head only as token_embd.weight, but {' and '.join(parametrized)}, so "
+            "the head and the embedding no longer compute the same weight and the file would drop the head's. "
+            "Before exporting, remove the parametrization (torch.nn.utils.parametrize.remove_parametrizations) "
+            "and re-tie the head (net.lm_head.weight = net.tok_embed.weight), so both read one weight; or export "
+            "a model built with tie_embeddings=False that holds the head's own weight."
+        )
+
+
 def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:
     """Walk a ``TransformerNN`` and return ``{gguf_name: numpy_array}``.
 
@@ -165,11 +192,14 @@ def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:
         TypeError: when the network carries a PEFT adapter, a projection
             is not a plain ``nn.Linear``, or any module carries an unbaked
             prune mask or a legacy ``weight_norm`` / ``spectral_norm``
-            hook (see :func:`nnx.interop.gguf.write_gguf`).
+            hook, or the embeddings are tied and the ``lm_head`` or
+            ``tok_embed`` weight is parametrized (see
+            :func:`nnx.interop.gguf.write_gguf`).
     """
     _refuse_adapters(net)
     # A weight that a forward pre-hook recomputes is stale in storage.
     _refuse_reparameterized(net)
+    _refuse_parametrized_tied_weights(net)
     out: dict[str, np.ndarray] = {}
 
     # Token embedding — always present, always named ``token_embd.weight``.
