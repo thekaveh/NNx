@@ -1048,10 +1048,11 @@ def _resume_mode(run_path: str, run_id: str) -> Optional[str]:
 def _resolvable(run_id: str, root: Optional[str]) -> bool:
     """Whether ``run_id`` names a run directory (not an alias, a malformed id
     or a deleted run). A directory whose files cannot be read is resolvable:
-    reading it then raises."""
-    from .nn.params.nn_run import _runs_root, _validate_run_id
+    reading it then raises. A recorded ``"BEST"`` the filesystem opens as
+    ``runs/best`` is the alias (``nn_run._addresses_best_pointer``)."""
+    from .nn.params.nn_run import _addresses_best_pointer, _runs_root, _validate_run_id
 
-    if run_id in ALIASES:
+    if run_id in ALIASES or _addresses_best_pointer(run_id, root):
         return False
     try:
         path = os.path.join(_runs_root(root), _validate_run_id(run_id))
@@ -1578,10 +1579,11 @@ def observations_from_runs(
     is never read. A legacy run (no commit marker) keeps its value,
     but its status is unknown, so it is never counted in a group's ``n``.
     A NaN metric is read back as missing: ``idps.csv`` writes NaN as an
-    empty cell. A run id ``"best"`` (in any case) reads the run the
-    ``runs/best`` pointer names, in the symlink and the ``best/POINTER.txt``
-    layout alike, observed under that run's own id; when no run holds the
-    pointer it is refused as a missing run.
+    empty cell. A run id ``"best"`` (or a case variant the filesystem opens
+    as ``runs/best``) reads the run the ``runs/best`` pointer names, in the
+    symlink and the ``best/POINTER.txt`` layout alike, observed under that
+    run's own id; when no run holds the pointer it is refused as a missing
+    run.
     """
     if not isinstance(metric, Metric):
         raise ComparisonError(f"metric must be a Metric, got {type(metric).__name__}")

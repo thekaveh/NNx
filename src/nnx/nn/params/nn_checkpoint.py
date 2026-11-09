@@ -1231,8 +1231,9 @@ class NNCheckpoint:
         map_location: Any = "cpu",
     ) -> Optional[NNCheckpoint]:
         """Load run ``run``'s ``type`` checkpoint, or ``None`` when it is
-        absent. ``run="best"`` (in any case) reads the run `NNRun.best_id`
-        names, in the symlink and the ``best/POINTER.txt`` layout alike, and
-        returns ``None`` when no run holds the pointer."""
+        absent. ``run="best"`` (or a case variant the filesystem opens as
+        ``runs/best``) reads the run `NNRun.best_id` names, in the symlink
+        and the ``best/POINTER.txt`` layout alike, and returns ``None`` when
+        no run holds the pointer."""
         target = _read_checkpoint_path(run, type, root=root)
         return None if target is None else NNCheckpoint.from_file(path=target[1], map_location=map_location)

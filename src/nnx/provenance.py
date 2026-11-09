@@ -572,9 +572,10 @@ def load_provenance(run_id: str, root: Optional[str] = None) -> Optional[Provena
     Raises ``ValueError`` for an unsupported format, a fingerprint that
     does not match its manifest, or JSON nested too deeply to read; a
     malformed entry (a missing key, a non-object entry) raises ``KeyError``
-    or ``TypeError``. ``run_id="best"`` (in any case) reads the run the
-    ``runs/best`` pointer names, in the symlink and the
-    ``best/POINTER.txt`` layout alike; ``None`` when no run holds it."""
+    or ``TypeError``. ``run_id="best"`` (or a case variant the filesystem
+    opens as ``runs/best``) reads the run the ``runs/best`` pointer names,
+    in the symlink and the ``best/POINTER.txt`` layout alike; ``None`` when
+    no run holds it."""
     from .nn.params.nn_run import _resolve_run_id
 
     resolved = _resolve_run_id(run_id, root)
