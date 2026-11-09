@@ -344,7 +344,12 @@ def _count_registration(parent: nn.Module, name: str, sub: Optional[nn.Module]) 
     # GIL: the stamp only has to change.
     if torch.compiler.is_compiling():
         _REGISTRATIONS[2] = True
-    elif sub is not None and any(_is_pending_lazy(m) for m in sub.modules()):
+        return
+    try:
+        brings = sub is not None and any(_is_pending_lazy(m) for m in sub.modules())
+    except Exception:  # a hook on every registration in the process never raises; count when unsure
+        brings = True
+    if brings:
         _REGISTRATIONS[1] += 1
 
 
