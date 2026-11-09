@@ -23,15 +23,15 @@ The exit status separates failures — it never passes by skipping:
 1 is an error and 2 a usage error: an artifact folder that already holds a
 profile's files is refused unless ``--force`` clears it, and a profile
 folder that is a symlink (dangling or not), or that cannot be read, is
-refused even with ``--force``, which never touches a link or its target.
-Every folder is checked before any is cleared or written. Nothing is
-downloaded. Needs ``thekaveh-nnx[onnx-runtime,onnx-dynamo]``.
+refused even with ``--force``, which never touches a link or its target,
+and so is one that cannot be created (``--artifacts`` a dangling symlink
+or not writable, say). Every folder is checked before any is cleared or
+written. Nothing is downloaded. Needs ``thekaveh-nnx[onnx-runtime,onnx-dynamo]``.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import stat
 import sys
@@ -39,7 +39,7 @@ from pathlib import Path
 
 
 def main(argv: list[str] | None = None) -> int:
-    from nnx.export_conformance import PROFILES, exit_code, run_profiles, save_report, summary_lines
+    from nnx.export_conformance import PROFILES, ConformanceError, exit_code, run_profiles, save_report, summary_lines
 
     parser = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])
     parser.add_argument("--output", required=True, type=Path, help="where to write the JSON report")
@@ -78,9 +78,11 @@ def main(argv: list[str] | None = None) -> int:
             held.append(folder)
     for folder in held:
         shutil.rmtree(folder) if folder.is_dir() else folder.unlink()
-    os.makedirs(artifacts, exist_ok=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    report = run_profiles(artifacts, names, source_revision=args.source_revision)
+    try:  # run_profiles creates every profile folder, and the root, before the first profile runs
+        report = run_profiles(artifacts, names, source_revision=args.source_revision)
+    except ConformanceError as error:  # a folder refused before anything is written
+        parser.error(str(error))
     save_report(report, args.output)
     for line in summary_lines(report):
         print(line)

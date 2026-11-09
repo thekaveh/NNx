@@ -884,6 +884,15 @@ def _check_folder(root: str) -> None:
         raise ConformanceError(f"{root!r} must be a new or empty directory: a profile owns its artifacts")
 
 
+def _make_folder(root: str) -> None:
+    """Create a checked profile folder, refusing one that cannot be created
+    (the artifacts root a dangling symlink, or not writable, say)."""
+    try:
+        os.makedirs(root, exist_ok=True)
+    except OSError as error:
+        raise ConformanceError(f"{root!r} cannot be created: {type(error).__name__}: {error}") from error
+
+
 def _checked(profile: Union[str, Profile], directory: Union[str, os.PathLike[str]]) -> tuple[Profile, str]:
     """The profile to run and its artifact folder, once every check that
     comes before anything is written has passed."""
@@ -913,11 +922,11 @@ def run_profile(
     symlink; ``directory`` itself may be one), and return its record (see
     the module docstring). An unknown name, a tested name with other
     settings, or a folder that is not new or empty (a symlink, dangling
-    or not, or a folder that cannot be read) raises
-    :class:`ConformanceError` before anything is written. Never raises for
-    a failing stage: every outcome is classified in the record."""
+    or not, or a folder that cannot be read) or that cannot be created
+    raises :class:`ConformanceError` before anything is written. Never
+    raises for a failing stage: every outcome is classified in the record."""
     profile, root = _checked(profile, directory)
-    os.makedirs(root, exist_ok=True)
+    _make_folder(root)
     model = build_model(profile.model)
     config = {**_canonical_model(profile.model), "weights_sha256": _weights_digest(model.net)}
     record: dict[str, Any] = {
@@ -1021,10 +1030,14 @@ def run_profiles(
     ``directory/<name>/`` that is not new or an empty directory (a
     symlink, dangling or not, or a folder that cannot be read) raises
     :class:`ConformanceError` before anything is written, so no earlier
-    profile's artifacts are left to block the retry."""
+    profile's artifacts are left to block the retry. Every folder is then
+    created before the first profile runs: one that cannot be created
+    raises :class:`ConformanceError`, leaving at most empty folders, which
+    do not block the retry."""
     chosen = list(PROFILES) if names is None else list(dict.fromkeys(names))  # each profile once
-    for name in chosen:
-        _checked(name, directory)
+    roots = [_checked(name, directory)[1] for name in chosen]
+    for root in roots:
+        _make_folder(root)
     records = [run_profile(name, directory, source_revision=source_revision) for name in chosen]
     return {
         "format": FORMAT,
