@@ -25,8 +25,11 @@ profile's files is refused unless ``--force`` clears it, and a profile
 folder that is a symlink (dangling or not), or that cannot be read, is
 refused even with ``--force``, which never touches a link or its target,
 and so is one that cannot be created (``--artifacts`` a dangling symlink
-or not writable, say). Every folder is checked before any is cleared or
-written. Nothing is downloaded. Needs ``thekaveh-nnx[onnx-runtime,onnx-dynamo]``.
+or not writable, say). An ``--output`` that is a directory, or whose
+parent cannot be created, is refused too. Every folder, and the output,
+is checked before any folder is cleared or written. A folder ``--force``
+cannot clear (one holding a read-only subfolder, say) is refused, and may
+be left partly cleared. Nothing is downloaded. Needs ``thekaveh-nnx[onnx-runtime,onnx-dynamo]``.
 """
 
 from __future__ import annotations
@@ -76,9 +79,17 @@ def main(argv: list[str] | None = None) -> int:
             if not args.force:
                 parser.error(f"{folder} already holds artifacts: pass --force to clear it, or a new --artifacts folder")
             held.append(folder)
+    if args.output.is_dir():  # refused before --force clears anything, not when the report is saved
+        parser.error(f"{args.output} is a directory: pass the path of the JSON report to write")
+    try:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        parser.error(f"{args.output.parent} cannot be created: {type(error).__name__}: {error}")
     for folder in held:
-        shutil.rmtree(folder) if folder.is_dir() else folder.unlink()
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.rmtree(folder) if folder.is_dir() else folder.unlink()
+        except OSError as error:  # it may be left partly cleared
+            parser.error(f"{folder} cannot be cleared: {type(error).__name__}: {error}")
     try:  # run_profiles creates every profile folder, and the root, before the first profile runs
         report = run_profiles(artifacts, names, source_revision=args.source_revision)
     except ConformanceError as error:  # a folder refused before anything is written
