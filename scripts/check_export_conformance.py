@@ -25,8 +25,8 @@ profile's files is refused unless ``--force`` clears it, and a profile
 folder that is a symlink (dangling or not), or that cannot be read, is
 refused even with ``--force``, which never touches a link or its target,
 and so is one that cannot be created (``--artifacts`` a dangling symlink
-or not writable, say). An ``--output`` that is a directory, that lies
-inside a profile folder, or whose parent cannot be created, is refused too. Every folder, and the output,
+or not writable, say). An ``--output`` that is a directory, that is,
+holds or lies inside a profile folder, or whose parent cannot be created, is refused too. Every folder, and the output,
 is checked before any folder is cleared or written. A folder ``--force``
 cannot clear (one holding a read-only subfolder, say) is refused, and may
 be left partly cleared. An ``--output`` folder that exists but cannot be
@@ -84,11 +84,13 @@ def main(argv: list[str] | None = None) -> int:
             held.append(folder)
     if os.path.isdir(args.output):  # refused before --force clears anything; any OSError is left to the mkdir below
         parser.error(f"{args.output} is a directory: pass the path of the JSON report to write")
-    parent = args.output.parent.resolve()
+    output = Path(os.path.realpath(args.output))  # realpath never raises, even on a symlink loop
     for name in names:  # a report inside a profile folder would be cleared, or mixed with the artifacts
-        folder = (Path(artifacts) / name).resolve()
-        if parent == folder or folder in parent.parents:
+        folder = Path(os.path.realpath(Path(artifacts) / name))
+        if folder in output.parents:
             parser.error(f"{args.output} is inside the profile folder {folder}: write the report outside it")
+        if output == folder or output in folder.parents:  # the export would make it a directory
+            parser.error(f"{args.output} is the profile folder {folder} or holds it: pass the path of the JSON report")
     try:
         args.output.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:
