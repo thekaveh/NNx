@@ -350,7 +350,7 @@ def test_trainer_params_from_state_keeps_a_saved_non_string_lineage():
 
 
 def _hashable_optim(max_lr: float) -> NNOptimParams:
-    """No `param_groups`: unlike `_g_optim()`, this one is hashable."""
+    """A single-group optimizer at `max_lr`, so two learning rates give two configurations."""
     return NNOptimParams(name=Optims.ADAM, max_lr=max_lr, momentum=(0.9, 0.999), weight_decay=0.0)
 
 
@@ -402,6 +402,30 @@ def test_trainer_params_from_state_round_trip_hashes_equal():
     assert loaded == p
     assert hash(loaded) == hash(p)
     assert len({loaded, p}) == 1
+
+
+def test_trainer_params_with_param_groups_optimizer_hash_by_value():
+    """An optimizer with `param_groups` stores them as a read-only list, which
+    hashes by value: the optimizer and the NNTrainerParams holding it are set
+    members and dict keys, equal configurations (and their `from_state`
+    copies) hash equal, and state() is unchanged."""
+    optim, twin = _g_optim(), _g_optim()
+    assert optim == twin and hash(optim) == hash(twin) and len({optim, twin}) == 1
+    assert {optim: "G"}[twin] == "G"
+    assert NNOptimParams.from_state(optim.state()) == optim
+    assert hash(NNOptimParams.from_state(optim.state())) == hash(optim)
+
+    p = NNTrainerParams(n_epochs=1, optims={"G": _g_optim()}, schedulers={"G": _sched()})
+    q = NNTrainerParams(n_epochs=1, optims={"G": _g_optim()}, schedulers={"G": _sched()})
+    loaded = NNTrainerParams.from_state(p.state())
+    assert p == q == loaded
+    assert hash(p) == hash(q) == hash(loaded)
+    assert len({p, q, loaded}) == 1
+    assert {p: "run"}[q] == "run" and {p: "run"}[loaded] == "run"
+    assert loaded.state() == p.state()
+
+    other = NNTrainerParams(n_epochs=1, optims={"G": _hashable_optim(2e-4)}, schedulers={"G": _sched()})
+    assert other != p and len({p, other}) == 2
 
 
 def test_frozen_mapping_hash_needs_no_orderable_keys():

@@ -32,6 +32,11 @@ class _ImmutableList(list):
     def __deepcopy__(self, _memo):
         return self
 
+    def __hash__(self) -> int:
+        # Read-only, so it hashes by value like a tuple (equal lists hash
+        # equal), and so does every frozen params dataclass holding one.
+        return hash(tuple(self))
+
     def __reduce_ex__(self, _protocol):
         return (_ImmutableList, (list(self),))
 
