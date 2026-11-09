@@ -5079,8 +5079,8 @@ Join the process group ``torchrun`` described in the environment (``env://``) an
 **Details**
 
 ```text
-A Gloo group it formed that is still initialized when the interpreter
-exits (a failed ``train()`` or :func:`shutdown` left it) is destroyed
+The Gloo default group still initialized when the interpreter exits, in
+a process that called this function (a failed ``train()`` or :func:`shutdown` left it) is destroyed
 then, before the interpreter finalizes: exit waits for a collective
 still in flight (until the missing rank arrives or the group's timeout
 expires) instead of the process aborting with ``std::terminate``

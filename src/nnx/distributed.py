@@ -244,8 +244,8 @@ def init_process_group(backend: Optional[str] = None, *, timeout_seconds: float 
     ``torch.cuda.set_device(local_rank)`` before it is built (otherwise
     every rank's model sits on ``cuda:0``).
 
-    A Gloo group it formed that is still initialized when the interpreter
-    exits (a failed ``train()`` or :func:`shutdown` left it) is destroyed
+    The Gloo default group still initialized when the interpreter exits, in
+    a process that called this function (a failed ``train()`` or :func:`shutdown` left it) is destroyed
     then, before the interpreter finalizes: exit waits for a collective
     still in flight (until the missing rank arrives or the group's timeout
     expires) instead of the process aborting with ``std::terminate``
@@ -267,6 +267,7 @@ def init_process_group(backend: Optional[str] = None, *, timeout_seconds: float 
     # torch.distributed.nn.functional binds group.WORLD as a default argument
     # when first imported (DDP's construction imports it): imported after the
     # group exists, it keeps the group alive past destroy_process_group().
+    # (The torch 2.4 floor's DDP does not import it; the import is cheap there.)
     importlib.import_module("torch.distributed.nn")
     dist.init_process_group(backend=chosen, timeout=datetime.timedelta(seconds=timeout_seconds))
     global _exit_hook_registered
