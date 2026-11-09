@@ -1209,8 +1209,17 @@ def iter_history(run_id: str, root: Optional[str] = None, *, lineage: bool = Fal
     fresh (a born-again generation naming its teacher's run as
     ``parent_run_id``, say) starts its own epochs, and its lineage is its
     own history.
+
+    ``run_id="best"`` (in any case) streams the run the ``runs/best``
+    pointer names, in the symlink and the ``best/POINTER.txt`` layout alike,
+    and raises ``ValueError`` when no run holds it, as for an absent run.
     """
-    yield from _lineage(run_id, root, lineage, seen=set(), until=None, committed=_UNKNOWN, readers={})
+    from .nn.params.nn_run import _resolve_run_id, _runs_root
+
+    resolved = _resolve_run_id(run_id, root)  # once: the lineage, the journal and the committed epoch read one run
+    if resolved is None:
+        raise ValueError(f"no saved run holds the runs/best pointer under {_runs_root(root)}")
+    yield from _lineage(resolved, root, lineage, seen=set(), until=None, committed=_UNKNOWN, readers={})
 
 
 _UNKNOWN: Any = object()

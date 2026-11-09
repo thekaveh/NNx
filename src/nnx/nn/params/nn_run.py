@@ -375,10 +375,11 @@ def _uncommitted(run_path: str) -> bool:
 def _is_run_entry(runs_root: str, entry: str) -> bool:
     """Whether ``runs/<entry>`` is a run: a directory holding ``run.yaml``,
     and never the ``best`` pointer, the ``best.tmp`` temporary an interrupt
-    inside ``_point_best`` can strand, or a dot-name (``.leases``, locks).
-    Shared by ``NNRun.all`` and the ``runs/best`` election, so neither sees
-    a run twice through a stale alias (#522)."""
-    if entry in (_BEST_POINTER, _BEST_TEMP) or entry.startswith("."):
+    inside ``_point_best`` can strand (either in any case, which a
+    case-insensitive filesystem opens as them), or a dot-name (``.leases``,
+    locks). Shared by ``NNRun.all`` and the ``runs/best`` election, so
+    neither sees a run twice through a stale alias (#522)."""
+    if entry.casefold() in (_BEST_POINTER, _BEST_TEMP) or entry.startswith("."):
         return False
     run_path = os.path.join(runs_root, entry)
     return os.path.isdir(run_path) and os.path.isfile(os.path.join(run_path, "run.yaml"))
@@ -495,17 +496,34 @@ def _read_best_pointer(best_run_path: str) -> Optional[str]:
     return None
 
 
-def _resolve_best_pointer(root: Optional[str]) -> str:
-    """The id of the run ``runs/best`` points at, for ``NNRun.load("best")``
-    and ``NNCheckpoint.load(run="best")``. It is read by ``NNRun.best_id``'s
-    rule, so the POINTER.txt layout loads like the symlink, and a pointer
-    naming no run (a deleted run, a dot-name, ``..``) is never followed out
-    of the runs root. Raises ``FileNotFoundError`` when no run holds it."""
-    run_id = NNRun.best_id(root)
-    if run_id is None:
-        best_path = os.path.join(_runs_root(root), _BEST_POINTER)
-        raise FileNotFoundError(errno.ENOENT, "no saved run holds the runs/best pointer", best_path)
-    return _validate_run_id(run_id)
+def _names_best_pointer(run_id: str) -> bool:
+    """Whether a read of ``run_id`` names the ``runs/best`` pointer:
+    ``"best"`` in any case, since the default macOS and Windows filesystems
+    open ``runs/BEST`` as ``runs/best``. Run ids are user-chosen through
+    ``NNCheckpoint.save(run=...)``, so a case variant is not refused; it
+    only reads the pointer."""
+    return run_id.casefold() == _BEST_POINTER
+
+
+def _resolve_run_id(run_id: str, root: Optional[str]) -> Optional[str]:
+    """The run a read of ``run_id`` opens: ``run_id`` itself, validated, or
+    for the ``runs/best`` pointer the run `NNRun.best_id` names, ``None``
+    when no run holds it. Read by that rule, the POINTER.txt layout reads
+    like the symlink, and a pointer naming no run (a deleted run, a
+    dot-name, ``..``) is never followed out of the runs root. Each reader
+    resolves once per call; saves to ``run="best"`` never resolve."""
+    run_id = _validate_run_id(run_id)
+    if not _names_best_pointer(run_id):
+        return run_id
+    best = NNRun.best_id(root)
+    return None if best is None else _validate_run_id(best)
+
+
+def _no_best_pointer(root: Optional[str]) -> FileNotFoundError:
+    """The error a reader that refuses an absent run raises when no run
+    holds the ``runs/best`` pointer."""
+    best_path = os.path.join(_runs_root(root), _BEST_POINTER)
+    return FileNotFoundError(errno.ENOENT, "no saved run holds the runs/best pointer", best_path)
 
 
 def _best_err(checkpoint: Optional[NNCheckpoint]) -> float:
@@ -1176,8 +1194,8 @@ class NNRun:
         with an empty history; a committed or legacy run without
         ``idps.csv`` raises ``ValueError`` naming the file.
 
-        ``id="best"`` loads the run `NNRun.best_id` names, in the symlink
-        and the ``best/POINTER.txt`` layout alike, and raises
+        ``id="best"`` (in any case) loads the run `NNRun.best_id` names, in
+        the symlink and the ``best/POINTER.txt`` layout alike, and raises
         ``FileNotFoundError`` when no run holds the pointer, as for an
         absent run."""
         return NNRun._load(id, root)
@@ -1211,9 +1229,10 @@ class NNRun:
         # `_validate_run_id` for the threat model. Internal callers pass
         # md5 hex (always safe), so this is a defense-in-depth guard on
         # the public API surface.
-        id = _validate_run_id(id)
-        if id == _BEST_POINTER:
-            id = _resolve_best_pointer(root)
+        resolved = _resolve_run_id(id, root)
+        if resolved is None:
+            raise _no_best_pointer(root)
+        id = resolved
         run_path = os.path.join(_runs_root(root), id)
         yaml_path = os.path.join(run_path, "run.yaml")
 

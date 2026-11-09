@@ -572,9 +572,16 @@ def load_provenance(run_id: str, root: Optional[str] = None) -> Optional[Provena
     Raises ``ValueError`` for an unsupported format, a fingerprint that
     does not match its manifest, or JSON nested too deeply to read; a
     malformed entry (a missing key, a non-object entry) raises ``KeyError``
-    or ``TypeError``."""
+    or ``TypeError``. ``run_id="best"`` (in any case) reads the run the
+    ``runs/best`` pointer names, in the symlink and the
+    ``best/POINTER.txt`` layout alike; ``None`` when no run holds it."""
+    from .nn.params.nn_run import _resolve_run_id
+
+    resolved = _resolve_run_id(run_id, root)
+    if resolved is None:
+        return None
     try:
-        return _load_provenance(run_id, root)
+        return _load_provenance(resolved, root)
     except RecursionError as error:  # a corrupt, deeply nested file is malformed input
         raise ValueError(f"run {run_id}: provenance JSON nested too deeply to read") from error
 
@@ -663,9 +670,14 @@ class _AttemptRecorder:
         self.fingerprint = manifest.fingerprint()
         self.root = root
         self.execution = execution
+        # The run the parent's attempt and checkpoint are read from: the
+        # parent run id, or the run runs/best names (the recorded run_id
+        # stays the pointer, as the resume records it).
+        self._parent_source: Optional[str] = parent_run_id
         parent = None
         if parent_run_id is not None:
             from .nn.nn_model import _IN_MEMORY_RESUME, _resume_checkpoint_type
+            from .nn.params.nn_run import _resolve_run_id
 
             in_memory = _IN_MEMORY_RESUME.get()
             try:
@@ -678,7 +690,9 @@ class _AttemptRecorder:
             try:
                 # A run bundle's parent lives in the bundle: a local run that shares
                 # its (content-derived) id is not its attempt.
-                prior = None if bundled else load_provenance(parent_run_id, root)
+                if not bundled:
+                    self._parent_source = _resolve_run_id(parent_run_id, root)
+                prior = None if bundled or self._parent_source is None else load_provenance(self._parent_source, root)
             except (OSError, ValueError, KeyError, TypeError) as error:  # linkage is optional; the fit is not
                 from .nn.callbacks import _warn_at_user_frame
 
@@ -686,11 +700,12 @@ class _AttemptRecorder:
                     f"parent run {parent_run_id}'s provenance is unreadable ({error}); its attempt is not linked"
                 )
                 prior = None
+            source = self._parent_source  # None: no run holds runs/best
             parent = {
                 "run_id": parent_run_id,
                 "attempt_id": None if prior is None or prior.attempt is None else prior.attempt.attempt_id,
                 **(
-                    _checkpoint_summary(parent_run_id, parent_checkpoint, root)
+                    (None if source is None else _checkpoint_summary(source, parent_checkpoint, root))
                     or {"checkpoint": str(parent_checkpoint), "epoch": None, "generation": None}
                 ),
             }
@@ -715,14 +730,23 @@ class _AttemptRecorder:
         _write_json(self._path(MANIFEST_FILE), {**self.manifest.document(), "fingerprint": self.fingerprint})
         _write_json(self._path(ATTEMPT_FILE), self.attempt.state())
 
-    def resumed_from(self, run_id: str, checkpoint: Any) -> None:
-        """The resume read ``checkpoint`` of ``run_id`` (#537): the parent
-        names its epoch and generation, rewritten when the source published
-        the tag again after the record was started."""
+    def resumed_from(self, run_id: str, checkpoint: Any, source_id: Optional[str] = None) -> None:
+        """The resume read ``checkpoint`` of ``run_id`` (#537), from run
+        ``source_id`` (the run ``runs/best`` named, for that pointer): the
+        parent names its epoch and generation, rewritten when the source
+        published the tag again after the record was started, and the
+        attempt of ``source_id`` when ``runs/best`` was repointed since."""
         parent = self.attempt.parent
         if parent is None or parent.get("run_id") != run_id:
             return
         restored = {"epoch": int(checkpoint.idp.epoch_idx), "generation": checkpoint.training_state_id}
+        if source_id is not None and source_id != self._parent_source:
+            try:
+                prior = load_provenance(source_id, self.root)
+            except (OSError, ValueError, KeyError, TypeError):  # linkage is optional, as at the start
+                prior = None
+            restored["attempt_id"] = None if prior is None or prior.attempt is None else prior.attempt.attempt_id
+            self._parent_source = source_id
         if all(parent.get(key) == value for key, value in restored.items()):
             return
         from dataclasses import replace

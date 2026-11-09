@@ -112,6 +112,19 @@ def _checkpoint_path(run: str, type: Checkpoints, root: Optional[str] = None) ->
     return os.path.join(base, "runs", run, "checkpoints", str(type) + ".pt")
 
 
+def _read_checkpoint_path(run: str, type: Checkpoints, root: Optional[str] = None) -> Optional[tuple[str, str]]:
+    """The run and checkpoint path a reader opens: ``_checkpoint_path``
+    (``run`` and ``type`` validated first) with the ``runs/best`` pointer
+    resolved once (``nn_run._resolve_run_id``), or ``None`` when no run
+    holds it, which each reader answers as for an absent run. Saves use
+    ``_checkpoint_path``, which never resolves."""
+    from .nn_run import _resolve_run_id
+
+    _checkpoint_path(run, type, root=root)
+    resolved = _resolve_run_id(run, root)
+    return None if resolved is None else (resolved, _checkpoint_path(resolved, type, root=root))
+
+
 def _run_directory_exists(checkpoint_path: str) -> bool:
     """Absence fast path for the training-state readers (FIX-007).
 
@@ -823,8 +836,11 @@ class NNCheckpoint:
         a manifest. Read as is: after an interrupted publish
         the live manifest may name the previous checkpoint while a staged one
         describes the published files — :meth:`verify` checks both and
-        returns the one that matches."""
-        return _read_manifest(_checkpoint_path(run, type, root=root))
+        returns the one that matches. ``run="best"`` reads the run the
+        ``runs/best`` pointer names (``None`` when no run holds it), as
+        :meth:`load` does."""
+        target = _read_checkpoint_path(run, type, root=root)
+        return None if target is None else _read_manifest(target[1])
 
     @staticmethod
     def verify(run: str, type: Checkpoints, root: Optional[str] = None) -> Optional[dict[str, Any]]:
@@ -840,8 +856,13 @@ class NNCheckpoint:
         is taken, created when missing): a point whose writer stopped between
         publishing the checkpoint and its live manifest is recognized by its
         staged manifest — every digest matching — and that manifest is
-        returned (the writer's next save makes it live)."""
-        ckpt_path = _checkpoint_path(run, type, root=root)
+        returned (the writer's next save makes it live). ``run="best"``
+        checks the run the ``runs/best`` pointer names (``None`` when no
+        run holds it), as :meth:`load` does."""
+        target = _read_checkpoint_path(run, type, root=root)
+        if target is None:
+            return None
+        run, ckpt_path = target
         label = f"{run}/{type}"
         directory = os.path.dirname(ckpt_path)
         name = os.path.basename(ckpt_path)
@@ -892,10 +913,13 @@ class NNCheckpoint:
 
         Returns ``None`` — without creating ``runs/<run>/`` — when the run
         directory does not exist; the run ID is still validated first.
+        ``run="best"`` reads the run the ``runs/best`` pointer names
+        (``None`` when no run holds it), as :meth:`load` does.
         """
-        checkpoint_path = _checkpoint_path(run, type, root=root)
-        if not _run_directory_exists(checkpoint_path):
+        target = _read_checkpoint_path(run, type, root=root)
+        if target is None or not _run_directory_exists(target[1]):
             return None
+        checkpoint_path = target[1]
         with FileLock(checkpoint_path + ".lock"):
             checkpoint = NNCheckpoint.from_file(checkpoint_path, map_location=map_location)
             return NNCheckpoint._load_training_state_unlocked(checkpoint_path, checkpoint, map_location)
@@ -911,10 +935,13 @@ class NNCheckpoint:
 
         Returns ``(None, None)`` — without creating ``runs/<run>/`` — when
         the run directory does not exist; the run ID is still validated.
+        ``run="best"`` reads the run the ``runs/best`` pointer names
+        (``(None, None)`` when no run holds it), as :meth:`load` does.
         """
-        checkpoint_path = _checkpoint_path(run, type, root=root)
-        if not _run_directory_exists(checkpoint_path):
+        target = _read_checkpoint_path(run, type, root=root)
+        if target is None or not _run_directory_exists(target[1]):
             return None, None
+        checkpoint_path = target[1]
         with FileLock(checkpoint_path + ".lock"):
             checkpoint = NNCheckpoint.from_file(checkpoint_path, map_location=map_location)
             state = NNCheckpoint._load_training_state_unlocked(checkpoint_path, checkpoint, map_location)
@@ -939,9 +966,10 @@ class NNCheckpoint:
         that stopped between publishing its checkpoint and its live manifest
         leaves the verified generation live over the next one's file, which
         only its digest tells apart."""
-        checkpoint_path = _checkpoint_path(run, type, root=root)
-        if not _run_directory_exists(checkpoint_path):
+        target = _read_checkpoint_path(run, type, root=root)
+        if target is None or not _run_directory_exists(target[1]):
             return None, None
+        run, checkpoint_path = target
         label = f"{run}/{type}"
         changed = f"{label}: the resume point changed while it was being read"
         retry = "— retry once its writer has finished"
@@ -1038,7 +1066,8 @@ class NNCheckpoint:
     ) -> Optional[dict[str, Any]]:
         """Load the optimizer state sidecar for a checkpoint. Returns None
         when no sidecar exists (e.g., checkpoints written without resume
-        support).
+        support), or when ``run="best"`` and no run holds the ``runs/best``
+        pointer.
 
         The sidecar itself is read with ``weights_only=True``. Locating it
         reads the checkpoint through :meth:`load_training_state`, which
@@ -1202,16 +1231,8 @@ class NNCheckpoint:
         map_location: Any = "cpu",
     ) -> Optional[NNCheckpoint]:
         """Load run ``run``'s ``type`` checkpoint, or ``None`` when it is
-        absent. ``run="best"`` reads the run `NNRun.best_id` names, in the
-        symlink and the ``best/POINTER.txt`` layout alike, and returns
-        ``None`` when no run holds the pointer."""
-        from .nn_run import _BEST_POINTER, _resolve_best_pointer
-
-        path = _checkpoint_path(run, type, root=root)  # validates run and type first
-        if run == _BEST_POINTER:
-            try:
-                run = _resolve_best_pointer(root)
-            except FileNotFoundError:
-                return None
-            path = _checkpoint_path(run, type, root=root)
-        return NNCheckpoint.from_file(path=path, map_location=map_location)
+        absent. ``run="best"`` (in any case) reads the run `NNRun.best_id`
+        names, in the symlink and the ``best/POINTER.txt`` layout alike, and
+        returns ``None`` when no run holds the pointer."""
+        target = _read_checkpoint_path(run, type, root=root)
+        return None if target is None else NNCheckpoint.from_file(path=target[1], map_location=map_location)
