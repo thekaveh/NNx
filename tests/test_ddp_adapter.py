@@ -19,6 +19,7 @@ import torch
 
 from nnx import NNTrainParams
 from nnx.distributed import RankPartition
+from tests._process_group import alive_with, run_group
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -43,7 +44,7 @@ def launch(
     command = [sys.executable, "-m", "torch.distributed.run", *_single_node_flags(env), f"--nproc_per_node={nproc}"]
     command += [str(ROOT / "tests" / "ddp_scenarios.py"), scenario, str(out)]
     try:
-        completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=timeout)
+        completed = run_group(command, env=env, timeout=timeout)  # a timeout ends every rank too
     except subprocess.TimeoutExpired as expired:  # say where it hung
         raise AssertionError(
             f"torchrun {scenario} timed out after {timeout:.0f} s:\n{_text(expired.stdout)[-4000:]}\n"
@@ -886,6 +887,27 @@ def test_a_hung_scenario_reports_where_each_rank_was(tmp_path, monkeypatch):
     assert "timed out after 30 s" in message and "rank stacks:" in message
     assert "_parked_for_diagnostics" in message  # the parked rank's own frame
     assert message.count("joined the group: parked") == 2  # each rank's last phase
+    # The timeout ended torchrun's whole process group: no rank outlives the
+    # test, reparented to init and still parked.
+    assert alive_with(str(tmp_path / "parked")) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX")
+def test_a_timed_out_launch_ends_every_process_it_started(tmp_path):
+    """run_group(), which launch() and the examples' torchrun use: a timeout
+    ends the command's descendants too, killing one that ignores SIGTERM after
+    the grace period, and still returns the output written so far."""
+    marker = str(tmp_path / "descendant")
+    descendant = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(120)"
+    parent = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {descendant!r}, {marker!r}]); "
+        "print('started', flush=True); time.sleep(120)"
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        run_group([sys.executable, "-c", parent], timeout=5, grace=1)
+    assert alive_with(marker) == []
+    assert "started" in caught.value.stdout
 
 
 def test_a_batch_one_rank_cannot_score_stops_every_rank(tmp_path):
