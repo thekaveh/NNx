@@ -58,12 +58,14 @@ from ..models import (
     _dry_run_materialization,
     _finish_materialization,
     _has_pending_lazy,
+    _is_pending_lazy,
     _lazy_layers_emulable,
     _materialized_class_name,
     _materialized_topology,
     _pending_lazy_modules,
     _same_class_once_materialized,
     _settle_loaded_lazy_layers,
+    _submodule_at,
     _unmaterialized_topology,
     _UnpackBatch,
     build_module,
@@ -3685,11 +3687,13 @@ class NNModel(_HubMixinBase):
                 if _has_pending_lazy(module) and _lazy_layers_emulable(module)
                 else None
             )
-            # The lazy layers seen pending, at the wrap and at each params read
-            # until none is: the only layers the refresh settles.
-            self._lazy_layers: list[torch.nn.Module] = (
-                [layer for _, layer in _pending_lazy_modules(module)] if self._lazy_wrap_keys is not None else []
-            )
+            # The lazy layers seen pending, at the wrap and at each walk of the
+            # module until none is: the only layers the refresh settles.
+            pending = _pending_lazy_modules(module) if self._lazy_wrap_keys is not None else []
+            self._lazy_layers: list[torch.nn.Module] = [layer for _, layer in pending]
+            # Those layers by the names a walk found them at, which a params
+            # read checks instead of walking the module (_refresh_lazy_descriptor).
+            self._lazy_places: dict[str, torch.nn.Module] = dict(pending)
             # The module those keys describe: a model given another net (a
             # copy made by quantize_int8, say) keeps its descriptor.
             self._lazy_wrapped: Optional[torch.nn.Module] = module if self._lazy_wrap_keys is not None else None
@@ -3758,7 +3762,14 @@ class NNModel(_HubMixinBase):
         ``from_checkpoint``'s load of its weights), so ``params``, checkpoints
         and later runs describe the module as it now is (#562). A run already
         reserved keeps its id; nothing changes for any other module, or when
-        anything but materialization changed the module's state keys."""
+        anything but materialization changed the module's state keys.
+
+        While a lazy layer stays pending (one the forward never reaches), a
+        read checks only the lazy layers a walk of the module found, at the
+        names it found them at: one still pending there means the walk would
+        find it too. The module is walked again once none is pending, or
+        once another module sits at one of those names (a layer re-created
+        after the wrap)."""
         keys = getattr(self, "_lazy_wrap_keys", None)
         module = getattr(self, "net", None)
         if keys is None or module is None:
@@ -3768,11 +3779,22 @@ class NNModel(_HubMixinBase):
             # take afresh here.
             self._lazy_wrap_keys = None
             return
-        pending = [layer for _, layer in _pending_lazy_modules(module)]
+        # getattr: a model pickled before the places were kept walks once.
+        places: dict[str, torch.nn.Module] = getattr(self, "_lazy_places", {})
+        if any(_is_pending_lazy(layer) for layer in places.values()) and all(
+            _submodule_at(module, name) is layer for name, layer in places.items()
+        ):
+            return
+        pending = _pending_lazy_modules(module)
         if pending:
             seen = getattr(self, "_lazy_layers", [])
-            seen.extend(layer for layer in pending if all(layer is not other for other in seen))
+            seen.extend(layer for _, layer in pending if all(layer is not other for other in seen))
             self._lazy_layers = seen
+            # The places still holding their layer, materialized ones
+            # included, so a layer put in place of one is seen; then the
+            # pending ones found now.
+            kept = {name: layer for name, layer in places.items() if _submodule_at(module, name) is layer}
+            self._lazy_places = {**kept, **dict(pending)}
             return
         self._lazy_wrap_keys = None
         net = self.__dict__["params"].net
