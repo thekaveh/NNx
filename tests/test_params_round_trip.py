@@ -145,6 +145,16 @@ def _hashable_params_configs() -> dict[str, Any]:
                 NNParamGroupSpec(name_pattern="*.bias", weight_decay=0.0),
             ],
         ),
+        "NNTrainParams": NNTrainParams(
+            n_epochs=1,
+            optim=NNOptimParams(
+                name=Optims.ADAM,
+                max_lr=1e-3,
+                momentum=(0.9, 0.999),
+                weight_decay=0.0,
+                param_groups=[NNParamGroupSpec(name_pattern="encoder.*", lr_multiplier=0.1)],
+            ),
+        ),
     }
 
 
