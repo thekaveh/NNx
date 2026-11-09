@@ -95,6 +95,25 @@ def test_a_stalled_mps_queue_never_holds_the_ci_run():
     assert not any("self-hosted" in str(job.get("runs-on")) for job in workflows["ci.yml"]["jobs"].values())
 
 
+def test_contributing_says_a_stalled_gpu_queue_holds_the_docs_run():
+    """FEAT-043: unlike the MPS job, the GPU job is part of the docs
+    workflow. The build needs it, the Pages deploy and the wiki publish need
+    the build, and the workflow's concurrency group lets a run finish. While
+    the runner is offline that run waits, and the next push's run waits
+    behind it; CONTRIBUTING's GPU runner note says so and names the remedy."""
+    docs = yaml.safe_load(repo_file(".github", "workflows", "docs.yml").read_text(encoding="utf-8"))
+    assert docs["concurrency"]["cancel-in-progress"] is False
+    jobs = docs["jobs"]
+    assert "gpu-evidence" in jobs["build"]["needs"]
+    for name in ("deploy", "wiki"):
+        assert "build" in jobs[name]["needs"], name
+    contributing = repo_file("CONTRIBUTING.md").read_text(encoding="utf-8")
+    section = contributing.split("#### GPU evidence", 1)[1].split("### 5.2.", 1)[0]
+    note = " ".join(section.split())
+    assert "While the runner is offline, the docs build, the Pages deploy and the wiki publish wait" in note
+    assert "Unset `NNX_GPU_RUNNER` while the runner is offline" in note
+
+
 def test_every_apt_step_has_its_own_short_timeout():
     apt_steps = [
         (workflow, job_name, step)
