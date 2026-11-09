@@ -1237,6 +1237,23 @@ def test_the_script_refuses_an_output_inside_a_profile_folder_before_any_profile
 
 
 @_POSIX_USER
+def test_the_script_reports_an_output_folder_it_cannot_write_in_without_a_traceback(tmp_path, capsys):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    artifacts = tmp_path / "artifacts"
+    args = ["--output", str(locked / "c.json"), "--artifacts", str(artifacts), "--profile", "feedfwd-fp32-torchscript"]
+    locked.chmod(0o500)
+    try:
+        with pytest.raises(SystemExit) as refused:
+            _script().main([*args, "--source-revision", "test"])
+    finally:
+        locked.chmod(0o700)
+    error = capsys.readouterr().err
+    assert refused.value.code == 2 and "c.json cannot be written: PermissionError" in error and "--force" in error
+    assert os.listdir(locked) == [] and os.listdir(artifacts / "feedfwd-fp32-torchscript")  # the artifacts are kept
+
+
+@_POSIX_USER
 def test_the_script_refuses_a_folder_force_cannot_clear(tmp_path, capsys):
     folder = _filled_folder(tmp_path)
     locked = folder / "sub"

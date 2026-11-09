@@ -29,7 +29,9 @@ or not writable, say). An ``--output`` that is a directory, that lies
 inside a profile folder, or whose parent cannot be created, is refused too. Every folder, and the output,
 is checked before any folder is cleared or written. A folder ``--force``
 cannot clear (one holding a read-only subfolder, say) is refused, and may
-be left partly cleared. Nothing is downloaded. Needs ``thekaveh-nnx[onnx-runtime,onnx-dynamo]``.
+be left partly cleared. An ``--output`` folder that exists but cannot be
+written in is only found once the profiles ran: that exits 2 too, and keeps
+the artifacts. Nothing is downloaded. Needs ``thekaveh-nnx[onnx-runtime,onnx-dynamo]``.
 """
 
 from __future__ import annotations
@@ -100,7 +102,13 @@ def main(argv: list[str] | None = None) -> int:
         report = run_profiles(artifacts, names, source_revision=args.source_revision)
     except ConformanceError as error:  # a folder refused before anything is written
         parser.error(str(error))
-    save_report(report, args.output)
+    try:
+        save_report(report, args.output)
+    except OSError as error:  # only known once the profiles ran: os.access is unreliable with ACLs and root
+        parser.error(
+            f"{args.output} cannot be written: {type(error).__name__}: {error}; "
+            f"the artifacts in {artifacts} are kept, so rerun with --force once the report can be written"
+        )
     for line in summary_lines(report):
         print(line)
     code = exit_code(report)

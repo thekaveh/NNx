@@ -60,6 +60,9 @@ for an `--output` that is a directory, that lies inside a profile folder,
 or whose parent cannot be created; the output is checked before `--force` clears anything. A folder that
 `--force` cannot clear (one holding a read-only subfolder, say) also exits
 `2`, and may be left partly cleared: fix its permissions and run again.
+An `--output` folder that exists but cannot be written in is found only
+once the profiles ran: that also exits `2`, keeps the artifacts, and needs
+`--force` on the next run.
 
 Or from Python:
 
