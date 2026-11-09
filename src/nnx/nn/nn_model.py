@@ -62,6 +62,7 @@ from ..models import (
     _lazy_layers_emulable,
     _materialized_class_name,
     _materialized_topology,
+    _module_registrations,
     _pending_lazy_modules,
     _same_class_once_materialized,
     _settle_loaded_lazy_layers,
@@ -3694,6 +3695,9 @@ class NNModel(_HubMixinBase):
             # Those layers by the names a walk found them at, which a params
             # read checks instead of walking the module (_refresh_lazy_descriptor).
             self._lazy_places: dict[str, torch.nn.Module] = dict(pending)
+            # The registration stamp after that walk: a module registered
+            # since (a lazy layer swapped in elsewhere) makes a read walk again.
+            self._lazy_stamp: Optional[tuple[object, int]] = _module_registrations() if pending else None
             # The module those keys describe: a model given another net (a
             # copy made by quantize_int8, say) keeps its descriptor.
             self._lazy_wrapped: Optional[torch.nn.Module] = module if self._lazy_wrap_keys is not None else None
@@ -3767,9 +3771,10 @@ class NNModel(_HubMixinBase):
         While a lazy layer stays pending (one the forward never reaches), a
         read checks only the lazy layers a walk of the module found, at the
         names it found them at: one still pending there means the walk would
-        find it too. The module is walked again once none is pending, or
-        once another module sits at one of those names (a layer re-created
-        after the wrap)."""
+        find it too. The module is walked again once none is pending, once
+        another module sits at one of those names (a layer re-created after
+        the wrap), or once a submodule was registered anywhere since that
+        walk (a lazy layer swapped in at another name: _module_registrations)."""
         keys = getattr(self, "_lazy_wrap_keys", None)
         module = getattr(self, "net", None)
         if keys is None or module is None:
@@ -3781,8 +3786,11 @@ class NNModel(_HubMixinBase):
             return
         # getattr: a model pickled before the places were kept walks once.
         places: dict[str, torch.nn.Module] = getattr(self, "_lazy_places", {})
-        if any(_is_pending_lazy(layer) for layer in places.values()) and all(
-            _submodule_at(module, name) is layer for name, layer in places.items()
+        stamp = _module_registrations()
+        if (
+            getattr(self, "_lazy_stamp", None) == stamp
+            and any(_is_pending_lazy(layer) for layer in places.values())
+            and all(_submodule_at(module, name) is layer for name, layer in places.items())
         ):
             return
         pending = _pending_lazy_modules(module)
@@ -3795,6 +3803,7 @@ class NNModel(_HubMixinBase):
             # pending ones found now.
             kept = {name: layer for name, layer in places.items() if _submodule_at(module, name) is layer}
             self._lazy_places = {**kept, **dict(pending)}
+            self._lazy_stamp = stamp
             return
         self._lazy_wrap_keys = None
         net = self.__dict__["params"].net

@@ -46,6 +46,7 @@ from typing import Any, Optional, cast
 import torch
 from torch import nn
 from torch.nn.modules.lazy import LazyModuleMixin
+from torch.nn.modules.module import register_module_module_registration_hook
 
 from ._config import _SLUG, _freeze_config, _thaw_config
 from ._validation import plain_str, require_count
@@ -324,6 +325,33 @@ def _submodule_at(module: nn.Module, name: str) -> Optional[nn.Module]:
     for atom in name.split(".") if name else ():
         found = None if found is None else found._modules.get(atom)
     return found
+
+
+# _module_registrations' stamp: a token of this process's own (a stamp copied
+# or unpickled with a model never equals one taken here) and the count. Then
+# the hook that counts, once installed.
+_REGISTRATIONS: list[Any] = [object(), 0]
+_REGISTRATION_HOOK: list[Any] = []
+
+
+def _count_registration(parent: nn.Module, name: str, sub: Optional[nn.Module]) -> None:
+    # Not while dynamo traces: a compiled forward that builds a container
+    # (slicing a ModuleList, say) would guard on the count and recompile at
+    # every call. A plain increment under the GIL: the stamp only has to change.
+    if not torch.compiler.is_compiling():
+        _REGISTRATIONS[1] += 1
+
+
+def _module_registrations() -> tuple[object, int]:
+    """A stamp that changes at every submodule registration in this
+    process (``setattr``, ``add_module`` / ``register_module`` and the
+    containers' ``__setitem__`` / ``append``), counted by torch's global
+    module registration hook, installed at the first call. The hook
+    returns ``None``, so it changes no module. A write straight into
+    ``_modules`` (``insert``, hand-written code) leaves the stamp as it was."""
+    if not _REGISTRATION_HOOK:
+        _REGISTRATION_HOOK.append(register_module_module_registration_hook(_count_registration))
+    return (_REGISTRATIONS[0], _REGISTRATIONS[1])
 
 
 def _has_pending_lazy(module: nn.Module) -> bool:

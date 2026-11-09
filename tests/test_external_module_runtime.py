@@ -1095,6 +1095,72 @@ def test_a_loaded_lazy_conv_put_in_place_of_a_materialized_one_is_settled():
     assert model.params.net == RuntimeModule.of(model.net)
 
 
+class _SwapNet(nn.Module):
+    """A dense conv to swap for a lazy one, a lazy head, and a lazy layer the
+    forward reaches only once ``reach`` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.conv, self.flat = nn.Conv1d(2, 4, 3), nn.Flatten()
+        self.head, self.extra = nn.LazyLinear(2), nn.LazyLinear(2)
+        self.reach = False
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.flat(self.conv(x))
+        return self.head(h) + self.extra(h) if self.reach else self.head(h)
+
+
+def _swap_in_a_loaded_lazy_conv(model: NNModel) -> None:
+    # At a name NNx never recorded, while `extra` stays pending.
+    model.net.conv = nn.LazyConv1d(4, 3)
+    model.net.conv.load_state_dict({"weight": torch.randn(4, 2, 3), "bias": torch.zeros(4)})
+
+
+def test_a_loaded_lazy_layer_swapped_in_where_none_was_lazy_is_settled_when_reached_later():
+    """A module registered after the wrap makes the next read walk the module,
+    so a loaded lazy conv swapped in for a dense one is seen pending, and
+    settled once the last lazy layer materializes (#562)."""
+    model = NNModel(module=_SwapNet(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    X = torch.randn(3, 2, 6)
+    model.predict(X)  # head materializes; extra stays pending
+    _swap_in_a_loaded_lazy_conv(model)
+    model.predict(X)  # conv materializes alone; extra stays pending
+    model.net.reach = True
+    model.predict(X)
+    assert model.net.conv.in_channels == 2  # torch's forward on loaded weights leaves 0
+    assert model.params.net == RuntimeModule.of(model.net)
+
+
+def test_a_loaded_lazy_layer_swapped_in_where_none_was_lazy_is_settled_by_the_next_predict():
+    model = NNModel(module=_SwapNet(), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    X = torch.randn(3, 2, 6)
+    model.predict(X)
+    _swap_in_a_loaded_lazy_conv(model)
+    model.net.reach = True
+    model.predict(X)  # conv and extra materialize in the same forward
+    assert model.net.conv.in_channels == 2
+    assert model.params.net == RuntimeModule.of(model.net)
+
+
+def test_training_with_a_lazy_layer_the_forward_never_reaches_walks_the_module_at_no_batch(monkeypatch):
+    """train() reads params about twice per batch: none of those reads walks
+    the module, since nothing is registered per batch."""
+    import nnx.nn.nn_model as nn_model
+
+    model = NNModel(module=_Deep(2), params=NNModelParams(loss=Losses.CROSS_ENTROPY))
+    model.predict(torch.randn(3, 4))
+    walks = [0]
+    pending = nn_model._pending_lazy_modules
+
+    def counted(module):
+        walks[0] += 1
+        return pending(module)
+
+    monkeypatch.setattr(nn_model, "_pending_lazy_modules", counted)
+    run = model.train(params=_params(_loader()))
+    assert len(run.idps) == 6 and walks[0] == 0
+
+
 def test_the_wrap_adds_no_hook_to_a_lazy_module():
     """Nothing of NNx is put on a caller's module (#562): it scripts, compiles
     and pickles as torch alone leaves it."""
