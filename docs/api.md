@@ -17191,13 +17191,18 @@ Raises:
         (``torch.nn.utils.remove_weight_norm`` /
         ``remove_spectral_norm``) or use their
         ``torch.nn.utils.parametrizations`` forms, which export reads.
-        Also when the embeddings are tied and the ``lm_head`` or
+        Also when the embeddings are tied but the ``lm_head`` no
+        longer reads the embedding's weight: the ``lm_head`` or
         ``tok_embed`` weight is parametrized
-        (``torch.nn.utils.parametrize``): the tied head's one GGUF slot,
-        ``token_embd``, cannot hold both weights. Remove the
-        parametrization and re-tie the head
-        (``net.lm_head.weight = net.tok_embed.weight``), or export a
-        model built with ``tie_embeddings=False``.
+        (``torch.nn.utils.parametrize``), or ``lm_head.weight`` is
+        another tensor with different values (reassigned, or left
+        untied by ``remove_parametrizations``). The tied head's one
+        GGUF slot, ``token_embd``, cannot hold both weights. To keep
+        the outputs, copy the weights the forward reads into a model
+        built with ``tie_embeddings=False`` and export that; removing
+        the parametrization and re-tying the head
+        (``net.lm_head.weight = net.tok_embed.weight``) keeps only one
+        of the two weights and changes the outputs.
         Nothing is written, and no directory is created; the same holds
         for a tokenizer that cannot be read (its own error propagates).
 ```
@@ -17233,8 +17238,8 @@ Raises:
     TypeError: when the network carries a PEFT adapter, a projection
         is not a plain ``nn.Linear``, or any module carries an unbaked
         prune mask or a legacy ``weight_norm`` / ``spectral_norm``
-        hook, or the embeddings are tied and the ``lm_head`` or
-        ``tok_embed`` weight is parametrized (see
+        hook, or the embeddings are tied but the ``lm_head`` no longer
+        reads the embedding's weight (see
         :func:`nnx.interop.gguf.write_gguf`).
 ```
 
@@ -17293,9 +17298,12 @@ Raises:
         ``torch.nn.utils.remove_weight_norm`` /
         ``remove_spectral_norm`` or use their
         ``torch.nn.utils.parametrizations`` forms), or, with tied
-        embeddings, a parametrized ``lm_head`` or ``tok_embed`` weight
-        (remove the parametrization and re-tie the head, or export a
-        model built with ``tie_embeddings=False``).
+        embeddings, an ``lm_head`` that no longer reads the
+        embedding's weight: a parametrized ``lm_head`` or ``tok_embed``
+        weight, or an ``lm_head.weight`` reassigned to different values
+        (copy the weights the forward reads into a model built with
+        ``tie_embeddings=False`` and export that; re-tying the head
+        changes the outputs).
     ImportError: when ``gguf`` is not installed, or the quantization
         needs ``llama-quantize``.
 ```
