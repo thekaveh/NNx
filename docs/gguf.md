@@ -50,8 +50,8 @@ metadata, and stable tensor names. The fused QKV projection is split into
 separate gate, up, and down tensors.
 
 The writer reads each module's stored weight; it does not call the module.
-Bake or remove forward-pre-hook reparameterizations, and parametrizations
-on a tied head or embedding, before exporting:
+Bake or remove forward-pre-hook reparameterizations before exporting, and
+export a tied net whose head or embedding is parametrized as an untied copy:
 
 - An unbaked prune mask (`magnitude_prune(bake=False)` or a
   `torch.nn.utils.prune` method) recomputes `.weight` from `weight_orig` and

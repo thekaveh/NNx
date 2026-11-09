@@ -236,8 +236,9 @@ def write_gguf(
     feed_forward_length = int(2 * params.ffn_mult * params.d_model / 3)
     head_dim = params.d_model // n_heads
     # Read the network (which refuses a PEFT adapter, a factorized
-    # projection, an unbaked prune mask or a legacy weight_norm /
-    # spectral_norm hook) and the tokenizer before anything touches the disk.
+    # projection, an unbaked prune mask, a legacy weight_norm /
+    # spectral_norm hook, or a tied lm_head that no longer reads the
+    # embedding's weight) and the tokenizer before anything touches the disk.
     tensors = map_tensors(transformer_nn)
     vocab = _tokenizer_vocab(tokenizer)
 
