@@ -841,6 +841,28 @@ def test_shutdown_is_bounded_when_a_rank_never_arrives(tmp_path):
         assert late["initialized_after"] is True
 
 
+@pytest.mark.parametrize("failure", ["fetch", "stall"])
+def test_a_group_left_by_a_failed_fit_is_destroyed_before_the_interpreter_finalizes(failure, tmp_path, monkeypatch):
+    """Rank 1's first fetch fails, at once or once rank 0's first step has
+    timed out; each rank catches the error and returns without shutdown().
+    NNx's exit hook destroys the Gloo group before the interpreter
+    finalizes, and nothing holds it after (DDP's import of
+    torch.distributed.nn did, so its worker threads outlived the destroy):
+    a worker thread that releases a failed collective's tensors during
+    finalization calls std::terminate (exit -6, "terminate called without
+    an active exception"; seen on Linux under load, not on macOS)."""
+    monkeypatch.setenv("NNX_DDP_FAILURE", failure)
+    monkeypatch.setenv("NNX_DDP_TIMEOUT", "15")
+    out = tmp_path / f"rank-fails-{failure}"
+    completed = launch("rank_fails_mid_fit", out, check=False, timeout=120)
+    assert completed.returncode == 0 and "terminate called" not in completed.stderr, completed.stderr[-4000:]
+    waiting, failing = results(out)
+    assert failing["error"].startswith("OSError: cannot read sample"), failing
+    assert waiting["error"] is not None and "OSError" not in waiting["error"], waiting
+    for rank in range(2):
+        assert (out / f"exit-rank{rank}.txt").read_text(encoding="utf-8") == "destroyed"
+
+
 def test_single_process_entry_points_refuse_a_multi_rank_group(tmp_path):
     """FIX-028: ``ExperimentPlan.fit``, ``nnx.search.search`` and
     ``Trainer.train`` train in one process; under a two-rank torchrun each

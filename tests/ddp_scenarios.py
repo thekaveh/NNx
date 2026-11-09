@@ -19,6 +19,7 @@ import gc
 import os
 import sys
 import traceback
+import weakref
 from dataclasses import replace
 
 import torch
@@ -71,6 +72,19 @@ class UnreadableRows(Rows):
 
     def __getitem__(self, index: int):
         raise OSError(f"cannot read sample {index}")
+
+
+class StallingRows(UnreadableRows):
+    """``UnreadableRows`` whose read stalls 5 s past the group's timeout
+    (``NNX_DDP_TIMEOUT``) before it fails: a hung network mount, say. It
+    fails rather than serves, so this rank enters no collective once its
+    peer has left (on macOS, Gloo's uv transport can then hang)."""
+
+    def __getitem__(self, index: int):
+        import time
+
+        time.sleep(float(os.environ.get("NNX_DDP_TIMEOUT", "60")) + 5)
+        return super().__getitem__(index)
 
 
 def _device() -> Devices:
@@ -724,6 +738,22 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             out["initialized_after"] = torch.distributed.is_initialized()
             out["teardown_done"] = True  # left for process exit when the wait failed
 
+    elif name == "rank_fails_mid_fit":
+        # Rank 1's first fetch fails (NNX_DDP_FAILURE=fetch), or first stalls
+        # past the group's timeout, so rank 0's first step times out (=stall).
+        # Each rank catches its error and returns without shutdown(), as a
+        # user program does when train() raises: the group is left for exit.
+        failure = os.environ.get("NNX_DDP_FAILURE", "fetch")
+        data = train_set()
+        if rank == 1:
+            data = UnreadableRows(11, seed=1) if failure == "fetch" else StallingRows(11, seed=1)
+        try:
+            model().train(params=params(nnx_dist.train_loader(data, batch_size=2, seed=3)), distributed=nnx_dist.DDP())
+            out["error"] = None
+        except BaseException as error:  # noqa: BLE001 - recorded for the test
+            out["error"] = f"{type(error).__name__}: {error}"
+        out["teardown_done"] = True  # the group is left for process exit
+
     elif name == "single_process_entries":
         # FIX-028: the single-process entry points refuse a multi-rank group
         # before any study, factory call or run; one rank behaves as before.
@@ -1350,12 +1380,32 @@ def _mark(phase: str) -> None:
     print(f"[ddp-scenario pid={os.getpid()} rank={os.environ.get('RANK', '?')}] {phase}", file=sys.stderr, flush=True)
 
 
+_WORLD: list = []  # a weak reference to the default group, once formed
+
+
+def _record_exit_state(out_dir: str) -> None:
+    """``exit-rank<r>.txt``: whether the process group was still initialized
+    once the other exit hooks ran, and if not, whether anything still held
+    it (a held group outlives ``destroy_process_group()``, worker threads
+    and all). Registered before ``init_process_group()``, so it runs after
+    any exit hook that NNx registers."""
+    if torch.distributed.is_initialized():
+        state = "initialized"
+    else:
+        gc.collect()
+        state = "destroyed" if not _WORLD or _WORLD[0]() is None else "destroyed but held"
+    with open(os.path.join(out_dir, f"exit-rank{os.environ.get('RANK', '?')}.txt"), "w", encoding="utf-8") as handle:
+        handle.write(state)
+
+
 def main() -> None:
     name, out_dir = sys.argv[1], sys.argv[2]
     os.chdir(out_dir)
     _watch_for_hangs(out_dir)
     atexit.register(_mark, "interpreter exiting")
+    atexit.register(_record_exit_state, out_dir)
     rank, world_size = nnx_dist.init_process_group(timeout_seconds=float(os.environ.get("NNX_DDP_TIMEOUT", "60")))
+    _WORLD.append(weakref.ref(torch.distributed.group.WORLD))
     _mark(f"joined the group: {name}")
     try:
         result = scenario(name, rank, world_size)
