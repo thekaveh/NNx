@@ -8,7 +8,9 @@ install the extra still get a clean ``pytest -q``.
 from __future__ import annotations
 
 import pickle
+import sys
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -68,7 +70,8 @@ def tiny_model() -> NNModel:
 
 # The process-wide settings torchao's recommended_inductor_config_setter()
 # changes (FIX-060, #527). The fp32_precision attributes are absent before
-# torch 2.9, so they read as None there.
+# torch 2.9, and a torch release may drop an inductor flag, so a setting this
+# torch lacks reads as None.
 _INDUCTOR_FLAGS = (
     "coordinate_descent_tuning",
     "coordinate_descent_check_all_directions",
@@ -76,14 +79,27 @@ _INDUCTOR_FLAGS = (
 )
 
 
+def _matmul_backends() -> dict[str, object]:
+    """The backends with a per-backend fp32 precision (``mkldnn.matmul`` is
+    absent on older torch)."""
+    backends = {
+        "cuda.matmul": torch.backends.cuda.matmul,
+        "mkldnn.matmul": getattr(torch.backends.mkldnn, "matmul", None),
+    }
+    return {name: backend for name, backend in backends.items() if backend is not None}
+
+
 def _global_settings() -> dict[str, object]:
     import torch._inductor.config as inductor
 
+    backends = _matmul_backends()
     return {
         "float32_matmul_precision": torch.get_float32_matmul_precision(),
-        "cuda.matmul.fp32_precision": getattr(torch.backends.cuda.matmul, "fp32_precision", None),
-        "mkldnn.matmul.fp32_precision": getattr(torch.backends.mkldnn.matmul, "fp32_precision", None),
-        **{f"inductor.{flag}": getattr(inductor, flag) for flag in _INDUCTOR_FLAGS},
+        **{
+            f"{name}.fp32_precision": getattr(backends.get(name), "fp32_precision", None)
+            for name in ("cuda.matmul", "mkldnn.matmul")
+        },
+        **{f"inductor.{flag}": getattr(inductor, flag, None) for flag in _INDUCTOR_FLAGS},
     }
 
 
@@ -133,21 +149,40 @@ def test_quantize_int8_does_not_mutate_original(tiny_model):
     assert out.shape == (2, 3)
 
 
-def _restore_global_settings_at_teardown(monkeypatch) -> None:
-    """Have ``monkeypatch`` put back the inductor flags and the per-backend
-    fp32 precisions. ``torch.set_float32_matmul_precision`` rewrites the
-    per-backend values (``"highest"`` gives ``"ieee"``, not ``"none"``), so
-    restoring the global one alone does not round-trip them."""
+def _saved_global_settings() -> list[tuple[object, str, object]]:
+    """``(target, name, value)`` for the inductor flags and per-backend fp32
+    precisions this torch has (any it lacks is skipped)."""
     import torch._inductor.config as inductor
 
-    for backend in (torch.backends.cuda.matmul, torch.backends.mkldnn.matmul):
-        if hasattr(backend, "fp32_precision"):
-            monkeypatch.setattr(backend, "fp32_precision", backend.fp32_precision)
+    saved = [
+        (backend, "fp32_precision", backend.fp32_precision)
+        for backend in _matmul_backends().values()
+        if hasattr(backend, "fp32_precision")
+    ]
     for flag in ("fx_graph_cache", "triton.unique_kernel_names", *_INDUCTOR_FLAGS):
-        monkeypatch.setattr(inductor, flag, getattr(inductor, flag))
+        if hasattr(inductor, flag):
+            saved.append((inductor, flag, getattr(inductor, flag)))
+    return saved
 
 
-def test_quantize_int8_leaves_matmul_precision_and_inductor_flags_unchanged(monkeypatch, tiny_model):
+def _restore_global_settings_at_teardown(request) -> None:
+    """Put back the inductor flags and the per-backend fp32 precisions at
+    teardown. ``torch.set_float32_matmul_precision`` rewrites the per-backend
+    values (``"highest"`` gives ``"ieee"``, not ``"none"``), so restoring the
+    global one alone does not round-trip them. Not through ``monkeypatch``:
+    torch serves these attributes through ``__getattr__``, which pytest 9.2's
+    ``monkeypatch`` records as absent, so its undo deletes them (removing the
+    inductor config entry for the rest of the process)."""
+    saved = _saved_global_settings()
+
+    def restore() -> None:
+        for target, name, value in saved:
+            setattr(target, name, value)
+
+    request.addfinalizer(restore)
+
+
+def test_quantize_int8_leaves_matmul_precision_and_inductor_flags_unchanged(request, tiny_model):
     """FIX-060 (#527): torchao's default ``set_inductor_config=True`` set the
     float32 matmul precision to ``"high"`` (TF32 on capable hardware, so later
     runs recorded TF32 as enabled) and five inductor flags, for the rest of
@@ -155,12 +190,13 @@ def test_quantize_int8_leaves_matmul_precision_and_inductor_flags_unchanged(monk
     earlier test in the worker already leaked the changed values."""
     import torch._inductor.config as inductor
 
-    _restore_global_settings_at_teardown(monkeypatch)
+    _restore_global_settings_at_teardown(request)
     prior = torch.get_float32_matmul_precision()
     torch.set_float32_matmul_precision("highest")
     try:
         for flag in _INDUCTOR_FLAGS:
-            monkeypatch.setattr(inductor, flag, False)
+            if hasattr(inductor, flag):
+                setattr(inductor, flag, False)
         before = _global_settings()
         quantize_int8(tiny_model)
         assert _global_settings() == before
@@ -168,7 +204,7 @@ def test_quantize_int8_leaves_matmul_precision_and_inductor_flags_unchanged(monk
         torch.set_float32_matmul_precision(prior)
 
 
-def test_quantize_int8_is_bitwise_equal_to_torchaos_default_config(monkeypatch, tiny_model):
+def test_quantize_int8_is_bitwise_equal_to_torchaos_default_config(request, tiny_model):
     """Not touching the global settings changes nothing in the result: the
     weights' int8 data, scales and the outputs equal those of torchao's
     default ``Int8WeightOnlyConfig(version=2)``, run here with its global
@@ -176,7 +212,7 @@ def test_quantize_int8_is_bitwise_equal_to_torchaos_default_config(monkeypatch, 
     from torchao.quantization import Int8WeightOnlyConfig, quantize_
 
     reference = deepcopy(tiny_model.net)
-    _restore_global_settings_at_teardown(monkeypatch)
+    _restore_global_settings_at_teardown(request)
     prior = torch.get_float32_matmul_precision()
     try:
         quantize_(reference, Int8WeightOnlyConfig(version=2))
@@ -195,6 +231,38 @@ def test_quantize_int8_is_bitwise_equal_to_torchaos_default_config(monkeypatch, 
     x = torch.randn(16, 32, generator=torch.Generator().manual_seed(0))
     with torch.no_grad():
         assert torch.equal(m_q.net(x), reference(x))
+
+
+def test_settings_probe_skips_an_inductor_flag_this_torch_lacks(monkeypatch):
+    """A flag a torch release removed reads as None and is never saved, so
+    neither the per-test probe nor the teardown restore raises on it."""
+    import torch._inductor.config as inductor
+
+    removed = "flag_a_torch_release_removed"
+    assert not hasattr(inductor, removed)
+    monkeypatch.setattr(sys.modules[__name__], "_INDUCTOR_FLAGS", (*_INDUCTOR_FLAGS, removed))
+    assert _global_settings()[f"inductor.{removed}"] is None
+    assert removed not in [name for _, name, _ in _saved_global_settings()]
+
+
+def test_teardown_restore_sets_each_setting_back_and_never_deletes_one():
+    """The restore puts every saved setting back to its exact value and leaves
+    it defined (pytest 9.2's ``monkeypatch`` undo deleted torch's inductor
+    config entries)."""
+    import torch._inductor.config as inductor
+
+    finalizers: list = []
+    _restore_global_settings_at_teardown(SimpleNamespace(addfinalizer=finalizers.append))
+    saved = _saved_global_settings()
+    assert any(target is inductor and isinstance(value, bool) for target, _, value in saved)  # not vacuous
+    try:
+        for target, name, value in saved:
+            if isinstance(value, bool):
+                setattr(target, name, not value)
+    finally:
+        (restore,) = finalizers
+        restore()
+    assert [(target, name, getattr(target, name, "<deleted>")) for target, name, _ in saved] == saved
 
 
 def test_quantize_int8_replaces_linear_weights_with_quantized_tensor(tiny_model):
