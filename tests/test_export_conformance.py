@@ -1176,7 +1176,8 @@ def _filled_folder(tmp_path):
 @pytest.fixture
 def uncreatable_parent(tmp_path, request):
     """An ``--output`` whose parent cannot be created: under a regular file,
-    or under a read-only folder (its mode restored afterwards)."""
+    a read-only folder or one that cannot be searched (its mode restored
+    afterwards)."""
     if request.param == "under-a-file":
         (tmp_path / "afile").write_bytes(b"")
         yield tmp_path / "afile" / "out" / "c.json", "NotADirectoryError"
@@ -1185,7 +1186,7 @@ def uncreatable_parent(tmp_path, request):
         pytest.skip("a read-only folder is writable by root")
     locked = tmp_path / "ro"
     locked.mkdir()
-    locked.chmod(0o555)
+    locked.chmod(0o555 if request.param == "read-only" else 0o000)
     try:
         yield locked / "out" / "c.json", "PermissionError"
     finally:
@@ -1193,7 +1194,7 @@ def uncreatable_parent(tmp_path, request):
 
 
 @pytest.mark.parametrize("force", [False, True])
-@pytest.mark.parametrize("uncreatable_parent", ["under-a-file", "read-only"], indirect=True)
+@pytest.mark.parametrize("uncreatable_parent", ["under-a-file", "read-only", "unsearchable"], indirect=True)
 def test_the_script_refuses_an_output_whose_parent_cannot_be_created(tmp_path, capsys, uncreatable_parent, force):
     output, cause = uncreatable_parent
     name = "feedfwd-fp32-torchscript"
@@ -1218,6 +1219,21 @@ def test_the_script_refuses_an_output_that_is_a_directory_before_any_profile_run
         _script().main([*args, "--source-revision", "test"])
     assert refused.value.code == 2 and f"{output} is a directory" in capsys.readouterr().err
     assert not os.path.lexists(artifacts) and os.listdir(output) == []  # nothing was exported or written
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("inside", [".", "sub"])
+def test_the_script_refuses_an_output_inside_a_profile_folder_before_any_profile_runs(tmp_path, capsys, inside, force):
+    folder = _filled_folder(tmp_path) if force else tmp_path / "artifacts" / "feedfwd-fp32-torchscript"
+    output = folder / inside / "c.json"
+    args = ["--output", str(output), "--artifacts", str(folder.parent), "--source-revision", "test"]
+    with pytest.raises(SystemExit) as refused:
+        _script().main([*args, "--force"] if force else args)
+    assert refused.value.code == 2 and "is inside the profile folder" in capsys.readouterr().err  # a usage error
+    if force:
+        assert os.listdir(folder) == ["old.onnx"]  # nothing was cleared, created or exported
+    else:
+        assert not os.path.lexists(folder.parent)  # nothing was created or exported
 
 
 @_POSIX_USER
