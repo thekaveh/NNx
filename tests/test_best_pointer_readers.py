@@ -166,6 +166,16 @@ def _attempt_id(record):
     return None if record is None or record.attempt is None else record.attempt.attempt_id
 
 
+def _case_sensitive(directory: Path) -> bool:
+    """Whether the filesystem holding ``directory`` tells ``a`` from ``A``."""
+    probe = directory / "case-probe"
+    probe.mkdir()
+    try:
+        return not os.path.exists(directory / "CASE-PROBE")
+    finally:
+        probe.rmdir()
+
+
 def _absent(reader, run, root):
     expected = ABSENT[reader]
     if isinstance(expected, type):
@@ -178,11 +188,12 @@ def _absent(reader, run, root):
 @pytest.mark.parametrize("reader", sorted(READERS))
 @pytest.mark.parametrize("layout", LAYOUTS)
 def test_a_reader_of_best_reads_the_run_the_pointer_names(runs, tmp_path, layout, reader):
-    """In both layouts, a read of ``"best"`` (and of a case variant, which a
-    case-insensitive filesystem opens as ``runs/best``) returns what a read
-    of the run's own id returns, with and without ``root=``. On the old code
-    every one of them read ``runs/best/`` directly, which in the POINTER.txt
-    layout holds no run."""
+    """In both layouts, a read of ``"best"`` returns what a read of the run's
+    own id returns, with and without ``root=``, and so does a case variant
+    where the filesystem opens it as ``runs/best``; on a case-sensitive one
+    ``BEST`` is a run of its own, here absent. On the old code every one of
+    them read ``runs/best/`` directly, which in the POINTER.txt layout holds
+    no run."""
     model_id, _, point = runs
     point(layout, model_id)
     assert NNRun.best_id() == model_id
@@ -190,7 +201,10 @@ def test_a_reader_of_best_reads_the_run_the_pointer_names(runs, tmp_path, layout
         own = READERS[reader](model_id, root)
         assert own is not None and own != (None, None) and own != []
         assert READERS[reader]("best", root) == own
-    assert READERS[reader]("BEST", str(tmp_path)) == own
+    if _case_sensitive(tmp_path):
+        _absent(reader, "BEST", str(tmp_path))
+    else:
+        assert READERS[reader]("BEST", str(tmp_path)) == own
 
 
 @pytest.mark.parametrize("reader", sorted(READERS))
@@ -347,3 +361,93 @@ def test_a_pointer_to_a_case_variant_of_best_names_no_run(runs, tmp_path, layout
     with pytest.raises(FileNotFoundError, match="runs/best"):
         NNRun.load("best")
     assert NNCheckpoint.load(run="best", type=Checkpoints.LAST) is None
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_on_a_case_sensitive_filesystem_a_run_named_BEST_is_that_run(runs, tmp_path, layout):
+    """Run ids are user-chosen (``NNCheckpoint.save(run="BEST")`` is public):
+    on a case-sensitive filesystem ``runs/BEST`` is a run of its own beside
+    ``runs/best``, so a read of it reads it, and ``NNRun.all`` lists it. On
+    the old code (``"best"`` in any case read the pointer) its load returned
+    the pointed-at run's checkpoint and ``NNRun.all`` dropped it."""
+    if not _case_sensitive(tmp_path):
+        pytest.skip("needs a case-sensitive filesystem, which tells runs/BEST from runs/best")
+    from nnx.nn.params.nn_run import _is_run_entry
+
+    model_id, trainer_id, point = runs
+    point(layout, model_id)
+    shutil.copytree(tmp_path / "runs" / trainer_id, tmp_path / "runs" / "BEST")
+    own = NNCheckpoint.load(trainer_id, Checkpoints.LAST).training_state_id
+    assert own != NNCheckpoint.load(model_id, Checkpoints.LAST).training_state_id
+    assert NNCheckpoint.load(run="BEST", type=Checkpoints.LAST).training_state_id == own
+    assert READERS["load_with_training_state"]("BEST", None) == READERS["load_with_training_state"](trainer_id, None)
+    assert READERS["load_with_training_state"]("best", None) == READERS["load_with_training_state"](model_id, None)
+    assert _is_run_entry(str(tmp_path / "runs"), "BEST")
+    assert len(NNRun.all()) == 3  # the model run, the trainer run and BEST
+    assert NNRun.best_id() == model_id
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_on_a_case_insensitive_filesystem_BEST_is_refused_as_best_is(runs, tmp_path, layout):
+    """Where ``runs/BEST`` opens ``runs/best``, ``migrate_history`` and
+    ``export_bundle`` refuse it as they refuse ``"best"``: the pointer is a
+    moving alias, and a migration's lease is keyed by the run's own id. On
+    the old code both went ahead through the pointer (or, in the POINTER.txt
+    layout, failed on a missing run rather than as the alias)."""
+    if _case_sensitive(tmp_path):
+        pytest.skip("needs a case-insensitive filesystem, which opens runs/BEST as runs/best")
+    from nnx.bundles import BundleError, export_bundle
+    from nnx.history import migrate_history
+    from nnx.nn.params.nn_run import _is_run_entry
+
+    model_id, _, point = runs
+    point(layout, model_id)
+    for alias in ("best", "BEST", "Best"):
+        with pytest.raises(ValueError, match="through the runs/best pointer"):
+            migrate_history(alias)
+        with pytest.raises(BundleError, match='not the "best" pointer'):
+            export_bundle(alias, tmp_path / "bundle")
+        assert not _is_run_entry(str(tmp_path / "runs"), alias)
+    assert not os.path.lexists(tmp_path / "runs" / ".leases" / "BEST.lock")
+
+
+def _child(parent: str):
+    return _model().train(params=_fit_params(n_epochs=1, resume_from_run_id=parent), provenance=MANIFEST)
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_on_a_case_insensitive_filesystem_a_child_of_BEST_is_a_child_of_the_alias(runs, tmp_path, layout):
+    """A child resumed through ``"BEST"`` (which opens ``runs/best`` here)
+    records that parent; history and comparison read it as the moving alias,
+    as for a child of ``"best"``: observed with the same configuration
+    identity, its lineage starting at itself with the alias warning. On the
+    old code the POINTER.txt layout raised ``ComparisonError`` (its
+    ``run.yaml`` was read from ``runs/BEST``) and the symlink layout stitched
+    the alias's records as a fixed parent's."""
+    if _case_sensitive(tmp_path):
+        pytest.skip("needs a case-insensitive filesystem, which opens runs/BEST as runs/best")
+    model_id, _, point = runs
+    point(layout, model_id)
+    children = [_child("best").id]
+    point(layout, model_id)  # a child's save may have moved the pointer
+    children.append(_child("BEST").id)
+    assert NNRun.load(children[1]).resume_status.source_run_id == "BEST"
+    observed = observations_from_runs(children, metric=Metric("loss", "minimize"))
+    assert [item.run_id for item in observed] == children
+    assert observed[0].config == observed[1].config
+    for child in children:
+        with pytest.warns(RuntimeWarning, match="resumed from the runs/best pointer"):
+            records = list(iter_history(child, lineage=True))
+        assert [record.epoch_idx for record in records] == [record.epoch_idx for record in iter_history(child)]
+
+
+def test_a_resume_from_a_run_whose_metadata_is_not_utf8_records_no_source_attempt(runs, tmp_path):
+    """A source's ``metadata.yaml`` that is not UTF-8 reads as recording no
+    attempt, as before this branch: the resume goes ahead with
+    ``source_attempt_token`` ``None``."""
+    model_id, _, _ = runs
+    with open(tmp_path / "runs" / model_id / "metadata.yaml", "ab") as handle:
+        handle.write(b"\xff\xfe junk")
+    resumed = _child(model_id)
+    status = NNRun.load(resumed.id).resume_status
+    assert status is not None and status.source_run_id == model_id and status.source_attempt_token is None

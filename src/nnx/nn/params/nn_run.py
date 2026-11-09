@@ -375,11 +375,12 @@ def _uncommitted(run_path: str) -> bool:
 def _is_run_entry(runs_root: str, entry: str) -> bool:
     """Whether ``runs/<entry>`` is a run: a directory holding ``run.yaml``,
     and never the ``best`` pointer, the ``best.tmp`` temporary an interrupt
-    inside ``_point_best`` can strand (either in any case, which a
-    case-insensitive filesystem opens as them), or a dot-name (``.leases``,
+    inside ``_point_best`` can strand (or a case variant of either that the
+    filesystem opens as it, :func:`_opens_as`), or a dot-name (``.leases``,
     locks). Shared by ``NNRun.all`` and the ``runs/best`` election, so
-    neither sees a run twice through a stale alias (#522)."""
-    if entry.casefold() in (_BEST_POINTER, _BEST_TEMP) or entry.startswith("."):
+    neither sees a run twice through a stale alias (#522). On a
+    case-sensitive filesystem a run named ``BEST`` is a run."""
+    if entry.startswith(".") or any(_opens_as(runs_root, entry, name) for name in (_BEST_POINTER, _BEST_TEMP)):
         return False
     run_path = os.path.join(runs_root, entry)
     return os.path.isdir(run_path) and os.path.isfile(os.path.join(run_path, "run.yaml"))
@@ -496,13 +497,42 @@ def _read_best_pointer(best_run_path: str) -> Optional[str]:
     return None
 
 
-def _names_best_pointer(run_id: str) -> bool:
-    """Whether a read of ``run_id`` names the ``runs/best`` pointer:
-    ``"best"`` in any case, since the default macOS and Windows filesystems
-    open ``runs/BEST`` as ``runs/best``. Run ids are user-chosen through
-    ``NNCheckpoint.save(run=...)``, so a case variant is not refused; it
-    only reads the pointer."""
+def _opens_as(runs_root: str, entry: str, name: str) -> bool:
+    """Whether ``runs/<entry>`` is the entry ``runs/<name>``: ``entry`` is
+    ``name``, or a case variant of it that the filesystem opens as the same
+    entry (``lstat`` gives both one ``(st_dev, st_ino)``), as the default
+    macOS and Windows filesystems open ``runs/BEST`` as ``runs/best``. On a
+    case-sensitive filesystem a case variant is an entry of its own, or
+    none."""
+    if entry == name:
+        return True
+    if entry.casefold() != name:
+        return False
+    try:
+        own, named = os.lstat(os.path.join(runs_root, entry)), os.lstat(os.path.join(runs_root, name))
+    except OSError:  # either is absent: not one entry
+        return False
+    return (own.st_dev, own.st_ino) == (named.st_dev, named.st_ino)
+
+
+def _may_name_best_pointer(run_id: str) -> bool:
+    """Whether ``run_id`` is ``"best"`` in some case, from the string alone:
+    the DDP gate of a resume, which every rank passes or skips alike even
+    if a repoint races an ``lstat``. Whether it addresses the pointer
+    (:func:`_addresses_best_pointer`) the writer rank decides inside the
+    gather."""
     return run_id.casefold() == _BEST_POINTER
+
+
+def _addresses_best_pointer(run_id: str, root: Optional[str]) -> bool:
+    """Whether ``run_id`` addresses the ``runs/best`` pointer: it is
+    ``"best"``, or a case variant the filesystem opens as ``runs/best``
+    (:func:`_opens_as`). Run ids are user-chosen through
+    ``NNCheckpoint.save(run=...)``, so on a case-sensitive filesystem a run
+    named ``BEST`` is that run. The one rule the readers, the
+    ``migrate_history`` and ``export_bundle`` refusals and the recorded
+    parents of ``nnx.history`` and ``nnx.comparison`` share."""
+    return isinstance(run_id, str) and _opens_as(_runs_root(root), run_id, _BEST_POINTER)
 
 
 def _resolve_run_id(run_id: str, root: Optional[str]) -> Optional[str]:
@@ -513,7 +543,7 @@ def _resolve_run_id(run_id: str, root: Optional[str]) -> Optional[str]:
     dot-name, ``..``) is never followed out of the runs root. Each reader
     resolves once per call; saves to ``run="best"`` never resolve."""
     run_id = _validate_run_id(run_id)
-    if not _names_best_pointer(run_id):
+    if not _addresses_best_pointer(run_id, root):
         return run_id
     best = NNRun.best_id(root)
     return None if best is None else _validate_run_id(best)
@@ -1194,8 +1224,9 @@ class NNRun:
         with an empty history; a committed or legacy run without
         ``idps.csv`` raises ``ValueError`` naming the file.
 
-        ``id="best"`` (in any case) loads the run `NNRun.best_id` names, in
-        the symlink and the ``best/POINTER.txt`` layout alike, and raises
+        ``id="best"`` (or a case variant the filesystem opens as
+        ``runs/best``) loads the run `NNRun.best_id` names, in the symlink
+        and the ``best/POINTER.txt`` layout alike, and raises
         ``FileNotFoundError`` when no run holds the pointer, as for an
         absent run."""
         return NNRun._load(id, root)

@@ -1210,9 +1210,10 @@ def iter_history(run_id: str, root: Optional[str] = None, *, lineage: bool = Fal
     ``parent_run_id``, say) starts its own epochs, and its lineage is its
     own history.
 
-    ``run_id="best"`` (in any case) streams the run the ``runs/best``
-    pointer names, in the symlink and the ``best/POINTER.txt`` layout alike,
-    and raises ``ValueError`` when no run holds it, as for an absent run.
+    ``run_id="best"`` (or a case variant the filesystem opens as
+    ``runs/best``) streams the run the ``runs/best`` pointer names, in the
+    symlink and the ``best/POINTER.txt`` layout alike, and raises
+    ``ValueError`` when no run holds it, as for an absent run.
     """
     from .nn.params.nn_run import _resolve_run_id, _runs_root
 
@@ -1279,9 +1280,9 @@ def _parent_prefix(
     and only from the parent attempt it resumed from, when it recorded one
     (#553)."""
     from .components import _BUNDLE_ATTEMPT_PREFIX
-    from .nn.params.nn_run import _committed_epoch, _recorded_attempt_token
+    from .nn.params.nn_run import _addresses_best_pointer, _committed_epoch, _recorded_attempt_token
 
-    if parent == "best":
+    if _addresses_best_pointer(parent, root):
         from .nn.callbacks import _warn_at_user_frame
 
         _warn_at_user_frame(
@@ -1395,10 +1396,10 @@ def migrate_history(
     """
     from filelock import FileLock, Timeout
 
-    from .nn.params.nn_run import _lease_path, _runs_root
+    from .nn.params.nn_run import _addresses_best_pointer, _lease_path, _runs_root
 
     spec = spec or HistoryJournal()
-    if run_id == "best":
+    if _addresses_best_pointer(run_id, root):  # its lease is keyed by the run's own id
         raise ValueError("migrate a run by its own id, not through the runs/best pointer")
     run_path = _run_path(run_id, root)
     if not os.path.isfile(os.path.join(run_path, "run.yaml")):

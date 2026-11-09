@@ -5704,7 +5704,7 @@ A run's provenance: the declared manifest, its fingerprint and the attempt that 
 nnx.provenance.load_provenance(run_id: 'str', root: 'Optional[str]' = None) -> 'Optional[ProvenanceRecord]'
 ```
 
-Read a run's provenance files; ``None`` when it has none (absent). Raises ``ValueError`` for an unsupported format, a fingerprint that does not match its manifest, or JSON nested too deeply to read; a malformed entry (a missing key, a non-object entry) raises ``KeyError`` or ``TypeError``. ``run_id="best"`` (in any case) reads the run the ``runs/best`` pointer names, in the symlink and the ``best/POINTER.txt`` layout alike; ``None`` when no run holds it.
+Read a run's provenance files; ``None`` when it has none (absent). Raises ``ValueError`` for an unsupported format, a fingerprint that does not match its manifest, or JSON nested too deeply to read; a malformed entry (a missing key, a non-object entry) raises ``KeyError`` or ``TypeError``. ``run_id="best"`` (or a case variant the filesystem opens as ``runs/best``) reads the run the ``runs/best`` pointer names, in the symlink and the ``best/POINTER.txt`` layout alike; ``None`` when no run holds it.
 
 
 #### `nnx.provenance.compare`
@@ -9157,10 +9157,11 @@ only up to it — not at all while it is unknown, so an uncommitted tail
 is never read. A legacy run (no commit marker) keeps its value,
 but its status is unknown, so it is never counted in a group's ``n``.
 A NaN metric is read back as missing: ``idps.csv`` writes NaN as an
-empty cell. A run id ``"best"`` (in any case) reads the run the
-``runs/best`` pointer names, in the symlink and the ``best/POINTER.txt``
-layout alike, observed under that run's own id; when no run holds the
-pointer it is refused as a missing run.
+empty cell. A run id ``"best"`` (or a case variant the filesystem opens
+as ``runs/best``) reads the run the ``runs/best`` pointer names, in the
+symlink and the ``best/POINTER.txt`` layout alike, observed under that
+run's own id; when no run holds the pointer it is refused as a missing
+run.
 ```
 
 
@@ -11535,8 +11536,9 @@ Load a saved run. Its history is ``idps.csv`` read whole — or, for a run with 
 **Details**
 
 ```text
-``id="best"`` (in any case) loads the run `NNRun.best_id` names, in
-the symlink and the ``best/POINTER.txt`` layout alike, and raises
+``id="best"`` (or a case variant the filesystem opens as
+``runs/best``) loads the run `NNRun.best_id` names, in the symlink
+and the ``best/POINTER.txt`` layout alike, and raises
 ``FileNotFoundError`` when no run holds the pointer, as for an
 absent run.
 ```
@@ -11828,7 +11830,7 @@ arbitrary-code path.
 nnx.nn.params.nn_checkpoint.NNCheckpoint.load(run: 'str', type: 'Checkpoints', root: 'Optional[str]' = None, map_location: 'Any' = 'cpu') -> 'Optional[NNCheckpoint]'
 ```
 
-Load run ``run``'s ``type`` checkpoint, or ``None`` when it is absent. ``run="best"`` (in any case) reads the run `NNRun.best_id` names, in the symlink and the ``best/POINTER.txt`` layout alike, and returns ``None`` when no run holds the pointer.
+Load run ``run``'s ``type`` checkpoint, or ``None`` when it is absent. ``run="best"`` (or a case variant the filesystem opens as ``runs/best``) reads the run `NNRun.best_id` names, in the symlink and the ``best/POINTER.txt`` layout alike, and returns ``None`` when no run holds the pointer.
 
 
 #### `nnx.nn.params.nn_checkpoint.ResumePointError`
@@ -12104,9 +12106,10 @@ fresh (a born-again generation naming its teacher's run as
 ``parent_run_id``, say) starts its own epochs, and its lineage is its
 own history.
 
-``run_id="best"`` (in any case) streams the run the ``runs/best``
-pointer names, in the symlink and the ``best/POINTER.txt`` layout alike,
-and raises ``ValueError`` when no run holds it, as for an absent run.
+``run_id="best"`` (or a case variant the filesystem opens as
+``runs/best``) streams the run the ``runs/best`` pointer names, in the
+symlink and the ``best/POINTER.txt`` layout alike, and raises
+``ValueError`` when no run holds it, as for an absent run.
 ```
 
 

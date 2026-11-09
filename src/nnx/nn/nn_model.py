@@ -111,7 +111,7 @@ from .params.nn_params import NNParams
 from .params.nn_run import (
     NNRun,
     _best_err,
-    _names_best_pointer,
+    _may_name_best_pointer,
     _print_run_saved,
     _recorded_attempt_token,
     _resolve_run_id,
@@ -478,11 +478,13 @@ def _resume_source_id(run_id: str, ddp: Any) -> Optional[str]:
     resolved once, so the source attempt, the verified point, its load and
     the recorded hyperparameters all read one run, in the symlink and the
     ``best/POINTER.txt`` layout alike. The recorded lineage keeps
-    ``run_id``. Under DDP the writer rank resolves the pointer and shares
-    the id or its failure (``ddp.gather``), so a repoint between two ranks'
-    reads cannot split them; an invalid run id fails alike on every rank,
-    as itself."""
-    if ddp is None or not _names_best_pointer(_validate_run_id(run_id)):
+    ``run_id``. Under DDP a run id that is ``"best"`` in some case (decided
+    from the string, alike on every rank) is resolved by the writer rank,
+    which also decides whether a case variant addresses the pointer, and
+    shares the id or its failure (``ddp.gather``), so a repoint between two
+    ranks' reads cannot split them; an invalid run id fails alike on every
+    rank, as itself."""
+    if ddp is None or not _may_name_best_pointer(_validate_run_id(run_id)):
         return _resolve_run_id(run_id, None)
     from ..distributed import DistributedFailure
 
@@ -563,7 +565,10 @@ def _load_resume_source(
         # #553: the source's attempt, read before its checkpoint: a source
         # retrained in place in between is then recorded as the earlier
         # attempt, which its lineage no longer stitches.
-        attempt = _recorded_attempt_token(os.path.join(_runs_root(), source_id))
+        try:
+            attempt = _recorded_attempt_token(os.path.join(_runs_root(), source_id))
+        except ValueError:  # a metadata.yaml that is not UTF-8: no recorded attempt
+            attempt = None
         # #394: a torn, mixed or corrupted resume point is refused here, with
         # its reason, before anything is restored from it — and #537: one
         # published again since it was verified, on every rank (the load
