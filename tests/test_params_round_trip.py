@@ -8,7 +8,7 @@ keeping both sides of the contract in sync."""
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 import torch
@@ -87,6 +87,97 @@ def test_nested_conv_and_optimizer_collections_are_immutable():
         conv.conv_channels.append(16)
     with pytest.raises(TypeError, match="immutable"):
         optim.param_groups.clear()
+
+
+def _hashable_params_configs() -> dict[str, Any]:
+    """One configuration per params class that stores an immutable list (each
+    NNParams subclass through `_dims`), built from fresh lists on every call."""
+    from nnx.nn.params.nn_moe_params import NNMoEParams
+    from nnx.nn.params.nn_vit_params import NNViTParams
+
+    return {
+        "NNParams": NNParams(
+            input_dim=784,
+            output_dim=10,
+            dropout_prob=0.2,
+            activation=Activations.RELU,
+            hidden_dims=[128, 64],
+            activations=[Activations.RELU, Activations.TANH],
+            dropout_probs=[0.1, 0.3],
+        ),
+        "NNParams_no_hidden": NNParams(input_dim=4, output_dim=2, dropout_prob=0.0),
+        "NNConvParams": NNConvParams(
+            input_dim=28 * 28,
+            output_dim=10,
+            hidden_dims=[16],
+            dropout_prob=0.0,
+            activation=Activations.RELU,
+            conv_channels=[4, 8],
+        ),
+        "NNMoEParams": NNMoEParams(input_dim=8, output_dim=2, dropout_prob=0.0, hidden_dims=[16], num_experts=4),
+        "NNViTParams": NNViTParams(
+            input_dim=3 * 32 * 32,
+            output_dim=16,
+            dropout_prob=0.0,
+            image_size=32,
+            patch_size=8,
+            d_model=16,
+            n_layers=1,
+            n_heads=2,
+        ),
+        "NNTransformerParams": NNTransformerParams(
+            input_dim=16,
+            output_dim=16,
+            dropout_prob=0.0,
+            vocab_size=16,
+            n_layers=1,
+            d_model=16,
+            max_seq_len=8,
+            n_heads=2,
+        ),
+        "NNOptimParams": NNOptimParams(
+            name=Optims.ADAM,
+            max_lr=1e-3,
+            momentum=(0.9, 0.999),
+            weight_decay=0.0,
+            param_groups=[
+                NNParamGroupSpec(name_pattern="encoder.*", lr_multiplier=0.01),
+                NNParamGroupSpec(name_pattern="*.bias", weight_decay=0.0),
+            ],
+        ),
+    }
+
+
+@pytest.mark.parametrize("name", list(_hashable_params_configs()))
+def test_params_holding_immutable_lists_hash_by_value(name):
+    """The list fields are read-only, so they hash by value: equal params
+    built from separate lists, and the `from_state` copy, hash equal, are
+    one set member and find each other as dict keys. state() is unchanged."""
+    first, second = _hashable_params_configs()[name], _hashable_params_configs()[name]
+    state = first.state()
+    reloaded = type(first).from_state(state)
+
+    assert first is not second and first == second == reloaded
+    assert hash(first) == hash(second) == hash(reloaded)
+    assert len({first, second, reloaded}) == 1
+    assert {first: "config"}[second] == "config" and {first: "config"}[reloaded] == "config"
+    assert reloaded.state() == state == second.state()
+
+
+def test_immutable_list_hash_follows_equality():
+    """Different contents stay different set members; an immutable list still
+    equals the plain list it was built from, and its state() text is the
+    plain list's."""
+    from nnx.nn.params.nn_params import _ImmutableList
+
+    a, b = _ImmutableList([1, 2]), _ImmutableList([1, 2])
+    assert a == b == [1, 2] and hash(a) == hash(b)
+    assert len({a, b, _ImmutableList([2, 1])}) == 2
+    assert hash(_ImmutableList([_ImmutableList([1]), 2])) == hash(_ImmutableList([_ImmutableList([1]), 2]))
+    wide = _hashable_params_configs()["NNParams"]
+    narrow = replace(wide, hidden_dims=[128, 32])
+    assert wide != narrow and len({wide, narrow}) == 2
+    assert wide.state()["hidden_dims"] == "[128, 64]" and narrow.state()["hidden_dims"] == "[128, 32]"
 
 
 def test_nn_run_state_returns_a_defensive_snapshot():
