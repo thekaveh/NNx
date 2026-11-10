@@ -2651,8 +2651,12 @@ the student's loss on the labels with its own denominator (weight
 ``1 − alpha``). Over a window this is exactly
 ``alpha · KL_batchmean + (1 − alpha) · loss`` of the full batch, however
 the rows are split into microbatches or targets are ignored. The teacher
-is frozen once and never updated, and is put back in eval mode before
-every teacher forward, as ``kd_train_step_factory`` does. At
+must be kept apart from the student's net (not the net, not inside it,
+sharing none of its parameters): building the objective leaves it
+alone, and each run checks that before any run is reserved
+(:meth:`check_run`), then freezes it. It is never updated, and is put
+back in eval mode before every teacher forward, as
+``kd_train_step_factory`` does. At
 ``alpha=0`` only the ``"supervised"`` term is returned, and at
 ``alpha=1`` only the ``"distillation"`` term (the labels are not
 scored, so placeholder labels train as with
@@ -2667,6 +2671,14 @@ at ``alpha=1``, so a placeholder label must then be the task's
 ``ignore_index`` (NaN for a multilabel task). A regression task is
 refused before any run is reserved.
 ```
+
+##### `nnx.objectives.KDObjective.check_run`
+
+```python
+nnx.objectives.KDObjective.check_run(self, model: 'NNModel', *, optimizers: 'Mapping[str, torch.optim.Optimizer]', callbacks: 'Sequence[Any]') -> 'None'
+```
+
+Refuse, before any run is reserved or anything is frozen, a teacher that is the student's net, lies inside it or shares a parameter with it (freezing it would freeze the student); then freeze the teacher.
 
 
 #### `nnx.objectives.supervised_objective`
@@ -15662,12 +15674,14 @@ Build a knowledge-distillation `TrainStepFn`.
 ```text
 Args:
     teacher: a fully-trained :class:`NNModel` whose net produces
-        logits of the same shape as the student's. The teacher's
-        parameters are frozen (``requires_grad=False``) and its
-        net is set to eval mode on factory call, and put back in
-        eval mode before every teacher forward (a teacher under the
-        student's net, or one a callback switches to train mode,
-        would otherwise run its dropout and BatchNorm in train mode).
+        logits of the same shape as the student's, kept apart from the
+        student: not the student's net, not inside it, sharing none of
+        its parameters. Building the step leaves it alone; each step
+        checks that placement first, then freezes the teacher's
+        parameters (``requires_grad=False``) and puts its net in eval
+        mode before every teacher forward (one a callback switches to
+        train mode would otherwise run its dropout and BatchNorm in
+        train mode).
     alpha: weight on the distillation (soft) loss. The hard-label
         loss gets ``1 − α``. ``α=1.0`` is pure distillation (the
         labels are not scored); ``α=0.0`` collapses to standard
@@ -15698,10 +15712,13 @@ Returns:
 Raises:
     ValueError: if ``alpha`` is not a real in [0, 1], or ``temperature``
         not a finite real > 0 (a ``bool`` is refused). At the first
-        step: a single-logit head with ``alpha > 0`` (no class
-        distribution to distill), or a teacher of another shape.
-        ``NNModel.train`` refuses a model that declares a regression
-        task (``TaskValidationError``) before any run is reserved.
+        step, before anything is frozen or run: a teacher that is the
+        student's net, lies inside it or shares a parameter with it
+        (freezing it would freeze the student); a single-logit head
+        with ``alpha > 0`` (no class distribution to distill), or a
+        teacher of another shape. ``NNModel.train`` refuses a model
+        that declares a regression task (``TaskValidationError``)
+        before any run is reserved.
     TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
         records train through ``TeacherDataset.objective()``).
 ```
@@ -15728,11 +15745,11 @@ elementwise MSE that's mixed into the loss via ``beta``::
 
 Args:
     teacher: a fully-trained :class:`NNModel` whose net produces
-        logits of the same shape as the student's. The teacher's
-        parameters are frozen (``requires_grad=False``) and its
-        net is set to eval mode on factory call and before every
-        teacher forward — same guarantee as
-        :func:`kd_train_step_factory`.
+        logits of the same shape as the student's, kept apart from the
+        student's net. Each step checks that, then freezes the
+        teacher's parameters (``requires_grad=False``) and puts its
+        net in eval mode before every teacher forward — same guarantee
+        as :func:`kd_train_step_factory`.
     auxiliary_layers: dict mapping ``teacher_layer_name ->
         student_layer_name`` for each (teacher, student) pair to
         match. Names are dotted paths resolved via
@@ -15764,7 +15781,9 @@ Raises:
     ValueError: if ``alpha`` or ``beta`` is not a real in [0, 1], if
         ``temperature`` is not a finite real > 0 (a ``bool`` is refused),
         or if ``auxiliary_layers`` is empty.
-        On the first batch, if any paired teacher/student
+        On the first batch: before anything is frozen or run, if the
+        teacher is the student's net, lies inside it or shares a
+        parameter with it; if any paired teacher/student
         activation shapes disagree, or if the head has a single logit
         and ``alpha > 0`` (no class distribution to distill).
         ``NNModel.train`` refuses a model that declares a regression
@@ -16854,13 +16873,13 @@ Build a Direct Preference Optimization `TrainStepFn`.
 Args:
     ref_model: a frozen reference policy — typically a copy of the
         SFT checkpoint that the trainable policy was initialized
-        from. Its ``net`` is set to eval mode and every parameter
-        has ``requires_grad`` cleared on factory call; every step
-        puts the net back in eval mode before its forward (a
-        reference under the policy's net, or one a callback
-        switches to train mode, would otherwise run its dropout in
-        train mode). Must share ``vocab_size`` and tokenization
-        with the policy.
+        from, kept apart from the policy: not the policy's net, not
+        inside it, sharing none of its parameters. Building the step
+        leaves it alone; each step checks that placement first, then
+        clears ``requires_grad`` on every parameter and puts the net
+        in eval mode before its forward (one a callback switches to
+        train mode would otherwise run its dropout in train mode).
+        Must share ``vocab_size`` and tokenization with the policy.
     beta: strength of the reference-policy constraint (the scale of
         the implicit reward). Larger ``beta`` keeps the policy closer
         to the reference; smaller ``beta`` lets it deviate more. The
@@ -16894,7 +16913,11 @@ Returns:
 
 Raises:
     ValueError: if ``beta`` is not a finite positive number, or if
-        ``pad_token_id`` is not a non-negative integer.
+        ``pad_token_id`` is not a non-negative integer. At the first
+        step, before anything is frozen or run: a reference that is
+        the policy's net, lies inside it or shares a parameter with it
+        (freezing it would freeze the policy).
+    TypeError: if ``ref_model`` has no ``net`` module.
 ```
 
 
