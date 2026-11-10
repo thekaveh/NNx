@@ -15,10 +15,11 @@ prompt ``x`` plus a chosen response ``y_w`` and a rejected response
     L    = −log σ(β · (Δ_w − Δ_l))
 
 — i.e., minimize the negative log-sigmoid of the policy-vs-reference
-log-ratio margin between chosen and rejected. The reference's
-parameters are frozen on factory call (``requires_grad=False``) and
-its net is pinned to eval mode, again before every reference forward;
-the policy is the only module whose weights move.
+log-ratio margin between chosen and rejected. The reference must be
+kept apart from the policy's net; each step checks that, then freezes
+the reference's parameters (``requires_grad=False``) and pins its net
+to eval mode before every reference forward; the policy is the only
+module whose weights move.
 
 Scope: this is the bare DPO objective for the small-LM experimentation
 NNx is sized for. It is **not** a production RLHF replacement —
@@ -34,11 +35,14 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
-from .._step_helpers import finalize_step, imperative_step, pin_eval
+from .._step_helpers import finalize_step, freeze_apart, imperative_step, pin_eval
 from .._validation import require_count, require_finite_real, shown
 from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..precision import full_precision_only
+
+# The remedy every refusal of a reference in (or sharing) the policy's net names.
+_REFERENCE_REMEDY = "pass a reference kept apart from the policy (copy.deepcopy(policy) before training)"
 
 
 def dpo_train_step_factory(
@@ -52,13 +56,13 @@ def dpo_train_step_factory(
     Args:
         ref_model: a frozen reference policy — typically a copy of the
             SFT checkpoint that the trainable policy was initialized
-            from. Its ``net`` is set to eval mode and every parameter
-            has ``requires_grad`` cleared on factory call; every step
-            puts the net back in eval mode before its forward (a
-            reference under the policy's net, or one a callback
-            switches to train mode, would otherwise run its dropout in
-            train mode). Must share ``vocab_size`` and tokenization
-            with the policy.
+            from, kept apart from the policy: not the policy's net, not
+            inside it, sharing none of its parameters. Building the step
+            leaves it alone; each step checks that placement first, then
+            clears ``requires_grad`` on every parameter and puts the net
+            in eval mode before its forward (one a callback switches to
+            train mode would otherwise run its dropout in train mode).
+            Must share ``vocab_size`` and tokenization with the policy.
         beta: strength of the reference-policy constraint (the scale of
             the implicit reward). Larger ``beta`` keeps the policy closer
             to the reference; smaller ``beta`` lets it deviate more. The
@@ -92,7 +96,11 @@ def dpo_train_step_factory(
 
     Raises:
         ValueError: if ``beta`` is not a finite positive number, or if
-            ``pad_token_id`` is not a non-negative integer.
+            ``pad_token_id`` is not a non-negative integer. At the first
+            step, before anything is frozen or run: a reference that is
+            the policy's net, lies inside it or shares a parameter with it
+            (freezing it would freeze the policy).
+        TypeError: if ``ref_model`` has no ``net`` module.
     """
     # A bool, NaN, ±inf or an integer too large for a float (10**400) is refused by name.
     beta = require_finite_real(
@@ -106,15 +114,18 @@ def dpo_train_step_factory(
     if pad_token_id is not None:  # a bool or a negative id would mask nothing
         pad_token_id = require_count(pad_token_id, "pad_token_id", owner="dpo_train_step_factory", minimum=0)
 
-    # Freeze the reference and pin to eval mode. The policy's training
-    # never touches the reference; this just guards against accidental
-    # gradient flow if the caller wires them into a shared module later.
-    ref_model.net.eval()
-    for p in ref_model.net.parameters():
-        p.requires_grad = False
+    if not isinstance(getattr(ref_model, "net", None), torch.nn.Module):
+        raise TypeError(
+            f"dpo_train_step_factory needs an NNModel reference (a model with a net), got {type(ref_model).__name__}"
+        )
+    # The reference is left alone here: until a step sees the policy,
+    # freezing it could freeze (part of) the policy.
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
+        # Before any mode change or forward: refuse a reference that is, lies
+        # in or shares parameters with the policy's net, then freeze it.
+        freeze_apart(m.net, ref_model.net, role="DPO reference model", remedy=_REFERENCE_REMEDY)
         m.net.train()
         m.net.zero_grad()
 

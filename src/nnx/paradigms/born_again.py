@@ -185,9 +185,10 @@ def born_again_train(
             break
 
         # Snapshot the just-trained model as the next generation's
-        # teacher. deepcopy duplicates the net's parameters into a
-        # detached graph; freezing + eval-mode is then enforced here
-        # (and again inside kd_train_step_factory as belt-and-braces).
+        # teacher. deepcopy duplicates the net's parameters, so the
+        # teacher shares none with the student (the KD step refuses one
+        # that does); freezing + eval-mode is then enforced here (and
+        # again by every KD step as belt-and-braces).
         teacher = copy.deepcopy(model)
         teacher.net.eval()
         for p in teacher.net.parameters():
