@@ -626,8 +626,8 @@ _MISPLACED_REFERENCE = {
     r"would freeze the network being trained",
     "nested": r"DPO reference model must not be part of model\.net \(it is model\.net\._dpo_reference\): the "
     r"optimizer would train it with the net",
-    "shares_one": r"DPO reference model shares parameters with model\.net \(e\.g\. norm_out\.weight\), so "
-    r"freezing it",
+    "shares_one": r"DPO reference model shares parameters with model\.net \(e\.g\. norm_out\.weight\): it must be "
+    r"kept apart",
 }
 
 

@@ -114,8 +114,8 @@ def freeze_apart(net: torch.nn.Module, frozen: torch.nn.Module, *, role: str, re
     shared = [n for n, p in frozen.named_parameters() if id(p) in trained]
     if shared:
         raise ValueError(
-            f"the {role} shares parameters with model.net (e.g. {shared[0]}), so freezing it would freeze the "
-            f"network being trained; {remedy}"
+            f"the {role} shares parameters with model.net (e.g. {shared[0]}): it must be kept apart from the "
+            f"network being trained, since freezing it freezes any shared parameter that network trains; {remedy}"
         )
     for param in frozen.parameters():
         param.requires_grad = False
