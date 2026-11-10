@@ -489,7 +489,7 @@ _MISPLACED_TEACHER = {
     r"the network being trained",
     "nested": r"KD teacher must not be part of model\.net \(it is model\.net\._kd_teacher\): the optimizer would "
     r"train it with the net",
-    "shares_one": r"KD teacher shares parameters with model\.net \(e\.g\. layers\.0\.weight\), so freezing it",
+    "shares_one": r"KD teacher shares parameters with model\.net \(e\.g\. layers\.0\.weight\): it must be kept apart",
 }
 
 
