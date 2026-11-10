@@ -1235,8 +1235,7 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         )
         out["rng_unchanged"] = torch.equal(torch.get_rng_state(), torch_rng)
         if name == "resume_unreadable_rank":
-            out["teardown_done"] = True  # the timed-out group is left for process exit
-            out["hard_exit"] = True  # and ends with os._exit: its C++ teardown can abort the rank
+            out["teardown_done"] = True  # the timed-out group is left for process exit (NNx's exit hook)
         if name == "resume_writer_begin_fails":
             out["shutdown"] = _leave_together()
     elif name == "collectives":
@@ -1419,14 +1418,6 @@ def main() -> None:
     if not result.get("teardown_done"):
         nnx_dist.shutdown()  # leave together (a no-op when the scenario already did)
     _mark("left the group")
-    if result.get("hard_exit"):
-        # A timed-out Gloo group's destructors can abort a rank while the
-        # interpreter finalizes ("terminate called without an active
-        # exception", exit -6), so end without them once the result is saved.
-        _mark("exiting without teardown")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(0)
 
 
 if __name__ == "__main__":
