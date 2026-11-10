@@ -198,7 +198,7 @@ def main():
     teacher_params = sum(p.numel() for p in teacher.net.parameters())
     print(f"\nteacher: {teacher_params} params, val error {teacher_err:.4f}")
 
-    # Snapshot teacher weights — we'll verify the factory keeps them
+    # Snapshot teacher weights — we'll verify the KD step keeps them
     # frozen by re-checking after the student's training run.
     teacher_snapshot = {k: v.clone() for k, v in teacher.net.state_dict().items()}
 
@@ -219,9 +219,9 @@ def main():
     student_err = student_run.idps[-1].val_edp.error
     print(f"\nstudent (distilled) val error: {student_err:.4f}")
 
-    # Verify the factory kept the teacher frozen across the student's
-    # training run. (kd_train_step_factory sets requires_grad=False on
-    # every teacher parameter; this is a runtime sanity check.)
+    # Verify the teacher stayed frozen across the student's training run.
+    # (Each KD step sets requires_grad=False on every teacher parameter
+    # before its forward; this is a runtime sanity check.)
     for k, v in teacher.net.state_dict().items():
         if not torch.equal(v, teacher_snapshot[k]):
             raise RuntimeError(f"teacher param {k!r} drifted during distillation")
