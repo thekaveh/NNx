@@ -88,12 +88,37 @@ def full_precision(tensor: torch.Tensor) -> torch.Tensor:
 
 def pin_eval(module: torch.nn.Module) -> None:
     """Put a frozen model's net (a KD teacher, a DPO reference) back in eval
-    mode before its forward. ``model.net.train()`` switches one registered
-    under the trained net to train mode, and a callback or user code may
-    too; its dropout and BatchNorm would then change its outputs. A module
+    mode before its forward. A callback or user code may switch it to train
+    mode; its dropout and BatchNorm would then change its outputs. A module
     already in eval mode throughout is left untouched."""
     if any(sub.training for sub in module.modules()):
         module.eval()
+
+
+def freeze_apart(net: torch.nn.Module, frozen: torch.nn.Module, *, role: str, remedy: str) -> None:
+    """Freeze ``frozen`` (a KD teacher's or DPO reference's net) once it is
+    known to be apart from ``net`` (``model.net``, the network being
+    trained): refuse, before any parameter is frozen, one that is ``net``,
+    is part of it or shares a parameter with it, since freezing it would
+    freeze (part of) the trained network. The JEPA target's rule (#531).
+    Its mode is left to :func:`pin_eval`, before each forward."""
+    path = next((name for name, sub in net.named_modules() if sub is frozen), None)
+    if path is not None:
+        if path == "":  # the trained network itself
+            where, cost = "model.net itself", "freezing it would freeze the network being trained"
+        else:  # registered under the net, so among the optimizer's parameters
+            where = f"model.net.{path}"
+            cost = "the optimizer would train it with the net, and freezing it would leave those parameters untrained"
+        raise ValueError(f"the {role} must not be part of model.net (it is {where}): {cost}; {remedy}")
+    trained = {id(p) for p in net.parameters()}
+    shared = [n for n, p in frozen.named_parameters() if id(p) in trained]
+    if shared:
+        raise ValueError(
+            f"the {role} shares parameters with model.net (e.g. {shared[0]}), so freezing it would freeze the "
+            f"network being trained; {remedy}"
+        )
+    for param in frozen.parameters():
+        param.requires_grad = False
 
 
 def imperative_step(step: _StepT, *, paradigm: str) -> _StepT:

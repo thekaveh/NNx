@@ -347,8 +347,12 @@ class KDObjective(Objective):
     ``1 − alpha``). Over a window this is exactly
     ``alpha · KL_batchmean + (1 − alpha) · loss`` of the full batch, however
     the rows are split into microbatches or targets are ignored. The teacher
-    is frozen once and never updated, and is put back in eval mode before
-    every teacher forward, as ``kd_train_step_factory`` does. At
+    must be kept apart from the student's net (not the net, not inside it,
+    sharing none of its parameters): building the objective leaves it
+    alone, and each run checks that before any run is reserved
+    (:meth:`check_run`), then freezes it. It is never updated, and is put
+    back in eval mode before every teacher forward, as
+    ``kd_train_step_factory`` does. At
     ``alpha=0`` only the ``"supervised"`` term is returned, and at
     ``alpha=1`` only the ``"distillation"`` term (the labels are not
     scored, so placeholder labels train as with
@@ -368,14 +372,25 @@ class KDObjective(Objective):
     __nnx_step_tasks__ = _StepTasks("kd_objective")
 
     def __init__(self, teacher: NNModel, *, alpha: float = 0.5, temperature: float = 4.0, nonfinite: str = "fail"):
-        from .paradigms.distillation import _check_kd_weights, _freeze_teacher
+        from .paradigms.distillation import _check_kd_weights, _check_live_teacher
 
         super().__init__(nonfinite=nonfinite)
         _check_kd_weights(alpha, temperature, owner="KDObjective")
+        _check_live_teacher(teacher)  # frozen by check_run, once it is known to be apart from the student
         self.teacher = teacher
         self.alpha = float(alpha)
         self.temperature = float(temperature)
-        _freeze_teacher(teacher)
+
+    def check_run(
+        self, model: NNModel, *, optimizers: Mapping[str, torch.optim.Optimizer], callbacks: Sequence[Any]
+    ) -> None:
+        """Refuse, before any run is reserved or anything is frozen, a
+        teacher that is the student's net, lies inside it or shares a
+        parameter with it (freezing it would freeze the student); then
+        freeze the teacher."""
+        from .paradigms.distillation import _freeze_teacher
+
+        _freeze_teacher(model.net, self.teacher)
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
         from ._step_helpers import pin_eval, predicted_labels, require_row_logits, softened_kl

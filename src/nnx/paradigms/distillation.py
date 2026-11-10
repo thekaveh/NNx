@@ -17,13 +17,16 @@ Two factories:
         L = α · KL_soft · T² + β · MSE(student_act, teacher_act) + (1 − α) · L_hard
 
 Both factories return a :class:`nnx.TrainStepFn` that plugs straight
-into :meth:`NNModel.train` via the ``train_step_fn=`` hook. The
-teacher's parameters are frozen on factory call so subsequent training
-can never drift the teacher's weights; restored on tear-down would be
-tidy but unnecessary in practice — once a teacher is a teacher, it
-stays one. Every step puts the teacher back in eval mode before its
-forward, so a teacher that the student's ``net.train()`` or a callback
-switched to train mode still gives its eval-mode soft targets.
+into :meth:`NNModel.train` via the ``train_step_fn=`` hook. Each step
+first checks that the teacher is apart from the student's net (not the
+net, not inside it, sharing none of its parameters), then freezes the
+teacher's parameters, so training can never drift the teacher's weights;
+restored on tear-down would be tidy but unnecessary in practice — once a
+teacher is a teacher, it stays one. Building the step leaves the teacher
+alone: until a step sees the student, freezing it could freeze (part of)
+the student. Every step puts the teacher back in eval mode before its
+forward, so a teacher that a callback switched to train mode still gives
+its eval-mode soft targets.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ import torch.nn.functional as F
 from .._step_helpers import (
     finalize_step,
     finalize_task_step,
+    freeze_apart,
     imperative_step,
     pin_eval,
     predicted_labels,
@@ -71,12 +75,15 @@ def _check_kd_weights(alpha: float, temperature: float, *, owner: str) -> None:
     require_finite_real(temperature, "temperature", owner=owner, minimum=0, exclusive_min=True)
 
 
-def _freeze_teacher(teacher: NNModel) -> None:
-    """Freeze the teacher and pin it to eval mode. The student's training
-    never touches the teacher; this just guards against accidental gradient
-    flow if the caller wires them into a shared module later. Stored teacher
-    probabilities (FEAT-022) are refused: live distillation softens a
-    running teacher's logits."""
+# The remedy every refusal of a teacher in (or sharing) the student's net names.
+_TEACHER_REMEDY = "pass a teacher model kept apart from the student (copy.deepcopy(student) for a snapshot)"
+
+
+def _check_live_teacher(teacher: NNModel) -> None:
+    """Refuse, when the step is built, a teacher that is not a live model.
+    Stored teacher probabilities (FEAT-022) are refused: live distillation
+    softens a running teacher's logits. The teacher itself is left alone
+    until a step can check it against the student (:func:`_freeze_teacher`)."""
     from .offline_distillation import _is_teacher_records
 
     if _is_teacher_records(teacher) or not isinstance(getattr(teacher, "net", None), torch.nn.Module):
@@ -85,9 +92,15 @@ def _freeze_teacher(teacher: NNModel) -> None:
             f"{type(teacher).__name__}; stored, probability-only teacher records train through "
             "nnx.paradigms.offline_distillation (TeacherDataset.objective())"
         )
-    teacher.net.eval()
-    for p in teacher.net.parameters():
-        p.requires_grad = False
+
+
+def _freeze_teacher(net: torch.nn.Module, teacher: NNModel) -> None:
+    """Freeze the teacher once it is known to be apart from ``net`` (the
+    student's ``model.net``): one that is the net, lies inside it or shares
+    a parameter with it is refused first, since freezing it would freeze
+    the student. The student's training never touches a separate teacher;
+    the freeze guards against accidental gradient flow."""
+    freeze_apart(net, teacher.net, role="KD teacher", remedy=_TEACHER_REMEDY)
 
 
 def kd_train_step_factory(
@@ -100,12 +113,14 @@ def kd_train_step_factory(
 
     Args:
         teacher: a fully-trained :class:`NNModel` whose net produces
-            logits of the same shape as the student's. The teacher's
-            parameters are frozen (``requires_grad=False``) and its
-            net is set to eval mode on factory call, and put back in
-            eval mode before every teacher forward (a teacher under the
-            student's net, or one a callback switches to train mode,
-            would otherwise run its dropout and BatchNorm in train mode).
+            logits of the same shape as the student's, kept apart from the
+            student: not the student's net, not inside it, sharing none of
+            its parameters. Building the step leaves it alone; each step
+            checks that placement first, then freezes the teacher's
+            parameters (``requires_grad=False``) and puts its net in eval
+            mode before every teacher forward (one a callback switches to
+            train mode would otherwise run its dropout and BatchNorm in
+            train mode).
         alpha: weight on the distillation (soft) loss. The hard-label
             loss gets ``1 − α``. ``α=1.0`` is pure distillation (the
             labels are not scored); ``α=0.0`` collapses to standard
@@ -136,18 +151,22 @@ def kd_train_step_factory(
     Raises:
         ValueError: if ``alpha`` is not a real in [0, 1], or ``temperature``
             not a finite real > 0 (a ``bool`` is refused). At the first
-            step: a single-logit head with ``alpha > 0`` (no class
-            distribution to distill), or a teacher of another shape.
-            ``NNModel.train`` refuses a model that declares a regression
-            task (``TaskValidationError``) before any run is reserved.
+            step, before anything is frozen or run: a teacher that is the
+            student's net, lies inside it or shares a parameter with it
+            (freezing it would freeze the student); a single-logit head
+            with ``alpha > 0`` (no class distribution to distill), or a
+            teacher of another shape. ``NNModel.train`` refuses a model
+            that declares a regression task (``TaskValidationError``)
+            before any run is reserved.
         TypeError: if ``teacher`` is not an ``NNModel`` (stored teacher
             records train through ``TeacherDataset.objective()``).
     """
     _check_kd_weights(alpha, temperature, owner="kd_train_step_factory")
-    _freeze_teacher(teacher)
+    _check_live_teacher(teacher)
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
+        _freeze_teacher(m.net, teacher)  # before any mode change or forward: refuses a teacher in the student's net
         m.net.train()
         m.net.zero_grad()
 
@@ -217,11 +236,11 @@ def feature_kd_train_step_factory(
 
     Args:
         teacher: a fully-trained :class:`NNModel` whose net produces
-            logits of the same shape as the student's. The teacher's
-            parameters are frozen (``requires_grad=False``) and its
-            net is set to eval mode on factory call and before every
-            teacher forward — same guarantee as
-            :func:`kd_train_step_factory`.
+            logits of the same shape as the student's, kept apart from the
+            student's net. Each step checks that, then freezes the
+            teacher's parameters (``requires_grad=False``) and puts its
+            net in eval mode before every teacher forward — same guarantee
+            as :func:`kd_train_step_factory`.
         auxiliary_layers: dict mapping ``teacher_layer_name ->
             student_layer_name`` for each (teacher, student) pair to
             match. Names are dotted paths resolved via
@@ -253,7 +272,9 @@ def feature_kd_train_step_factory(
         ValueError: if ``alpha`` or ``beta`` is not a real in [0, 1], if
             ``temperature`` is not a finite real > 0 (a ``bool`` is refused),
             or if ``auxiliary_layers`` is empty.
-            On the first batch, if any paired teacher/student
+            On the first batch: before anything is frozen or run, if the
+            teacher is the student's net, lies inside it or shares a
+            parameter with it; if any paired teacher/student
             activation shapes disagree, or if the head has a single logit
             and ``alpha > 0`` (no class distribution to distill).
             ``NNModel.train`` refuses a model that declares a regression
@@ -270,7 +291,7 @@ def feature_kd_train_step_factory(
             "auxiliary_layers must be a non-empty mapping of teacher_layer_name -> student_layer_name; got empty dict"
         )
 
-    _freeze_teacher(teacher)  # same guarantee as kd_train_step_factory
+    _check_live_teacher(teacher)  # each step freezes it, as kd_train_step_factory's does
 
     # Resolve named submodules eagerly so a typo in the user's mapping
     # raises a clear error on factory call (not deep inside the first
@@ -286,6 +307,7 @@ def feature_kd_train_step_factory(
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
+        _freeze_teacher(m.net, teacher)  # as kd_train_step_factory: before any mode change or forward
         m.net.train()
         m.net.zero_grad()
 

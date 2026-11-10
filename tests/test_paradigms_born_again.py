@@ -194,7 +194,7 @@ def test_born_again_teacher_frozen_and_eval_mode(tmp_path, monkeypatch):
     must already have requires_grad=False on every parameter AND be in
     eval mode. Verified at the moment of the KD-factory call so we catch
     state established by born_again_train itself (not the side effect of
-    kd_train_step_factory, which also freezes belt-and-braces)."""
+    the KD step, which also freezes it belt-and-braces)."""
     monkeypatch.chdir(tmp_path)
     set_seed(0)
     model = _make_classifier()

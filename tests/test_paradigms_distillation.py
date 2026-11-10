@@ -67,25 +67,6 @@ def test_kd_factory_validates_alpha_and_temperature():
         kd_train_step_factory(teacher, alpha=0.5, temperature=-1.0)
 
 
-def test_kd_factory_freezes_teacher_params():
-    teacher = _make_classifier(32)
-    # Teacher params start trainable.
-    assert all(p.requires_grad for p in teacher.net.parameters())
-    kd_train_step_factory(teacher, alpha=0.5, temperature=4.0)
-    # After factory: every teacher param frozen.
-    assert all(not p.requires_grad for p in teacher.net.parameters())
-
-
-def test_kd_factory_teacher_in_eval_mode():
-    teacher = _make_classifier(32)
-    teacher.net.train()  # force into train mode
-    kd_train_step_factory(teacher, alpha=0.5, temperature=4.0)
-    assert not teacher.net.training, (
-        "kd_train_step_factory must set teacher.net to eval mode so dropout / "
-        "BatchNorm running stats don't drift during student training"
-    )
-
-
 def test_kd_end_to_end_loss_decreases(tmp_path, monkeypatch):
     """Train a teacher first, then distill into a smaller student via
     the KD step factory and verify the student's loss trends down."""
@@ -431,24 +412,19 @@ def _distill(student: NNModel, step: dict, callbacks=()) -> None:
     )
 
 
-@pytest.mark.parametrize("layout", ["under_student_net", "switched_by_callback"])
 @pytest.mark.parametrize("kind", ["kd", "feature_kd", "kd_objective"])
-def test_every_teacher_forward_runs_in_eval_mode(kind, layout, tmp_path, monkeypatch):
-    """A dropout teacher that the student's ``net.train()`` or a callback
-    switches to train mode is put back in eval mode before every forward:
-    its soft targets equal its eval-mode output at every step."""
+def test_every_teacher_forward_runs_in_eval_mode(kind, tmp_path, monkeypatch):
+    """A dropout teacher that a callback switches to train mode is put back
+    in eval mode before every forward: its soft targets equal its eval-mode
+    output at every step. (A teacher under the student's net, which its
+    ``net.train()`` would reach, is refused: see below.)"""
     monkeypatch.chdir(tmp_path)
     set_seed(0)
     teacher = _make_classifier(32, dropout_prob=0.5)
     student = _make_classifier(32)
-    callbacks = []
-    if layout == "under_student_net":
-        student.net.add_module("_kd_teacher", teacher.net)  # student.net.train() reaches it
-    else:
-        callbacks.append(TrainModeAtEpochStart(teacher.net))
     step = _kd_step(kind, teacher)
     seen = record_forward_modes(teacher.net)
-    _distill(student, step, callbacks)
+    _distill(student, step, [TrainModeAtEpochStart(teacher.net)])
     assert seen == [(False, True)] * 4  # 2 epochs x 2 batches
 
 
@@ -459,8 +435,89 @@ def test_a_teacher_left_in_eval_mode_is_not_switched_again(kind, tmp_path, monke
     monkeypatch.chdir(tmp_path)
     set_seed(0)
     teacher = _make_classifier(32, dropout_prob=0.5)
+    teacher.net.eval()  # building the step leaves the teacher's mode alone
     student = _make_classifier(32)
     step = _kd_step(kind, teacher)
     switches = record_mode_switches(monkeypatch, teacher.net)
     _distill(student, step)
     assert switches == [] and not teacher.net.training
+
+
+# ---------- the teacher stays apart from the student's net ----------
+
+
+@pytest.mark.parametrize("kind", ["kd", "feature_kd", "kd_objective"])
+def test_the_run_freezes_the_teacher_not_building_the_step(kind, tmp_path, monkeypatch):
+    """Building the step leaves the teacher alone (it cannot yet tell it
+    apart from the student's net); the run freezes it and puts it in eval
+    mode once it has checked that."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    teacher = _make_classifier(32, dropout_prob=0.5)
+    student = _make_classifier(32)
+    step = _kd_step(kind, teacher)
+    assert all(p.requires_grad for p in teacher.net.parameters()) and teacher.net.training
+    _distill(student, step)
+    assert not any(p.requires_grad for p in teacher.net.parameters()) and not teacher.net.training
+
+
+@pytest.mark.parametrize("kind", ["kd", "feature_kd", "kd_objective"])
+def test_a_separate_teacher_trains_as_one_frozen_before_the_step_was_built(kind, tmp_path):
+    """A teacher apart from the student trains bit-for-bit as one frozen and
+    put in eval mode before the step was built (the factories' old state)."""
+    trained = []
+    for by_hand in (False, True):
+        set_seed(0)
+        teacher = _make_classifier(32, dropout_prob=0.5)
+        student = _make_classifier(32, dropout_prob=0.5)
+        if by_hand:
+            teacher.net.eval().requires_grad_(False)
+        step = _kd_step(kind, teacher)
+        (tmp_path / str(by_hand)).mkdir()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.chdir(tmp_path / str(by_hand))
+            _distill(student, step)
+        assert not any(p.requires_grad for p in teacher.net.parameters()) and not teacher.net.training
+        trained.append({**student.net.state_dict(), **{f"t.{k}": v for k, v in teacher.net.state_dict().items()}})
+    assert trained[0].keys() == trained[1].keys()
+    assert all(torch.equal(trained[0][k], trained[1][k]) for k in trained[0])
+
+
+# How the teacher sits against the student's net, and what the refusal says.
+_MISPLACED_TEACHER = {
+    "is_student": r"KD teacher must not be part of model\.net \(it is model\.net itself\): freezing it would freeze "
+    r"the network being trained",
+    "nested": r"KD teacher must not be part of model\.net \(it is model\.net\._kd_teacher\): the optimizer would "
+    r"train it with the net",
+    "shares_one": r"KD teacher shares parameters with model\.net \(e\.g\. layers\.0\.weight\), so freezing it",
+}
+
+
+@pytest.mark.parametrize("layout", list(_MISPLACED_TEACHER))
+@pytest.mark.parametrize("kind", ["kd", "feature_kd", "kd_objective"])
+def test_a_teacher_in_or_sharing_the_students_net_is_refused_before_any_freeze(kind, layout, tmp_path, monkeypatch):
+    """A teacher that is the student, lies inside its net or shares one of
+    its parameters is refused before anything is frozen or run: freezing it
+    would freeze (part of) the student, so ``train()`` blamed ``freeze('*')``
+    or silently trained fewer parameters."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    student = _make_classifier(32)
+    teacher = student if layout == "is_student" else _make_classifier(32)
+    if layout == "nested":
+        student.net.add_module("_kd_teacher", teacher.net)
+    elif layout == "shares_one":
+        teacher.net.get_submodule("layers.0").weight = student.net.get_parameter("layers.0.weight")
+    before = {k: v.clone() for k, v in student.net.state_dict().items()}
+    step = _kd_step(kind, teacher)
+    assert all(p.requires_grad for p in student.net.parameters()) and student.net.training  # building froze nothing
+    forwards: list[int] = []
+    teacher.net.register_forward_hook(lambda *_: forwards.append(1))
+    with pytest.raises(ValueError, match=_MISPLACED_TEACHER[layout]) as caught:
+        _distill(student, step)
+    assert "copy.deepcopy" in str(caught.value)
+    assert all(p.requires_grad for p in student.net.parameters())
+    assert all(torch.equal(v, before[k]) for k, v in student.net.state_dict().items())
+    assert forwards == []
+    if kind == "kd_objective":  # its check_run refuses before any run is reserved
+        assert tasks.no_run_left(tmp_path)

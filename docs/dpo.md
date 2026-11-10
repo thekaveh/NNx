@@ -23,6 +23,13 @@ L_DPO = -log σ(β · ( (log π_θ(y_w | x) - log π_ref(y_w | x))
 relative to the reference's. There's no separate reward model and no
 RL loop; the standard `NNModel.train()` machinery just runs.
 
+The reference must be its own copy of the policy. Building the step
+leaves it alone; each step first checks that it is not the policy's
+net, does not lie inside it and shares none of its parameters, then
+freezes it. A reference that fails the check raises a `ValueError` at
+the first step, before anything is frozen, since freezing it would
+freeze the policy.
+
 ## 2. When DPO beats SFT
 
 SFT (supervised fine-tuning on `(prompt, good_response)` pairs)

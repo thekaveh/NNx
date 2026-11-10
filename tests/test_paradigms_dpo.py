@@ -109,23 +109,6 @@ def test_dpo_factory_validates_beta(tmp_path):
         dpo_train_step_factory(ref_model, beta=-0.5)
 
 
-def test_dpo_factory_freezes_reference_params(tmp_path):
-    tokenizer = _make_tokenizer(tmp_path)
-    ref_model = _make_model(tokenizer)
-    # Reference params start trainable.
-    assert all(p.requires_grad for p in ref_model.net.parameters())
-    dpo_train_step_factory(ref_model, beta=0.1)
-    assert all(not p.requires_grad for p in ref_model.net.parameters())
-
-
-def test_dpo_factory_puts_reference_in_eval_mode(tmp_path):
-    tokenizer = _make_tokenizer(tmp_path)
-    ref_model = _make_model(tokenizer)
-    ref_model.net.train()
-    dpo_train_step_factory(ref_model, beta=0.1)
-    assert not ref_model.net.training
-
-
 # ---------- dataset shape ----------
 
 
@@ -565,24 +548,20 @@ def _dpo_fit(policy: GenerativeNNModel, loader, step_fn, callbacks=()) -> None:
     )
 
 
-@pytest.mark.parametrize("layout", ["under_policy_net", "switched_by_callback"])
-def test_every_reference_forward_runs_in_eval_mode(layout, tmp_path, monkeypatch):
-    """A dropout reference that the policy's ``net.train()`` or a callback
-    switches to train mode is put back in eval mode before every forward:
-    its log-probs equal its eval-mode ones at every step."""
+def test_every_reference_forward_runs_in_eval_mode(tmp_path, monkeypatch):
+    """A dropout reference that a callback switches to train mode is put
+    back in eval mode before every forward: its log-probs equal its
+    eval-mode ones at every step. (A reference under the policy's net,
+    which its ``net.train()`` would reach, is refused: see below.)"""
     monkeypatch.chdir(tmp_path)
     set_seed(0)
     tokenizer = _make_tokenizer(tmp_path)
     ref_model = _make_model(tokenizer, resid_dropout=0.5)
     policy = _make_model(tokenizer)
-    callbacks = []
-    if layout == "under_policy_net":
-        policy.net.add_module("_dpo_reference", ref_model.net)  # policy.net.train() reaches it
-    else:
-        callbacks.append(TrainModeAtEpochStart(ref_model.net))
     step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
     seen = record_forward_modes(ref_model.net)
-    _dpo_fit(policy, _preference_loader(tokenizer, n_pairs=4, batch_size=2), step_fn, callbacks)
+    loader = _preference_loader(tokenizer, n_pairs=4, batch_size=2)
+    _dpo_fit(policy, loader, step_fn, [TrainModeAtEpochStart(ref_model.net)])
     assert seen == [(False, True)] * 8  # 2 epochs x 2 batches x (chosen, rejected)
 
 
@@ -592,8 +571,96 @@ def test_a_reference_left_in_eval_mode_is_not_switched_again(tmp_path, monkeypat
     set_seed(0)
     tokenizer = _make_tokenizer(tmp_path)
     ref_model = _make_model(tokenizer, resid_dropout=0.5)
+    ref_model.net.eval()  # building the step leaves the reference's mode alone
     policy = _make_model(tokenizer)
     step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
     switches = record_mode_switches(monkeypatch, ref_model.net)
     _dpo_fit(policy, _preference_loader(tokenizer, n_pairs=4, batch_size=2), step_fn)
     assert switches == [] and not ref_model.net.training
+
+
+# ---------- the reference stays apart from the policy's net ----------
+
+
+def test_the_run_freezes_the_reference_not_building_the_step(tmp_path, monkeypatch):
+    """Building the step leaves the reference alone (it cannot yet tell it
+    apart from the policy's net); the run freezes it and puts it in eval
+    mode once it has checked that."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    tokenizer = _make_tokenizer(tmp_path)
+    ref_model = _make_model(tokenizer, resid_dropout=0.5)
+    policy = _make_model(tokenizer)
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
+    assert all(p.requires_grad for p in ref_model.net.parameters()) and ref_model.net.training
+    _dpo_fit(policy, _preference_loader(tokenizer, n_pairs=4, batch_size=2), step_fn)
+    assert not any(p.requires_grad for p in ref_model.net.parameters()) and not ref_model.net.training
+
+
+def test_a_separate_reference_trains_as_one_frozen_before_the_step_was_built(tmp_path):
+    """A reference apart from the policy trains bit-for-bit as one frozen
+    and put in eval mode before the step was built (the factory's old
+    state)."""
+    tokenizer = _make_tokenizer(tmp_path)
+    trained = []
+    for by_hand in (False, True):
+        set_seed(0)
+        policy = _make_model(tokenizer, resid_dropout=0.3)
+        ref_model = copy.deepcopy(policy)
+        if by_hand:
+            ref_model.net.eval().requires_grad_(False)
+        step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
+        (tmp_path / str(by_hand)).mkdir()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.chdir(tmp_path / str(by_hand))
+            _dpo_fit(policy, _preference_loader(tokenizer, n_pairs=4, batch_size=2), step_fn)
+        assert not any(p.requires_grad for p in ref_model.net.parameters()) and not ref_model.net.training
+        trained.append({**policy.net.state_dict(), **{f"r.{k}": v for k, v in ref_model.net.state_dict().items()}})
+    assert trained[0].keys() == trained[1].keys()
+    assert all(torch.equal(trained[0][k], trained[1][k]) for k in trained[0])
+
+
+# How the reference sits against the policy's net, and what the refusal says.
+_MISPLACED_REFERENCE = {
+    "is_policy": r"DPO reference model must not be part of model\.net \(it is model\.net itself\): freezing it "
+    r"would freeze the network being trained",
+    "nested": r"DPO reference model must not be part of model\.net \(it is model\.net\._dpo_reference\): the "
+    r"optimizer would train it with the net",
+    "shares_one": r"DPO reference model shares parameters with model\.net \(e\.g\. norm_out\.weight\), so "
+    r"freezing it",
+}
+
+
+@pytest.mark.parametrize("layout", list(_MISPLACED_REFERENCE))
+def test_a_reference_in_or_sharing_the_policys_net_is_refused_before_any_freeze(layout, tmp_path, monkeypatch):
+    """A reference that is the policy, lies inside its net or shares one of
+    its parameters is refused before anything is frozen or run: freezing it
+    would freeze (part of) the policy, so ``train()`` blamed ``freeze('*')``
+    or silently trained fewer parameters."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    tokenizer = _make_tokenizer(tmp_path)
+    policy = _make_model(tokenizer)
+    ref_model = policy if layout == "is_policy" else _make_model(tokenizer)
+    if layout == "nested":
+        policy.net.add_module("_dpo_reference", ref_model.net)
+    elif layout == "shares_one":
+        ref_model.net.norm_out.weight = policy.net.norm_out.weight
+    before = {k: v.clone() for k, v in policy.net.state_dict().items()}
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
+    assert all(p.requires_grad for p in policy.net.parameters()) and policy.net.training  # building froze nothing
+    forwards: list[int] = []
+    ref_model.net.register_forward_hook(lambda *_: forwards.append(1))
+    with pytest.raises(ValueError, match=_MISPLACED_REFERENCE[layout]) as caught:
+        _dpo_fit(policy, _preference_loader(tokenizer, n_pairs=4, batch_size=2), step_fn)
+    assert "copy.deepcopy" in str(caught.value)
+    assert all(p.requires_grad for p in policy.net.parameters())
+    assert all(torch.equal(v, before[k]) for k, v in policy.net.state_dict().items())
+    assert forwards == []
+
+
+def test_the_factory_refuses_a_reference_that_is_not_a_model():
+    """The reference is left alone until the first step, but a value with no
+    ``net`` module is still refused when the step is built."""
+    with pytest.raises(TypeError, match="dpo_train_step_factory needs an NNModel reference"):
+        dpo_train_step_factory(torch.nn.Linear(2, 2), beta=0.1)  # type: ignore[arg-type]

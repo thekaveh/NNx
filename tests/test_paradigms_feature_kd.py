@@ -75,23 +75,6 @@ def test_feature_kd_factory_validates_alpha_beta_temperature():
         feature_kd_train_step_factory(teacher, auxiliary_layers={}, alpha=0.5, beta=0.5, temperature=4.0)
 
 
-def test_feature_kd_freezes_teacher():
-    """Factory freezes every teacher param and pins .net to eval mode —
-    same guarantee as kd_train_step_factory."""
-    teacher = _make_classifier(32)
-    teacher.net.train()  # force into train mode
-    assert all(p.requires_grad for p in teacher.net.parameters())
-    feature_kd_train_step_factory(
-        teacher,
-        auxiliary_layers={"layers.0": "layers.0"},
-        alpha=0.5,
-        beta=0.5,
-        temperature=4.0,
-    )
-    assert all(not p.requires_grad for p in teacher.net.parameters())
-    assert not teacher.net.training
-
-
 def test_feature_kd_rejects_mismatched_layer_widths(tmp_path, monkeypatch):
     """Teacher's paired layer outputs 32 features, student's paired
     layer outputs 16 — the MSE would broadcast-error or silently
