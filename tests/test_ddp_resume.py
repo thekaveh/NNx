@@ -297,9 +297,16 @@ def test_a_resumes_step_count_refusal_hands_every_ranks_model_and_rng_back(first
 def test_a_resume_whose_first_fetch_fails_on_one_rank_is_rolled_back_on_both(first_split_run, monkeypatch):
     """Rank 1's first fetch fails; rank 0 waits in its first step until rank
     1 has left (or the process group's timeout expires). Neither has
-    committed an update, so both hand their model and RNG back."""
+    committed an update, so both hand their model and RNG back. Each rank
+    leaves its timed-out group for process exit, where NNx's exit hook
+    destroys it before the interpreter finalizes, and exits cleanly."""
     monkeypatch.setenv("NNX_DDP_TIMEOUT", "15")
-    launch("resume_unreadable_rank", first_split_run, timeout=180)
+    for stale in first_split_run.glob("exit-rank*.txt"):  # written by the launches before this one
+        stale.unlink()
+    completed = launch("resume_unreadable_rank", first_split_run, check=False, timeout=180)
+    assert completed.returncode == 0 and "terminate called" not in completed.stderr, completed.stderr[-4000:]
+    for rank in range(2):
+        assert (first_split_run / f"exit-rank{rank}.txt").read_text(encoding="utf-8") == "destroyed"
     waiting, failing = results(first_split_run)
     assert failing["error"].startswith("OSError: cannot read sample"), failing
     assert waiting["error"] is not None and "OSError" not in waiting["error"], waiting  # the group's timeout
