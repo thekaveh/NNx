@@ -62,7 +62,7 @@ The [Capability reference](https://github.com/thekaveh/NNx/blob/main/docs/capabi
 
 ### 2.1. Release or source
 
-This documentation describes the source on `main`: NNx 0.4.1 and its unreleased changes. <!-- x-release-please-version -->
+This documentation describes the source on `main`: NNx 0.4.2 and its unreleased changes. <!-- x-release-please-version -->
 
 Install the newest release from PyPI, then check its version:
 
