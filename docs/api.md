@@ -207,7 +207,7 @@ no other NNModel functionality is affected.
 property nnx.nn.nn_model.NNModel.params
 ```
 
-The model's `NNModelParams`. A wrapped lazy module is described as materialized from the first read after it materialized: at its first forward, wherever that ran (``train``, ``predict``, ``evaluate`` or a direct call of ``net``), or at ``from_checkpoint``'s load of its saved weights (#562) — unless a lazy layer stays unreached or its state keys changed after the wrap.
+The model's `NNModelParams`. A wrapped lazy module is described as materialized from the first read after it materialized: at its first forward, wherever that ran (``train``, ``predict``, ``evaluate`` or a direct call of ``net``), or at ``from_checkpoint``'s load of its saved weights — unless a lazy layer stays unreached or its state keys changed after the wrap.
 
 ##### `nnx.nn.nn_model.NNModel.task_adapter`
 
@@ -2106,7 +2106,7 @@ Attributes:
         ``None`` for a checkpoint without a manifest.
     attempt_token: this session's attempt token, a fresh id for every
         ``train()`` call (under DDP, the same on every rank) that a later
-        resume records as its source's (#553); ``None`` for status
+        resume records as its source's; ``None`` for status
         recorded without it.
     source_attempt_token: the source run's ``attempt_token`` when the
         session resumed from it, or ``"bundle-<generation>"`` for a run
@@ -5121,8 +5121,10 @@ then could block on the missing rank). The timed-out barrier stays queued
 while the process lives: a rank arriving then completes against it. Up to
 torch 2.13 the process also waits at exit until the missing rank arrives
 or the group's own timeout (``init_process_group(timeout_seconds=...)``)
-expires; from torch 2.14 it exits at once, so a rank arriving after that
-raises in its own call within its timeout. The Gloo default group of a
+expires. The test suite also covers a torch 2.14 case where it exits at
+once, so a rank arriving after that raises in its own call within its
+timeout (tests/test_ddp_adapter.py, test_shutdown_is_bounded_when_a_rank_never_arrives);
+torch does not promise either behaviour. The Gloo default group of a
 process that called :func:`init_process_group` is destroyed at exit,
 before the interpreter finalizes. With NCCL, older torch
 releases ignore ``timeout_seconds`` unless ``TORCH_NCCL_BLOCKING_WAIT=1``
@@ -8206,7 +8208,10 @@ recorded topology transform NNx cannot replay from data (anything but an
 ``nnx.transforms`` recipe operation of a known version or a torchao QAT
 conversion — the error names its index and id), module extra state that
 is not a tensor, and training state that is not tensors and JSON
-primitives are refused before anything is written.
+primitives are refused before anything is written. NumPy bool, integer and
+floating scalars are not refused: they are stored as the Python number they
+hold. A NumPy ``timedelta64`` is refused with a ``BundleError``, whatever its
+unit; store a duration as a plain number in a fixed unit instead.
 
 Every file and directory is flushed to stable storage as resume points
 are (``F_FULLFSYNC`` on macOS, ``fsync`` elsewhere). A filesystem that
@@ -11714,7 +11719,7 @@ carry a multi-optimizer ``Trainer``'s name-keyed states; either
 stateful. ``optimizer_config`` / ``scheduler_config`` (name-keyed:
 ``optimizer_configs`` / ``scheduler_configs``) record the configured
 hyperparameters the restored states replace, which a stateful
-resume compares with its own (#502); ``None`` (and a sidecar
+resume compares with its own; ``None`` (and a sidecar
 written before them) leaves the comparison to the source
 ``run.yaml``.
 
@@ -12121,7 +12126,7 @@ that epoch cannot be known (the checkpoint, or the parent's LAST, is
 unreadable), the parent's records before the run's first record are
 used, with a ``RuntimeWarning``; when neither is known, or the parent
 run is gone, the lineage starts at the run, with a ``RuntimeWarning``.
-A run that recorded the parent attempt it resumed from (#553) is
+A run that recorded the parent attempt it resumed from is
 stitched only to that attempt: when the parent has been retrained in
 place since, or the run resumed from a run bundle (whose parent lives
 in the bundle, not under ``root``), the lineage starts at the run, with

@@ -72,10 +72,10 @@ export a tied net whose head or embedding is parametrized as an untied copy:
   `output.weight` is written, so the head must still read the embedding's
   weight. A `torch.nn.utils.parametrize` parametrization on the `lm_head` or
   `tok_embed` weight computes that module's weight while the other still
-  reads the raw tensor, and an `lm_head.weight` reassigned to another tensor
-  (or left untied by `remove_parametrizations`) holds its own values; either
-  way the file would drop the head's weight. A distinct tensor with the
-  embedding's exact values, as `load_state_dict(assign=True)` leaves, still
+  reads the raw tensor. An `lm_head.weight` reassigned to another tensor, or
+  left untied by `remove_parametrizations`, is refused when its values differ
+  from the embedding's, because the file would drop the head's weight. A
+  distinct tensor with the embedding's exact values, as `load_state_dict(assign=True)` leaves, still
   exports. To keep the outputs the model computes, export an untied copy
   (below). Removing a parametrization and re-tying the head
   (`net.lm_head.weight = net.tok_embed.weight`) also exports, but keeps only

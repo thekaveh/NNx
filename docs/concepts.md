@@ -376,7 +376,7 @@ Only a run with a *committed* BEST checkpoint can own the pointer. That means a 
 
 Overwriting a run (`overwrite_existing=True`) deletes its artifacts and reuses its ID. If that run owned `runs/best`, the best surviving committed run is elected *before* the old artifacts are removed. Ties keep the incumbent, then the lexicographically smallest ID. So the pointer never dangles and an emptied replacement is never advertised. The replacement becomes a candidate again only once its own BEST commits; saving its history earlier cannot claim the slot.
 
-When no eligible run remains, `runs/best` is absent. Readers should treat a missing pointer as "no winner yet", not as an error. Runs that select BEST with a named monitor (§6.4) are never candidates: their ranking is not comparable with other runs'. Lock order is lease → admission → `.best.lock` on overwrite and lease → run → `.best.lock` on save. Election reads other runs without taking their locks.
+When no eligible run remains, `runs/best` is absent and the election has no winner yet. Readers that take the run id `"best"` then raise, as listed above: `NNRun.load` raises `FileNotFoundError`, a resume raises `ValueError`, and `iter_history` and `export_history_csv` raise `ValueError`. Runs that select BEST with a named monitor (§6.4) are never candidates: their ranking is not comparable with other runs'. Lock order is lease → admission → `.best.lock` on overwrite and lease → run → `.best.lock` on save. Election reads other runs without taking their locks.
 
 Both the per-run BEST checkpoint and the cross-run pointer score a checkpoint by the first **finite** value. The order is validation error → validation loss → training error → training loss. The training values come from the epoch's last batch record; declare a monitor (§6.4) to select on a whole-epoch training summary instead.
 
@@ -1517,7 +1517,7 @@ step_fn = kd_train_step_factory(teacher, alpha=0.5, temperature=4.0)
 student.train(params=train_params, train_step_fn=step_fn)
 ```
 
-Every step **freezes the teacher's parameters and puts its net in eval mode** before its forward. So teacher weights are guaranteed not to drift during student training, and a teacher switched to train mode by a callback still gives its eval-mode soft targets. The teacher must be kept apart from the student. Building the step leaves it alone, and each step first refuses, with a `ValueError` and before anything is frozen, a teacher that is the student's net, lies inside it or shares one of its parameters: freezing it would freeze the student. `kd_objective` makes the same check before any run is reserved. The loss is `α · KL(softmax(t/T) || softmax(s/T)) · T² + (1-α) · L_hard`. That is the standard Hinton direction (teacher first), implemented via `F.kl_div(log_softmax(student/T), softmax(teacher/T))`.
+Every step **freezes the teacher's parameters and puts its net in eval mode** before its forward. So the step keeps the teacher's weights from changing during student training, and a teacher switched to train mode by a callback still gives its eval-mode soft targets. This does not stop outside code from writing the teacher's weights, or an optimizer that holds them. The teacher must be kept apart from the student. Building the step leaves it alone, and each step first refuses, with a `ValueError` and before anything is frozen, a teacher that is the student's net, lies inside it or shares one of its parameters: freezing it would freeze the student. `kd_objective` makes the same check before any run is reserved. The loss is `α · KL(softmax(t/T) || softmax(s/T)) · T² + (1-α) · L_hard`. That is the standard Hinton direction (teacher first), implemented via `F.kl_div(log_softmax(student/T), softmax(teacher/T))`.
 
 The hard-label term uses the student's `loss_fn`. Native NLL gets the same internal log-softmax adaptation as the supervised loop, so CE and NLL students train identically from the same weights. The soft KL term always works on raw logits. EDP reports the combined loss and student top-1 error.
 
@@ -2940,6 +2940,7 @@ export_bundle(run_id, dir) ──► inspect_bundle(dir) ──► validate_bund
     - module extra state that is not a tensor;
     - a custom object in optimizer or component state;
     - a runtime-only module;
+    - a NumPy `timedelta64` value in any state, whatever its unit (NumPy bool, integer and float scalars are stored as the Python number they hold);
     - a recorded topology transform NNx cannot replay from data. That is
       anything but an `nnx.transforms` recipe operation or a torchao QAT
       conversion; the error names its index and id.

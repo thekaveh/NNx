@@ -1189,7 +1189,10 @@ def export_bundle(
     ``nnx.transforms`` recipe operation of a known version or a torchao QAT
     conversion — the error names its index and id), module extra state that
     is not a tensor, and training state that is not tensors and JSON
-    primitives are refused before anything is written.
+    primitives are refused before anything is written. NumPy bool, integer and
+    floating scalars are not refused: they are stored as the Python number they
+    hold. A NumPy ``timedelta64`` is refused with a ``BundleError``, whatever its
+    unit; store a duration as a plain number in a fixed unit instead.
 
     Every file and directory is flushed to stable storage as resume points
     are (``F_FULLFSYNC`` on macOS, ``fsync`` elsewhere). A filesystem that
