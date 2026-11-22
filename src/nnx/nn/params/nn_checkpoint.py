@@ -711,7 +711,7 @@ class NNCheckpoint:
         stateful. ``optimizer_config`` / ``scheduler_config`` (name-keyed:
         ``optimizer_configs`` / ``scheduler_configs``) record the configured
         hyperparameters the restored states replace, which a stateful
-        resume compares with its own (#502); ``None`` (and a sidecar
+        resume compares with its own; ``None`` (and a sidecar
         written before them) leaves the comparison to the source
         ``run.yaml``.
 

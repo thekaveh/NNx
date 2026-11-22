@@ -1200,7 +1200,7 @@ def iter_history(run_id: str, root: Optional[str] = None, *, lineage: bool = Fal
     unreadable), the parent's records before the run's first record are
     used, with a ``RuntimeWarning``; when neither is known, or the parent
     run is gone, the lineage starts at the run, with a ``RuntimeWarning``.
-    A run that recorded the parent attempt it resumed from (#553) is
+    A run that recorded the parent attempt it resumed from is
     stitched only to that attempt: when the parent has been retrained in
     place since, or the run resumed from a run bundle (whose parent lives
     in the bundle, not under ``root``), the lineage starts at the run, with
