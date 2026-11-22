@@ -95,6 +95,26 @@ def pin_eval(module: torch.nn.Module) -> None:
         module.eval()
 
 
+def submodule_path(root: torch.nn.Module, module: torch.nn.Module) -> Optional[str]:
+    """The dotted name ``module`` is registered under in ``root`` (``""``
+    for ``root`` itself), or ``None`` when it is not part of ``root``."""
+    return next((name for name, candidate in root.named_modules() if candidate is module), None)
+
+
+def placement_in(net: torch.nn.Module, module: torch.nn.Module) -> tuple[Optional[str], Optional[str]]:
+    """Where ``module`` (a JEPA target, a KD teacher, a DPO reference) sits
+    against ``net`` (``model.net``), for the refusals of #531: the dotted
+    name it is registered under in ``net`` or ``None``, and the first
+    parameter name it shares with ``net`` or ``None``. The path is found
+    first, and the shared scan is skipped once a path is, since that
+    refusal ends the check."""
+    path = submodule_path(net, module)
+    if path is not None:
+        return path, None
+    trained = {id(p) for p in net.parameters()}
+    return None, next((n for n, p in module.named_parameters() if id(p) in trained), None)
+
+
 def freeze_apart(net: torch.nn.Module, frozen: torch.nn.Module, *, role: str, remedy: str) -> None:
     """Freeze ``frozen`` (a KD teacher's or DPO reference's net) once it is
     known to be apart from ``net`` (``model.net``, the network being
@@ -102,7 +122,7 @@ def freeze_apart(net: torch.nn.Module, frozen: torch.nn.Module, *, role: str, re
     is part of it or shares a parameter with it, since freezing it would
     freeze (part of) the trained network. The JEPA target's rule (#531).
     Its mode is left to :func:`pin_eval`, before each forward."""
-    path = next((name for name, sub in net.named_modules() if sub is frozen), None)
+    path, shared = placement_in(net, frozen)
     if path is not None:
         if path == "":  # the trained network itself
             where, cost = "model.net itself", "freezing it would freeze the network being trained"
@@ -110,11 +130,9 @@ def freeze_apart(net: torch.nn.Module, frozen: torch.nn.Module, *, role: str, re
             where = f"model.net.{path}"
             cost = "the optimizer would train it with the net, and freezing it would leave those parameters untrained"
         raise ValueError(f"the {role} must not be part of model.net (it is {where}): {cost}; {remedy}")
-    trained = {id(p) for p in net.parameters()}
-    shared = [n for n, p in frozen.named_parameters() if id(p) in trained]
-    if shared:
+    if shared is not None:
         raise ValueError(
-            f"the {role} shares parameters with model.net (e.g. {shared[0]}): it must be kept apart from the "
+            f"the {role} shares parameters with model.net (e.g. {shared}): it must be kept apart from the "
             f"network being trained, since freezing it freezes any shared parameter that network trains; {remedy}"
         )
     for param in frozen.parameters():
