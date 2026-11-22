@@ -6,6 +6,8 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/thekaveh/NNx/compare/v0.4.1...v0.4.2) (2026-11-14)
+
 ### Added
 
 - **CUDA rows on the feature-composition matrix.** The matrix now has a `cuda` evidence profile beside the CPU one. FP16 AMP (TC-06), BF16 AMP (TC-10) and two-GPU NCCL DDP (TC-11) have tests, and a report from a GPU run verifies them. Until one runs, they stay *unverified*. CONTRIBUTING describes the opt-in GPU runner and a manual run ([#420](https://github.com/thekaveh/NNx/issues/420)).
