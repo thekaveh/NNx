@@ -117,9 +117,11 @@ The wait is bounded with Gloo; with NCCL on older torch, it is bounded by the
 group's own timeout. A rank that does not arrive in time makes the others
 raise `RuntimeError` instead of blocking in the call. The group is then left
 for process exit. Up to torch 2.13 the process may still wait at exit until
-the missing rank arrives or the group's timeout expires. From torch 2.14 it
-exits at once, and a rank that arrives after that raises within its own
-timeout too. Without a process group, or after a successful call, it does
+the missing rank arrives or the group's timeout expires. The test suite
+also covers a case where torch 2.14 exits at once, and a rank that arrives
+after that raises within its own timeout (`tests/test_ddp_adapter.py`,
+`test_shutdown_is_bounded_when_a_rank_never_arrives`). torch does not promise
+either behaviour. Without a process group, or after a successful call, it does
 nothing.
 
 In a process that called `init_process_group()`, the Gloo default group
