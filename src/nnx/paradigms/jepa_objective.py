@@ -32,7 +32,7 @@ from typing import Any, Optional, cast
 import torch
 from torch import nn
 
-from .._step_helpers import adapter_output, first_input, full_precision
+from .._step_helpers import adapter_output, first_input, full_precision, placement_in, submodule_path
 from ..components import ComponentSpec
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from ..objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult, UpdateEvent
@@ -44,15 +44,6 @@ MaskFn = Callable[[int, torch.device], "tuple[torch.Tensor, torch.Tensor]"]
 
 _TERM = "latent_mse"
 _STATE_KEYS = frozenset({"spec", "predictor", "target_encoder", "ema_updates"})
-
-
-def _submodule_path(root: nn.Module, module: nn.Module) -> Optional[str]:
-    """The dotted name ``module`` is registered under in ``root`` (``""``
-    for ``root`` itself), or ``None`` when it is not part of ``root``."""
-    for name, candidate in root.named_modules():
-        if candidate is module:
-            return name
-    return None
 
 
 def _check_masks(context: torch.Tensor, target: torch.Tensor, n_patches: int) -> None:
@@ -84,7 +75,7 @@ def _check_target_placement(net: nn.Module, target_encoder: nn.Module) -> None:
     outside ``net`` (``model.net``) and sharing none of its parameters. Under
     the net, ``net.train()`` would put the target's dropout and BatchNorm in
     train mode; a target sharing the net's parameters would freeze them."""
-    path = _submodule_path(net, target_encoder)
+    path, shared = placement_in(net, target_encoder)
     if path is not None:
         if path == "":  # the online network itself, which the optimizer already trains
             where, cost = "model.net itself", "freezing it would freeze the online network"
@@ -95,11 +86,9 @@ def _check_target_placement(net: nn.Module, target_encoder: nn.Module) -> None:
             f"its dropout and BatchNorm in train mode, and {cost}; pass a build_target_encoder(model.net) copy "
             "kept outside the net"
         )
-    online = {id(p) for p in net.parameters()}
-    shared = [n for n, p in target_encoder.named_parameters() if id(p) in online]
-    if shared:
+    if shared is not None:
         raise ValueError(
-            f"the JEPA target encoder shares parameters with model.net (e.g. {shared[0]}), so freezing it would "
+            f"the JEPA target encoder shares parameters with model.net (e.g. {shared}), so freezing it would "
             "freeze the online network; build it with build_target_encoder(model.net)"
         )
 
@@ -195,7 +184,7 @@ class JEPAObjective(Objective):
                 f"jepa_objective needs a ViT-style model.net with n_patches and patch_positions(); got "
                 f"{type(net).__name__}"
             )
-        path = _submodule_path(net, self.predictor)
+        path = submodule_path(net, self.predictor)
         if not path:
             raise ValueError(
                 "the JEPA predictor must be a submodule of model.net (e.g. model.net.add_module('_jepa_predictor', "
