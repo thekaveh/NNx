@@ -16,6 +16,10 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+### Thanks
+
+- Thanks to @bfs2021 for the report and the fix in PR #581 (a zero-row multilabel batch and a flat regression target in `StreamingMetrics.update_logits`). Both are fixed by FIX-081 (#549), which shipped in 0.4.2.
+
 ## [0.4.2](https://github.com/thekaveh/NNx/compare/v0.4.1...v0.4.2) (2026-11-14)
 
 ### Added
