@@ -839,6 +839,13 @@ def test_shutdown_is_bounded_when_a_rank_never_arrives(tmp_path):
     else:
         assert late["error"].startswith("RuntimeError: ") and "teardown barrier within 3s" in late["error"], late
         assert late["initialized_after"] is True
+    # Pinned to the measured teardown path per torch minor (Linux,
+    # python:3.12-slim, CPU torch, five runs each): rank 0's process still
+    # waited at exit on 2.13.0, 2.14.0 and 2.14.1, so the late rank's barrier
+    # completed. Other minors are not pinned until measured.
+    minor = tuple(int(part) for part in torch.__version__.split("+")[0].split(".")[:2])
+    if minor in {(2, 13), (2, 14)}:
+        assert late["peer_waiting_at_exit"] is True, late
 
 
 @pytest.mark.parametrize("failure", ["fetch", "stall"])
