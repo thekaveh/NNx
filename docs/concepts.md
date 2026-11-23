@@ -370,7 +370,21 @@ Artifacts are still written under `<cwd>/runs/<id>/`. Use `os.path.abspath(f"run
 
 ### 4.1. The `runs/best` pointer
 
-The `runs/best` symlink points at the lowest-error run across all runs in the directory. For paradigm runs whose steps don't produce a supervised error, it uses the lowest loss. In a runs root mixing both kinds, the comparison is between unlike metrics. That is an accepted trade-off against a `best` pointer paradigm runs could never claim. On Windows without developer mode, `runs/best` is a directory that holds a `POINTER.txt` file with the run's path. `NNRun.best_id(root)` reads either layout and returns the run's id, or `None` when no run holds the pointer. Every reader that accepts the run id `"best"` reads the run it names, in either layout: `NNRun.load`, the `NNCheckpoint` readers (`load`, `resume_point`, `verify`, `load_training_state`, `load_with_training_state` and `load_optimizer_state`), `load_provenance`, `iter_history`, `export_history_csv`, `observations_from_runs` and a resume from `resume_from_run_id="best"` (`NNModel.train` and `Trainer.train`). Each resolves the pointer once per call. A case variant such as `"BEST"` reads the pointer too where the filesystem opens it as `runs/best` (the same entry: a case-insensitive filesystem, such as the macOS and Windows defaults); on a case-sensitive filesystem a run named `BEST` is read as that run. On a case-insensitive filesystem such a name is the `runs/best` slot itself and cannot hold a run of its own. A resume still records `"best"` as its source run, and reads the attempt, checkpoint, hyperparameters and provenance of the one run the pointer named. When no run holds the pointer (it is absent, or names a deleted run, a dot-name or `..`), each reader answers as for an absent run: `NNRun.load` raises `FileNotFoundError`, the checkpoint readers and `load_provenance` return `None`, `iter_history` and `export_history_csv` raise `ValueError`, `observations_from_runs` raises `ComparisonError`, and the resume raises `ValueError` (not found on disk). None of these readers follows the pointer out of the runs root. `export_bundle` and `migrate_history` refuse `"best"` and a case variant that opens it, and `iter_history(lineage=True)` and `observations_from_runs` treat a parent recorded as either as the moving alias. Saves to `run="best"` are unchanged.
+The `runs/best` symlink points at the lowest-error run across all runs in the directory. For paradigm runs whose steps don't produce a supervised error, it uses the lowest loss. In a runs root mixing both kinds, the comparison is between unlike metrics. That is an accepted trade-off against a `best` pointer paradigm runs could never claim.
+
+On Windows without developer mode, `runs/best` is a directory that holds a `POINTER.txt` file with the run's path. `NNRun.best_id(root)` reads either layout. It returns the run's id, or `None` when no run holds the pointer.
+
+Every reader that accepts the run id `"best"` reads the run it names, in either layout. The readers are `NNRun.load`, `load_provenance`, `iter_history`, `export_history_csv` and `observations_from_runs`. The `NNCheckpoint` readers are `load`, `resume_point`, `verify`, `load_training_state`, `load_with_training_state` and `load_optimizer_state`. A resume from `resume_from_run_id="best"` (`NNModel.train` and `Trainer.train`) is one more reader.
+
+Each reader resolves the pointer once per call. A case variant such as `"BEST"` reads the pointer too where the filesystem opens it as `runs/best`. That is the same entry on a case-insensitive filesystem, such as the macOS and Windows defaults. On a case-sensitive filesystem, a run named `BEST` is read as that run. On a case-insensitive filesystem, such a name is the `runs/best` slot itself and cannot hold a run of its own.
+
+A resume still records `"best"` as its source run. It reads the attempt, checkpoint, hyperparameters and provenance of the one run the pointer named.
+
+When no run holds the pointer, each reader answers as for an absent run. The pointer is absent, or names a deleted run, a dot-name or `..`. `NNRun.load` raises `FileNotFoundError`. The checkpoint readers and `load_provenance` return `None`.
+
+`iter_history` and `export_history_csv` raise `ValueError`. `observations_from_runs` raises `ComparisonError`. The resume raises `ValueError` (not found on disk).
+
+None of these readers follows the pointer out of the runs root. `export_bundle` and `migrate_history` refuse `"best"` and a case variant that opens it. `iter_history(lineage=True)` and `observations_from_runs` treat a parent recorded as either as the moving alias. Saves to `run="best"` are unchanged.
 
 Only a run with a *committed* BEST checkpoint can own the pointer. That means a real run directory with `run.yaml`, loadable history and a parseable BEST. Under the history protocol, the BEST epoch must also be no later than the committed LAST. `best`, `.leases`, bare reservations and malformed artifacts are never candidates. Neither is `best.tmp`, the temporary symlink a repoint renames over `runs/best`, which an interrupt between those two steps can leave behind; `NNRun.all()` skips the same entries, so it lists that run once. Eligibility never reads `metadata.yaml` or provenance, so an unreadable `provenance.json` cannot move the pointer, even under a warnings-as-errors filter (`-W error`).
 
@@ -1517,7 +1531,11 @@ step_fn = kd_train_step_factory(teacher, alpha=0.5, temperature=4.0)
 student.train(params=train_params, train_step_fn=step_fn)
 ```
 
-Every step **freezes the teacher's parameters and puts its net in eval mode** before its forward. So the step keeps the teacher's weights from changing during student training, and a teacher switched to train mode by a callback still gives its eval-mode soft targets. This does not stop outside code from writing the teacher's weights, or an optimizer that holds them. The teacher must be kept apart from the student. Building the step leaves it alone, and each step first refuses, with a `ValueError` and before anything is frozen, a teacher that is the student's net, lies inside it or shares one of its parameters: freezing it would freeze the student. `kd_objective` makes the same check before any run is reserved. The loss is `α · KL(softmax(t/T) || softmax(s/T)) · T² + (1-α) · L_hard`. That is the standard Hinton direction (teacher first), implemented via `F.kl_div(log_softmax(student/T), softmax(teacher/T))`.
+Every step **freezes the teacher's parameters and puts its net in eval mode** before its forward. So the step keeps the teacher's weights from changing during student training. A teacher switched to train mode by a callback still gives its eval-mode soft targets. This does not stop outside code from writing the teacher's weights, or an optimizer that holds them.
+
+The teacher must be kept apart from the student. Building the step leaves it alone. Each step first refuses a teacher that is the student's net, lies inside it or shares one of its parameters. That check raises a `ValueError` before anything is frozen. Freezing such a teacher would freeze the student. `kd_objective` makes the same check before any run is reserved.
+
+The loss is `α · KL(softmax(t/T) || softmax(s/T)) · T² + (1-α) · L_hard`. That is the standard Hinton direction (teacher first), implemented via `F.kl_div(log_softmax(student/T), softmax(teacher/T))`.
 
 The hard-label term uses the student's `loss_fn`. Native NLL gets the same internal log-softmax adaptation as the supervised loop, so CE and NLL students train identically from the same weights. The soft KL term always works on raw logits. EDP reports the combined loss and student top-1 error.
 
@@ -3525,16 +3543,17 @@ deliberately narrow and **guarantees no speedup**:
   `on_failure="error"`, a compile failure leaves them so too.
 - **Buffer snapshots.** For that re-run, the wrapper keeps the RNG state
   and a copy of the net's buffers from before each compiled call. From
-  torch 2.5, a buffer unchanged since the previous call (the same tensor,
-  with the same `_version`) keeps its copy. A read-only buffer, such as a
-  `TransformerNN` layer's RoPE tables, is therefore copied once per fit. A
-  buffer written in place, by the forward (BatchNorm statistics) or between
-  calls, is copied again. An in-place write through `.data`
-  (`buffer.data.fill_(0)`) does not change `_version`, so the snapshot misses
-  it, and an eager re-run could start from the buffer's older value. Write
-  the buffer itself in place (`buffer.fill_(0)` under `torch.no_grad()`).
-  On torch 2.4, inductor writes buffers without changing `_version`, so
-  every compiled call copies every buffer.
+  torch 2.5, a buffer unchanged since the previous call keeps its copy. It
+  is unchanged when it is the same tensor with the same `_version`. A
+  read-only buffer, such as a `TransformerNN` layer's RoPE tables, is
+  therefore copied once per fit.
+- **Buffer writes.** A buffer written in place, by the forward (BatchNorm
+  statistics) or between calls, is copied again. An in-place write through
+  `.data` (`buffer.data.fill_(0)`) does not change `_version`. The snapshot
+  misses it, and an eager re-run could start from the buffer's older value.
+  Write the buffer itself in place (`buffer.fill_(0)` under
+  `torch.no_grad()`). On torch 2.4, inductor writes buffers without changing
+  `_version`, so every compiled call copies every buffer.
 - **Recompile limit.** Hitting dynamo's recompile limit is a failure, never a
   silent eager fallback (torch >= 2.6 reports it). The limit is per code
   object and process-wide. Each fit therefore gets it afresh, on top of the
