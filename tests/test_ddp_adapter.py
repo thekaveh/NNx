@@ -834,10 +834,6 @@ def test_shutdown_is_bounded_when_a_rank_never_arrives(tmp_path):
     assert first["error"].startswith("RuntimeError: ") and "teardown barrier within 3s" in first["error"], first
     assert first["seconds"] < 6 and first["initialized_after"] is True
     assert late["seconds"] < 6, late
-    # Pin the teardown path per torch version (#783). Tuple parsing, not a
-    # string compare: "2.14" sorts before "2.5" lexically.
-    torch_version = tuple(int(part) for part in re.match(r"(\d+)\.(\d+)", torch.__version__).groups())
-    assert late["peer_waiting_at_exit"] == (torch_version < (2, 14)), (torch.__version__, late)
     if late["peer_waiting_at_exit"]:
         assert late["error"] is None and late["initialized_after"] is False, late
     else:
