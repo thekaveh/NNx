@@ -49,20 +49,30 @@ python scripts/check_export_conformance.py --output conformance.json
 ```
 
 Every name and profile folder is checked before anything is written. The
-script exits `2` (a usage error) for a profile folder that already holds
-files, unless `--force` clears it. It also exits `2`, even with `--force`,
-for a profile folder that is a symlink (to an empty or a filled folder, or
-dangling) or that cannot be read: `--force` never touches a link or its
-target. Every folder is checked before any is cleared. The artifact root
-itself may be a symlink. It exits `2` too for a profile folder that cannot
-be created (the artifact root a dangling symlink, or not writable), and
-for an `--output` that is a directory, that is, holds or lies inside a profile folder,
-or whose parent cannot be created; the output is checked before `--force` clears anything. A folder that
-`--force` cannot clear (one holding a read-only subfolder, say) also exits
-`2`, and may be left partly cleared: fix its permissions and run again.
+script exits `2` (a usage error) when a profile folder already holds files.
+`--force` clears those files instead.
+
+The script exits `2` even with `--force` for a profile folder that is a
+symlink or cannot be read. The link may point to an empty or a filled
+folder, or be dangling. `--force` never touches a link or its target. Every
+folder is checked before any is cleared.
+
+The artifact root itself may be a symlink. The script exits `2` for a
+profile folder that cannot be created. That happens when the artifact root
+is a dangling symlink, or is not writable.
+
+The script also exits `2` for an unusable `--output`. The output is checked
+before `--force` clears anything. It is refused when it is a directory. It is also refused
+when it is a profile folder or holds one. It is refused when it lies inside
+a profile folder, or when its parent cannot be created.
+
+A folder that `--force` cannot clear exits `2` too. One holding a read-only
+subfolder is an example. Such a run may leave the folder partly cleared. Fix
+its permissions and run again.
+
 An `--output` folder that exists but cannot be written in is found only
-once the profiles ran: that also exits `2`, keeps the artifacts, and needs
-`--force` on the next run.
+after the profiles ran. The script then exits `2` and keeps the artifacts.
+The next run needs `--force`.
 
 Or from Python:
 
