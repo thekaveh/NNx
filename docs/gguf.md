@@ -68,19 +68,24 @@ export a tied net whose head or embedding is parametrized as an untied copy:
   power-iteration step. A norm on a tied `lm_head` unties it, removed or
   parametrized: export an untied copy (next item).
 - With tied embeddings (`tie_embeddings=True`, the default), the `lm_head`
-  has no GGUF slot of its own: readers take it from `token_embd`, and no
-  `output.weight` is written, so the head must still read the embedding's
-  weight. A `torch.nn.utils.parametrize` parametrization on the `lm_head` or
-  `tok_embed` weight computes that module's weight while the other still
-  reads the raw tensor. An `lm_head.weight` reassigned to another tensor, or
-  left untied by `remove_parametrizations`, is refused when its values differ
-  from the embedding's, because the file would drop the head's weight. A
-  distinct tensor with the embedding's exact values, as `load_state_dict(assign=True)` leaves, still
-  exports. To keep the outputs the model computes, export an untied copy
-  (below). Removing a parametrization and re-tying the head
-  (`net.lm_head.weight = net.tok_embed.weight`) also exports, but keeps only
-  one of the two weights, so the exported model's outputs change. An untied
-  model exports a parametrized head or embedding as its forward reads it.
+  has no GGUF slot of its own. Readers take it from `token_embd`, and no
+  `output.weight` is written. The head must therefore still read the
+  embedding's weight.
+- A `torch.nn.utils.parametrize` parametrization on the `lm_head` or
+  `tok_embed` weight computes that module's weight. The other module still
+  reads the raw tensor, so the two can disagree.
+- An `lm_head.weight` reassigned to another tensor is refused when its values
+  differ from the embedding's. So is a head left untied by
+  `remove_parametrizations` with different values. The file would drop the
+  head's weight.
+- A distinct tensor with the embedding's exact values exports, as
+  `load_state_dict(assign=True)` leaves it.
+- To keep the outputs the model computes, export an untied copy (below).
+  Removing a parametrization and re-tying the head
+  (`net.lm_head.weight = net.tok_embed.weight`) also exports. It keeps only
+  one of the two weights, so the exported model's outputs change.
+- An untied model exports a parametrized head or embedding as its forward
+  reads it.
 
 `write_gguf` and `export_ollama_modelfile` refuse such a hook on any module,
 and a tied head that no longer reads the embedding's weight, with a
