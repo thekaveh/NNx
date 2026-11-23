@@ -164,10 +164,9 @@ def shutdown(*, timeout_seconds: float = 60.0) -> None:
     while the process lives: a rank arriving then completes against it. Up to
     torch 2.13 the process also waits at exit until the missing rank arrives
     or the group's own timeout (``init_process_group(timeout_seconds=...)``)
-    expires. The test suite also covers a torch 2.14 case where it exits at
-    once, so a rank arriving after that raises in its own call within its
-    timeout (tests/test_ddp_adapter.py, test_shutdown_is_bounded_when_a_rank_never_arrives);
-    torch does not promise either behaviour. The Gloo default group of a
+    expires. On Linux CPU builds of torch 2.13.0 to 2.14.1 it does so as well
+    (tests/test_ddp_adapter.py, test_shutdown_is_bounded_when_a_rank_never_arrives);
+    a macOS run on torch 2.14.1 exited at once. torch does not promise either behaviour. The Gloo default group of a
     process that called :func:`init_process_group` is destroyed at exit,
     before the interpreter finalizes. With NCCL, older torch
     releases ignore ``timeout_seconds`` unless ``TORCH_NCCL_BLOCKING_WAIT=1``
