@@ -173,7 +173,7 @@ class ResumeStatus:
             ``None`` for a checkpoint without a manifest.
         attempt_token: this session's attempt token, a fresh id for every
             ``train()`` call (under DDP, the same on every rank) that a later
-            resume records as its source's (#553); ``None`` for status
+            resume records as its source's; ``None`` for status
             recorded without it.
         source_attempt_token: the source run's ``attempt_token`` when the
             session resumed from it, or ``"bundle-<generation>"`` for a run

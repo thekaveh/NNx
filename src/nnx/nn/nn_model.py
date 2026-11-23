@@ -3737,7 +3737,7 @@ class NNModel(_HubMixinBase):
         described as materialized from the first read after it materialized:
         at its first forward, wherever that ran (``train``, ``predict``,
         ``evaluate`` or a direct call of ``net``), or at
-        ``from_checkpoint``'s load of its saved weights (#562) — unless a
+        ``from_checkpoint``'s load of its saved weights — unless a
         lazy layer stays unreached or its state keys changed after the wrap."""
         # Kept in the instance dict under its own name, as before it was a
         # property, so pickles load across nnx versions in both directions.

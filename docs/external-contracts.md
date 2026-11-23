@@ -131,7 +131,7 @@ recreated; PyPI remains the artifact source for that version.
    or published configuration change.
 2. Prefer tests against the frozen public API. Use a mock only for credentials,
    hardware, daemons, or network boundaries, and record the gate here.
-   MPS (FEAT-050): the CPU pins above stand in for the device (a tensor
+   MPS: the CPU pins above stand in for the device (a tensor
    that refuses float64 and NumPy, a fake `torch.mps` generator). The tests
    marked `mps` need the device: they skip without it, and fail instead
    under `NNX_REQUIRE_MPS=1`, which the opt-in `mps-evidence` job sets
