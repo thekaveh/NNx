@@ -6,6 +6,20 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+### Thanks
+
+- Thanks to @bfs2021 for the report and the fix in PR #581 (a zero-row multilabel batch and a flat regression target in `StreamingMetrics.update_logits`). Both are fixed by FIX-081 (#549), which shipped in 0.4.2.
+
+## [0.4.3](https://github.com/thekaveh/NNx/compare/v0.4.2...v0.4.3) (2026-11-22)
+
+
+### Documentation
+
+* finalize the 0.4.2 CHANGELOG section against the curated notes that shipped ([d92873d](https://github.com/thekaveh/NNx/commit/d92873dfc9312c9a70dcde7566875d9d9b6348a1))
+* fix 0.4.2 audit findings in bundle, run, DDP and GGUF text ([00051b0](https://github.com/thekaveh/NNx/commit/00051b0776647d50dc5977dfcade94aa51fd7516))
+* fix 0.4.2 audit findings in bundle, run, DDP and GGUF text ([1a8dc31](https://github.com/thekaveh/NNx/commit/1a8dc31a8c383e10d895c4192c455340c570e690))
+* publish the curated 0.4.2 notes on main ([a639733](https://github.com/thekaveh/NNx/commit/a639733044c2e16513b6dbc3851759723682bb36))
+
 ## [0.4.2](https://github.com/thekaveh/NNx/compare/v0.4.1...v0.4.2) (2026-11-14)
 
 ### Added
