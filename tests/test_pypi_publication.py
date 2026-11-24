@@ -111,7 +111,7 @@ def test_audits_run_uniformly_on_every_python_with_no_ignored_vulnerabilities(wo
     assert workflow.count("python -m pip_audit") == 1
     assert "--ignore-vuln" not in workflow
     assert "pip-audit-py310-ignores" not in workflow
-    assert not repo_file(".github", "pip-audit-py310-ignores.txt").exists()
+    assert not (_PYPROJECT.parent / ".github" / "pip-audit-py310-ignores.txt").exists()
 
 
 def test_release_build_and_audit_tools_are_resolved_from_uv_lock():
