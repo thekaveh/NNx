@@ -52,10 +52,17 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import torch
-from torch._C._functorch import is_batchedtensor, is_legacy_batchedtensor
 
 from .components import ComponentSpec
 from .objectives import LossTerm, Objective, ObjectiveContext, ObjectiveResult
+
+try:  # private torch helpers: a torch change may remove them, and that must not break ``import nnx``
+    from torch._C._functorch import is_batchedtensor as _is_batchedtensor
+    from torch._C._functorch import is_legacy_batchedtensor as _is_legacy_batchedtensor
+except ImportError:  # decided once here: without the probes, every backward is out of place
+    _BATCHED_PROBES: Optional[tuple[Any, Any]] = None
+else:
+    _BATCHED_PROBES = (_is_batchedtensor, _is_legacy_batchedtensor)
 
 __all__ = [
     "ALIGNMENTS",
@@ -95,7 +102,9 @@ class _TokenNLL(torch.autograd.Function):
     * grad`` into one ``(n, V)`` buffer in float32 or wider, the gradient
     itself (cast once more to the logits' dtype for half-precision logits),
     where autograd's own logsumexp and gather backward peak at four; under
-    ``create_graph`` or for a batched gradient it runs out of place. Its
+    ``create_graph`` or for a batched gradient it runs out of place, and so
+    for every gradient when torch no longer provides the private batched-tensor
+    probes (``_BATCHED_PROBES`` is ``None``), which costs memory, not correctness. Its
     ``setup_context``, ``jvp`` and generated vmap rule keep ``torch.func``
     transforms and forward-mode AD working, as on ``cross_entropy``
     (Dynamo does not trace a custom ``jvp``, so ``torch.compile`` breaks
@@ -119,7 +128,7 @@ class _TokenNLL(torch.autograd.Function):
     def backward(ctx: Any, *grads: torch.Tensor) -> tuple[torch.Tensor, None]:
         flat, chosen, lse = ctx.saved_tensors
         grad, index = grads[0].unsqueeze(1), chosen.unsqueeze(1)
-        batched = is_batchedtensor(grads[0]) or is_legacy_batchedtensor(grads[0])
+        batched = _BATCHED_PROBES is None or any(probe(grads[0]) for probe in _BATCHED_PROBES)
         # Out of place under create_graph=True, so the gradient has a derivative too, and for a batched incoming
         # gradient (is_grads_batched, a vectorized jacobian, vmap over autograd.grad), whose batch an in-place
         # write cannot hold.
