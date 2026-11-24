@@ -11676,7 +11676,11 @@ Args:
           ``thekaveh-nnx[hub]`` extra. Portable, so a runtime-only
           module (``reconstructible=False``) is rejected
           with ``MissingModelFactoryError`` before anything is
-          written.
+          written. Likewise a recorded transform NNx cannot replay
+          from data, such as a callback's own train-end transform, is
+          rejected with ``ValueError`` naming it, as
+          ``NNModel.save_pretrained`` refuses it; such a checkpoint
+          is written with ``format="pickle"``.
 
 Both formats write to a hidden temporary file beside ``path``
 (``.<name>.<random>``), flush it to disk and rename it into place,
