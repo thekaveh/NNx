@@ -168,7 +168,9 @@ model = NNModel.from_pretrained("./my-model")
 `NNModelParams` via their public `from_state` constructors. It replays any
 recorded `"transforms"` on the fresh base: LoRA wrappers are rebuilt, and
 low-rank factors are allocated in their recorded shape (no SVD). It then
-loads the safetensors weights into the freshly-built `self.net`. An unknown
+loads the safetensors weights into the freshly-built `self.net`.
+
+An unknown
 operation or version is refused before any tensor is loaded. The error names
 both possible causes: an operation of a newer NNx, or a callback's own
 transform that only its producer can rebuild. Tensors round-trip bit-exactly.
@@ -184,7 +186,9 @@ A model can be saved with extra top-level submodules attached to its net,
 such as a JEPA predictor registered as `model.net._jepa_predictor`. It can
 also carry extra top-level tensors, such as a `logit_scale` parameter or a
 buffer registered on `model.net`. It rebuilds without them through
-`exclude_submodules`, which takes a submodule's or a tensor's name. Every
+`exclude_submodules`, which takes a submodule's or a tensor's name.
+
+Every
 other key still loads strictly (`strict=False` would also accept missing
 weights). A name the saved weights do not hold is refused. Without it, the
 error names the extra submodules and tensors and this option. The net's
