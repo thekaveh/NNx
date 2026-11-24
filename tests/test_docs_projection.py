@@ -131,10 +131,7 @@ def test_readme_reaches_install_and_a_first_model_before_the_detailed_reference(
 def test_install_guidance_separates_the_release_from_the_current_source():
     """#472 NN-01: the newest PyPI release can lag the documented source, so
     the README gives both routes; every extra the manifest defines is listed."""
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python 3.10
-        import tomli as tomllib
+    import tomllib
 
     readme = (build_docs.ROOT / "README.md").read_text(encoding="utf-8")
     install = readme[readme.index("## 2. Install") : readme.index("## 3. Quickstart")]
