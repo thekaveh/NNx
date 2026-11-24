@@ -6,6 +6,10 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+### Deprecated
+
+- **Python 3.10 support ends in the next minor release.** The next minor (0.5.0) will set `requires-python >=3.11`. Users on Python 3.10 stay on 0.4.x, which pip selects for them. Tracked by #759.
+
 ### Thanks
 
 - Thanks to @bfs2021 for the report and the fix in PR #581 (a zero-row multilabel batch and a flat regression target in `StreamingMetrics.update_logits`). Both are fixed by FIX-081 (#549), which shipped in 0.4.2.
