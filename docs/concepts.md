@@ -684,7 +684,7 @@ ones.
 
 Under DDP, a mid-epoch request is agreed across ranks when a listener was
 registered in `on_train_begin` or `on_epoch_begin` on any rank (the epoch's
-start agrees again whether any rank listens, #768). Otherwise the request
+start agrees again whether any rank listens). Otherwise the request
 takes effect at the epoch boundary, agreed there. Such a listener's error is
 agreed at the same point: every rank stops after that batch, and the others
 raise a `DistributedFailure` naming the failing rank. A listener added in the
