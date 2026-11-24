@@ -4344,7 +4344,7 @@ class NNModel(_HubMixinBase):
         """Hub upload (``huggingface_hub.PyTorchModelHubMixin.push_to_hub``):
         :meth:`save_pretrained` into a temporary directory, uploaded to
         ``repo_id``. Whatever :meth:`save_pretrained` refuses is refused
-        before the repository is created or anything is uploaded (#509)."""
+        before the repository is created or anything is uploaded."""
         self._refuse_unloadable_hub_artifact(
             "push_to_hub refused before creating the repository or uploading anything", operation="push_to_hub"
         )
