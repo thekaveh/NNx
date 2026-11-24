@@ -18,12 +18,15 @@ library must get right on top:
   :class:`DistributedFailure` naming it): the preflight refusals, building
   the DDP wrapper, reserving the run, the writer's provenance attempt start,
   resume and component-restore failures, ``on_train_begin``, each epoch's
-  step-count check and ``on_epoch_begin``, each default step's loss
-  finiteness and target checks, update listeners registered in
-  ``on_train_begin`` (at each batch's stop decision), ``on_epoch_end``,
+  step-count check and ``on_epoch_begin`` (whose agreement also says whether
+  any rank listens for updates: a listener registered in ``on_train_begin``
+  or ``on_epoch_begin``, at each batch's stop decision, #768), each default
+  step's loss finiteness and target checks, ``on_epoch_end``,
   each epoch's writer-side commit, ``on_train_end`` and the final commit. A
   writer-only callback failing in any of its hooks therefore stops every
-  rank within seconds. Anything else
+  rank within seconds. A listener added
+  mid-epoch (not in ``on_train_begin`` or ``on_epoch_begin``) is not agreed
+  until the next epoch's start. Anything else
   that fails on one rank only (a dataset error mid-epoch, say) ends through
   the process group's timeout (``init_process_group(timeout_seconds=...)``)
   and ``torchrun`` stopping the other ranks — bounded, never a silent hang.

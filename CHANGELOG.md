@@ -9,6 +9,9 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 ### Deprecated
 
 - **Python 3.10 support ends in the next minor release.** The next minor (0.5.0) will set `requires-python >=3.11`. Users on Python 3.10 stay on 0.4.x, which pip selects for them. Tracked by #759.
+### Fixed
+
+- Under `NNModel.train(distributed=DDP())`, an update listener registered in `on_epoch_begin` (after `on_train_begin`) is agreed at each epoch's start. Its failure on the writer now raises on every rank (the others a `DistributedFailure` naming rank 0) instead of leaving the other ranks to the process-group timeout, and a mid-epoch stop it requests stops every rank at the same batch (#768).
 
 ### Thanks
 

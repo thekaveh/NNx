@@ -5179,7 +5179,7 @@ class NNModel(_HubMixinBase):
             # callback's, say) is held until the batch's stop gather, which
             # every rank reaches, and agreed there.
             listener_errors: list[BaseException] = []
-            ddp_listening = False  # agreed after on_train_begin, below
+            ddp_listening = False  # agreed at each epoch's start, below (#768)
 
             def _announce_update() -> None:
                 # FEAT-033: count the committed update and tell the listeners.
@@ -5266,9 +5266,6 @@ class NNModel(_HubMixinBase):
             # resume is then rolled back on each, by resume_window).
             with contextlib.nullcontext() if ddp is None else _collectively("the callbacks' on_train_begin"):
                 callback_lifecycle.start()
-            # FEAT-033: under DDP, whether any rank listens for updates (and
-            # may request a stop at one) is agreed once, not per batch.
-            ddp_listening = ddp is not None and any(ddp.gather(bool(ctx.update_listeners)))
             # FEAT-005: reset hooks (on_train_begin) have run once; now the
             # validated component states are restored, all-or-nothing, before
             # the first resumed epoch.
@@ -5302,9 +5299,24 @@ class NNModel(_HubMixinBase):
                 if ddp is not None:
                     # Unequal step counts fail on every rank, never hang.
                     ddp.check_steps(len(cast(Sized, train_loader)), idx_epoch)
-                with contextlib.nullcontext() if ddp is None else _collectively(f"epoch {idx_epoch}'s start"):
+                if ddp is None:
                     for cb in normalized_callbacks:
                         cb.on_epoch_begin(ctx)
+                else:
+                    # #768: the epoch's start is agreed, and rides the same
+                    # gather as its verdict: whether any rank listens for
+                    # updates (and may request a stop at one) is agreed here,
+                    # so a listener registered in on_epoch_begin counts too.
+                    # Not per batch (FEAT-033).
+                    start_error: Optional[BaseException] = None
+                    try:
+                        for cb in normalized_callbacks:
+                            cb.on_epoch_begin(ctx)
+                    except Exception as caught:
+                        start_error = caught
+                    ddp_listening = any(
+                        ddp.gather_agreed(bool(ctx.update_listeners), start_error, f"epoch {idx_epoch}'s start")
+                    )
                 warn_unowned_trainables(self.net, [optimizer], unowned_warned)  # unfrozen but never trained
 
                 records.begin_epoch()
