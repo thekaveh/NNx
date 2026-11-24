@@ -16,7 +16,7 @@
   <a href="https://github.com/thekaveh/NNx/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/thekaveh/NNx/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="https://github.com/thekaveh/NNx/actions/workflows/docs.yml"><img alt="Docs" src="https://github.com/thekaveh/NNx/actions/workflows/docs.yml/badge.svg?branch=main"></a>
   <a href="https://pypi.org/project/thekaveh-nnx/"><img alt="PyPI" src="https://img.shields.io/pypi/v/thekaveh-nnx"></a>
-  <a href="https://pypi.org/project/thekaveh-nnx/"><img alt="Python" src="https://img.shields.io/badge/python-3.10--3.14-3776AB?logo=python&logoColor=white"></a>
+  <a href="https://pypi.org/project/thekaveh-nnx/"><img alt="Python" src="https://img.shields.io/badge/python-3.11--3.14-3776AB?logo=python&logoColor=white"></a>
   <a href="https://spdx.org/licenses/Apache-2.0.html"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-2E7D32"></a>
 </p>
 

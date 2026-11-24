@@ -16,7 +16,7 @@
   <a href="https://github.com/thekaveh/NNx/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/thekaveh/NNx/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="https://github.com/thekaveh/NNx/actions/workflows/docs.yml"><img alt="Docs" src="https://github.com/thekaveh/NNx/actions/workflows/docs.yml/badge.svg?branch=main"></a>
   <a href="https://pypi.org/project/thekaveh-nnx/"><img alt="PyPI" src="https://img.shields.io/pypi/v/thekaveh-nnx"></a>
-  <a href="https://pypi.org/project/thekaveh-nnx/"><img alt="Python" src="https://img.shields.io/badge/python-3.10--3.14-3776AB?logo=python&logoColor=white"></a>
+  <a href="https://pypi.org/project/thekaveh-nnx/"><img alt="Python" src="https://img.shields.io/badge/python-3.11--3.14-3776AB?logo=python&logoColor=white"></a>
   <a href="https://spdx.org/licenses/Apache-2.0.html"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-2E7D32"></a>
 </p>
 
@@ -84,7 +84,7 @@ The requirements and extras below describe this version. `pip` warns when a requ
 
 The core install is torch, NumPy, pandas, scikit-learn and a few small utilities. `import nnx` loads no vision, graph or plotting stack. Those stacks are the `vision`, `graph` and `plots` extras, and `domains` installs all three. Using one without its extra raises an `ImportError` that names the extra.
 
-NNx needs Python 3.10 or later and PyTorch 2.4 or later; the `vision` extra needs torchvision 0.19 or later. It is tested on Python 3.10 through 3.14. The [PyTorch support matrix](docs/external-contracts.md#21-pytorch-support-matrix) lists every tested combination and which have real CUDA evidence. Optional extras keep their own version constraints. The examples in [examples/](examples/) run on CPU.
+NNx needs Python 3.11 or later and PyTorch 2.4 or later; the `vision` extra needs torchvision 0.19 or later. It is tested on Python 3.11 through 3.14. The [PyTorch support matrix](docs/external-contracts.md#21-pytorch-support-matrix) lists every tested combination and which have real CUDA evidence. Optional extras keep their own version constraints. The examples in [examples/](examples/) run on CPU.
 
 ### 2.3. Optional extras
 
