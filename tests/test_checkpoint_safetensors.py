@@ -779,3 +779,44 @@ def test_a_real_io_error_fails_a_safetensors_save_and_leaves_no_file(tmp_path, m
     with pytest.raises(OSError):
         _build_checkpoint(_tiny_model()).to_file(str(tmp_path / "model.safetensors"), format="safetensors")
     assert os.listdir(tmp_path) == []
+
+
+# ---------- #767: to_file(format="safetensors") refuses a transform NNx cannot replay ----------
+
+
+def _checkpoint_with_transforms(model: NNModel, *transforms: NNCheckpointTransform) -> NNCheckpoint:
+    return replace(_build_checkpoint(model), transforms=tuple(transforms))
+
+
+def test_safetensors_refuses_a_callbacks_own_transform_before_writing(tmp_path):
+    """#767: the callback's transform is unreplayable, so to_file refuses it
+    before the destination's directory exists, as save_pretrained does, and
+    the error names the transform and format="pickle"."""
+    checkpoint = _checkpoint_with_transforms(_tiny_model(), NNCheckpointTransform(name="my-convert"))
+    target = tmp_path / "portable" / "checkpoint.safetensors"
+
+    with pytest.raises(ValueError, match=r"my-convert.*format=\"pickle\""):
+        checkpoint.to_file(str(target), format="safetensors")
+    assert not target.parent.exists()  # rejected before any directory or file was written
+
+
+def test_pickle_still_writes_a_callbacks_own_transform(tmp_path):
+    """#767: the refusal is specific to the safetensors format; the pickle
+    store keeps the same checkpoint."""
+    checkpoint = _checkpoint_with_transforms(_tiny_model(), NNCheckpointTransform(name="my-convert"))
+    path = tmp_path / "checkpoint.pt"
+
+    checkpoint.to_file(str(path), format="pickle")
+    assert NNCheckpoint.from_file(str(path)).transforms == checkpoint.transforms
+
+
+def test_safetensors_still_writes_a_replayable_checkpoint(tmp_path):
+    """#767: a recorded recipe NNx replays (a torchao QAT conversion) still
+    writes safetensors."""
+    transform = NNCheckpointTransform(name="torchao_qat", version=1, options={"qat_config": "8da4w", "groupsize": 16})
+    checkpoint = _checkpoint_with_transforms(_tiny_model(), transform)
+    path = tmp_path / "portable" / "checkpoint.safetensors"
+
+    checkpoint.to_file(str(path), format="safetensors")
+    assert path.exists()
+    assert NNCheckpoint.from_file(str(path)).transforms == (transform,)
