@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import random
+from datetime import UTC
 
 import numpy as np
 import pandas as pd
@@ -498,7 +499,7 @@ def test_small_classes_never_skew_large_class_allocations():
 
 
 def test_numpy_datetimes_dates_and_timezones():
-    from datetime import date, datetime, timedelta, timezone
+    from datetime import date, datetime, timedelta
 
     days = np.array([f"2024-01-0{d}" for d in TIMES], dtype="datetime64[ns]")
     cut = np.array(["2024-01-03", "2024-01-05"], dtype="datetime64[ns]")
@@ -510,7 +511,7 @@ def test_numpy_datetimes_dates_and_timezones():
     with pytest.raises(TypeError, match="cutoffs\\[0\\] is a date"):
         naive = [datetime(2024, 1, d) for d in TIMES]
         plan_split(IDS, strategy="chronological", times=naive, cutoffs=(date(2024, 1, 3), None))
-    aware = [datetime(2024, 1, d, tzinfo=timezone.utc) for d in TIMES]
+    aware = [datetime(2024, 1, d, tzinfo=UTC) for d in TIMES]
     with pytest.raises(TypeError, match="naive datetime but times are tz-aware"):
         plan_split(IDS, strategy="chronological", times=aware, cutoffs=(datetime(2024, 1, 3), None))
 
