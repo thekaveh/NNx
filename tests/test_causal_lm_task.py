@@ -13,6 +13,7 @@ before the first resumed update.
 
 from __future__ import annotations
 
+import importlib
 import math
 from typing import Optional
 
@@ -920,3 +921,52 @@ def test_a_partially_masked_batch_with_nan_logits_at_unscored_positions_stays_fi
         F.cross_entropy(logits.detach()[:, 2:].reshape(-1, V), targets[:, 2:].reshape(-1), reduction="sum")
     )
     assert float(ce.detach()) == pytest.approx(expected, rel=1e-6) and nll == pytest.approx(expected, rel=1e-5)
+
+
+@pytest.fixture
+def lm_tasks_without_batched_probes(monkeypatch):
+    """``nnx.lm_tasks`` reloaded as if torch had removed its two private batched-tensor probes."""
+    import nnx.lm_tasks as lm_tasks
+
+    functorch = torch._C._functorch
+    monkeypatch.delattr(functorch, "is_batchedtensor")
+    monkeypatch.delattr(functorch, "is_legacy_batchedtensor")
+    try:
+        yield importlib.reload(lm_tasks)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(lm_tasks)  # back to the normal path for the rest of the session
+
+
+@pytest.mark.parametrize("masked", [False, True], ids=["all-scored", "masked"])
+def test_without_the_private_probes_import_survives_and_the_smoothing_0_gradients_match_cross_entropy(
+    lm_tasks_without_batched_probes, masked
+):
+    import nnx  # noqa: F401  (the package still imports after the reload)
+
+    lm = lm_tasks_without_batched_probes
+    assert lm._BATCHED_PROBES is None  # the fallback was decided at import
+    task = lm.CausalLMTask(vocab_size=V)
+    g = torch.Generator().manual_seed(31)
+    base = torch.randn(2, 3, V, generator=g) * 2
+    targets = torch.randint(0, V, (2, 3), generator=g)
+    if masked:
+        targets[0, :2] = task.ignore_id
+    valid = task.valid(targets, None)
+    batch = torch.tensor([1.0, -2.0, 0.5])
+
+    ours, reference = base.clone().requires_grad_(), base.clone().requires_grad_()
+    out = task.token_sums(ours, targets, valid)[0]
+    ref = F.cross_entropy(reference[valid], targets[valid], reduction="sum")
+    (grad,) = torch.autograd.grad(out, ours)
+    (ref_grad,) = torch.autograd.grad(ref, reference)
+    assert torch.allclose(grad, ref_grad, rtol=1e-5, atol=1e-6)
+
+    # A batched incoming gradient takes the same out-of-place path and still matches.
+    ours_b = base.clone().requires_grad_()
+    batched = torch.autograd.grad(task.token_sums(ours_b, targets, valid)[0], ours_b, batch, is_grads_batched=True)
+    ref_b = base.clone().requires_grad_()
+    ref_batched = torch.autograd.grad(
+        F.cross_entropy(ref_b[valid], targets[valid], reduction="sum"), ref_b, batch, is_grads_batched=True
+    )
+    assert torch.allclose(batched[0], ref_batched[0], rtol=1e-5, atol=1e-6)
