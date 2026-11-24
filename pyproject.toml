@@ -26,7 +26,7 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Kaveh Razavi", email = "kaveh.razavi@gmail.com" }
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = [
     "pytorch", "deep-learning", "graph-neural-networks", "training",
     "checkpointing", "callbacks", "experiments", "reproducibility",
@@ -77,7 +77,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -132,10 +131,8 @@ dev = [
     "pip-audit==2.10.1",
     "tensorboard>=2.15",   # exercises TensorBoardCallback path in tests
     "onnx>=1.15",          # exercises NNModel.to_onnx in tests
-    # Runs exported graphs against the CPU model in tests (FEAT-006); 1.24+
-    # ships no CPython 3.10 wheels.
-    "onnxruntime>=1.17,<1.24; python_version < '3.11'",
-    "onnxruntime>=1.17; python_version >= '3.11'",
+    # Runs exported graphs against the CPU model in tests (FEAT-006).
+    "onnxruntime>=1.17",
 ]
 tensorboard = ["tensorboard>=2.15"]
 notebook = ["ipython>=8.0"]
@@ -148,13 +145,12 @@ onnx = ["onnx>=1.15"]
 onnx-dynamo = ["onnx>=1.15", "onnxscript>=0.1"]
 # `onnx-runtime` executes exported graphs in ONNX Runtime on CPU — the
 # export conformance profiles (`nnx.export_conformance`,
-# `scripts/check_export_conformance.py`, FEAT-038). 1.24+ ships no CPython
-# 3.10 wheels; 1.18 is the first to load the dynamo exporter's IR-10 models.
-# Add `onnx-dynamo` for the dynamo-exporter profile.
+# `scripts/check_export_conformance.py`, FEAT-038). 1.18 is the first to load
+# the dynamo exporter's IR-10 models. Add `onnx-dynamo` for the
+# dynamo-exporter profile.
 onnx-runtime = [
     "onnx>=1.15",
-    "onnxruntime>=1.18,<1.24; python_version < '3.11'",
-    "onnxruntime>=1.18; python_version >= '3.11'",
+    "onnxruntime>=1.18",
 ]
 # `viz` covers the core model-internals viz primitives (summary +
 # weight_histogram + activation_map + Captum attribution). `viz-interactive`
@@ -220,11 +216,6 @@ Documentation = "https://thekaveh.github.io/NNx/"
 Changelog = "https://github.com/thekaveh/NNx/blob/main/CHANGELOG.md"
 Issues = "https://github.com/thekaveh/NNx/issues"
 
-[tool.uv]
-# filelock 4.1.0-4.2.0 carry advisories fixed only in 4.2.1, which needs
-# Python >= 3.11; 4.0.x does not have them, so the 3.10 lock stays on 4.0.x.
-constraint-dependencies = ["filelock<4.1 ; python_full_version < '3.11'"]
-
 [tool.setuptools.packages.find]
 where = ["src"]
 
@@ -237,12 +228,12 @@ nnx = ["py.typed"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 # E/F/W catch core style + pyflakes errors. B adds bugbear (mutable defaults,
 # common foot-guns). I keeps imports ordered. UP nudges toward modern Python
-# 3.10+ syntax.
+# 3.11+ syntax.
 select = ["E", "F", "W", "B", "I", "UP"]
 ignore = [
     "E501",  # line too long — large library, gradual cleanup
