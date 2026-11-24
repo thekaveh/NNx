@@ -152,7 +152,10 @@ A change to `widen`, `deepen`, or `low_rank_factorize` (at max rank) can produce
 - With dropout configured, the `widen` parity promise is for eval mode. A stochastic training forward is not identical by construction.
 - `deepen` rejects any activation other than ReLU: a `ValueError` at a `FeedFwdNN` site, a `TypeError` for a non-ReLU target in an `nn.Sequential`. The ReLU must be fed by an `nn.Linear` through elementwise or norm modules only; any other module in between is refused with a `ValueError`. The identity-Linear trick only function-preserves through ReLU. For sigmoid / tanh / GELU networks, structurally similar insertions silently produce a drifted forward output.
 - `deepen` rebuilds an `nn.Sequential` as a plain `nn.Sequential` of the same children. It therefore refuses a subclass with its own `forward`, and a container with its own parameters, buffers or hooks. These would be dropped. It also refuses a target ReLU with hooks, and a `ModuleList` that is not the `layers` / `fcs` of a stock `FeedFwdNN` / `ConvNN`.
-- `deepen` writes the rebuilt `nn.Sequential` / `ModuleList` back at one path. So it refuses a container registered under more than one path, such as a tied block (`nn.ModuleList([block, block])`) or an alias (`self.backbone = self.body`). The `ValueError` names every path and is raised before the model is copied. Rebuilding one path would split the container: the other paths would keep the old one, so a tied block would compute two functions after training, and a `forward` that uses the alias would never run the inserted layer. Paths that reach one slot through an aliased *ancestor* are accepted, since the write changes that slot for every path. To deepen a tied block, deepen the block itself (`deepen(model.blocks[0], after_layer_name="1")`) and assign the result to every slot.
+- `deepen` writes the rebuilt `nn.Sequential` / `ModuleList` back at one path. So it refuses a container registered under more than one path, such as a tied block (`nn.ModuleList([block, block])`) or an alias (`self.backbone = self.body`). The `ValueError` names every path and is raised before the model is copied.
+
+    Rebuilding one path would split the container: the other paths would keep the old one, so a tied block would compute two functions after training, and a `forward` that uses the alias would never run the inserted layer. Paths that reach one slot through an aliased *ancestor* are accepted, since the write changes that slot for every path. To deepen a tied block, deepen the block itself (`deepen(model.blocks[0], after_layer_name="1")`) and assign the result to every slot.
+
 - On a `FeedFwdNN`, the `deepen` check reads the activation actually applied at the insertion site — `params.activation_for(i)`. So a per-layer override wins over the scalar default in both directions.
 - On a `FeedFwdNN`, `deepen` returns a network with updated immutable `params`:
     - One more `hidden_dims` entry at the site.
@@ -183,7 +186,9 @@ Each replacement module also takes the train/eval mode of the module it replaces
 
 `widen`, `low_rank_factorize` and `expand_embedding` refuse a module with a `weight_norm` / `spectral_norm` or an unbaked prune mask, which a rebuilt plain module would drop silently. Remove it first: `torch.nn.utils.parametrize.remove_parametrizations` for the parametrization form, `remove_weight_norm` / `remove_spectral_norm` for the legacy hooks, `torch.nn.utils.prune.remove` for a mask.
 
-`low_rank_factorize` and `expand_embedding` also refuse a source with any other hook of its own — a forward hook, forward pre-hook, backward hook or backward pre-hook — which would stay on the discarded original. The source and its hooks are left as they were. Remove the hook (its handle's `.remove()`), run the primitive, and re-register it on the returned module if it should still apply there. `widen` refuses hooks on the path from its target to the consumer (§5).
+`low_rank_factorize` and `expand_embedding` also refuse a source with any other hook of its own — a forward hook, forward pre-hook, backward hook or backward pre-hook — which would stay on the discarded original. The source and its hooks are left as they were.
+
+Remove the hook (its handle's `.remove()`), run the primitive, and re-register it on the returned module if it should still apply there. `widen` refuses hooks on the path from its target to the consumer (§5).
 
 The same primitives refuse a subclass of `nn.Linear` / `nn.Embedding` with its own `forward`, such as a fake-quantized QAT Linear. The rebuilt plain module would drop that forward. `deepen` refuses a ReLU subclass with its own `forward` for the same reason. `widen` also refuses such a subclass as the consumer or on the path.
 
@@ -264,7 +269,10 @@ check_optimizer(model, optimizer)
 - **Validation.** Before anything changes, `validate` / `materialize` reject each of these, named by operation index and target:
     - a missing target, or a target that is not exactly an `nn.Linear`;
     - a target registered under more than one name;
-    - a `low_rank` target with a hook of its own (forward, forward pre-, backward or backward pre-), a legacy `weight_norm` / `spectral_norm` or an unbaked prune mask, which the factors would drop. The model keeps its module identities, hooks and weights. Loading a checkpoint does not apply this check: the replay rebuilds the saved factors, which carry no hook. A `lora` target keeps its hooks, because `LoRALinear` calls its base: a hooked LoRA target is exact at init;
+    - a `low_rank` target with a hook of its own (forward, forward pre-, backward or backward pre-), a legacy `weight_norm` / `spectral_norm` or an unbaked prune mask, which the factors would drop. The model keeps its module identities, hooks and weights.
+
+    Loading a checkpoint does not apply this check: the replay rebuilds the saved factors, which carry no hook. A `lora` target keeps its hooks, because `LoRALinear` calls its base: a hooked LoRA target is exact at init;
+
     - two targets of one operation that are the same or nested;
     - a target inside a subtree another operation (or an earlier recipe) transforms;
     - a rank above `min(in, out)`;
@@ -279,7 +287,10 @@ check_optimizer(model, optimizer)
 
     It accepts an optimizer built afterwards over the trainable parameters. This covers every one, a subset, parameters outside `model.net` (a learnable loss temperature, say), or BitFit-style over unfrozen base tensors.
 
-- **What carries the recipe.** The recorded operations travel with every run checkpoint (LAST, BEST, the phase tags and `ModelCheckpoint` snapshots). They also travel with `NNCheckpoint.to_file` in both formats, `save_pretrained`, and run bundles. `nnx.bundles.export_bundle` and `save_pretrained` (so `push_to_hub` too, before it creates the repository) refuse any other recorded transform except a torchao QAT conversion (a callback's own train-end operation, say), naming its index and id, because a bundle or a Hub artifact is rebuilt from data alone.
+- **What carries the recipe.** The recorded operations travel with every run checkpoint (LAST, BEST, the phase tags and `ModelCheckpoint` snapshots).
+
+    They also travel with `NNCheckpoint.to_file` in both formats, `save_pretrained`, and run bundles. `nnx.bundles.export_bundle` and `save_pretrained` (so `push_to_hub` too, before it creates the repository) refuse any other recorded transform except a torchao QAT conversion (a callback's own train-end operation, say), naming its index and id, because a bundle or a Hub artifact is rebuilt from data alone.
+
 - **Reconstruction.** `NNModel.from_checkpoint` and `from_pretrained` build a fresh base and replay the operations. The replay puts LoRA wrappers around the fresh layers and allocates low-rank factors in their recorded two-Linear shape. Only then do they load the saved tensors. SVD is never rerun, and the ordered keys, shapes, trainability and predictions match the saved model. An unknown operation or version, or malformed recorded options, is refused before any tensor is loaded, naming the transform's index.
 - **Training.** A recipe model trains through `NNModel.train` / `Trainer.train`, custom `train_step_fn` included.
     - Before any run is reserved, both check the live topology. It must be exactly the base plus its recipe: tensor names and shapes, and each target's module and configuration.
