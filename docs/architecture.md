@@ -203,10 +203,12 @@ rank its own error, the others usually a `DistributedFailure` naming it.
 - the writer's provenance attempt start (`provenance.json`, `attempt.json`);
 - the resume and the component restore;
 - `on_train_begin`;
-- each epoch's step count and `on_epoch_begin`;
+- each epoch's step count and `on_epoch_begin`, whose agreement also says
+  whether any rank listens for updates (#768);
 - each default step's loss finiteness and target checks;
-- update listeners registered in `on_train_begin`, at each batch's stop
-  decision;
+- update listeners registered in `on_train_begin` or `on_epoch_begin`, at
+  each batch's stop decision (agreed again at each epoch's start, so a
+  listener added in `on_epoch_begin` counts; #768);
 - `on_epoch_end` and each epoch's commit;
 - `on_train_end` and the final commit.
 
