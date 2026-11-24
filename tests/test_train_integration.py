@@ -2296,8 +2296,8 @@ def test_resume_warns_only_for_worker_loaders(tmp_path, monkeypatch):
 
 def _declared_floor(package: str, block_name: str = "dependencies") -> tuple[int, int]:
     """(major, minor) of ``package>=X.Y`` in pyproject's core ``dependencies``
-    or, with ``block_name``, one extra's list (regex over the raw text:
-    ``tomllib`` is 3.11+ and NNx supports 3.10)."""
+    or, with ``block_name``, one extra's list (regex over the raw text,
+    not tomllib)."""
     import re
     from pathlib import Path
 

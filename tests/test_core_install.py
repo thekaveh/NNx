@@ -12,14 +12,10 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+import tomllib
 from pathlib import Path
 
 import pytest
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 DOMAIN = ("torchvision", "torch_geometric", "plotly")
