@@ -580,7 +580,11 @@ class NNCheckpoint:
                   ``thekaveh-nnx[hub]`` extra. Portable, so a runtime-only
                   module (``reconstructible=False``) is rejected
                   with ``MissingModelFactoryError`` before anything is
-                  written.
+                  written. Likewise a recorded transform NNx cannot replay
+                  from data, such as a callback's own train-end transform, is
+                  rejected with ``ValueError`` naming it, as
+                  ``NNModel.save_pretrained`` refuses it; such a checkpoint
+                  is written with ``format="pickle"``.
 
         Both formats write to a hidden temporary file beside ``path``
         (``.<name>.<random>``), flush it to disk and rename it into place,
@@ -592,6 +596,7 @@ class NNCheckpoint:
             raise ValueError(f"unknown checkpoint format: {format!r} (expected 'pickle' or 'safetensors')")
         if format == "safetensors":
             self._require_portable()  # before any directory or file is created
+            self._require_replayable()
         dir_path = os.path.dirname(path)
         if dir_path:
             os.makedirs(dir_path, exist_ok=True)  # a concurrent writer may create it first
@@ -609,6 +614,20 @@ class NNCheckpoint:
                 f"a safetensors checkpoint is portable, but {self.model_params.net} is a runtime-only module "
                 "(reconstructible=False) with no model factory to rebuild it; register one "
                 "(nnx.models.register_model_factory) and train from a ModelSpec, or keep format='pickle'"
+            )
+
+    def _require_replayable(self) -> None:
+        """Refuse a recorded transform NNx cannot replay from data, before
+        anything is written (the same condition ``save_pretrained`` applies)."""
+        from ..nn_model import _unportable_transform
+
+        unportable = _unportable_transform(self.transforms)
+        if unportable is not None:
+            raise ValueError(
+                f'to_file(format="safetensors") refused before writing anything: {unportable}; '
+                "NNModel.from_checkpoint replays only operations NNx rebuilds from data (nnx.transforms recipe "
+                'operations, a torchao QAT conversion); write this checkpoint with format="pickle" instead, '
+                "which save_pretrained and export_bundle also refuse"
             )
 
     def _to_safetensors_file(self, path: str) -> None:
