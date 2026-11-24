@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -104,12 +104,7 @@ jobs:
       - name: Audit frozen dependency graph
         run: |
           uv export --frozen --all-extras --all-groups --python "$PYTHON_VERSION" --no-emit-project --no-hashes --output-file frozen-requirements.txt
-          # Python 3.10 only: skip the IDs whose fixes need Python >= 3.11 (see the file's header).
-          ignores=()
-          if [ "$PYTHON_VERSION" = "3.10" ]; then
-            while read -r id _; do ignores+=(--ignore-vuln "$id"); done < <(grep -v '^#' .github/pip-audit-py310-ignores.txt)
-          fi
-          uv run --frozen python -m pip_audit --requirement frozen-requirements.txt --progress-spinner off "${ignores[@]}"
+          uv run --frozen python -m pip_audit --requirement frozen-requirements.txt --progress-spinner off
         env:
           PYTHON_VERSION: ${{ matrix.python-version }}
 
@@ -286,7 +281,7 @@ jobs:
         pair: [floor, current]
         include:
           - pair: floor
-            python: "3.10"
+            python: "3.11"
             torch: "2.4.1"
             torchvision: "0.19.1"
           - pair: current
