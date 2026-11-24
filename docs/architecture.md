@@ -57,7 +57,9 @@ Durable state then commits in order: run history, LAST, phase/BEST, and
 deferred callback checkpoints. Finalization calls `on_train_end` in reverse
 callback order. Both `NNModel` and `Trainer` refresh LAST after finalization.
 Callback mutations and topology-transform metadata are therefore present in
-the persisted checkpoint. The exception is an `NNModel` stop at an update
+the persisted checkpoint.
+
+The exception is an `NNModel` stop at an update
 boundary (`ctx.stop_at_update`): LAST then stays at the last committed epoch.
 The refreshed LAST's RNG streams are the ones from before `on_train_end`, so
 a draw there never reaches a resume.
@@ -116,7 +118,9 @@ No rank therefore tears down its connections while a peer still uses them.
 The wait is bounded with Gloo; with NCCL on older torch, it is bounded by the
 group's own timeout. A rank that does not arrive in time makes the others
 raise `RuntimeError` instead of blocking in the call. The group is then left
-for process exit. On Linux CPU builds of torch 2.13.0, 2.14.0 and 2.14.1 the
+for process exit.
+
+On Linux CPU builds of torch 2.13.0, 2.14.0 and 2.14.1 the
 process waits at exit until the missing rank arrives or the group's timeout
 expires. The test suite pins that per torch minor
 (`tests/test_ddp_adapter.py`, `test_shutdown_is_bounded_when_a_rank_never_arrives`).
@@ -231,7 +235,9 @@ write. `"writer"` callbacks (`ModelCheckpoint`, plain function callbacks) run
 on the writer only and may not carry checkpointed component state. `TensorBoardCallback` and
 `WandbCallback` write when constructed, so a borrowed instance is refused;
 `nnx.distributed.writer_only(lambda: TensorBoardCallback(...))` builds one on
-the writer alone. A callback that declares nothing is refused before training,
+the writer alone.
+
+A callback that declares nothing is refused before training,
 on every rank. So is a callback that changes `model.net`'s topology (it
 overrides `Callback.checkpoint_transforms`, as `QATLifecycleCallback` does),
 wrapped in `writer_only` or not: on one rank only, DDP would average
