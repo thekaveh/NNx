@@ -27,6 +27,7 @@ import json
 import os
 import pathlib
 import re
+import tomllib
 import types
 import urllib.error
 import urllib.request
@@ -36,11 +37,6 @@ import yaml
 
 import nnx
 from tests._repo_files import repo_file
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
 
 _PYPROJECT = pathlib.Path(__file__).parent.parent / "pyproject.toml"
 # Repository-only (the sdist does not ship them): each test that reads one
@@ -108,27 +104,14 @@ def test_security_runs_for_pushes_and_pull_requests_on_gitflow_branches():
 
 
 @pytest.mark.parametrize("workflow_path", [(*_WORKFLOW_DIRECTORY, "security.yml"), _RELEASE_WORKFLOW])
-def test_audits_ignore_vulnerabilities_only_on_python_3_10_and_only_listed_ones(workflow_path):
+def test_audits_run_uniformly_on_every_python_with_no_ignored_vulnerabilities(workflow_path):
+    # Python 3.10 is dropped (#759), so no per-interpreter skip list remains.
     workflow = repo_file(*workflow_path).read_text(encoding="utf-8")
-    ignores = repo_file(".github", "pip-audit-py310-ignores.txt").read_text(encoding="utf-8")
 
-    # The one audit that skips IDs does so under the 3.10 guard, from the reviewed list.
     assert workflow.count("python -m pip_audit") == 1
-    assert workflow.count("--ignore-vuln") == 1
-    guard = workflow.index('if [ "$PYTHON_VERSION" = "3.10" ]; then')
-    assert guard < workflow.index("--ignore-vuln") < workflow.index("fi", guard)
-    assert "< <(grep -v '^#' .github/pip-audit-py310-ignores.txt)" in workflow
-    assert workflow.index("fi", guard) < workflow.index('--progress-spinner off "${ignores[@]}"')
-    # `while read` drops an unterminated last line; a blank line would ignore "".
-    assert ignores.endswith("\n")
-    entries = [line for line in ignores.splitlines() if not line.startswith("#")]
-    assert entries and all(entries)
-    assert len({line.split()[0] for line in entries}) == len(entries)
-    for line in entries:
-        assert re.fullmatch(
-            r"(CVE-\d{4}-\d+|GHSA(-[0-9a-z]{4}){3}|PYSEC-\d{4}-\d+)  # .+: fixed in \S+ \(requires-python >=3\.11\)",
-            line,
-        ), line
+    assert "--ignore-vuln" not in workflow
+    assert "pip-audit-py310-ignores" not in workflow
+    assert not repo_file(".github", "pip-audit-py310-ignores.txt").exists()
 
 
 def test_release_build_and_audit_tools_are_resolved_from_uv_lock():
@@ -202,8 +185,7 @@ def test_privileged_wiki_publication_uses_locked_nonbuilding_tool_group():
 def _read_pyproject_field(field: str) -> str:
     """Grep a top-level [project] string field from pyproject.toml.
 
-    Hand-rolled instead of importing tomllib to keep this test cheap on
-    Python 3.10 (tomllib is stdlib only on 3.11+).
+    Hand-rolled instead of parsing the whole file with tomllib.
     """
     text = _PYPROJECT.read_text(encoding="utf-8")
     match = re.search(rf'^{re.escape(field)}\s*=\s*"([^"]+)"', text, flags=re.MULTILINE)

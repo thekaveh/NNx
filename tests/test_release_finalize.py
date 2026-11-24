@@ -152,10 +152,7 @@ def test_release_please_bumps_the_lockfile_version_itself():
     """FIX-033: release-please's toml updater bumps the package's version in
     uv.lock (one line), so the release PR's lock stays consistent with
     pyproject.toml without a lockfile refresh commit."""
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python 3.10
-        import tomli as tomllib
+    import tomllib
 
     config = json.loads((ROOT / "release-please-config.json").read_text(encoding="utf-8"))
     updaters = config["packages"]["."]["extra-files"]
