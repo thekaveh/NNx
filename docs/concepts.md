@@ -665,7 +665,7 @@ See [`examples/05_custom_train_step_autoencoder.py`](https://github.com/thekaveh
 update with `ctx.report_update()`, or the shared update engine reports it.
 Every such update increments the callback context's `committed_updates`. It
 also calls each function in `ctx.update_listeners`; a callback appends one in
-`on_train_begin`. Setting `ctx.stop_at_update = True` from a listener stops
+`on_train_begin` or `on_epoch_begin`. Setting `ctx.stop_at_update = True` from a listener stops
 training right after that batch. Set in `on_epoch_end`, it stops at that epoch
 boundary.
 
@@ -683,10 +683,13 @@ weights are never relabelled as a committed epoch's. The in-memory
 ones.
 
 Under DDP, a mid-epoch request is agreed across ranks when a listener was
-registered in `on_train_begin` on any rank. Otherwise the request takes
-effect at the epoch boundary, agreed there. Such a listener's error is agreed
-at the same point: every rank stops after that batch, and the others raise a
-`DistributedFailure` naming the failing rank. `committed_updates` is exact for
+registered in `on_train_begin` or `on_epoch_begin` on any rank (the epoch's
+start agrees again whether any rank listens, #768). Otherwise the request
+takes effect at the epoch boundary, agreed there. Such a listener's error is
+agreed at the same point: every rank stops after that batch, and the others
+raise a `DistributedFailure` naming the failing rank. A listener added in the
+middle of an epoch is not agreed until the next epoch's start, so use
+`on_epoch_begin` for one that must be agreed from the epoch's first batch. `committed_updates` is exact for
 fp16 (a skipped scaler step is not counted) while a listener or an update
 clock is attached. `nnx.search` uses it for its update caps and deadlines
 (§29).

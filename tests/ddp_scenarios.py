@@ -208,6 +208,30 @@ class FailingWriterHook(Callback):
         raise OSError(disk_full(self.hook))
 
 
+class LateListener(Callback):
+    """#768: a writer-only update listener registered in ``on_epoch_begin`` of
+    epoch 0, after ``on_train_begin``. ``mode="fail"`` raises in it;
+    ``mode="stop"`` sets ``ctx.stop_at_update`` at update ``stop_at``."""
+
+    distributed = "writer"
+
+    def __init__(self, mode: str, stop_at: int = 1) -> None:
+        self.mode = mode
+        self.stop_at = stop_at
+        self.registered = False
+
+    def on_epoch_begin(self, ctx) -> None:
+        if not self.registered:
+            self.registered = True
+            ctx.update_listeners.append(self.on_update)
+
+    def on_update(self, ctx) -> None:
+        if self.mode == "fail":
+            raise OSError(disk_full("a late update listener"))
+        if ctx.committed_updates == self.stop_at:
+            ctx.stop_at_update = True
+
+
 def disk_full(where: str) -> str:
     return f"disk full (injected in {where} on the writer)"
 
@@ -924,6 +948,26 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
             case["seconds"] = time.monotonic() - started
             case["shutdown"] = _leave_together()
             out["cases"][hook] = case
+    elif name in ("late_listener_fails", "late_listener_stops"):
+        # #768: a listener registered after on_train_begin (in on_epoch_begin)
+        # is agreed at the epoch's start, so its error and its stop are agreed too.
+        import time
+
+        mode = "fail" if name == "late_listener_fails" else "stop"
+        started = time.monotonic()
+        try:
+            run = model().train(
+                params=params(nnx_dist.train_loader(train_set(), batch_size=2, seed=3), n_epochs=2),
+                callbacks=[LateListener(mode)],
+                distributed=nnx_dist.DDP(),
+            )
+            out.update(summary(run))
+            out["error"] = None
+        except BaseException as error:  # noqa: BLE001 - recorded for the test
+            out["error"] = f"{type(error).__name__}: {error}"
+        out["seconds"] = time.monotonic() - started
+        out["shutdown"] = _leave_together()
+        out["teardown_done"] = True
     elif name == "steps_mismatch":
         loader = nnx_dist.train_loader(train_set(), batch_size=2, seed=3)
         if rank == 1:

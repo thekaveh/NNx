@@ -642,6 +642,39 @@ def test_a_writer_only_failure_in_a_hook_listener_or_attempt_start_stops_every_r
             assert case["shutdown"] is None, (hook, case)
 
 
+def test_a_listener_registered_after_on_train_begin_fails_on_every_rank_at_epoch_start(tmp_path, monkeypatch):
+    """#768: a writer-only update listener registered in on_epoch_begin (after
+    on_train_begin) is agreed at the epoch's start, so its failure is raised
+    on the writer and every other rank raises DistributedFailure naming it,
+    well before the group's timeout."""
+    monkeypatch.setenv("NNX_DDP_TIMEOUT", "30")
+    out = tmp_path / "late-listener-fails"
+    launch("late_listener_fails", out)
+    first, second = results(out)
+    own = f"OSError: {scenarios.disk_full('a late update listener')}"
+    assert first["error"] == own, first
+    assert second["error"] == f"DistributedFailure: epoch 0's update listeners failed on rank 0: {own}", second
+    for case in (first, second):
+        assert case["seconds"] < 15, case  # agreed, not the 30 s collective timeout
+        assert case["shutdown"] is None, case
+
+
+def test_a_listener_registered_after_on_train_begin_stops_every_rank_at_the_same_batch(tmp_path, monkeypatch):
+    """#768: a late writer-only listener that sets ctx.stop_at_update stops
+    every rank at the same update. It stops at update 1 (batch 1 of 3 in
+    epoch 0), so the epoch is discarded on every rank: the uninterrupted two
+    epochs (six iterations) never run."""
+    monkeypatch.setenv("NNX_DDP_TIMEOUT", "30")
+    out = tmp_path / "late-listener-stops"
+    launch("late_listener_stops", out)
+    first, second = results(out)
+    assert first["error"] is None and second["error"] is None, (first, second)
+    assert first["train_loss"] == second["train_loss"] == [], (first, second)
+    assert first["epochs"] == second["epochs"] == [], (first, second)
+    assert first["seconds"] < 15 and second["seconds"] < 15, (first, second)
+    assert first["shutdown"] is None and second["shutdown"] is None
+
+
 @pytest.mark.parametrize("hook", ["on_train_begin", "on_train_end", "listener", "attempt"])
 def test_without_distributed_a_failing_hook_or_attempt_start_raises_as_before(hook, tmp_path, monkeypatch):
     """#540 leaves the single-process path alone: the failure is the
