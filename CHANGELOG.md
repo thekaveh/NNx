@@ -4,47 +4,9 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 This file intentionally keeps the standard Keep a Changelog heading format rather than the hierarchical numbering used by the rest of the documentation.
 
-## [0.4.4](https://github.com/thekaveh/NNx/compare/v0.4.3...v0.4.4) (2026-11-25)
-
-
-### Bug Fixes
-
-* **checkpoint:** refuse unreplayable transforms in to_file(format="safetensors") ([31a4258](https://github.com/thekaveh/NNx/commit/31a425893ce68ead6dee07aca0d721b3bc23a96e))
-* **checkpoint:** refuse unreplayable transforms in to_file(format="safetensors") ([5c4bc22](https://github.com/thekaveh/NNx/commit/5c4bc2237a74d04800b26c1fa7a78220fc4bbca5))
-* **distributed:** agree update listeners again at each epoch's start ([#768](https://github.com/thekaveh/NNx/issues/768)) ([b774c35](https://github.com/thekaveh/NNx/commit/b774c35e8dbec6a6bb12b6268f24c7101bc7c449))
-* **distributed:** agree update listeners again at each epoch's start ([#768](https://github.com/thekaveh/NNx/issues/768)) ([918cb4a](https://github.com/thekaveh/NNx/commit/918cb4ae5c25bbf3b1b080c3dc6ea0a3357a6d5e))
-* keep import nnx working when torch drops the batched-tensor probes ([3c23214](https://github.com/thekaveh/NNx/commit/3c23214152843fa9c274df52b5c25c628c594a17)), closes [#766](https://github.com/thekaveh/NNx/issues/766)
-* keep import nnx working when torch drops the batched-tensor probes ([#766](https://github.com/thekaveh/NNx/issues/766)) ([0c7e650](https://github.com/thekaveh/NNx/commit/0c7e650bebeb1477804a31e7339b925e686ae044))
-
-
-### Documentation
-
-* announce that Python 3.10 support ends in the next minor release ([#759](https://github.com/thekaveh/NNx/issues/759)) ([96ec91c](https://github.com/thekaveh/NNx/commit/96ec91caaacf794ca34e7adfa9247598f5bb1eae))
-* announce that Python 3.10 support ends in the next minor release ([#759](https://github.com/thekaveh/NNx/issues/759)) ([9490244](https://github.com/thekaveh/NNx/commit/94902449ed9f9d7dd7376d3368b95fcc1265a340))
-* **changelog:** name the 0.4.1 files the new JSON depth bounds refuse ([#762](https://github.com/thekaveh/NNx/issues/762)) ([5ad5814](https://github.com/thekaveh/NNx/commit/5ad5814b3b2a56b0bf79bdb418a98326159b84f7))
-* **changelog:** name the 0.4.1 files the new JSON depth bounds refuse ([#762](https://github.com/thekaveh/NNx/issues/762)) ([ade8acc](https://github.com/thekaveh/NNx/commit/ade8acc0bd923f4aa2b7b9668611e125b66346b4))
-* credit [@bfs2021](https://github.com/bfs2021) for the report and fix in PR 581 ([3ba77a5](https://github.com/thekaveh/NNx/commit/3ba77a5b9b2ddc2e0b58f865d0a130525287790f))
-* credit [@bfs2021](https://github.com/bfs2021) for the report and fix in PR 581 ([bdf2489](https://github.com/thekaveh/NNx/commit/bdf2489c09620c7e667513f48878c8c189603f2e))
-* drop issue reference from push_to_hub docstring and regenerate API reference ([fae6439](https://github.com/thekaveh/NNx/commit/fae6439f5145563301bffb4787d41ea02032a1af))
-* drop issue references from distributed update-listener prose ([171fa9d](https://github.com/thekaveh/NNx/commit/171fa9dca82f264503425f6df354c31322603024))
-* split over-length paragraphs and drop issue IDs from reader text (0.4.2 audit DA-05, DA-06) ([79c9054](https://github.com/thekaveh/NNx/commit/79c90547f3de9005ff3e22688062c586d6d70ee6))
-* split over-length prose paragraphs in architecture ([7b68caa](https://github.com/thekaveh/NNx/commit/7b68caa59dea2d6b243527a4e3c42167af65e08b))
-* split over-length prose paragraphs in capabilities ([9cf487a](https://github.com/thekaveh/NNx/commit/9cf487a5b37cdb2bdbc43e0694bda8122588b45d))
-* split over-length prose paragraphs in concepts ([cef9318](https://github.com/thekaveh/NNx/commit/cef9318794bd51ef78c3fba1a0ac8686972941d4))
-* split over-length prose paragraphs in decisions ([bb0159e](https://github.com/thekaveh/NNx/commit/bb0159e73e880783d096057096c5f42c6a018913))
-* split over-length prose paragraphs in export-conformance ([54d14d8](https://github.com/thekaveh/NNx/commit/54d14d8ed2feb368543b3db8c76b327e63c507ce))
-* split over-length prose paragraphs in external-contracts ([98ee950](https://github.com/thekaveh/NNx/commit/98ee950261683d028c105b52e6a6ad59e45a54c0))
-* split over-length prose paragraphs in hub ([e55a8be](https://github.com/thekaveh/NNx/commit/e55a8be4ba25819ebb3ee0b11fdbd455adcc4fb1))
-* split over-length prose paragraphs in jepa ([d438127](https://github.com/thekaveh/NNx/commit/d438127fc6d84d7269695d648aba76674b98271e))
-* split over-length prose paragraphs in surgery ([cde2aea](https://github.com/thekaveh/NNx/commit/cde2aea203f0c4bd7edaac088b23e6fb593d7119))
-* split the audit's long paragraphs into short sentences (0.4.2 audit DA-05) ([64c2944](https://github.com/thekaveh/NNx/commit/64c2944858cb726f9f47efecfb9940fa61f93f95))
-* split the export-conformance folder and --output paragraph ([511ff68](https://github.com/thekaveh/NNx/commit/511ff6890e4a38339c3e56dc2be02a8c44475e7b))
-* split the GGUF tied-head paragraph into one bullet per rule ([597741b](https://github.com/thekaveh/NNx/commit/597741bb7bb410dc8d0e2ec5f44edfd039ff7065))
-* split the runs/best pointer, KD and buffer-snapshot paragraphs into short sentences ([c10f9b1](https://github.com/thekaveh/NNx/commit/c10f9b1020738694a2515e85330934b860e78506))
-* state the measured torch 2.13 and 2.14 shutdown behaviour, not the assumed 2.14 boundary ([d7f102c](https://github.com/thekaveh/NNx/commit/d7f102cdd534766c3e91dab798488f6562b3b8b7))
-* state the measured torch shutdown behaviour, not the assumed 2.14 boundary ([c213117](https://github.com/thekaveh/NNx/commit/c2131176cbe172f83766b4a7dba65b44bcef159f))
-
 ## [Unreleased]
+
+## [0.4.4](https://github.com/thekaveh/NNx/compare/v0.4.3...v0.4.4) (2026-11-25)
 
 ### Deprecated
 
