@@ -44,7 +44,9 @@ description without a UTF-8 encoding: a lone surrogate, such as half an
 emoji a JavaScript client cut or a `surrogateescape` decode. It is refused
 when the question is built, before any provider call. `kind` (`"choice"`,
 `"boolean"`, `"score"`) is the discriminator. `state()` /
-`question_from_state(...)` round-trip a question as plain data. Malformed
+`question_from_state(...)` round-trip a question as plain data.
+
+Malformed
 state raises `InvalidDecisionRequest`, never a bare `KeyError`.
 
 **Bookkeeping ids vs model-facing text.** An option's `id` is how results are
@@ -137,7 +139,9 @@ before the model runs, instead of being served as a softmax. That covers
 custom losses: for logits trained with one (a focal loss, say), set
 `model.loss_fn` to the matching `CrossEntropyLoss`, `NLLLoss` or
 `BCEWithLogitsLoss`. A declared `TaskSpec` also names the head's kind, but
-that task's `train()` and `evaluate()` accept only its own losses. Two kinds
+that task's `train()` and `evaluate()` accept only its own losses.
+
+Two kinds
 of head are refused with or without a task. A `BCELoss` head outputs
 probabilities, not logits: wrap the net without its final sigmoid and set a
 `BCEWithLogitsLoss` loss. A hinge head (`MultiMarginLoss` or
@@ -411,12 +415,15 @@ result.calls                                           # provider calls made
       when it has one, else `capabilities().check(...)` when NNx can tell
       the state's modality. A list of texts is text, and so is a tuple of
       several inputs whose first part is one; a tensor or array is a
-      tensor. Any other state (images as dicts, say) is the provider's to
+      tensor.
+
+      Any other state (images as dicts, say) is the provider's to
       judge, as in `collect` and `decide_result`. So is an empty list or
       tuple, which has no row to tell its modality by (a continuation that
       re-asks the rows that match and finds none, say); it is answered with
       no results. One value is no batch and is refused: one `str`, or a
       0-d tensor or array (alone or as a tuple's first part);
+
     - a `limits` that is neither `None` (the default `Limits()`) nor a
       `Limits`, such as a mapping, `{}` or `0`;
     - a `Limits.max_tokens` cap the provider cannot enforce (it needs

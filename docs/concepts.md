@@ -48,7 +48,9 @@ NNTrainerParams  # multi-optim version: dict of optims + dict of schedulers
 
 The rebuilt object need not equal the original. Runtime-only fields are not carried: loaders, `extra_metrics` and `resume_mode`, for example. Nor are omitted defaults, such as an `activations` list that repeats the net-wide activation. A resume request comes back as `parent_run_id` lineage (§8.4).
 
-The run-configuration params and specs (`NNParams`, `NNOptimParams`, `NNSchedulerParams`, `NNTransformerParams`, `NNTrainParams` / `NNTrainerParams`, `NNParamGroupSpec`, `MetricSpec` / `MonitorSpec`, `TaskSpec`, `ModelSpec`, `OptimizerFactorySpec` and `NNRun.salt`) store a NumPy scalar or a `str` subclass such as `numpy.str_` (a sweep-grid point, a DataFrame cell) as the plain Python value it equals, so `state()` stays YAML-safe and the configuration hashes like the one written with `float(value)`, `int(value)` or `str(value)`. A plain `int`, `float` or `str` is kept as given, so `weight_decay=0` and `weight_decay=0.0` remain different run ids. Other constructors may still keep a `numpy.str_` as given (`CompileSpec(backend=...)`, for example), so pass `str(value)` there.
+The run-configuration params and specs (`NNParams`, `NNOptimParams`, `NNSchedulerParams`, `NNTransformerParams`, `NNTrainParams` / `NNTrainerParams`, `NNParamGroupSpec`, `MetricSpec` / `MonitorSpec`, `TaskSpec`, `ModelSpec`, `OptimizerFactorySpec` and `NNRun.salt`) store a NumPy scalar or a `str` subclass such as `numpy.str_` (a sweep-grid point, a DataFrame cell) as the plain Python value it equals, so `state()` stays YAML-safe and the configuration hashes like the one written with `float(value)`, `int(value)` or `str(value)`.
+
+A plain `int`, `float` or `str` is kept as given, so `weight_decay=0` and `weight_decay=0.0` remain different run ids. Other constructors may still keep a `numpy.str_` as given (`CompileSpec(backend=...)`, for example), so pass `str(value)` there.
 
 ### 2.2. The omit-when-default invariant
 
@@ -264,7 +266,9 @@ A `ProbabilitySpec(kind, class_axis, labels)` *declares* the task rather than in
 - `"categorical"`: softmax over `class_axis`, rows sum to 1, argmax decoding.
 - `"bernoulli"`: independent element-wise sigmoid, rows not normalized, `logit >= 0` indicators.
 
-`labels` names the classes in order: unique, non-empty strings in a list, tuple, NumPy array or pandas `Index` (such as `LabelEncoder().classes_`), stored as a tuple of `str`. A string, mapping, set or generator is refused: a string is one name, not its letters, and a set's order can change between processes. `TaskSpec`, `StreamingMetrics`, calibration, abstention, `ExperimentManifest` and `FixedHeadProvider` read `labels=` by the same rule, each raising its own error. The one difference: `ExperimentManifest` also reads a generator or other one-shot iterator, once, though not an iterator over a set or a dict.
+`labels` names the classes in order: unique, non-empty strings in a list, tuple, NumPy array or pandas `Index` (such as `LabelEncoder().classes_`), stored as a tuple of `str`.
+
+A string, mapping, set or generator is refused: a string is one name, not its letters, and a set's order can change between processes. `TaskSpec`, `StreamingMetrics`, calibration, abstention, `ExperimentManifest` and `FixedHeadProvider` read `labels=` by the same rule, each raising its own error. The one difference: `ExperimentManifest` also reads a generator or other one-shot iterator, once, though not an iterator over a set or a dict.
 
 The returned `PredictionResult` carries the same raw `logits` as `predict()`, `probabilities`, `decoded` values and the spec (class axis and ordered labels). It also carries `sample_ids`:
 
@@ -308,11 +312,41 @@ As with built-in nets, the id reflects the architecture, not the weights. Give d
 
 **Lazy layers and the descriptor.** A lazy layer changes the topology when it materializes at its first forward: it gains its shapes and a new `repr`. So the rule is:
 
-- A run's id comes from the descriptor when `train()` starts, and the run keeps it. A run that starts before the wrapped lazy module materializes gets the unmaterialized id. A run that starts after it has materialized (in an earlier run, `predict()`, `evaluate()` or a direct call), or on a model rebuilt from a checkpoint taken before materialization, gets the materialized descriptor's id: the id of a dry-run-wrapped or equivalent dense net. A lazy module wrapped with loaded weights before its first forward has a descriptor and a run id of its own until it materializes.
+- A run's id comes from the descriptor when `train()` starts, and the run keeps it. A run that starts before the wrapped lazy module materializes gets the unmaterialized id.
+
+    A run that starts after it has materialized (in an earlier run, `predict()`, `evaluate()` or a direct call), or on a model rebuilt from a checkpoint taken before materialization, gets the materialized descriptor's id: the id of a dry-run-wrapped or equivalent dense net. A lazy module wrapped with loaded weights before its first forward has a descriptor and a run id of its own until it materializes.
+
 - An uninitialized lazy layer records no shape. Uninitialized lazy nets that will see different input widths share a descriptor and a run id. Give them distinct `data_id` / `salt` values, or dry-run them (one forward on an example batch) before wrapping.
-- Once the wrapped module has materialized, at its first forward wherever it runs (`train()`, `predict()`, `evaluate()` or a direct call of `model.net`), `NNModel` takes its descriptor afresh at the next read of `model.params` (which `train()`, `predict()`, `evaluate()` and every checkpoint make). A top-level `nn.LazyLinear` is described as the `nn.Linear` it becomes. Checkpoints and later runs then describe the materialized module, so `NNModel(module=model.net, params=model.params)` and a reload into `model.net` match. The descriptor taken then is the module's `repr` at that read, so other state a custom `repr` shows (a learned value, say) is part of it too. Two cases keep the wrap-time descriptor: a lazy layer the forward never reaches (keep every lazy layer on the forward path), and state keys changed after the wrap (a submodule or tensor attached before the first forward, such as a JEPA predictor or a `logit_scale`; dry-run the module before wrapping it to avoid this). A run wrapped uninitialized then reloads into a fresh, unmaterialized instance, and one wrapped after a dry run into the trained module or a module dry-run the same way; the refusal says so.
-- NNx puts no hook on the wrapped module (it counts submodule registrations with torch's global `register_module_module_registration_hook`, which changes no module, installed at the first wrap of a module with a pending lazy layer in a process; on torch releases newer than 2.4, that install makes a function compiled earlier in the process, whose trace registered a module (slicing a `ModuleList` or `nn.Sequential`, as `FeedFwdNN` does), recompile once). Weights loaded into a lazy layer (`load_state_dict`, before or after the wrap) before its first forward materialize it at that forward as torch does, which leaves `in_channels` / `num_features` of lazy conv and norm layers at 0 where a dry run sets them (older torch releases also leave `nn.LazyLinear`'s `in_features` at 0). When `NNModel` then takes the descriptor afresh it sets those attributes as a dry run does, on the lazy layers it saw pending only (at the wrap, and at a `model.params` read after a module holding a pending lazy layer was registered anywhere, or any submodule was registered while `torch.compile` or `torch.export` traced, after every lazy layer it saw has materialized, or after one of them was replaced): they change no output (only the `repr`, and InstanceNorm's input-width check, which then passes). So such a run is described, and reloads into fresh instances, as a dry-run one. A lazy layer written straight into a parent's `_modules` (by hand, or by `Sequential.insert` / `ModuleList.insert`, also when it replaces a layer after `pop` or `del`) at a name where NNx saw no lazy layer, rather than set as an attribute or through `add_module` or a container's `__setitem__` / `append`, while a lazy layer NNx saw stays pending is not seen until one of those reads, and keeps torch's form if it materializes first. Torch's own forward fails on a loaded affine `nn.LazyInstanceNorm` (and warns on one with running statistics only): dry-run such a module before loading. A module whose lazy layers hold loaded weights does not match a descriptor taken before materialization: there, pass a fresh, unmaterialized instance (`NNModel.from_checkpoint` loads the saved weights into one). The wrap leaves the module as given, except one whose own loaded weights it accepts for a descriptor taken after materialization: it materializes that module as the dry run did. A module loaded and then forwarded before the wrap keeps torch's form (NNx never described it), so its runs reload only into a module prepared the same way: weights loaded, then one forward.
-- `module=` follows one rule in `NNModel(...)`, `NNModel.from_checkpoint` and `VisUtils.two_dim_tsne_checkpoint_logits`. A module that matches the descriptor exactly is accepted. A module of the same class once materialized, with lazy layers still to materialize, is checked against the saved weights first: parameter names and shapes, then the topology those weights materialize, layer hyperparameters and dtypes included. The weights then load and materialize it as a dry run would. So a fresh lazy instance reloads a run wrapped uninitialized or after a dry run. A checkpoint with recorded transforms (a QAT run, say) holds the transformed module's weights, which give no shapes to check, so it reloads only into a dry-run (materialized) instance. A different class, different hyperparameters, dtypes or real shape mismatches are refused before any weight loads, and a refused call leaves the module as given.
+- Once the wrapped module has materialized, at its first forward wherever it runs (`train()`, `predict()`, `evaluate()` or a direct call of `model.net`), `NNModel` takes its descriptor afresh at the next read of `model.params` (which `train()`, `predict()`, `evaluate()` and every checkpoint make). A top-level `nn.LazyLinear` is described as the `nn.Linear` it becomes.
+
+    Checkpoints and later runs then describe the materialized module, so `NNModel(module=model.net, params=model.params)` and a reload into `model.net` match. The descriptor taken then is the module's `repr` at that read, so other state a custom `repr` shows (a learned value, say) is part of it too.
+
+    Two cases keep the wrap-time descriptor: a lazy layer the forward never reaches (keep every lazy layer on the forward path), and state keys changed after the wrap (a submodule or tensor attached before the first forward, such as a JEPA predictor or a `logit_scale`; dry-run the module before wrapping it to avoid this).
+
+    A run wrapped uninitialized then reloads into a fresh, unmaterialized instance, and one wrapped after a dry run into the trained module or a module dry-run the same way. The refusal says so.
+
+- NNx puts no hook on the wrapped module (it counts submodule registrations with torch's global `register_module_module_registration_hook`, which changes no module, installed at the first wrap of a module with a pending lazy layer in a process; on torch releases newer than 2.4, that install makes a function compiled earlier in the process, whose trace registered a module (slicing a `ModuleList` or `nn.Sequential`, as `FeedFwdNN` does), recompile once).
+
+    Weights loaded into a lazy layer (`load_state_dict`, before or after the wrap) before its first forward materialize it at that forward as torch does, which leaves `in_channels` / `num_features` of lazy conv and norm layers at 0 where a dry run sets them (older torch releases also leave `nn.LazyLinear`'s `in_features` at 0).
+
+    When `NNModel` then takes the descriptor afresh it sets those attributes as a dry run does, on the lazy layers it saw pending only.
+
+    That happens at the wrap, and at a `model.params` read after a module holding a pending lazy layer was registered anywhere, or any submodule was registered while `torch.compile` or `torch.export` traced, after every lazy layer it saw has materialized, or after one of them was replaced. They change no output (only the `repr`, and InstanceNorm's input-width check, which then passes).
+
+    So such a run is described, and reloads into fresh instances, as a dry-run one.
+
+    A lazy layer written straight into a parent's `_modules` (by hand, or by `Sequential.insert` / `ModuleList.insert`, also when it replaces a layer after `pop` or `del`) at a name where NNx saw no lazy layer, rather than set as an attribute or through `add_module` or a container's `__setitem__` / `append`, while a lazy layer NNx saw stays pending is not seen until one of those reads, and keeps torch's form if it materializes first.
+
+    Torch's own forward fails on a loaded affine `nn.LazyInstanceNorm` (and warns on one with running statistics only): dry-run such a module before loading.
+
+    A module whose lazy layers hold loaded weights does not match a descriptor taken before materialization: there, pass a fresh, unmaterialized instance (`NNModel.from_checkpoint` loads the saved weights into one). The wrap leaves the module as given, except one whose own loaded weights it accepts for a descriptor taken after materialization: it materializes that module as the dry run did.
+
+    A module loaded and then forwarded before the wrap keeps torch's form (NNx never described it), so its runs reload only into a module prepared the same way: weights loaded, then one forward.
+
+- `module=` follows one rule in `NNModel(...)`, `NNModel.from_checkpoint` and `VisUtils.two_dim_tsne_checkpoint_logits`. A module that matches the descriptor exactly is accepted. A module of the same class once materialized, with lazy layers still to materialize, is checked against the saved weights first: parameter names and shapes, then the topology those weights materialize, layer hyperparameters and dtypes included. The weights then load and materialize it as a dry run would.
+
+    So a fresh lazy instance reloads a run wrapped uninitialized or after a dry run. A checkpoint with recorded transforms (a QAT run, say) holds the transformed module's weights, which give no shapes to check, so it reloads only into a dry-run (materialized) instance. A different class, different hyperparameters, dtypes or real shape mismatches are refused before any weight loads, and a refused call leaves the module as given.
+
 - `NNModel(...)` has no saved weights. An uninitialized lazy module there matches only a descriptor taken before materialization, so wrapping a fresh lazy instance with a materialized run's params is refused; for one taken after, dry-run it first, or load the run's weights into it, which are then checked the same way. The refusal names lazy materialization and these remedies.
 - Lazy layers that torch does not ship infer their attributes only at a forward, so NNx cannot check a fresh instance against a materialized descriptor. A module holding one keeps its wrap-time descriptor: a run wrapped uninitialized reloads into a fresh instance, and one wrapped after a dry run reloads into a dry-run instance.
 
@@ -331,11 +365,15 @@ A runtime module trains, evaluates, predicts, checkpoints and resumes like any m
 
 `predict()` accepts a mapping of keyword inputs as well as tensors, tuples and loaders. Some supervised paradigm steps transform the input: Mixup / CutMix, KD and feature KD, MoE, and `kd_objective`. They split batches through the same adapter and need exactly one positional input. Other layouts raise `ValueError` and need a custom step.
 
-Subclass `BatchAdapter` for other layouts. Implement `split(batch) -> (args, kwargs, target)`, and `output(raw)` to extract the tensor from a non-tensor return value (the default requires a tensor). `nnx.viz.summary(model, batch=...)` and `VisUtils.two_dim_tsne_checkpoint_logits(..., batch_adapter=..., module=...)` take the same adapters. `summary` moves the split inputs to the module's device, as `predict` does, so a CPU loader batch works for a CUDA or MPS model. A keyword-input model given a synthetic `input_size`, or a runtime checkpoint without `module=`, fails before the module or any data is touched. A borrowed module keeps its identity, state keys and every submodule's training mode.
+Subclass `BatchAdapter` for other layouts. Implement `split(batch) -> (args, kwargs, target)`, and `output(raw)` to extract the tensor from a non-tensor return value (the default requires a tensor). `nnx.viz.summary(model, batch=...)` and `VisUtils.two_dim_tsne_checkpoint_logits(..., batch_adapter=..., module=...)` take the same adapters. `summary` moves the split inputs to the module's device, as `predict` does, so a CPU loader batch works for a CUDA or MPS model.
+
+A keyword-input model given a synthetic `input_size`, or a runtime checkpoint without `module=`, fails before the module or any data is touched. A borrowed module keeps its identity, state keys and every submodule's training mode.
 
 **What renders.** A registered or runtime run has no built-in `NNParams`. `run.yaml` omits `net`, and `model.net` holds the descriptor mapping (`kind: registered | runtime`). `str(run)` and the notebook table show the descriptor instead of dims, dropout and activation. The descriptor fields are `kind`, `factory` (`id@vN`), `config` and `seed`, or `module` and `reconstructible=False`. `NNRun.load` restores the same descriptor.
 
-Built-in runs serialize exactly as before. `to_onnx` exports any tensor-output module whose forward takes positional tensors, from its `example_input`. It refuses a mapping example (a keyword-input module): wrap such a module in one with a positional forward. Task adapters (§6.3) check the loss up front and the output width on the first batch; `predict()` and `predict_proba()` check an in-memory input's whole output the same way. `GenerativeNNModel` stays built-in only. [`examples/custom_module.py`](https://github.com/thekaveh/NNx/blob/main/examples/custom_module.py) trains, reconstructs and prints a registered encoder and a wrapped keyword-input module. `examples/04_onnx_export.py::registered_module_variant` exports one.
+Built-in runs serialize exactly as before. `to_onnx` exports any tensor-output module whose forward takes positional tensors, from its `example_input`. It refuses a mapping example (a keyword-input module): wrap such a module in one with a positional forward.
+
+Task adapters (§6.3) check the loss up front and the output width on the first batch; `predict()` and `predict_proba()` check an in-memory input's whole output the same way. `GenerativeNNModel` stays built-in only. [`examples/custom_module.py`](https://github.com/thekaveh/NNx/blob/main/examples/custom_module.py) trains, reconstructs and prints a registered encoder and a wrapped keyword-input module. `examples/04_onnx_export.py::registered_module_variant` exports one.
 
 ## 4. What lands on disk
 
@@ -386,11 +424,15 @@ When no run holds the pointer, each reader answers as for an absent run. The poi
 
 None of these readers follows the pointer out of the runs root. `export_bundle` and `migrate_history` refuse `"best"` and a case variant that opens it. `iter_history(lineage=True)` and `observations_from_runs` treat a parent recorded as either as the moving alias. Saves to `run="best"` are unchanged.
 
-Only a run with a *committed* BEST checkpoint can own the pointer. That means a real run directory with `run.yaml`, loadable history and a parseable BEST. Under the history protocol, the BEST epoch must also be no later than the committed LAST. `best`, `.leases`, bare reservations and malformed artifacts are never candidates. Neither is `best.tmp`, the temporary symlink a repoint renames over `runs/best`, which an interrupt between those two steps can leave behind; `NNRun.all()` skips the same entries, so it lists that run once. Eligibility never reads `metadata.yaml` or provenance, so an unreadable `provenance.json` cannot move the pointer, even under a warnings-as-errors filter (`-W error`).
+Only a run with a *committed* BEST checkpoint can own the pointer. That means a real run directory with `run.yaml`, loadable history and a parseable BEST. Under the history protocol, the BEST epoch must also be no later than the committed LAST. `best`, `.leases`, bare reservations and malformed artifacts are never candidates.
+
+Neither is `best.tmp`, the temporary symlink a repoint renames over `runs/best`, which an interrupt between those two steps can leave behind; `NNRun.all()` skips the same entries, so it lists that run once. Eligibility never reads `metadata.yaml` or provenance, so an unreadable `provenance.json` cannot move the pointer, even under a warnings-as-errors filter (`-W error`).
 
 Overwriting a run (`overwrite_existing=True`) deletes its artifacts and reuses its ID. If that run owned `runs/best`, the best surviving committed run is elected *before* the old artifacts are removed. Ties keep the incumbent, then the lexicographically smallest ID. So the pointer never dangles and an emptied replacement is never advertised. The replacement becomes a candidate again only once its own BEST commits; saving its history earlier cannot claim the slot.
 
-When no eligible run remains, `runs/best` is absent and the election has no winner yet. Readers that take the run id `"best"` then raise, as listed above: `NNRun.load` raises `FileNotFoundError`, a resume raises `ValueError`, and `iter_history` and `export_history_csv` raise `ValueError`. Runs that select BEST with a named monitor (§6.4) are never candidates: their ranking is not comparable with other runs'. Lock order is lease → admission → `.best.lock` on overwrite and lease → run → `.best.lock` on save. Election reads other runs without taking their locks.
+When no eligible run remains, `runs/best` is absent and the election has no winner yet. Readers that take the run id `"best"` then raise, as listed above: `NNRun.load` raises `FileNotFoundError`, a resume raises `ValueError`, and `iter_history` and `export_history_csv` raise `ValueError`.
+
+Runs that select BEST with a named monitor (§6.4) are never candidates: their ranking is not comparable with other runs'. Lock order is lease → admission → `.best.lock` on overwrite and lease → run → `.best.lock` on save. Election reads other runs without taking their locks.
 
 Both the per-run BEST checkpoint and the cross-run pointer score a checkpoint by the first **finite** value. The order is validation error → validation loss → training error → training loss. The training values come from the epoch's last batch record; declare a monitor (§6.4) to select on a whole-epoch training summary instead.
 
@@ -404,15 +446,23 @@ Every write inside `runs/<id>/` (`run.yaml`, `metadata.yaml`, `idps.csv`, every 
 
 The text writer creates its temp next to the resolved destination, also for a bare filename, so the rename never crosses filesystems. It owns the temp until the rename. A failure while opening, writing, flushing or closing it, or in the rename itself, releases the descriptor and unlinks that temp. The writer then re-raises the original exception; a cleanup error never masks it.
 
-The temp is flushed with `fsync` before the rename. A flush the filesystem does not support (`ENOTSUP`, `EINVAL`, ...) is tolerated. A real I/O error (`EIO`, a full disk) fails the write before the rename, so the destination keeps its previous content. After a successful rename the temp name is never touched. The same writer, and so the same flush policy, also saves these other NNx text artifacts: split manifests, standardizers, calibration and abstention artifacts, provenance records, `export_history_csv` and the `runs/best` pointer.
+The temp is flushed with `fsync` before the rename. A flush the filesystem does not support (`ENOTSUP`, `EINVAL`, ...) is tolerated. A real I/O error (`EIO`, a full disk) fails the write before the rename, so the destination keeps its previous content.
 
-This is per-file cleanup for ordinary exceptions, not a multi-file transaction. `run.yaml`, `metadata.yaml` and `idps.csv` are still written one after another. An interrupt during a run's first save, for example a Ctrl-C while the environment snapshot for `metadata.yaml` runs `git`, can leave `run.yaml` without `idps.csv`. Nothing is committed yet, so the run loads with an empty history, `NNRun.all()` lists it, and `iter_history` and `export_history_csv` read no records. A plain retry is refused as for any existing run; retry with `overwrite_existing=True`. A committed or legacy run that has lost its `idps.csv` is malformed: loading it raises a `ValueError` naming the file. A SIGKILL or power loss can still strand a `.<name>.XXXXXX` temp, which later writes neither reuse nor delete. A failed write of the run's history marker also releases the still-empty `runs/<id>/` reservation, so the same run can be retried.
+After a successful rename the temp name is never touched. The same writer, and so the same flush policy, also saves these other NNx text artifacts: split manifests, standardizers, calibration and abstention artifacts, provenance records, `export_history_csv` and the `runs/best` pointer.
+
+This is per-file cleanup for ordinary exceptions, not a multi-file transaction. `run.yaml`, `metadata.yaml` and `idps.csv` are still written one after another. An interrupt during a run's first save, for example a Ctrl-C while the environment snapshot for `metadata.yaml` runs `git`, can leave `run.yaml` without `idps.csv`. Nothing is committed yet, so the run loads with an empty history, `NNRun.all()` lists it, and `iter_history` and `export_history_csv` read no records.
+
+A plain retry is refused as for any existing run; retry with `overwrite_existing=True`. A committed or legacy run that has lost its `idps.csv` is malformed: loading it raises a `ValueError` naming the file. A SIGKILL or power loss can still strand a `.<name>.XXXXXX` temp, which later writes neither reuse nor delete. A failed write of the run's history marker also releases the still-empty `runs/<id>/` reservation, so the same run can be retried.
 
 Each checkpoint names an immutable generation-addressed training-state sidecar. The sidecar is committed first and the checkpoint last. An interrupted replacement therefore leaves the previous generation resumable instead of pairing new weights with stale optimizer state.
 
 The epoch transaction is history → LAST → phase/BEST → deferred callback checkpoints. If LAST fails, history rolls back to the preceding epoch. Once LAST commits, a later ancillary failure retains that history because the epoch is durable.
 
-The history step is on stable storage before LAST is published. An eager epoch flushes `runs/<id>/` after its `idps.csv` rename; a journal epoch flushes `history/` after its manifest rename. The run's first checkpoint flushes `runs/<id>/` once it creates `checkpoints/` there, and a new run's `<id>` is flushed into `runs/` when the run is reserved. A history step whose flush fails with a real I/O error fails the epoch before LAST, so a reload shows the previous committed epoch. If the flush after the `idps.csv` or manifest rename is the one that fails (for a journal, also the save of `run.yaml` / `metadata.yaml` after its manifest), the step writes the file it replaced back through the same writer, byte for byte (before the first epoch it removes the new file, so the run reads as uncommitted), and raises the original error; a failure of that restore never replaces it. The flush policy is in §14.3.
+The history step is on stable storage before LAST is published. An eager epoch flushes `runs/<id>/` after its `idps.csv` rename; a journal epoch flushes `history/` after its manifest rename.
+
+The run's first checkpoint flushes `runs/<id>/` once it creates `checkpoints/` there, and a new run's `<id>` is flushed into `runs/` when the run is reserved. A history step whose flush fails with a real I/O error fails the epoch before LAST, so a reload shows the previous committed epoch.
+
+If the flush after the `idps.csv` or manifest rename is the one that fails (for a journal, also the save of `run.yaml` / `metadata.yaml` after its manifest), the step writes the file it replaced back through the same writer, byte for byte (before the first epoch it removes the new file, so the run reads as uncommitted), and raises the original error; a failure of that restore never replaces it. The flush policy is in §14.3.
 
 `NNRun.load()` treats LAST as the commit marker and truncates any history newer than it after a process kill. It rejects an empty or corrupt LAST instead of erasing otherwise valid history. A run with a history journal (§4.5) follows the same transaction: its chunks and manifest are the "history" step.
 
@@ -559,7 +609,10 @@ runs/<id>/history/
 ```
 
 - **Memory and bytes.** Only the last `retention` records stay in memory (`ctx.idps`, `NNRun.idps`). `chunk_size ≤ retention` (default `min(250, retention)`, resolved as `HistoryJournal.chunk`), so records waiting for their chunk are always inside the window. Every record is written once, so bytes written grow linearly with the records; `idps.csv` is not written.
-- **Commit protocol.** Each epoch's records are written as chunks and indexed, and its summary row is appended. Every file the epoch wrote is flushed to disk once; chunks written mid-epoch are not fsynced one by one. The manifest is then published *before* LAST. A flush that fails with a real I/O error fails the epoch before LAST (§14.3). If a flush of the epoch's files fails, the manifest is never replaced. If the flush of the manifest's rename fails, or the save of `run.yaml` / `metadata.yaml` after it, the previous manifest is republished (before the first epoch, the new one is removed) and the original error is raised. The journal is the epoch transaction's "history" step (§4.2), and LAST stays the commit marker.
+- **Commit protocol.** Each epoch's records are written as chunks and indexed, and its summary row is appended. Every file the epoch wrote is flushed to disk once; chunks written mid-epoch are not fsynced one by one. The manifest is then published *before* LAST. A flush that fails with a real I/O error fails the epoch before LAST (§14.3).
+
+    If a flush of the epoch's files fails, the manifest is never replaced. If the flush of the manifest's rename fails, or the save of `run.yaml` / `metadata.yaml` after it, the previous manifest is republished (before the first epoch, the new one is removed) and the original error is raised. The journal is the epoch transaction's "history" step (§4.2), and LAST stays the commit marker.
+
 - **Crashes.** A crash while a chunk is written, or before the manifest is replaced, leaves the previous manifest. A crash before LAST is replaced leaves an **uncommitted tail** on disk that no reader shows. Records newer than LAST's epoch are filtered, as for `idps.csv`.
 - **Failures and corruption.** If LAST fails, the previous manifest is republished. A committed chunk whose bytes no longer match its SHA-256, a missing chunk and an altered index raise `HistoryCorruptionError` (a `ValueError`).
 - **Lazy reads.** `NNRun.load` reads only the committed tail: the last `retention` records, from the chunks holding them. It returns a run whose `history` is the journal directory. Other readers read no records. The notebook chart (`_repr_html_`) reads the per-epoch rows. BEST and the `runs/best` election read checkpoints and the manifest and index. A resume reads only the source's checkpoint.
@@ -577,7 +630,10 @@ runs/<id>/history/
     - the child resumed through the `runs/best` pointer, which may name another run by now;
     - the parent has been retrained in place since the child resumed from it, so another attempt holds its id;
     - the child resumed from a run bundle, whose parent lives in the bundle.
-- **Parent attempts.** Run ids derive from the configuration, so another attempt can hold a parent's id: a retrain with `overwrite_existing=True`, or an unrelated same-configuration run beside a bundle's child. Every `train()` records a fresh `ResumeStatus.attempt_token`, and a resumed child records its parent's as `source_attempt_token`. Lineage stitches the parent only while it holds that attempt. The parent's own LAST, FIRST and BEST rewrites keep its token, so a still-training parent stays stitched. A bundle child records `bundle-<generation>` and is never stitched to a run in its runs root, not even the bundle's unchanged source run: the bundle does not record which attempt it was exported from. A child recorded without a token (before this check, or resumed from a parent recorded without one) is stitched to the run holding the parent's id, as before.
+- **Parent attempts.** Run ids derive from the configuration, so another attempt can hold a parent's id: a retrain with `overwrite_existing=True`, or an unrelated same-configuration run beside a bundle's child. Every `train()` records a fresh `ResumeStatus.attempt_token`, and a resumed child records its parent's as `source_attempt_token`. Lineage stitches the parent only while it holds that attempt. The parent's own LAST, FIRST and BEST rewrites keep its token, so a still-training parent stays stitched.
+
+    A bundle child records `bundle-<generation>` and is never stitched to a run in its runs root, not even the bundle's unchanged source run: the bundle does not record which attempt it was exported from. A child recorded without a token (before this check, or resumed from a parent recorded without one) is stitched to the run holding the parent's id, as before.
+
 - **Lineage follows resumes.** A run that started fresh starts its own epochs, and its lineage is its own history. One example is a born-again generation naming its teacher's run as `parent_run_id`.
 - **Export.** `export_history_csv` writes the same columns, order and index `NNRun.save` writes for an eager run. It holds the records in memory while it builds the table; stream `iter_history` for larger histories.
 - **Migration.** `migrate_history(run_id, spec=...)` moves an existing run's `idps.csv` into a journal explicitly, keeping `run.yaml` and the run id. Floats are parsed round-trip. The journal is read back and checked before it is published and the CSV removed. An unpublished leftover of an interrupted migration is replaced, and one interrupted after publishing is finished.
@@ -684,10 +740,12 @@ ones.
 
 Under DDP, a mid-epoch request is agreed across ranks when a listener was
 registered in `on_train_begin` or `on_epoch_begin` on any rank (the epoch's
-start agrees again whether any rank listens, #768). Otherwise the request
+start agrees again whether any rank listens). Otherwise the request
 takes effect at the epoch boundary, agreed there. Such a listener's error is
 agreed at the same point: every rank stops after that batch, and the others
-raise a `DistributedFailure` naming the failing rank. A listener added in the
+raise a `DistributedFailure` naming the failing rank.
+
+A listener added in the
 middle of an epoch is not agreed until the next epoch's start, so use
 `on_epoch_begin` for one that must be agreed from the epoch's first batch. `committed_updates` is exact for
 fp16 (a skipped scaler step is not counted) while a listener or an update
@@ -791,13 +849,16 @@ below):
   equal `output_dim`. A wrapped, registered or swapped net's width is unknown
   until it runs. The default step and `evaluate()` check it on every batch, and
   `predict()`, `iter_predict()` and `predict_proba()` without a spec check a
-  loader's first batch or an in-memory input's whole output. Both refuse an
+  loader's first batch or an in-memory input's whole output.
+
+    Both refuse an
   output without axis 1 or of another width with `TaskValidationError`.
   `Nets.TRANSFORMER` and `Nets.VIT` are out of scope; language-model,
   ranking, link and structured-prediction tasks are separate work.
   `NNModel.train`, `Trainer.train` and `NNModel.evaluate()` (the default
   and streaming validation steps included) re-check the live `loss_fn`
   before touching any loader.
+
 - **Masking and loss units.** Categorical targets equal to `ignore_index`
   and NaN multilabel / regression targets are excluded from the loss and
   every metric alike. Integer class targets of any width, unsigned ones
@@ -841,15 +902,20 @@ below):
   and NaN targets are masked as in the default step, and the record is the
   task's. Mixup and CutMix prepare each of their two targets and mix the
   record's metrics by λ. The distillation, feature and MoE auxiliary terms
-  keep every row. A batch with nothing to learn from (every target masked and
+  keep every row.
+
+    A batch with nothing to learn from (every target masked and
   every other term of weight 0) takes no update and records
   `status="empty"`. A regression task is refused with `TaskValidationError`
   before any run is reserved: by `NNModel.train`, `Trainer.train`,
   `ExperimentPlan.validate()` and, before generation 0, `born_again_train`.
   `kd_objective(alpha=1)` scores no labels, so placeholder labels train as
-  with `kd_train_step_factory(alpha=1)`. With a declared task both still
+  with `kd_train_step_factory(alpha=1)`.
+
+    With a declared task both still
   validate each batch's labels, so a placeholder must be the task's
   `ignore_index` (NaN for multilabel). Other custom steps are not adapted.
+
 - **Loggers and user metrics.** TensorBoard / W&B receive `mse`, `mae`, …
   directly and never a fabricated or zero-filled classification field. User
   `extra_metrics` are called as `fn(y_true, y_pred)` on the valid targets
@@ -1060,7 +1126,9 @@ Each term is back-propagated into its own gradient buffer, in place. A window
 of one microbatch (the default) takes a single backward pass through its
 combined loss, and a term of weight `0` is never back-propagated. At the
 window's end the gradients are built in the buffers, which are released
-before the optimizer steps. An accumulated window therefore holds about one
+before the optimizer steps.
+
+An accumulated window therefore holds about one
 gradient set per term at its peak, like the default step's one set. A
 parameter with a post-accumulate-grad hook
 (`Tensor.register_post_accumulate_grad_hook`) never sees these buffers: its
@@ -1092,7 +1160,9 @@ gradients.
 
 Only a term with a nonzero weight and samples trains: a summed term, or a
 normalized one with a positive denominator. A window without such a term
-(every term masked, or every term of weight `0`) takes no update. Its
+(every term masked, or every term of weight `0`) takes no update.
+
+Its
 update counter, `optimizer_update` scheduler clock, events and
 `after_update` stay put. A `GradScaler`-skipped step is always a quiet skip. Only optimizer-owned
 parameters that require gradients when a microbatch runs are differentiated.
@@ -1121,7 +1191,9 @@ The whole-epoch training loss (§6.4) of an objective run applies the same
 rule to the whole epoch. Each term's summed weighted numerators are divided
 by its summed denominators, over the terms that train: a weight-0 term
 never gives an all-masked epoch a loss of `0.0`, so such an epoch has no
-loss and a training-loss monitor reports `missing`. A window dropped under
+loss and a training-loss monitor reports `missing`.
+
+A window dropped under
 `nonfinite="skip"`, for a non-finite term or non-finite gradients, is left
 out of both the loss and the error. An epoch that drops every window has a
 non-finite loss and error, so a training monitor on either reports
@@ -1155,7 +1227,9 @@ They are the counterparts of `diffusion_train_step_factory` and
 `jepa_train_step_factory`, which stay available and unchanged.
 
 Each reads one input per batch. When the model has a batch adapter, the
-batch is split by it, and the adapter must then yield exactly one input. As
+batch is split by it, and the adapter must then yield exactly one input.
+
+As
 in the supervised step, the adapter's `output()` turns the net's return value
 into the tensor the loss scores (§3.2). `jepa_objective` applies it to the
 EMA target's return value too.
@@ -1427,7 +1501,11 @@ The resumed run's epochs continue from the saved epoch. Each named optimizer is 
 
 A mismatch fails before the model, an optimizer or the RNG is touched. Step ownership is unchanged: the step function still owns every optimizer update.
 
-`resume_from_run_id` / `resume_from_checkpoint` serialize only as `parent_run_id` / `parent_checkpoint` lineage, and `resume_mode` is runtime-only. So a configuration without them keeps its `state()` and run id. The controls survive `builder()`, `NNTrainerParamsBuilder.from_params` and the `with_*_loader` copies. `from_state()` restores the lineage only (`parent_run_id` and the checkpoint tag), never a resume request or its mode. `parent_run_id` must be a non-empty run id string (`run.id`, not the `NNRun`), on `NNTrainParams` as on `NNTrainerParams`; a run saved before this check with another lineage value still loads with its id. A copy of those loaded params (`with_*_loader`, `dataclasses.replace`, a builder, an `ExperimentPlan`) raises `ValueError` until `parent_run_id` is set to a run id string or `None`.
+`resume_from_run_id` / `resume_from_checkpoint` serialize only as `parent_run_id` / `parent_checkpoint` lineage, and `resume_mode` is runtime-only. So a configuration without them keeps its `state()` and run id.
+
+The controls survive `builder()`, `NNTrainerParamsBuilder.from_params` and the `with_*_loader` copies. `from_state()` restores the lineage only (`parent_run_id` and the checkpoint tag), never a resume request or its mode. `parent_run_id` must be a non-empty run id string (`run.id`, not the `NNRun`), on `NNTrainParams` as on `NNTrainerParams`; a run saved before this check with another lineage value still loads with its id.
+
+A copy of those loaded params (`with_*_loader`, `dataclasses.replace`, a builder, an `ExperimentPlan`) raises `ValueError` until `parent_run_id` is set to a run id string or `None`.
 
 A checkpoint written by `NNModel.train` (one optimizer) resumes only through `NNModel.train`. A Trainer checkpoint resumes only through `Trainer.train`. The exception is `resume_mode="weights_only"`, which warm-starts from the weights alone.
 
@@ -1608,10 +1686,20 @@ model.train(params=..., train_step_fn=mixup)
 
 Some pretrained models are too large to fine-tune in full. PEFT keeps the original weights frozen and trains a small set of new parameters instead. `nnx.peft` ships six adapters. They range from rank-decomposed residuals (LoRA) down to a single per-output scaling vector (IA3). §§11.1–11.2 walk through LoRA and `AdapterLayer` in detail. The others share the same wrap-and-freeze idiom; see [API §9](api.md#9-parameter-efficient-fine-tuning-nnxpeft) for full signatures.
 
-- **DoRA** (`DoRALinear` / `apply_dora_to`) — subclass of `LoRALinear` adding a trainable per-output-row `magnitude` vector. It recomposes the layer's weight as `W = magnitude · V / ||V||_c`, following [Liu et al. (2024)](https://arxiv.org/abs/2402.09353). It adds only `out_features` parameters per wrapped layer. Save/load shares `save_lora_weights` for the `lora_A`/`lora_B` matrices. The `magnitude` parameter rides along via the full `state_dict()` round-trip. Persist a DoRA adapter with the complete `state_dict()`, since the LoRA-only helpers omit `magnitude`.
+- **DoRA** (`DoRALinear` / `apply_dora_to`) — subclass of `LoRALinear` adding a trainable per-output-row `magnitude` vector. It recomposes the layer's weight as `W = magnitude · V / ||V||_c`, following [Liu et al. (2024)](https://arxiv.org/abs/2402.09353). It adds only `out_features` parameters per wrapped layer.
+
+    Save/load shares `save_lora_weights` for the `lora_A`/`lora_B` matrices. The `magnitude` parameter rides along via the full `state_dict()` round-trip. Persist a DoRA adapter with the complete `state_dict()`, since the LoRA-only helpers omit `magnitude`.
+
 - **DoRA precision.** The row normalization runs in FP32 for FP16/BF16 layers (FP64 keeps FP64). The effective weight is cast back to the layer dtype. A row of `V` may be zero or tiny, from baked pruning, explicit zero init or a zero row in a loaded base. Such a row gives a finite output equal to the base at initialization instead of NaN. Learned nonzero updates stay differentiable.
 - **DoRA scope.** DoRA's DropConnect-style dropout on the composed update is unchanged. The precision handling covers the normalization arithmetic only. It does not promise that every optional mixed-precision kernel is supported.
-- **DoRA bases.** DoRA reads the base layer's `weight` and `bias` and computes the matmul itself; it never calls the base layer. So `DoRALinear` and `apply_dora_to` raise `TypeError` for a base whose own forward path would be skipped: a subclass or instance `forward`, a forward, forward pre- or backward hook, an unbaked prune mask, a legacy `torch.nn.utils.weight_norm` / `spectral_norm`, or a quantized (torchao int8) weight. Masks and legacy norms update `weight` only when the layer is called, so DoRA would read a stale weight. Hooks would never fire, and DoRA cannot norm an int8 weight. The refusal comes before anything is frozen. The forward raises too when such a change is made to `.base` after wrapping, including `quantize_int8` or `torchao.quantize_` of a DoRA-adapted net. `QATLifecycleCallback` refuses a DoRA base it would fake-quantize before `prepare` changes anything. Bake the mask (`magnitude_prune(bake=True)`), remove the norm or hook, or use LoRA, which calls the base layer. NNx's own inspection tool `nnx.viz.summary` is exempt: torchinfo hooks every submodule, the base included, for its one pass, and a hook it did not install is still refused. The `torch.nn.utils.parametrizations` norms recompute `weight` on every access, so DoRA wraps them, as it wraps an `nn.Linear` subclass without its own `forward`.
+- **DoRA bases.** DoRA reads the base layer's `weight` and `bias` and computes the matmul itself; it never calls the base layer. So `DoRALinear` and `apply_dora_to` raise `TypeError` for a base whose own forward path would be skipped: a subclass or instance `forward`, a forward, forward pre- or backward hook, an unbaked prune mask, a legacy `torch.nn.utils.weight_norm` / `spectral_norm`, or a quantized (torchao int8) weight.
+
+    Masks and legacy norms update `weight` only when the layer is called, so DoRA would read a stale weight. Hooks would never fire, and DoRA cannot norm an int8 weight. The refusal comes before anything is frozen.
+
+    The forward raises too when such a change is made to `.base` after wrapping, including `quantize_int8` or `torchao.quantize_` of a DoRA-adapted net. `QATLifecycleCallback` refuses a DoRA base it would fake-quantize before `prepare` changes anything. Bake the mask (`magnitude_prune(bake=True)`), remove the norm or hook, or use LoRA, which calls the base layer.
+
+    NNx's own inspection tool `nnx.viz.summary` is exempt: torchinfo hooks every submodule, the base included, for its one pass, and a hook it did not install is still refused. The `torch.nn.utils.parametrizations` norms recompute `weight` on every access, so DoRA wraps them, as it wraps an `nn.Linear` subclass without its own `forward`.
+
 - **IA3** (`IA3Linear` / `apply_ia3_to`) — the smallest adapter in the family: a single learned per-output-dim scaling vector applied to a frozen `nn.Linear`'s output. Dedicated `save_ia3_weights` / `load_ia3_weights` persist only the scaling tensor.
 - **PrefixTuner** (`PrefixTuner` / `save_prefix_weights` / `load_prefix_weights`) — prepends a learned key/value prefix to every attention layer of a frozen `TransformerNN`. The wrapped model is mutated in place. Every parameter is frozen, and each targeted block's attention forward is monkey-patched to inject the prefix. (A forward hook fires on outputs, too late to reach the intermediate K/V.) Wrapping an already-tuned net raises; `copy.deepcopy` the tuner to fork it.
 - **PromptTuner** (`PromptTuner` / `save_prompt_weights` / `load_prompt_weights`) — prepends learned soft-prompt embeddings ahead of the input tokens of a frozen `TransformerNN`. Cheapest of the LM-targeted PEFT methods; useful when even the rank-decomposed LoRA budget is too large.
@@ -1677,7 +1765,9 @@ A `Linear` may be registered directly under more than one name. Examples are `m.
 
 The whole matched set is validated before the first wrapper is built, because construction freezes the base. So a rejected call leaves every module identity, weight, `requires_grad` flag and `build_param_groups` membership unchanged. An unselected alias never blocks an independent target. Register the layer once, or select only unaliased layers and retry.
 
-**Failed calls and options.** `apply_lora_to` and `apply_dora_to` check `r` (an integer of at least 1), `alpha` (finite and positive) and `dropout` (finite, in `[0, 1)`) before they select any layer; a `bool` is none of these. So an invalid value raises the same field-naming `ValueError` when a layer matches, when none does and when every match is already wrapped. Every wrapper is built before any slot is replaced, and each LoRA or DoRA wrapper draws its `lora_A` initialization from the global torch RNG. A build that fails part-way (a base DoRA refuses after a plain `Linear` was already built, say) restores the slots, `requires_grad` flags and train/eval modes, and the global random streams too. So a seeded `apply_lora_to` after a refused `apply_dora_to` initializes exactly as it would have without the DoRA attempt.
+**Failed calls and options.** `apply_lora_to` and `apply_dora_to` check `r` (an integer of at least 1), `alpha` (finite and positive) and `dropout` (finite, in `[0, 1)`) before they select any layer; a `bool` is none of these. So an invalid value raises the same field-naming `ValueError` when a layer matches, when none does and when every match is already wrapped.
+
+Every wrapper is built before any slot is replaced, and each LoRA or DoRA wrapper draws its `lora_A` initialization from the global torch RNG. A build that fails part-way (a base DoRA refuses after a plain `Linear` was already built, say) restores the slots, `requires_grad` flags and train/eval modes, and the global random streams too. So a seeded `apply_lora_to` after a refused `apply_dora_to` initializes exactly as it would have without the DoRA attempt.
 
 Tied *tensors* between distinct modules are not aliases and are outside this check; `TransformerNN`'s tied embedding / output head is an example. But wrapping either module freezes the shared tensor for both. So wrapping the tied output head also stops the token embedding from training. The returned count is the number of new wrappers. To preview what a pattern selects, list every path with `named_modules(remove_duplicate=False)`.
 
@@ -1998,7 +2088,15 @@ A checkpoint resumes only when its generation-addressed sidecar matches the chec
 
 Checkpoints written before resume support do not carry a versioned `.opt.pt` bundle. A checkpoint with no sidecar restores its weights only, and epoch numbering continues after its epoch. The optimizer, scheduler, scaler and RNG state start fresh, with a warning. A legacy optimizer-only sidecar also restores the optimizer state. If applying any resume state fails, NNx restores the model and all RNG streams before re-raising.
 
-The same rollback covers a resume's whole first stretch, until its first committed update. That stretch starts when the state is applied and ends when NNx sees the first update: the step's `report_update` (which the default step calls after each optimizer step), or a commit by an objective's update engine. Under gradient accumulation the micro-steps before the first update stay inside it. A custom step may never report an update, so with one the stretch also ends when its first call returns. In both `NNModel.train` and `Trainer.train` and in either resume mode, a failure there hands the caller's model and the Python, NumPy and torch RNG streams back, then the original error propagates. Such failures include the setup after the restore, a refused `on_train_begin` or first `on_epoch_begin`, the component restore, the DDP step-count check, the first batch fetch, an empty first epoch, a fetch or micro-step between accumulated batches, and a first step that raises before its update (a custom step, the default step's own refusals or an objective). Under DDP each failing rank rolls back, including one that the process group's timeout fails while it waits for a peer. A step that commits an update and then raises keeps the trained state, as in a fresh fit, and a retry from scratch therefore needs a new model. A warning raised during the rollback or the `on_train_end` cleanup never replaces the error, even under a warnings-as-errors filter (`-W error`).
+The same rollback covers a resume's whole first stretch, until its first committed update. That stretch starts when the state is applied and ends when NNx sees the first update: the step's `report_update` (which the default step calls after each optimizer step), or a commit by an objective's update engine.
+
+Under gradient accumulation the micro-steps before the first update stay inside it. A custom step may never report an update, so with one the stretch also ends when its first call returns.
+
+In both `NNModel.train` and `Trainer.train` and in either resume mode, a failure there hands the caller's model and the Python, NumPy and torch RNG streams back, then the original error propagates.
+
+Such failures include the setup after the restore, a refused `on_train_begin` or first `on_epoch_begin`, the component restore, the DDP step-count check, the first batch fetch, an empty first epoch, a fetch or micro-step between accumulated batches, and a first step that raises before its update (a custom step, the default step's own refusals or an objective).
+
+Under DDP each failing rank rolls back, including one that the process group's timeout fails while it waits for a peer. A step that commits an update and then raises keeps the trained state, as in a fresh fit, and a retry from scratch therefore needs a new model. A warning raised during the rollback or the `on_train_end` cleanup never replaces the error, even under a warnings-as-errors filter (`-W error`).
 
 ### 14.1. Component state
 
@@ -2049,7 +2147,9 @@ Sidecars written before component state existed still load. The model, optimizer
 
 Any other resume of a one-cycle or warmup-decay schedule needs one *shared horizon*. That is an explicit `total_steps` covering the original and the resumed epochs (updates, on the `optimizer_update` clock). A warmup-decay schedule on the epoch clock also needs an explicit `warmup_steps`, unless the resume uses `resume_epochs="planned"`. Its default is a tenth of each session's `n_epochs`. Both are checked before the checkpoint is read.
 
-The returned run reports what happened in `run.resume_status`, a `ResumeStatus`. It holds `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint, that checkpoint's epoch (`source_epoch`), and the restored and freshly started component names. It also holds the session's `attempt_token` (fresh for every `train()`, and the same on every DDP rank) and, on a resume, the source's (`source_attempt_token`), which history lineage checks (§4.5). `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
+The returned run reports what happened in `run.resume_status`, a `ResumeStatus`. It holds `mode` (`"fresh"`, `"stateful"` or `"weights_only"`), the source run and checkpoint, that checkpoint's epoch (`source_epoch`), and the restored and freshly started component names.
+
+It also holds the session's `attempt_token` (fresh for every `train()`, and the same on every DDP rank) and, on a resume, the source's (`source_attempt_token`), which history lineage checks (§4.5). `metadata.yaml` stores it under `resume`, so `NNRun.load(id).resume_status` reports it too. It is never part of the run id.
 
 ### 14.3. Exact resume to the planned horizon
 
@@ -2086,15 +2186,21 @@ checkpoint's:
 
 The message names each field, the optimizer (in a `Trainer`), and the saved
 and configured values. Resume with the checkpoint's configuration, or pass
-`resume_mode="weights_only"` to train the new values from the weights. The
+`resume_mode="weights_only"` to train the new values from the weights.
+
+The
 comparison is type-strict (`1` is not `1.0`, as in the run id). It uses the
 configuration the checkpoint recorded, never the live param groups, so a
 plateau cut or a one-cycle phase resumes as before. A checkpoint written
-before this check is compared with its source run's `run.yaml`. The check is
+before this check is compared with its source run's `run.yaml`.
+
+The check is
 skipped when that file is unreadable, or when the source run has a parent: it
 may itself be a stateful resume made before this check, whose `run.yaml`
 records values that never trained. `grad_clip_norm` and
-`accumulate_grad_batches` are read live, so a change applies. Horizons keep
+`accumulate_grad_batches` are read live, so a change applies.
+
+Horizons keep
 their own rules: a cosine `T_max` stays the checkpoint's (§2.5), and so does
 a step schedule's `step_size` when it is left at its horizon-derived
 default. A `total_steps` must cover the original and resumed epochs (§14.2).
@@ -2165,10 +2271,12 @@ unsupported flush is tolerated, and a real I/O error raises.
   standardizers, calibration and abstention artifacts, provenance,
   `export_history_csv` and the `runs/best` pointer, so a real I/O error
   fails those saves too.
-  The run directories are flushed like a resume point's: `runs/<id>/` after
+
+    The run directories are flushed like a resume point's: `runs/<id>/` after
   an eager epoch's history and when the first checkpoint creates
   `checkpoints/`, and `runs/` when a run is reserved. All of it happens
   before LAST, so LAST never gets ahead of the history after a power loss.
+
 - **History journal.** The chunks, the index, the epoch rows and `history/`
   are flushed like a resume point's, before the manifest is renamed, and
   `history/` again after it. A real I/O error fails the epoch before LAST.
@@ -2202,10 +2310,14 @@ The load that follows takes the checkpoint's lock again. In that hold it
 checks that the tag still holds the verified generation, so a point
 published again in between (a source still training, or retrained with
 `overwrite_existing=True`) is refused with `ResumePointError` too: the
-resume point changed while it was being read. Every resume path refuses it,
+resume point changed while it was being read.
+
+Every resume path refuses it,
 `NNModel.train` and `Trainer.train` in either resume mode, and so does every
 DDP rank, with the same error even when the point changed between two ranks'
-loads. So does a republish that stopped after publishing its checkpoint but
+loads.
+
+So does a republish that stopped after publishing its checkpoint but
 before its live manifest: the checkpoint id tells the files apart, or, for a
 weights-only checkpoint (no id), the checkpoint's digest. That digest is the
 only file hashed twice, and only while such an interrupted republish is on
@@ -2328,7 +2440,12 @@ Four Tier-2 subpackages are large enough to warrant a dedicated section but smal
 
 - The PTQ path is one call, with no calibration data and no retraining. It returns an instance of the same class it was given, with only `net` replaced by the quantized deep copy. A `GenerativeNNModel` keeps its tokenizer and `generate`; user subclasses keep their overrides and attributes.
 - The QAT path is a paradigm-style `TrainStepFn` factory that fake-quants during training and converts on commit.
-- `QATLifecycleCallback` refuses, before `prepare`, a net where it would swap a Linear that its parent reads instead of calling. A DoRA layer's base (use LoRA there) and `nn.MultiheadAttention.out_proj` are never called, so training would skip their fake quantization. A torch `TransformerEncoderLayer` that can take the eval fast path (`batch_first`, a relu or gelu activation, an even head count) calls `linear1` / `linear2` in training, but that fast path reads their weights, so the converted net's eval forward would fail. A `TransformerDecoderLayer` and an encoder layer that can never take the fast path always call them, so QAT does not refuse them. Every torch Transformer layer's attention `out_proj` (in_features `d_model`) is refused, though, so QAT converts such a layer only when `groupsize` divides `dim_feedforward` and not `d_model`, and then converts only `linear2`. The refusal lists the first ten paths it names. A fit that fails before its first update gets its unprepared net back, unconverted.
+- `QATLifecycleCallback` refuses, before `prepare`, a net where it would swap a Linear that its parent reads instead of calling. A DoRA layer's base (use LoRA there) and `nn.MultiheadAttention.out_proj` are never called, so training would skip their fake quantization.
+
+    A torch `TransformerEncoderLayer` that can take the eval fast path (`batch_first`, a relu or gelu activation, an even head count) calls `linear1` / `linear2` in training, but that fast path reads their weights, so the converted net's eval forward would fail.
+
+    A `TransformerDecoderLayer` and an encoder layer that can never take the fast path always call them, so QAT does not refuse them. Every torch Transformer layer's attention `out_proj` (in_features `d_model`) is refused, though, so QAT converts such a layer only when `groupsize` divides `dim_feedforward` and not `d_model`, and then converts only `linear2`. The refusal lists the first ten paths it names. A fit that fails before its first update gets its unprepared net back, unconverted.
+
 - A converted `LAST` checkpoint records its `qat_config` and `groupsize`. The ordinary `NNModel.from_checkpoint()` path therefore reconstructs quantized inference without consumer-side prepare/convert calls. Legacy converted checkpoints without that recipe fail with a targeted migration error.
 - See [API §12](api.md#12-quantization-nnxquantize) for the full surface, and `examples/12_quantize_int8.py` and `examples/15_qat_classifier.py` for end-to-end runs.
 
@@ -2336,7 +2453,9 @@ Four Tier-2 subpackages are large enough to warrant a dedicated section but smal
 
 With `bake=False` the masks stay. `NNModel.train` (default step or objective) and `Trainer.train(objective=...)` refuse a built-in or registered net that still carries them, or a `weight_norm` / `spectral_norm` parametrization, because its checkpoints could not be reloaded. A custom `train_step_fn` / `trainer_step_fn` owns its topology and is not checked; a recipe model is checked in both loops ([Surgery §8](surgery.md#8-recorded-recipes-surgery-that-checkpoints-can-rebuild)). Remove masks with `torch.nn.utils.prune.remove` and parametrizations with `torch.nn.utils.parametrize.remove_parametrizations` (`remove_weight_norm` / `remove_spectral_norm` for the legacy hooks). Alternatively, train the net as `NNModel(module=...)`.
 
-The check also finds a mask or legacy norm below a PEFT wrapper (`layers.0.base.weight` under `apply_lora_to` or `apply_ia3_to`), in either order. `magnitude_prune(bake=False)` refuses the `base` of a `DoRALinear` and leaves the net unmodified, as it refuses `MultiheadAttention.out_proj`: DoRA reads the weight directly, so the mask could not apply. Prune a DoRA base with `bake=True`, or adapt the layer with LoRA. In either bake mode, `magnitude_prune` refuses every matched Linear whose `weight` is parametrized (a `torch.nn.utils.parametrize` parametrization or a legacy `weight_norm` / `spectral_norm` hook), lists them in one error and prunes nothing: remove the parametrization or exclude the layer with `layer_pattern`. GGUF export (`write_gguf`, `export_ollama_modelfile`) refuses an unbaked mask or a legacy norm on any module, because it reads the stored weight ([Experimental GGUF export §3](gguf.md#3-write-and-inspect-a-gguf)).
+The check also finds a mask or legacy norm below a PEFT wrapper (`layers.0.base.weight` under `apply_lora_to` or `apply_ia3_to`), in either order. `magnitude_prune(bake=False)` refuses the `base` of a `DoRALinear` and leaves the net unmodified, as it refuses `MultiheadAttention.out_proj`: DoRA reads the weight directly, so the mask could not apply. Prune a DoRA base with `bake=True`, or adapt the layer with LoRA.
+
+In either bake mode, `magnitude_prune` refuses every matched Linear whose `weight` is parametrized (a `torch.nn.utils.parametrize` parametrization or a legacy `weight_norm` / `spectral_norm` hook), lists them in one error and prunes nothing: remove the parametrization or exclude the layer with `layer_pattern`. GGUF export (`write_gguf`, `export_ollama_modelfile`) refuses an unbaked mask or a legacy norm on any module, because it reads the stored weight ([Experimental GGUF export §3](gguf.md#3-write-and-inspect-a-gguf)).
 
 **`nnx.surgery`** provides `widen` / `deepen`, `drop_layer`, `low_rank_factorize` (SVD truncation, exact at max rank), and `expand_embedding`. Full walkthrough with before/after parameter-count tables in [`docs/surgery.md`](surgery.md).
 
@@ -2527,12 +2646,15 @@ test probabilities ──► policy.apply(...) ──► AbstentionResult (accep
   the same decisions on the same logits through `apply`, `select_threshold`,
   `risk_coverage_curve`, `decide`, `decide_result`, `DecisionJob` and the
   benchmark, and a threshold tuned on one producer reproduces its recorded
-  counts on another. This matters near 1: a two-class float32 top
+  counts on another.
+
+    This matters near 1: a two-class float32 top
   probability rounds to exactly 1 from a logit gap of 16.6 (float16 from
   8.3), a float64 one only from 36.7. Bare arrays are scored as given, in
   your precision, so pass the prediction itself rather than its float32
   `probabilities`. Other providers' distributions are scored as they serve
   them.
+
 - **Inputs.** For arrays, the prediction is the first class of maximal
   probability, so ties break by label order. Policies are pure functions
   over categorical `[N, C]` probabilities (`C >= 2`) with ordered labels and
@@ -2666,12 +2788,15 @@ ExperimentPlan ──with_*──► new ExperimentPlan (the source is unchanged
       warmup-decay `total_steps` shorter than `n_epochs` (on the
       `optimizer_update` clock, than the planned updates over a borrowed
       loader with a length), and a `warmup_steps` longer than the resolved
-      `total_steps`, a default one included. It also reports the stateful
+      `total_steps`, a default one included.
+
+      It also reports the stateful
       resume refusals that need no checkpoint (§14.2): a one-cycle /
       warmup-decay resume in any mode but `weights_only` without an explicit
       `total_steps`, and an epoch-clock warmup-decay resume without
       `warmup_steps` unless it is `resume_epochs="planned"`. The overrun of a
       resumed `total_steps` needs the checkpoint, so the loop checks it.
+
     - It never iterates a loader, calls a factory, builds a model, reads
       weights or writes a directory.
     - A data source must be re-iterable batches. It reports a one-shot
@@ -3103,11 +3228,14 @@ Observation(run_id, attempt_id, metric=Metric(name, direction, unit), value, sta
 - **Reports.** `table()` gives one plain-JSON row per group, observation,
   pair and unmatched replicate. It adds one `comparison` row per comparison
   with its `n`, mean, standard deviation and interval. `text()` gives a concise view with every run
-  and attempt id, status, selection rule and signed delta. Input order never
+  and attempt id, status, selection rule and signed delta.
+
+    Input order never
   changes either. `save` writes strict JSON. `load` re-derives the results
   from the stored observations and refuses a file whose results disagree.
   A report saved by NNx 0.4.1 or earlier, whose means were rounded twice,
   still loads, with its statistics re-derived exactly.
+
 - **Text view counts.** The text view counts attempts that did not complete
   as `not_completed`. A matched pair whose delta overflows a float is
   counted (`n_nonfinite`) rather than averaged.
@@ -3282,10 +3410,13 @@ batch = (features, query_ids, candidate_ids, relevance[, mask])   # or a mapping
   candidates in the top `k` over all relevant ones. `NDCG@k` uses gain
   `2^rel - 1` and discount `log2(rank + 1)`. For relevance `[2, 0, 1]`,
   scores `[3, 2, 1]` and `k=2`, the results are MRR 1, Recall 1/2 and NDCG
-  `3 / (3 + 1/log2 3)`. The gains are computed relative to the query's top
+  `3 / (3 + 1/log2 3)`.
+
+    The gains are computed relative to the query's top
   grade, so NDCG stays finite for every grade (grades of 1023 and more
   included). `ndcg_at_k` called directly refuses a negative,
   non-integer or boolean grade with a `RankingError`.
+
 - **Excluded queries and cutoffs.** A query with no relevant candidate is
   **excluded and counted**, never scored 0. A `k` above a query's candidate
   count, or `k <= 0`, is refused.
@@ -3382,13 +3513,16 @@ LinkTask(split).loader(name, x, batch_size)  ─►  Data(x, edge_index = traini
 - **The manifest.** Edges are canonicalised and de-duplicated before they
   are split. So a duplicate can never sit in two splits. In an undirected
   split, neither can a reverse; a directed split keeps `u→v` and `v→u`
-  apart. An explicit `LinkSplit` refuses non-canonical, repeated or cross-split edges
+  apart.
+
+    An explicit `LinkSplit` refuses non-canonical, repeated or cross-split edges
   and barred self-loops. It records directedness, the self-loop policy, the
   seed and the topology policy. `replay(edge_index)` re-derives it with a
   local generator (never the global RNG) and refuses a mismatch.
   `LinkSplit.from_state` refuses unknown or missing keys, a partial
   edge-label group (`categories`, `edge_labels`, `label_existence`) and a
   `topology` that disagrees with the split with `LinkTaskError`.
+
 - **Topology.** `message_edge_index()` is the only message graph, for every
   split. It holds the training edges, plus their reverses when undirected.
   An edge-label split with `label_existence="visible"` also holds every
@@ -3599,7 +3733,9 @@ stdev.
 Its `max_abs_diff` covers every tensor in the outputs, including those in
 tuples, mappings and dataclasses. It compares them in float64 (complex128
 for complex outputs), a chunk at a time on the outputs' device (on the CPU
-for MPS), so large outputs need no full-size float64 copies. Matching
+for MPS), so large outputs need no full-size float64 copies.
+
+Matching
 infinities and NaN on both sides differ by `0.0`; a NaN or an infinity on
 one side only counts as `inf`.
 `profile_forward` runs `torch.profiler` with a finite
@@ -3625,14 +3761,19 @@ The helpers compile through `nnx.compilation`, as a fit does:
   wrapped to count the calls of each graph it compiles. Dynamo serves a
   later benchmark with the spec the graphs cached for it, and only those
   count: a graph cached for another spec or a fit never counts, even when
-  dynamo runs it at the recompile limit. A forward under
+  dynamo runs it at the recompile limit.
+
+    A forward under
   `torch.compiler.disable`, one dynamo skips (an `nn.LSTM`, a forward with
   no torch op) or one dynamo leaves to eager at the recompile limit
-  compiled nothing, and fails as a compile failure does. Benchmarks with
+  compiled nothing, and fails as a compile failure does.
+
+    Benchmarks with
   one spec share its graphs: a model benchmarked again runs the graphs
   cached for it, so its first call need not include compilation, and it
   adds no cache entry. (Torch 2.4 keys the graphs on the benchmark's deep
   copy and recompiles each time.)
+
 - **Recorded.** `BenchmarkReport.compile` and `ProfileReport.compile` hold the
   `CompileRecord`: `effective` is `compiled`, or `eager` with the `restart`.
   `BenchmarkReport.state()` includes it. A report's default `label` and its
@@ -3684,19 +3825,24 @@ validate (space, budget, monitor = plan's val monitor, factories, weights-only r
 - **Configuration errors.** A configuration error fails that trial and stops
   the search with the error, recorded as `config_error:<type>`. The failed
   trial counts against a stored study's budget, and a rerun after the fix
-  continues with the budget left. Configuration errors are `apply` raising,
+  continues with the budget left.
+
+    Configuration errors are `apply` raising,
   `apply` returning something other than a plan, a plan the search cannot
   score (borrowed callbacks, another monitor, a resume that is not
   weights-only, any `validate()` diagnostic), and a `PlanError` from the
   trial's `fit()`. `fit()` raises one for what the factories made: data or
   callback factory output, a factory-made callback's monitor, or a missing
-  or too-short update budget over a factory's loader (§20). Each would fail
+  or too-short update budget over a factory's loader (§20).
+
+    Each would fail
   every trial alike. So an `apply` that varies `n_epochs`, `warmup_steps` or
   `total_steps` into a combination the scheduler refuses, or swaps in a
   factory with invalid output, stops the search at that trial. A base plan
   with such a scheduler is refused before the first trial.
   `updates_per_trial` is refused for a plan with its own `train_step_fn`,
   which may not report updates.
+
 - **The budget counts every trial**: completed, failed, pruned and orphaned
   ones (left running by a crashed process). Only enqueued, never-run trials
   do not count. A sampler that runs out of points (an exhausted
@@ -3727,7 +3873,9 @@ validate (space, budget, monitor = plan's val monitor, factories, weights-only r
   releases its run lease, records the trial as failed and propagates.
 
 NNx's artifacts live under `runs/`. Optuna's live in the `storage` URL (in
-memory when `None`). This process is the study's only writer. Inside a
+memory when `None`). This process is the study's only writer.
+
+Inside a
 process group of more than one rank (`torchrun`), `search()` raises
 `RuntimeError` before loading or creating a study. No rank therefore runs a
 study of its own. Samplers keep their own limits. See
