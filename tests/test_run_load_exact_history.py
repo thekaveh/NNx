@@ -8,7 +8,6 @@ history is now parsed round-trip, as ``migrate_history`` already did."""
 
 from __future__ import annotations
 
-import pandas as pd
 import torch
 
 from nnx import Activations, Devices, Losses, Nets, NNModel, NNModelParams, NNParams, NNTrainParams
@@ -39,11 +38,8 @@ def test_a_loaded_runs_history_equals_the_trained_runs_bit_for_bit(tmp_path, mon
     trained = [_floats(idp.state()) for idp in run.idps]
     assert sum(len(values) for values in trained) >= 40  # enough values that the default parser misreads some
 
-    # The default parser does misread some of these values (the bug being guarded).
-    csv = tmp_path / "runs" / run.id / "idps.csv"
-    default = pd.read_csv(csv)
-    exact = pd.read_csv(csv, float_precision="round_trip")
-    assert not default.equals(exact)
+    # The exact comparison below is the check; whether pandas' default parser misreads
+    # these values depends on the pandas build, so no assumption is made about it.
 
     loaded = NNRun.load(id=run.id)
     assert [_floats(idp.state()) for idp in loaded.idps] == trained
