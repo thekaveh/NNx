@@ -876,9 +876,8 @@ class _RegressionAccumulator(TaskMetricAccumulator):
 
     def update(self, output, target, valid):
         # float64 on the CPU: MPS has no float64.
-        prediction = output.detach().cpu().to(dtype=torch.float64)
-        truth = target.detach().cpu().to(dtype=torch.float64)
-        valid = valid.cpu()
+        prediction = output.detach().to(dtype=torch.float64)
+        truth = target.detach().to(dtype=torch.float64)
         diff = (prediction - truth)[valid]
         sums = torch.stack([(diff * diff).sum(), diff.abs().sum()]).tolist()  # one device sync
         self._sse += sums[0]
