@@ -63,7 +63,7 @@ _IMPORT_NAMES = {"scikit-learn": "sklearn", "pyyaml": "yaml"}
 
 def _core_import_names() -> frozenset[str]:
     """Top-level import names of pyproject's core ``[project] dependencies``
-    (regex over the raw text: ``tomllib`` is 3.11+ and NNx supports 3.10)."""
+    (regex over the raw text rather than tomllib, to stay cheap)."""
     import re
 
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")

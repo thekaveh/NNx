@@ -7,16 +7,12 @@ invocation and its dependency in place."""
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import yaml
 
 from tests._repo_files import repo_file
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 

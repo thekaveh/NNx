@@ -3624,7 +3624,7 @@ callback that returns a non-`Result` raises `TypeError`. A `Result` has no truth
 
 The types are generic (`Result[T, E] = Ok[T] | Err[E]`). Branch with
 `isinstance(result, Ok)` or `match`. A type checker narrows each branch on
-Python 3.10 with no extra package. `.is_ok` / `.is_err` answer the question
+Python 3.11 with no extra package. `.is_ok` / `.is_err` answer the question
 without narrowing.
 
 ```text
