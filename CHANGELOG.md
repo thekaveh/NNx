@@ -6,6 +6,8 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/thekaveh/NNx/compare/v0.4.3...v0.4.4) (2026-11-25)
+
 ### Deprecated
 
 - **Python 3.10 support ends in the next minor release.** The next minor (0.5.0) will set `requires-python >=3.11`. Users on Python 3.10 stay on 0.4.x, which pip selects for them. Tracked by #759.

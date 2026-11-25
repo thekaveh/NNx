@@ -26,7 +26,7 @@ relies on.
 ##### `nnx.__version__`
 
 ```python
-nnx.__version__ = '0.4.3'  # x-release-please-version
+nnx.__version__ = '0.4.4'  # x-release-please-version
 ```
 
 Exported value.
