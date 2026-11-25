@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -266,7 +266,7 @@ jobs:
         pair: [floor, current]
         include:
           - pair: floor
-            python: "3.10"
+            python: "3.11"
             torch: "2.4.1"
             torchvision: "0.19.1"
           - pair: current
@@ -360,7 +360,7 @@ jobs:
     # sync with pyproject.toml and docs/external-contracts.md §2.1;
     # tests/test_train_integration.py asserts the pyproject side.
     # (Static name: the `env` context is not available in a job's `name`.)
-    name: floor-deps (torch 2.4.1, Python 3.10)
+    name: floor-deps (torch 2.4.1, Python 3.11)
     runs-on: ubuntu-26.04
     timeout-minutes: 25
     env:
@@ -372,12 +372,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Python 3.10
-        # 3.10 has wheels for every torch release from the floor to the
+      - name: Set up Python 3.11
+        # 3.11 has wheels for every torch release from the floor to the
         # current lock.
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
       - name: Install the declared minimum torch / torchvision (CPU wheels)
         run: |

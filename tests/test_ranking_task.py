@@ -721,12 +721,12 @@ def test_training_keeps_block_inputs_not_the_pair_matrix():
 
 
 def test_round_two_settings_and_streams():
-    from enum import Enum
+    from enum import StrEnum
 
-    class Weighting(str, Enum):
+    class Weighting(StrEnum):
         PAIR = "pair"
 
-    class Sets(str, Enum):
+    class Sets(StrEnum):
         EXHAUSTIVE = "exhaustive"
 
     task = RankingTask(k=(1,), weighting=Weighting.PAIR, candidate_sets=Sets.EXHAUSTIVE)

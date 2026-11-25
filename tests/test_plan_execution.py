@@ -6,7 +6,6 @@ from __future__ import annotations
 import hashlib
 import os
 import random
-import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -526,8 +525,8 @@ def test_round_eleven_a_failing_restore_never_hides_the_blocks_error(monkeypatch
     monkeypatch.setattr(seeding, "_restore_rng_state", broken)
     with pytest.raises(ValueError, match="the probe's own error") as caught, _seed_scope():
         raise ValueError("the probe's own error")
-    if sys.version_info >= (3, 11):  # the failed restore is noted on the block's error
-        assert any("cannot restore" in note for note in getattr(caught.value, "__notes__", ()))
+    # the failed restore is noted on the block's error
+    assert any("cannot restore" in note for note in getattr(caught.value, "__notes__", ()))
 
 
 def test_round_thirteen_a_cpu_probe_on_a_gpu_host_queues_no_cuda_seed(monkeypatch):
@@ -652,7 +651,7 @@ def test_round_twenty_four_every_setting_is_restored_and_a_failure_is_never_sile
     monkeypatch.setattr(torch, "use_deterministic_algorithms", real)
     assert os.environ.get("PYTHONHASHSEED") == before  # restored although the torch setting failed
 
-    class NoNotes(Exception):  # as on Python 3.10, where exceptions have no add_note
+    class NoNotes(Exception):  # an exception without add_note (the seeding fallback path)
         add_note = None
 
     def failing(state, loader=None):

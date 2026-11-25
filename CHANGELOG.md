@@ -4,8 +4,13 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 This file intentionally keeps the standard Keep a Changelog heading format rather than the hierarchical numbering used by the rest of the documentation.
 
-## [0.4.4](https://github.com/thekaveh/NNx/compare/v0.4.3...v0.4.4) (2026-11-25)
+## [Unreleased]
 
+### Changed
+
+- **Breaking: Python 3.10 is no longer supported.** `requires-python` is now `>=3.11`, and the 3.10 CI lanes, the 3.10-only audit ignore list (`.github/pip-audit-py310-ignores.txt`) and its `filelock` constraint are removed. The `floor-deps` lane now runs torch 2.4.1 on Python 3.11. Installs on Python 3.10 resolve to 0.4.x (#759).
+
+## [0.4.4](https://github.com/thekaveh/NNx/compare/v0.4.3...v0.4.4) (2026-11-25)
 
 ### Bug Fixes
 
@@ -15,7 +20,6 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 * **distributed:** agree update listeners again at each epoch's start ([#768](https://github.com/thekaveh/NNx/issues/768)) ([918cb4a](https://github.com/thekaveh/NNx/commit/918cb4ae5c25bbf3b1b080c3dc6ea0a3357a6d5e))
 * keep import nnx working when torch drops the batched-tensor probes ([3c23214](https://github.com/thekaveh/NNx/commit/3c23214152843fa9c274df52b5c25c628c594a17)), closes [#766](https://github.com/thekaveh/NNx/issues/766)
 * keep import nnx working when torch drops the batched-tensor probes ([#766](https://github.com/thekaveh/NNx/issues/766)) ([0c7e650](https://github.com/thekaveh/NNx/commit/0c7e650bebeb1477804a31e7339b925e686ae044))
-
 
 ### Documentation
 
@@ -44,26 +48,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 * state the measured torch 2.13 and 2.14 shutdown behaviour, not the assumed 2.14 boundary ([d7f102c](https://github.com/thekaveh/NNx/commit/d7f102cdd534766c3e91dab798488f6562b3b8b7))
 * state the measured torch shutdown behaviour, not the assumed 2.14 boundary ([c213117](https://github.com/thekaveh/NNx/commit/c2131176cbe172f83766b4a7dba65b44bcef159f))
 
-## [Unreleased]
-
-### Deprecated
-
-- **Python 3.10 support ends in the next minor release.** The next minor (0.5.0) will set `requires-python >=3.11`. Users on Python 3.10 stay on 0.4.x, which pip selects for them. Tracked by #759.
-### Fixed
-
-- Under `NNModel.train(distributed=DDP())`, an update listener registered in `on_epoch_begin` (after `on_train_begin`) is agreed at each epoch's start. Its failure on the writer now raises on every rank (the others a `DistributedFailure` naming rank 0) instead of leaving the other ranks to the process-group timeout, and a mid-epoch stop it requests stops every rank at the same batch (#768).
-- **`import nnx` survives a torch change that removes the private batched-tensor probes.** The smoothing-0 causal-LM loss now falls back to its out-of-place backward for every gradient when `torch._C._functorch` no longer provides `is_batchedtensor` and `is_legacy_batchedtensor`; gradients are unchanged and only peak memory rises. The normal path is unchanged ([#766](https://github.com/thekaveh/NNx/issues/766)).
-
-### Thanks
-
-- Thanks to @bfs2021 for the report and the fix in PR #581 (a zero-row multilabel batch and a flat regression target in `StreamingMetrics.update_logits`). Both are fixed by FIX-081 (#549), which shipped in 0.4.2.
-
-### Fixed
-
-- **`NNCheckpoint.to_file(format="safetensors")` refuses a callback's own transform before writing anything.** A checkpoint holding a transform NNx cannot replay from data (a callback's train-end transform, say) wrote a file that `NNModel.from_checkpoint` could not load. It now raises `ValueError` naming the transform and advising `format="pickle"`, the same refusal `save_pretrained` and `export_bundle` make ([#767](https://github.com/thekaveh/NNx/issues/767)).
-
 ## [0.4.3](https://github.com/thekaveh/NNx/compare/v0.4.2...v0.4.3) (2026-11-22)
-
 
 ### Documentation
 
@@ -71,12 +56,6 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 * fix 0.4.2 audit findings in bundle, run, DDP and GGUF text ([00051b0](https://github.com/thekaveh/NNx/commit/00051b0776647d50dc5977dfcade94aa51fd7516))
 * fix 0.4.2 audit findings in bundle, run, DDP and GGUF text ([1a8dc31](https://github.com/thekaveh/NNx/commit/1a8dc31a8c383e10d895c4192c455340c570e690))
 * publish the curated 0.4.2 notes on main ([a639733](https://github.com/thekaveh/NNx/commit/a639733044c2e16513b6dbc3851759723682bb36))
-
-## [Unreleased]
-
-### Thanks
-
-- Thanks to @bfs2021 for the report and the fix in PR #581 (a zero-row multilabel batch and a flat regression target in `StreamingMetrics.update_logits`). Both are fixed by FIX-081 (#549), which shipped in 0.4.2.
 
 ## [0.4.2](https://github.com/thekaveh/NNx/compare/v0.4.1...v0.4.2) (2026-11-14)
 
@@ -328,11 +307,9 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [0.4.1](https://github.com/thekaveh/NNx/compare/v0.4.0...v0.4.1) (2026-10-11)
 
-
 ### Bug Fixes
 
 * **release:** build the artifact smoke venvs on the runner's work disk ([76b6706](https://github.com/thekaveh/NNx/commit/76b670649489281a03e5ada16d5ed8bc595de813)), closes [#445](https://github.com/thekaveh/NNx/issues/445)
-
 
 ### Documentation
 
@@ -568,7 +545,6 @@ Default training is unchanged: the same configuration gives the same run id, los
 
 ## [0.2.1](https://github.com/thekaveh/NNx/compare/v0.2.0...v0.2.1) (2026-07-22)
 
-
 ### Features
 
 * ConvNN (LeNet-style) + NNConvParams + Nets.CONV ([#89](https://github.com/thekaveh/NNx/issues/89)) ([46fdfef](https://github.com/thekaveh/NNx/commit/46fdfef1e3aa73ba19a4373e7cd70320c6e0259d))
@@ -576,7 +552,6 @@ Default training is unchanged: the same configuration gives the same run id, los
 * FeedFwdMoENN net + Nets.FEED_FWD_MOE + NNMoEParams ([5d3956f](https://github.com/thekaveh/NNx/commit/5d3956febf364091cd335455b40d2a8cd0e2d248)), closes [#88](https://github.com/thekaveh/NNx/issues/88)
 * per-layer activation & dropout on NNParams (net-wide → optional lists) ([4a5de0c](https://github.com/thekaveh/NNx/commit/4a5de0c2992b9e4b001fb930969247461f4314bf)), closes [#85](https://github.com/thekaveh/NNx/issues/85)
 * pluggable eval_step_fn on NNModel.train (mirror train_step_fn) ([822b6da](https://github.com/thekaveh/NNx/commit/822b6dadeb1c6a4ae8037da449d930a8c121fabf)), closes [#86](https://github.com/thekaveh/NNx/issues/86)
-
 
 ### Bug Fixes
 
@@ -589,7 +564,6 @@ Default training is unchanged: the same configuration gives the same run id, los
 * reject single-expert MoE params ([#114](https://github.com/thekaveh/NNx/issues/114)) ([a395e2d](https://github.com/thekaveh/NNx/commit/a395e2d03fd44594b65256ad69bf78942d0be15f))
 * require hidden layers for MoE params ([#116](https://github.com/thekaveh/NNx/issues/116)) ([70bf913](https://github.com/thekaveh/NNx/commit/70bf913c5371f099c9d1e019348764fe25531026))
 * support pandas 2 type contracts ([d9c523e](https://github.com/thekaveh/NNx/commit/d9c523e2f3a127252b9b997b6687b2401b15122b))
-
 
 ### Documentation
 
