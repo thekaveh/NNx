@@ -110,7 +110,9 @@ neither `onnx` nor `onnxruntime`; a profile run without them is a
 Each stage is `passed`, `failed` or `not_run`. A stage after a failed one
 does not run. The record's `failure` is the first failing stage's class.
 Its `level` is `executed` when parity passed, `structural` when only the
-checker did, and `none` otherwise. The script's exit status separates the
+checker did, and `none` otherwise.
+
+The script's exit status separates the
 failure classes. `1` is an error and `2` a usage error. An artifact folder
 that already holds a profile's files is refused unless `--force` clears it.
 A profile folder that is a symlink is refused even with `--force` (§2):
