@@ -84,7 +84,9 @@ yet.
 
 **MPS evidence.** MPS has no float64 and its own generator.
 `tests/test_mps_cpu_pins.py` hands the float64 sites a CPU tensor that
-refuses float64 and NumPy as an MPS tensor does (`tests/_mps.py`). Removing a
+refuses float64 and NumPy as an MPS tensor does (`tests/_mps.py`).
+
+Removing a
 `.cpu()` hop then raises the MPS `TypeError` on Linux: `tasks.py` (the
 regression accumulator), `lm_tasks.py` (the causal LM NLL), `preprocessing.py`
 (`Standardizer`), `diffusion/objective.py` (the schedule fingerprint),
@@ -92,11 +94,15 @@ regression accumulator), `lm_tasks.py` (the causal LM NLL), `preprocessing.py`
 `paradigms/offline_distillation.py` (KL and NLL sums), `monitors.py` (the
 Bernoulli NLL's sigmoid), `benchmarking.py` (`compare_compile`'s chunked diff,
 on tensors that report device `mps`) and `decisions/nli.py`
-(`tests/test_decision_nli.py`). The MPS generator branches run over a fake
+(`tests/test_decision_nli.py`).
+
+The MPS generator branches run over a fake
 `torch.mps` generator: the compile snapshot (`tests/test_compile_execution.py`),
 `nnx.viz.summary` (`tests/test_viz_summary.py`), `lr_finder`
 (`tests/test_lr_finder.py`) and the scoped seed and its restore
-(`tests/test_seeding.py`). Not pinned on the CPU: paths that build a tensor on
+(`tests/test_seeding.py`).
+
+Not pinned on the CPU: paths that build a tensor on
 the MPS device. That is the input placement and casts of `netron_export`,
 graph classifiers, `LinkTask` and `summary(batch=)`, MPS autocast, the
 low-rank factors placed on the device and the pairwise ranking loss with

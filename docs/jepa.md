@@ -31,6 +31,7 @@ in example 16 check this.
 ## 2. How a step runs
 
 ```
+
 1. mask_fn(n_patches, device) -> (ctx_mask_1d, tgt_mask_1d)
 2. context_embeds = output(model.net(x, mask=ctx_mask))
 3. with torch.no_grad():
@@ -46,7 +47,9 @@ in example 16 check this.
 as in the supervised step. A built-in net (`Nets.VIT`, which builds a
 `ViTNN`) has no adapter. An encoder passed as `module=` whose forward returns a
 tensor passes the default adapter's `output()` unchanged. One that returns a
-non-tensor needs an adapter whose `output()` extracts the embeddings. The EMA
+non-tensor needs an adapter whose `output()` extracts the embeddings.
+
+The EMA
 target, a copy of that encoder, goes through the same `output()`. The default
 adapter refuses a non-tensor with a `TypeError` that names this remedy.
 `jepa_objective` (§5) reads both encoders this way too.
@@ -208,7 +211,9 @@ a signal to lock onto. The other classification fields stay zero.
   train mode: its dropout and BatchNorm would change the targets. The first
   step therefore raises `ValueError` for a target that is part of
   `model.net` (`model.net` itself included) or shares its parameters, before
-  any freeze, mode change or update. A resumed run fails too: at its first
+  any freeze, mode change or update.
+
+    A resumed run fails too: at its first
   step with the same message, or earlier in the restore when the misplaced
   layout no longer matches the checkpoint (a parameter-topology `ValueError`,
   or a `load_state_dict` `RuntimeError` for `model.net` itself). The restore

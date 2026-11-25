@@ -349,7 +349,7 @@ them out through ``exclude_submodules``.
 nnx.nn.nn_model.NNModel.push_to_hub(self, repo_id: 'str', *args: 'Any', **kwargs: 'Any') -> 'Any'
 ```
 
-Hub upload (``huggingface_hub.PyTorchModelHubMixin.push_to_hub``): `save_pretrained` into a temporary directory, uploaded to ``repo_id``. Whatever `save_pretrained` refuses is refused before the repository is created or anything is uploaded (#509).
+Hub upload (``huggingface_hub.PyTorchModelHubMixin.push_to_hub``): `save_pretrained` into a temporary directory, uploaded to ``repo_id``. Whatever `save_pretrained` refuses is refused before the repository is created or anything is uploaded.
 
 ##### `nnx.nn.nn_model.NNModel.freeze`
 
