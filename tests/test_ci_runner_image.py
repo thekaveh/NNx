@@ -87,7 +87,9 @@ def test_a_stalled_mps_queue_never_holds_the_ci_run():
     its own, where a newer commit replaces the waiting run, so CI's group
     (which lets pushes finish) never waits behind it."""
     workflows = {path.name: yaml.safe_load(path.read_text(encoding="utf-8")) for path in WORKFLOWS}
-    assert set(workflows["mps.yml"]["jobs"]) == {"mps-evidence"}
+    # mps-gate-without-mps runs on a hosted image, so it never waits for the self-hosted runner
+    assert set(workflows["mps.yml"]["jobs"]) == {"mps-evidence", "mps-gate-without-mps"}
+    assert "self-hosted" not in str(workflows["mps.yml"]["jobs"]["mps-gate-without-mps"]["runs-on"])
     assert workflows["mps.yml"]["concurrency"] == {
         "group": "mps-${{ github.workflow }}-${{ github.ref }}",
         "cancel-in-progress": True,
@@ -134,3 +136,16 @@ def test_no_step_writes_under_tmp():
     for workflow, job_name, job in _jobs():
         for step in job.get("steps") or []:
             assert "/tmp" not in str(step.get("run", "")), (workflow, job_name, step.get("name"))
+
+
+def test_the_no_mps_gate_job_fails_every_mps_test_on_a_runner_without_mps():
+    """FEAT-050 (#572): the hosted-Linux twin proves the gate without MPS: its
+    probe must fail, and every ``mps`` test must fail with the gate message."""
+    job = dict((name, job) for workflow, name, job in _jobs() if workflow == "mps.yml")["mps-gate-without-mps"]
+    assert job["runs-on"] == RUNNER
+    assert job["if"] == "vars.NNX_MPS_RUNNER == 'true'"
+    steps = {step["name"]: step for step in job["steps"]}
+    gate = steps["The MPS tests fail with the gate message (never skip, never pass)"]
+    assert gate["env"]["NNX_REQUIRE_MPS"] == "1"
+    assert "pytest tests -m mps" in gate["run"] and "NNX_REQUIRE_MPS=1 and" in gate["run"]
+    assert "torch.backends.mps.is_available()" in steps["The probe fails without an MPS device"]["run"]

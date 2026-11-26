@@ -63,7 +63,7 @@ hardware evidence says so.
 | `< 2.3` | — | not run | `torch.amp.GradScaler` does not exist; the CUDA AMP factory would raise `AttributeError`. | **Unsupported** — excluded by metadata. |
 | CPU BF16 (`PrecisionPolicy("bf16")` on a CPU device) on the CI rows | 3.11 – 3.14 | the CI `lint-and-test` and `floor-deps` lanes (CPU) | `tests/test_precision_execution.py`: seeded classification and KD fixtures with accumulation stay within `nnx.precision.REFERENCE_TOLERANCES["bf16"]` of their FP32 reference. Also checked: bf16 autocast without a scaler, the backward outside autocast, float32 parameters, and the finite-gradient check before clipping. | **Tested — CPU** (`precision_support()` reports it `"verified"`). |
 | CUDA FP16 / BF16 (`PrecisionPolicy("fp16" / "bf16")`, or `mixed_precision=True`, on a CUDA device) on any row | — | no CUDA hardware in the local or CI environments used for this matrix | Stubs and CPU simulation only; the CUDA evidence tests have not run yet. See **CUDA precision evidence** below the table. | **Unverified** — control-flow coverage, not hardware execution. |
-| MPS (Apple silicon, `Devices.MPS`) on the current row | 3.12 | no MPS device in CI: every hosted lane is Linux, where the `mps` tests skip. A local macOS arm64 run on 2026-11-08. The opt-in self-hosted `mps-evidence` job (CONTRIBUTING §5.2) has not run yet | The `mps`-marked tests (`pytest tests -m mps` with `NNX_REQUIRE_MPS=1`: 22 passed locally). On Linux, CPU pins fail when an MPS fix is reverted; see **MPS evidence** below the table. | **Unverified in CI** — CPU pins and a local hardware run, not a CI lane. |
+| MPS (Apple silicon, `Devices.MPS`) on the current row | 3.12 | the opt-in self-hosted `mps-evidence` job ran green on the Mac Studio (run 45272285885, 2026-11-23, develop). The hosted `mps-gate-without-mps` job runs the same gate on Linux, which has no MPS, and must fail every `mps` test rather than skip it | The `mps`-marked tests (`pytest tests -m mps` with `NNX_REQUIRE_MPS=1`: 22 passed locally). On Linux, CPU pins fail when an MPS fix is reverted; see **MPS evidence** below the table. | **Verified on an MPS device** (the Mac Studio) and **gate verified without MPS** (hosted Linux). No Apple-silicon Mac without MPS exists here, so the MPS result itself has one device behind it. |
 
 **CUDA precision evidence.** Resolution is
 covered by stubs (`tests/test_precision_policy.py`, and
@@ -141,6 +141,6 @@ recreated; PyPI remains the artifact source for that version.
    that refuses float64 and NumPy, a fake `torch.mps` generator). The tests
    marked `mps` need the device: they skip without it, and fail instead
    under `NNX_REQUIRE_MPS=1`, which the opt-in `mps-evidence` job sets
-   (CONTRIBUTING §5.2).
+   (CONTRIBUTING §5.2). The hosted `mps-gate-without-mps` job runs the same gate on Linux, where it must fail.
 3. Document tolerated upstream skew together with the condition for removing its
    compatibility guard or skip.

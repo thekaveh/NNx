@@ -87,3 +87,67 @@ jobs:
           path: mps-evidence/
           if-no-files-found: warn
           retention-days: 30
+
+  mps-gate-without-mps:
+    # FEAT-050 (#572): the hosted-Linux twin of mps-evidence. Hosted Linux has
+    # no MPS device, so this is a real run without MPS: the probe must fail,
+    # and every `mps` test must fail with the NNX_REQUIRE_MPS message (not
+    # skip, not pass). It proves the gate; it runs no MPS result. Opt-in like
+    # mps-evidence, so it runs only where the repository has set NNX_MPS_RUNNER.
+    name: MPS gate without MPS (hosted Linux, must fail)
+    if: vars.NNX_MPS_RUNNER == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install diagram rendering runtime
+        # A package-mirror stall fails here, not after the whole job budget.
+        timeout-minutes: 5
+        run: sudo apt-get -o Acquire::Retries=3 update && sudo apt-get -o Acquire::Retries=3 install --yes libcairo2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+          version: "0.13.7"
+
+      - name: Sync the extras from the frozen lock
+        run: uv sync --frozen --all-extras --python "3.12"
+
+      - name: The probe fails without an MPS device
+        run: |
+          if uv run --frozen --no-sync python - <<'PY'
+          import torch
+          assert torch.backends.mps.is_built() and torch.backends.mps.is_available()
+          PY
+          then
+            echo "this runner has an MPS device, so the no-MPS gate cannot run here"
+            exit 1
+          fi
+
+      - name: The MPS tests fail with the gate message (never skip, never pass)
+        env:
+          NNX_REQUIRE_MPS: "1"
+          NNX_TQDM_DISABLE: "1"
+        run: |
+          mkdir -p mps-gate
+          set +e
+          uv run --frozen --no-sync pytest tests -m mps -p no:cacheprovider -rs -q --junitxml=mps-gate/pytest.xml
+          status=$?
+          set -e
+          test "$status" -ne 0 || { echo "the mps tests passed without an MPS device"; exit 1; }
+          uv run --frozen --no-sync python - <<'PY'
+          import xml.etree.ElementTree as ET
+          cases = list(ET.parse("mps-gate/pytest.xml").getroot().iter("testcase"))
+          gated = [
+              case
+              for case in cases
+              if any("NNX_REQUIRE_MPS=1 and" in (failure.get("message") or "") for failure in case.findall("failure") + case.findall("error"))
+          ]
+          print("tests:", len(cases), "failed with the gate message:", len(gated))
+          assert cases and len(gated) == len(cases), "an mps test skipped, passed, or failed for another reason"
+          PY
