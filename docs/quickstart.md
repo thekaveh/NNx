@@ -134,7 +134,7 @@ model is touched; a weights-only warm start (`resume_mode="weights_only"`)
 may switch:
 
 ```python
-from nnx import Checkpoints, NNCheckpoint
+from nnx import Checkpoints, NNCheckpoint, PrecisionPolicy
 
 bf16 = NNModelParams(net=Nets.FEED_FWD, device=Devices.CPU, loss=Losses.CROSS_ENTROPY, precision=PrecisionPolicy("bf16"))
 first = NNModel(net_params=net_params, params=bf16).train(params=NNTrainParams(n_epochs=1, train_loader=train_loader))
