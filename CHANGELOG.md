@@ -8,7 +8,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ### Fixed
 
-- **Hub and Ollama exports are atomic.** `NNModel.save_pretrained` and `export_ollama_modelfile` write each file to a temporary name and rename it into place, so an interrupted export leaves no truncated `model.safetensors` or `config.json` behind.
+- **Hub and Ollama exports are atomic.** `NNModel.save_pretrained` and `export_ollama_modelfile` write their files through a temporary name and a rename, so an interrupted export leaves no truncated `model.safetensors`, `config.json` or `Modelfile` under its final name. `model.gguf` is still written in place.
 
 ## [0.5.0](https://github.com/thekaveh/NNx/compare/v0.4.4...v0.5.0) (2026-11-26)
 

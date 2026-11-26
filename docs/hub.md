@@ -177,9 +177,9 @@ operation or version is refused before any tensor is loaded. The error names
 both possible causes: an operation of a newer NNx, or a callback's own
 transform that only its producer can rebuild. Tensors round-trip bit-exactly.
 
-The params' `state()` round-trips too, except `NNModelParams.device`.
-`from_pretrained(map_location=...)`, default `"cpu"`, sets it, so a GPU or MPS model
-reloads on the CPU unless you pass one.
+The params' `state()` round-trips too. `from_pretrained` replaces `NNModelParams.device`
+with its `map_location` (default `"cpu"`), so a GPU or MPS model reloads on the CPU
+unless you pass one.
 
 The saved precision policy is resolved again on the destination device.
 `precision=` replaces it, and the legacy `mixed_precision` flag with it.

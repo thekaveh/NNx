@@ -95,7 +95,7 @@ writes no `.gguf`, `model.gguf` or Modelfile.
 
 An untied copy of a tied net holds both of its weights, so its file computes
 what the net computes. Copy in the weights the net's forward reads (a
-parametrized module's `.weight` is the computed one); The weights of `net` are not changed; the snippet's `net.eval()` switches its mode. Remove a legacy norm, and bake a prune mask, first.
+parametrized module's `.weight` is the computed one). The weights of `net` are not changed, and the snippet's `net.eval()` switches its mode. Remove a legacy norm, and bake a prune mask, first.
 
 ```python
 import operator
