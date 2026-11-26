@@ -19,7 +19,6 @@ from __future__ import annotations
 import contextlib
 import os
 import random
-import warnings
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any, Optional, cast
 
@@ -265,8 +264,7 @@ def _seed_scope() -> Iterator[Callable[[], None]]:
     ``ExperimentPlan.probe``). The RNG streams (restored together, as the
     training loop restores them) and each setting are restored even if
     another restore fails, and a failing restore never hides the block's
-    own error (it is added to that error as a note, or warned about on
-    Python 3.10).
+    own error (it is added to that error as a note).
 
     An idle CUDA context is not created just to read its streams (a CPU
     probe on a GPU host). When the block itself starts CUDA, it calls the
@@ -288,13 +286,7 @@ def _seed_scope() -> Iterator[Callable[[], None]]:
         try:
             restore()
         except Exception as restore_error:  # the block's error is the one to report; the failure is noted on it
-            note = f"restoring the RNG streams and seed settings also failed: {restore_error!r}"
-            add_note = getattr(error, "add_note", None)  # Python >= 3.11
-            if callable(add_note):
-                add_note(note)
-            else:
-                with contextlib.suppress(Exception):  # a warning turned into an error must not hide the block's
-                    warnings.warn(note, RuntimeWarning, stacklevel=3)
+            error.add_note(f"restoring the RNG streams and seed settings also failed: {restore_error!r}")
         raise
     restore()
 
