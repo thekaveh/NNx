@@ -1,4 +1,4 @@
-# 10. DPO — Direct Preference Optimization
+# 11. DPO — Direct Preference Optimization
 
 `nnx.dpo_train_step_factory` implements the Direct Preference
 Optimization objective from Rafailov et al. (2023) — a simpler
@@ -161,6 +161,7 @@ fill from the `datasets` library:
 
 ```python
 from datasets import load_dataset
+from nnx import NNPreferenceDataset  # tokenizer: the one built in §3
 
 ds = load_dataset("Anthropic/hh-rlhf", split="train[:1000]")
 # HH-RLHF rows are whole dialogues: chosen and rejected share every turn
@@ -241,7 +242,7 @@ and experimental context.
   (negated chosen−rejected log-prob gap, so lower is better — same
   monotone direction as `loss`).
 
-    It also stores three values in `idp.train_edp.extra`. `reward_chosen`
+    It also stores three values in the iteration record's `train_edp.extra` (`NNIterationDataPoint.train_edp`). `reward_chosen`
     and `reward_rejected` are the batch-mean implicit rewards
     `beta * (policy_logp - reference_logp)`. `reward_accuracy` is the
     fraction of pairs where the chosen reward exceeds the rejected reward

@@ -278,7 +278,7 @@ An unsupported request fails before any run is reserved, unless it names a
 fallback. `run.precision` records the requested and effective precision, the
 fallback reason and TF32. The legacy `mixed_precision=True` (CUDA FP16,
 silently FP32 elsewhere) keeps its meaning and run id. See
-[Quickstart §2.2](docs/quickstart.md#22-precision-fp32-fp16-and-bf16).
+[Quickstart §2.2](docs/quickstart-recipes.md#22-precision-fp32-fp16-and-bf16).
 
 ### 4.9. Scheduler choices
 

@@ -1,4 +1,4 @@
-# 16. Architecture
+# 17. Architecture
 
 ## 1. Package and lifecycle overview
 
@@ -130,7 +130,7 @@ nothing.
 
 In a process that called `init_process_group()`, the Gloo default group
 still initialized at interpreter exit is destroyed then, before the interpreter
-finalizes. A failed `train()` or `shutdown()` leaves it that way. Exit then
+finalizes. If `train()` or `shutdown()` fails, the Gloo default group stays initialized, and exit then
 waits for a collective still in flight. Otherwise a Gloo worker thread could
 release that collective during finalization and abort the process with
 `std::terminate` (exit -6).

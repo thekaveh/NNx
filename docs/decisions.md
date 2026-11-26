@@ -1,4 +1,4 @@
-# 11. Typed decisions
+# 12. Typed decisions
 
 `nnx.decisions` is NNx's **inference branch**: a provider-neutral way to ask a
 typed question and get labelled probabilities back, instead of reading
@@ -76,7 +76,7 @@ order. These raise `InvalidDecisionResponse`:
 
 - a **missing**, **duplicate**, **unknown** or **unlabeled** (empty or
   non-string) id;
-- a probability outside `[0, 1]` (one too large for a float included);
+- a probability outside `[0, 1]` (an integer too large to convert to a float, such as `10**400`, is refused too);
 - a distribution that does not sum to 1.
 
 A malformed distribution is **never renormalized**: dividing by the sum would
@@ -377,12 +377,13 @@ Building one calls no provider, runs no callback and draws no RNG; `run` and
 `arun` are the only effect boundaries.
 
 ```python
-from nnx.decisions import DecisionJob as Job, Follow, Limits
+from nnx.decisions import Boolean, DecisionJob as Job, Follow, Limits
 
 flags = Job.collect({                                   # independent questions, keyed
     "goal": Job.ask(Boolean("Mentions goal"), id="goal"),
     "bank": Job.ask(Boolean("Mentions bank"), id="bank"),
 })
+# topic and keeper are questions; sports_texts(answers) builds the follow-up texts
 routed = Job.ask(topic, id="topic").then(               # a dependent question
     lambda answers: Follow(Job.ask(keeper, id="keeper"), state=sports_texts(answers))
 )
@@ -421,13 +422,13 @@ result.calls                                           # provider calls made
       judge, as in `collect` and `decide_result`. So is an empty list or
       tuple, which has no row to tell its modality by (a continuation that
       re-asks the rows that match and finds none, say); it is answered with
-      no results. One value is no batch and is refused: one `str`, or a
-      0-d tensor or array (alone or as a tuple's first part);
+      no results. A one-value state (one `str`, or a 0-d tensor or array, alone or as a
+      tuple's first part) is refused unless the provider has its own `check()`, which then judges it;
 
     - a `limits` that is neither `None` (the default `Limits()`) nor a
       `Limits`, such as a mapping, `{}` or `0`;
     - a `Limits.max_tokens` cap the provider cannot enforce (it needs
-      `count_tokens(questions, inputs)`);
+      `count_tokens(questions, state)`, where `state` is the job's state);
     - an abstention `policy` whose labels or `model_id` do not fit its
       question (checked by `ask`).
 
@@ -563,7 +564,7 @@ print(report.text())
     - the answer (`distribution` or `p_true`), or the `reason` there is none;
     - model `revision`;
     - `prompt_identity` (by default a digest of the provider's `record()`);
-    - `execution` metadata (batch, size, `partial_batch`, seconds, attempt).
+    - `execution` metadata (batch, `batch_size`, `partial_batch`, seconds, attempt).
 
     A record is immutable: `execution` is read-only at every depth, its lists
     as tuples, and `state()` gives the plain JSON (for `json.dumps`, or to
@@ -820,8 +821,8 @@ re-exports the jobs, NLI and JEV features. The consumers are:
 - It does not execute actions based on a decision.
 - It does not assume that separately asked questions describe independent
   events; each question is answered on its own.
-- It does not call hosted models except through an adapter you build.
-  `JevProvider` (§6) is the only one. It needs the `jev` extra and your
+- It calls no hosted model except through an adapter. NNx ships one, `JevProvider`
+  (§6), which needs the `jev` extra and your
   credentials, and NNx never falls back to it silently. It does not fine-tune
   Jev models or ship credentials, and vendor numbers are not benchmarks —
   measure them (§8).

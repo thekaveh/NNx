@@ -1,4 +1,4 @@
-# 9. Experimental GGUF export
+# 10. Experimental GGUF export
 
 NNx can serialize `TransformerNN` weights and tokenizer metadata into a
 [GGUF](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md) container.
@@ -95,8 +95,7 @@ writes no `.gguf`, `model.gguf` or Modelfile.
 
 An untied copy of a tied net holds both of its weights, so its file computes
 what the net computes. Copy in the weights the net's forward reads (a
-parametrized module's `.weight` is the computed one); `net` is left as it
-was. Remove a legacy norm, and bake a prune mask, first.
+parametrized module's `.weight` is the computed one); The weights of `net` are not changed; the snippet's `net.eval()` switches its mode. Remove a legacy norm, and bake a prune mask, first.
 
 ```python
 import operator
@@ -104,6 +103,7 @@ import operator
 import torch
 
 from nnx import NNTransformerParams, TransformerNN
+from nnx.interop import write_gguf
 
 net.eval()  # a spectral_norm parametrization steps on each read in training mode
 untied = TransformerNN(
@@ -189,8 +189,8 @@ export_ollama_modelfile(
 A `SYSTEM` message reaches the model only through `{{ .System }}` in the
 template, so a template without it drops the system prompt.
 
-The generated directory contains `model.gguf` and `Modelfile`; it may also
-contain `tokenizer.json` when the tokenizer was saved there.
+The helper writes `model.gguf` and `Modelfile` only. If you also save the tokenizer there,
+as `examples/18_export_ollama_bundle.py` does, `tokenizer.json` sits beside them.
 
 The helper validates the Ollama `v0.32.2` tagged-source parameter set:
 

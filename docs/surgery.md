@@ -1,4 +1,4 @@
-# 4. Model surgery — `nnx.surgery`
+# 5. Model surgery — `nnx.surgery`
 
 The `nnx.surgery` subpackage ships five primitives that take a trained `nn.Module` and return a fresh module with a structural change applied. Four are **function-preserving** in some sense:
 
@@ -8,7 +8,7 @@ The `nnx.surgery` subpackage ships five primitives that take a trained `nn.Modul
 
 Only `drop_layer` is purely chain-preserving. It changes the function the network computes; the surged module is meant to be refined via `NNModel.train()` to recover quality. See the table in §1 for the per-primitive breakdown.
 
-This is the unique compositional payoff of pairing surgery primitives with a training loop in the same toolkit. Every primitive returns a fresh module, and that module is a drop-in target for `NNModel.train()`. `expand_embedding` returns the new `nn.Embedding` with a mask of the original rows.
+This is the unique compositional payoff of pairing surgery primitives with a training loop in the same toolkit. Every primitive returns a fresh module, and that module is a drop-in target for `NNModel.train()`.
 
 ## 1. The five primitives at a glance
 
@@ -20,7 +20,7 @@ This is the unique compositional payoff of pairing surgery primitives with a tra
 | `low_rank_factorize(linear, *, rank, method='svd')` | SVD truncation: Linear → `Sequential(Linear, Linear)` | yes at max rank, approximate below | fresh `nn.Sequential` |
 | `expand_embedding(emb, *, new_num_embeddings, init=...)` | Resize Embedding; preserve original rows | yes on original token IDs | `(nn.Embedding, frozen_mask)` |
 
-All primitives accept keyword-only arguments after the first positional and operate on a deep copy of the input so the caller's reference survives.
+All primitives accept keyword-only arguments after the first positional and leave their input unchanged: `widen`, `deepen` and `drop_layer` deep-copy it, while `low_rank_factorize` and `expand_embedding` read its tensors into new modules.
 
 ## 2. End-to-end: widen → refine → save
 
@@ -206,7 +206,7 @@ from nnx import NNModel, NNOptimParams, NNParamGroupSpec, Optims, expand_embeddi
 
 new_emb, frozen_mask = expand_embedding(net.embed, new_num_embeddings=20_000, init="copy_mean")
 net.embed = new_emb  # reattach — expand_embedding returns a NEW module
-model = NNModel(module=net, params=model_params)  # a fresh model over the expanded net
+model = NNModel(module=net, params=model_params)  # a fresh model over the expanded net; model_params is your NNModelParams
 
 # Register a gradient hook ONCE before training: hooks fire during
 # backward(), i.e. before optimizer.step(), so frozen rows receive
@@ -224,7 +224,7 @@ optim = NNOptimParams(
 )
 from dataclasses import replace
 
-model.train(params=replace(train_params, optim=optim))  # default supervised step works as-is
+model.train(params=replace(train_params, optim=optim))  # train_params is your NNTrainParams; the default supervised step works as-is
 ```
 
 With the reattach, the hook and the decay-free group together, the
@@ -254,7 +254,7 @@ recipe = TransformRecipe(
 )
 recipe.validate(model)          # mutates nothing; one RecipeError names every problem
 recipe.materialize(model)       # transactional (model and random streams); the operations are recorded
-optimizer = build_optimizer(model.net, optim_params)  # AFTER the recipe
+optimizer = build_optimizer(model.net, optim_params)  # optim_params is your NNOptimParams; build it AFTER the recipe
 check_optimizer(model, optimizer)
 ```
 
@@ -271,12 +271,12 @@ check_optimizer(model, optimizer)
     - a target registered under more than one name;
     - a `low_rank` target with a hook of its own (forward, forward pre-, backward or backward pre-), a legacy `weight_norm` / `spectral_norm` or an unbaked prune mask, which the factors would drop. The model keeps its module identities, hooks and weights.
 
-    Loading a checkpoint does not apply this check: the replay rebuilds the saved factors, which carry no hook. A `lora` target keeps its hooks, because `LoRALinear` calls its base: a hooked LoRA target is exact at init;
-
     - two targets of one operation that are the same or nested;
     - a target inside a subtree another operation (or an earlier recipe) transforms;
     - a rank above `min(in, out)`;
     - an unknown operation or version.
+
+    Loading a checkpoint does not apply this check: the replay rebuilds the saved factors, which carry no hook. A `lora` target keeps its hooks, since `LoRALinear` calls its base, so a hooked LoRA target is exact at init.
 
     They also reject any optimizer passed in `optimizers=` that already holds a target's parameters. The error instructs you to build the optimizer after the recipe.
 
