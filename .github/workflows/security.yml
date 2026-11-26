@@ -40,7 +40,7 @@ jobs:
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           enable-cache: false
-          version: "0.13.7"
+          version: "0.13.9"
 
       - name: Sync audit tooling from the frozen lock
         run: uv sync --frozen --all-extras --python "$PYTHON_VERSION"
