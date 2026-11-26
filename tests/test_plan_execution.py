@@ -651,16 +651,17 @@ def test_round_twenty_four_every_setting_is_restored_and_a_failure_is_never_sile
     monkeypatch.setattr(torch, "use_deterministic_algorithms", real)
     assert os.environ.get("PYTHONHASHSEED") == before  # restored although the torch setting failed
 
-    class NoNotes(Exception):  # an exception without add_note (the seeding fallback path)
-        add_note = None
+    class Own(Exception):
+        pass
 
     def failing(state, loader=None):
         raise RuntimeError("cannot restore")
 
     monkeypatch.setattr(seeding, "_restore_rng_state", failing)
-    with pytest.warns(RuntimeWarning, match="cannot restore"), pytest.raises(NoNotes):
+    with pytest.raises(Own) as caught:
         with _seed_scope():
-            raise NoNotes("the probe's own error")
+            raise Own("the probe's own error")
+    assert any("cannot restore" in note for note in caught.value.__notes__)  # noted on the block's error
 
 
 def test_round_twenty_five_each_setting_is_restored_on_its_own():

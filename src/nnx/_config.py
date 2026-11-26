@@ -57,7 +57,7 @@ def _freeze_config(value: Any, path: str, owner: str = "OptimizerFactorySpec") -
     rejected, so a spec always serializes to plain YAML and never smuggles
     executable state into ``run.yaml``.
     """
-    # FIX-083: the copy recurses once per level (twice on 3.10 / 3.11), so a
+    # FIX-083: the copy recurses once per level (twice on 3.11), so a
     # deeper value raised a raw RecursionError.
     if too_deep(value, MAX_JSON_DEPTH):
         raise ValueError(f"{owner} config{path} nests more than {MAX_JSON_DEPTH} levels")
