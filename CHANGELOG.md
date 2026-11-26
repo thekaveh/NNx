@@ -6,6 +6,8 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/thekaveh/NNx/compare/v0.4.4...v0.5.0) (2026-11-26)
+
 ### Changed
 
 - **Breaking: Python 3.10 is no longer supported.** `requires-python` is now `>=3.11`, and the 3.10 CI lanes, the 3.10-only audit ignore list (`.github/pip-audit-py310-ignores.txt`) and its `filelock` constraint are removed. The `floor-deps` lane now runs torch 2.4.1 on Python 3.11. Installs on Python 3.10 resolve to 0.4.x (#759).
