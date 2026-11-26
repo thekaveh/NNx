@@ -92,10 +92,10 @@ jobs:
     # FEAT-050 (#572): the hosted-Linux twin of mps-evidence. Hosted Linux has
     # no MPS device, so this is a real run without MPS: the probe must fail,
     # and every `mps` test must fail with the NNX_REQUIRE_MPS message (not
-    # skip, not pass). It proves the gate; it runs no MPS result. Opt-in like
-    # mps-evidence, so it runs only where the repository has set NNX_MPS_RUNNER.
+    # skip, not pass). It proves the gate; it runs no MPS result. It needs no
+    # runner, so it is not gated on NNX_MPS_RUNNER and runs on every trigger of
+    # this workflow.
     name: MPS gate without MPS (hosted Linux, must fail)
-    if: vars.NNX_MPS_RUNNER == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:

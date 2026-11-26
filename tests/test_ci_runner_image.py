@@ -143,7 +143,7 @@ def test_the_no_mps_gate_job_fails_every_mps_test_on_a_runner_without_mps():
     probe must fail, and every ``mps`` test must fail with the gate message."""
     job = dict((name, job) for workflow, name, job in _jobs() if workflow == "mps.yml")["mps-gate-without-mps"]
     assert job["runs-on"] == RUNNER
-    assert job["if"] == "vars.NNX_MPS_RUNNER == 'true'"
+    assert "if" not in job  # hosted, so it needs no self-hosted runner
     steps = {step["name"]: step for step in job["steps"]}
     gate = steps["The MPS tests fail with the gate message (never skip, never pass)"]
     assert gate["env"]["NNX_REQUIRE_MPS"] == "1"
