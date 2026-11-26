@@ -26,6 +26,7 @@ try:
 except ImportError:  # Windows
     fcntl = None  # type: ignore[assignment]
 
+from ..._artifacts import file_sha256
 from ...monitors import MonitorRecord
 from ..enum.checkpoints import Checkpoints
 from ..params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -337,14 +338,6 @@ def _staged_manifest_path(checkpoint_path: str) -> str:
     return f"{checkpoint_path}.manifest.staged.json"
 
 
-def _sha256(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _read_manifest(checkpoint_path: str) -> Optional[dict[str, Any]]:
     path = _manifest_path(checkpoint_path)
     if not os.path.exists(path):
@@ -435,7 +428,7 @@ def _manifest_problem(directory: str, checkpoint_name: str, manifest: Mapping[st
                 f"torn resume point — the manifest names checkpoint {checkpoint_id}, whose training state "
                 f"{sidecar} it does not list"
             )
-    mismatched = sorted(name for name, digest in files.items() if _sha256(os.path.join(directory, name)) != digest)
+    mismatched = sorted(name for name, digest in files.items() if file_sha256(os.path.join(directory, name)) != digest)
     if mismatched:
         return f"digest mismatch in {', '.join(mismatched)} — the file changed after it was written"
     return None
@@ -1003,7 +996,7 @@ class NNCheckpoint:
                 )
             if verified.get("checkpoint_id") is None and set(generations) != {generation}:
                 name = os.path.basename(checkpoint_path)
-                if _sha256(checkpoint_path) != verified.get("files", {}).get(name):
+                if file_sha256(checkpoint_path) != verified.get("files", {}).get(name):
                     now = next(value for value in generations if value != generation)
                     raise ResumePointError(
                         f"{changed} (generation {generation} was verified, {name} is generation {now}'s) {retry}"
