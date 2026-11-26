@@ -111,6 +111,7 @@ from .params.nn_model_params import NNModelParams
 from .params.nn_optim_params import NNOptimParams, _validate_step_knobs
 from .params.nn_params import NNParams
 from .params.nn_run import (
+    _CREATED_FILE_MODE,
     NNRun,
     _atomic_write_text,
     _best_err,
@@ -4474,7 +4475,11 @@ class NNModel(_HubMixinBase):
         # the host locale's default encoding could mis-encode unicode
         # paths or non-ASCII tokenizer names round-tripped via
         # `params.state()`.
-        _atomic_write_text(str(save_dir / _HUB_CONFIG_FILENAME), json.dumps(config, sort_keys=True, indent=2))
+        _atomic_write_text(
+            str(save_dir / _HUB_CONFIG_FILENAME),
+            json.dumps(config, sort_keys=True, indent=2),
+            mode=_CREATED_FILE_MODE,  # the mode a plain write gave before this path was atomic
+        )
 
     def _hub_reconstruction_config(self, save_directory) -> dict[str, Any]:
         """Persist subclass-owned artifacts and return their config fragment."""

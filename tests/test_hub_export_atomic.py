@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 
 import pytest
 import safetensors.torch
@@ -31,3 +32,14 @@ def test_successful_save_leaves_only_the_final_files(tmp_path):
     names = set(os.listdir(tmp_path))
     assert "model.safetensors" in names
     assert not any(name.endswith(".partial") for name in names)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_exported_files_keep_the_mode_a_plain_write_gives(tmp_path):
+    _tiny_model().save_pretrained(str(tmp_path))
+    reference = tmp_path / "reference.txt"
+    reference.write_text("x", encoding="utf-8")
+    expected = stat.S_IMODE(reference.stat().st_mode)
+    # config.json is written through the atomic writer, which must not leave mkstemp's 0600.
+    # model.safetensors is created by safetensors itself, with its own mode, as before this change.
+    assert stat.S_IMODE((tmp_path / "config.json").stat().st_mode) == expected

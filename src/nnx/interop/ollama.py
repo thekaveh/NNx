@@ -168,11 +168,12 @@ def export_ollama_modelfile(
     # back to the locale code page (cp1252) and silently mojibake.
     # Matches the convention every other text-mode write in src/nnx
     # carries (`feedback_utf8_explicit_text_opens`).
-    from ..nn.params.nn_run import _atomic_write_text  # lazy: the run module is heavy
+    from ..nn.params.nn_run import _CREATED_FILE_MODE, _atomic_write_text  # lazy: the run module is heavy
 
     _atomic_write_text(
         str(modelfile_path),
         _render_modelfile(system=system, parameters=parameters, template=template),
+        mode=_CREATED_FILE_MODE,
     )
     return str(modelfile_path)
 
