@@ -252,11 +252,11 @@ def test_canonical_api_reference_is_portable_and_covers_recent_public_signatures
 
 def test_recent_public_features_are_covered_by_user_guides():
     concepts = (build_docs.ROOT / "docs" / "concepts.md").read_text(encoding="utf-8")
-    quickstart = (build_docs.ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
+    recipes = (build_docs.ROOT / "docs" / "quickstart-recipes.md").read_text(encoding="utf-8")
     dpo = (build_docs.ROOT / "docs" / "dpo.md").read_text(encoding="utf-8")
     lm = (build_docs.ROOT / "docs" / "lm.md").read_text(encoding="utf-8")
 
-    assert "target_dtype=torch.float32" in quickstart
+    assert "target_dtype=torch.float32" in recipes
     assert 'salt="replicate-2"' in concepts
     assert all(metric in dpo for metric in ("reward_chosen", "reward_rejected", "reward_accuracy"))
     assert "on_token=" in lm
@@ -474,7 +474,7 @@ def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
     assert "repo_name" not in config
     labels = str(config["nav"])
     assert "1. Home" in labels
-    assert "24. License" in labels
+    assert "25. License" in labels
     assert {key: config[key] for key in ("site_name", "site_description", "site_url", "docs_dir", "site_dir")} == {
         "site_name": "NNx",
         "site_description": "Lightweight PyTorch training, evaluation, and visualization toolkit",
@@ -505,40 +505,41 @@ def test_generated_mkdocs_has_no_repository_chrome(tmp_path: Path):
     assert config["nav"] == [
         {"1. Home": "index.md"},
         {"2. Quickstart": "Quickstart.md"},
+        {"3. Quickstart recipes": "Quickstart-recipes.md"},
         {
             "Core guides": [
-                {"3. Concepts": "Concepts.md"},
-                {"4. Model surgery": "Model-surgery.md"},
-                {"5. HuggingFace Hub": "HuggingFace-Hub.md"},
-                {"6. Embeddings": "Embeddings.md"},
-                {"7. Language modeling": "Language-modeling.md"},
-                {"8. I-JEPA": "I-JEPA.md"},
-                {"9. Experimental GGUF export": "Experimental-GGUF-export.md"},
-                {"10. DPO": "DPO.md"},
-                {"11. Typed decisions": "Typed-decisions.md"},
+                {"4. Concepts": "Concepts.md"},
+                {"5. Model surgery": "Model-surgery.md"},
+                {"6. HuggingFace Hub": "HuggingFace-Hub.md"},
+                {"7. Embeddings": "Embeddings.md"},
+                {"8. Language modeling": "Language-modeling.md"},
+                {"9. I-JEPA": "I-JEPA.md"},
+                {"10. Experimental GGUF export": "Experimental-GGUF-export.md"},
+                {"11. DPO": "DPO.md"},
+                {"12. Typed decisions": "Typed-decisions.md"},
             ]
         },
         {
             "Reference": [
-                {"12. API reference": "API-reference.md"},
-                {"13. External dependency contracts": "External-dependency-contracts.md"},
-                {"14. Export conformance": "Export-conformance.md"},
-                {"15. Framework comparison": "Framework-comparison.md"},
-                {"16. Architecture": "Architecture.md"},
-                {"17. Capability reference": "Capability-reference.md"},
+                {"13. API reference": "API-reference.md"},
+                {"14. External dependency contracts": "External-dependency-contracts.md"},
+                {"15. Export conformance": "Export-conformance.md"},
+                {"16. Framework comparison": "Framework-comparison.md"},
+                {"17. Architecture": "Architecture.md"},
+                {"18. Capability reference": "Capability-reference.md"},
             ]
         },
         {
             "Project": [
-                {"18. Repository overview": "Repository-Overview.md"},
-                {"19. Examples": "Examples.md"},
-                {"20. Contributing": "Contributing.md"},
-                {"21. Security policy": "Security-Policy.md"},
-                {"22. Test import boundaries": "Test-Import-Boundaries.md"},
-                {"23. Changelog": "Changelog.md"},
-                {"24. License": "License.md"},
-                {"25. Decision-model pilot": "Decision-model-pilot.md"},
-                {"26. Feature composition": "Feature-composition.md"},
+                {"19. Repository overview": "Repository-Overview.md"},
+                {"20. Examples": "Examples.md"},
+                {"21. Contributing": "Contributing.md"},
+                {"22. Security policy": "Security-Policy.md"},
+                {"23. Test import boundaries": "Test-Import-Boundaries.md"},
+                {"24. Changelog": "Changelog.md"},
+                {"25. License": "License.md"},
+                {"26. Decision-model pilot": "Decision-model-pilot.md"},
+                {"27. Feature composition": "Feature-composition.md"},
             ]
         },
     ]
@@ -622,7 +623,7 @@ def test_manifest_rejects_unknown_keys(tmp_path: Path, monkeypatch, location: st
     elif location == "section":
         manifest["sections"][2][key] = "typo"
     else:
-        manifest["sections"][2]["children"][0][key] = "typo"
+        manifest["sections"][3]["children"][0][key] = "typo"
     invalid = tmp_path / "manifest.yaml"
     invalid.write_text(yaml.safe_dump(manifest), encoding="utf-8")
     monkeypatch.setattr(build_docs, "MANIFEST", invalid)
@@ -735,8 +736,8 @@ def test_site_and_wiki_are_self_contained(tmp_path: Path):
     assert "images/nnx-poster.png" in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "assets/architecture.svg" in (site / "Architecture.md").read_text(encoding="utf-8")
     assert "images/architecture.png" in (wiki / "Architecture.md").read_text(encoding="utf-8")
-    assert (site / "License.md").read_text(encoding="utf-8").startswith("# 24. License\n")
-    assert (wiki / "License.md").read_text(encoding="utf-8").startswith("# 24. License\n")
+    assert (site / "License.md").read_text(encoding="utf-8").startswith("# 25. License\n")
+    assert (wiki / "License.md").read_text(encoding="utf-8").startswith("# 25. License\n")
     assert "(Concepts)" in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "(Concepts.md)" not in (wiki / "Home.md").read_text(encoding="utf-8")
     assert "security/advisories/new" in (wiki / "Security-Policy.md").read_text(encoding="utf-8")

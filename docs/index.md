@@ -66,6 +66,7 @@ The [Capability reference](capabilities.md) describes each item with its entry p
 
 - [Install](../README.md#2-install) — a PyPI release or the current source, and the optional extras.
 - [Quickstart](quickstart.md) — a runnable example that trains a model in seconds.
+- [Quickstart recipes](quickstart-recipes.md) — the variations and recipes beyond supervised classification.
 
 ### 2.2. Understand the design
 

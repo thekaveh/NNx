@@ -1,4 +1,4 @@
-# 3. Concepts
+# 4. Concepts
 
 This document explains the design decisions behind NNx: the architecture and the foundational patterns every other feature builds on. It then covers the specialization subpackages and the decoder-only LM path on top:
 
@@ -28,6 +28,10 @@ The diagram has eight layers, top-to-bottom:
 6. **Callback bus** (orange) — `on_train_begin / on_epoch_begin / on_epoch_end / on_train_end`, plus `on_optimizer_update` in objective runs (§5).
 7. **Callback listeners** (orange) — `EarlyStopping`, `LRMonitor`, `ModelCheckpoint`, `TensorBoardCallback`, `WandbCallback`.
 8. **Persistence** (violet) — `NNRun` writes `run.yaml + idps.csv + metadata.yaml` and `NNCheckpoint` writes `*.pt + *.opt.pt` into `runs/<id>/`.
+
+### 1.1. Threads and processes
+
+NNx does not synchronize its shared state. The model, optimizer and metric registries and the module-registration counter that lazy layers use are process-wide and unlocked. Construct and train models from one thread per process. Parallel runs use processes: `torchrun` for data parallelism ([Quickstart recipes §3.10](quickstart-recipes.md#310-data-parallel-training-on-one-machine)), or separate jobs. NNx starts two kinds of short-lived internal worker thread, and neither makes that state safe. A checkpoint save hashes each chunk of 1 MiB or more on a worker thread while it is written. A typed decision job (§17) calls a synchronous provider from a worker thread, one call at a time within the job.
 
 ## 2. Params as the source of truth
 
@@ -91,7 +95,7 @@ Zero keeps its distinct meaning per field. `NNConvParams.padding`, `NNSchedulerP
 
 A transformer additionally needs `d_model % n_heads == 0` *and* an even head width, because RoPE rotates channel pairs. This is enforced at construction and in `.builder().layers(...)` before the divisibility arithmetic. So the builder and the direct constructor reject the same inputs.
 
-Dataset `batch_sizes` tuples follow the same count rule, with `None` as the only automatic full-split sentinel. Zero never means "full split" or "no split". They are validated before any dataset factory or tokenizer runs (see [Quickstart → Batch sizes](quickstart.md#25-tabular-regression-targets)).
+Dataset `batch_sizes` tuples follow the same count rule, with `None` as the only automatic full-split sentinel. Zero never means "full split" or "no split". They are validated before any dataset factory or tokenizer runs (see [Quickstart recipes §2.5 (batch sizes)](quickstart-recipes.md#25-tabular-regression-targets)).
 
 ### 2.4. Variant-gated construction via `.builder()`
 
@@ -310,45 +314,24 @@ Construction then calls the factory with Python's `random`, NumPy and torch all 
 
 As with built-in nets, the id reflects the architecture, not the weights. Give differently-initialized instances of one architecture distinct `data_id` / `salt` values. Lazy layers (`nn.LazyLinear`) may be wrapped and trained uninitialized. Materialize them (one forward) before a warm resume, whose parameter-topology check needs shapes.
 
-**Lazy layers and the descriptor.** A lazy layer changes the topology when it materializes at its first forward: it gains its shapes and a new `repr`. So the rule is:
+**Lazy layers and the descriptor.** A lazy layer (`nn.LazyLinear` and its kin) gets its shapes at its first forward, and its `repr` changes with them. The descriptor follows that change:
 
-- A run's id comes from the descriptor when `train()` starts, and the run keeps it. A run that starts before the wrapped lazy module materializes gets the unmaterialized id.
-
-    A run that starts after it has materialized (in an earlier run, `predict()`, `evaluate()` or a direct call), or on a model rebuilt from a checkpoint taken before materialization, gets the materialized descriptor's id: the id of a dry-run-wrapped or equivalent dense net. A lazy module wrapped with loaded weights before its first forward has a descriptor and a run id of its own until it materializes.
-
-- An uninitialized lazy layer records no shape. Uninitialized lazy nets that will see different input widths share a descriptor and a run id. Give them distinct `data_id` / `salt` values, or dry-run them (one forward on an example batch) before wrapping.
-- Once the wrapped module has materialized, at its first forward wherever it runs (`train()`, `predict()`, `evaluate()` or a direct call of `model.net`), `NNModel` takes its descriptor afresh at the next read of `model.params` (which `train()`, `predict()`, `evaluate()` and every checkpoint make). A top-level `nn.LazyLinear` is described as the `nn.Linear` it becomes.
-
-    Checkpoints and later runs then describe the materialized module, so `NNModel(module=model.net, params=model.params)` and a reload into `model.net` match. The descriptor taken then is the module's `repr` at that read, so other state a custom `repr` shows (a learned value, say) is part of it too.
-
-    Two cases keep the wrap-time descriptor: a lazy layer the forward never reaches (keep every lazy layer on the forward path), and state keys changed after the wrap (a submodule or tensor attached before the first forward, such as a JEPA predictor or a `logit_scale`; dry-run the module before wrapping it to avoid this).
-
-    A run wrapped uninitialized then reloads into a fresh, unmaterialized instance, and one wrapped after a dry run into the trained module or a module dry-run the same way. The refusal says so.
-
-- NNx puts no hook on the wrapped module (it counts submodule registrations with torch's global `register_module_module_registration_hook`, which changes no module, installed at the first wrap of a module with a pending lazy layer in a process; on torch releases newer than 2.4, that install makes a function compiled earlier in the process, whose trace registered a module (slicing a `ModuleList` or `nn.Sequential`, as `FeedFwdNN` does), recompile once).
-
-    Weights loaded into a lazy layer (`load_state_dict`, before or after the wrap) before its first forward materialize it at that forward as torch does, which leaves `in_channels` / `num_features` of lazy conv and norm layers at 0 where a dry run sets them (older torch releases also leave `nn.LazyLinear`'s `in_features` at 0).
-
-    When `NNModel` then takes the descriptor afresh it sets those attributes as a dry run does, on the lazy layers it saw pending only.
-
-    That happens at the wrap, and at a `model.params` read after a module holding a pending lazy layer was registered anywhere, or any submodule was registered while `torch.compile` or `torch.export` traced, after every lazy layer it saw has materialized, or after one of them was replaced. They change no output (only the `repr`, and InstanceNorm's input-width check, which then passes).
-
-    So such a run is described, and reloads into fresh instances, as a dry-run one.
-
-    A lazy layer written straight into a parent's `_modules` (by hand, or by `Sequential.insert` / `ModuleList.insert`, also when it replaces a layer after `pop` or `del`) at a name where NNx saw no lazy layer, rather than set as an attribute or through `add_module` or a container's `__setitem__` / `append`, while a lazy layer NNx saw stays pending is not seen until one of those reads, and keeps torch's form if it materializes first.
-
-    Torch's own forward fails on a loaded affine `nn.LazyInstanceNorm` (and warns on one with running statistics only): dry-run such a module before loading.
-
-    A module whose lazy layers hold loaded weights does not match a descriptor taken before materialization: there, pass a fresh, unmaterialized instance (`NNModel.from_checkpoint` loads the saved weights into one). The wrap leaves the module as given, except one whose own loaded weights it accepts for a descriptor taken after materialization: it materializes that module as the dry run did.
-
-    A module loaded and then forwarded before the wrap keeps torch's form (NNx never described it), so its runs reload only into a module prepared the same way: weights loaded, then one forward.
-
-- `module=` follows one rule in `NNModel(...)`, `NNModel.from_checkpoint` and `VisUtils.two_dim_tsne_checkpoint_logits`. A module that matches the descriptor exactly is accepted. A module of the same class once materialized, with lazy layers still to materialize, is checked against the saved weights first: parameter names and shapes, then the topology those weights materialize, layer hyperparameters and dtypes included. The weights then load and materialize it as a dry run would.
-
-    So a fresh lazy instance reloads a run wrapped uninitialized or after a dry run. A checkpoint with recorded transforms (a QAT run, say) holds the transformed module's weights, which give no shapes to check, so it reloads only into a dry-run (materialized) instance. A different class, different hyperparameters, dtypes or real shape mismatches are refused before any weight loads, and a refused call leaves the module as given.
-
-- `NNModel(...)` has no saved weights. An uninitialized lazy module there matches only a descriptor taken before materialization, so wrapping a fresh lazy instance with a materialized run's params is refused; for one taken after, dry-run it first, or load the run's weights into it, which are then checked the same way. The refusal names lazy materialization and these remedies.
-- Lazy layers that torch does not ship infer their attributes only at a forward, so NNx cannot check a fresh instance against a materialized descriptor. A module holding one keeps its wrap-time descriptor: a run wrapped uninitialized reloads into a fresh instance, and one wrapped after a dry run reloads into a dry-run instance.
+- **Before materialization.** `train()` takes the descriptor when it starts, and the run keeps that id. An uninitialized lazy module records no shape, so lazy nets that will see different input widths share a descriptor and run id. Give them distinct `data_id` / `salt` values, or dry-run them (one forward on an example batch) before wrapping.
+- **After materialization.** Once the module has materialized, at its first forward wherever that runs (`train()`, `predict()`, `evaluate()` or a direct call of `model.net`), `NNModel` takes the descriptor afresh at the next read of `model.params`. `train()`, `predict()`, `evaluate()` and every checkpoint make such a read, so checkpoints and later runs describe the materialized module, and `NNModel(module=model.net, params=model.params)` and a reload into `model.net` match. A top-level `nn.LazyLinear` is described as the `nn.Linear` it becomes. The fresh descriptor reflects the module's `repr` at that read, so a learned value that a custom `repr` shows is part of it too.
+- **Runs that start later.** A run that starts after materialization gets the materialized id. That covers an earlier run, `predict()`, `evaluate()` and a direct call. So does a model rebuilt from a checkpoint taken before materialization. A module with loaded weights but no forward yet has its own descriptor and run id until it materializes.
+- **Wrap-time descriptor kept.** Two cases keep the descriptor taken at the wrap: a lazy layer the forward never reaches (keep every lazy layer on the forward path), and state keys changed after the wrap, such as a submodule or tensor attached before the first forward (a JEPA predictor, a `logit_scale`). Dry-run the module before wrapping to avoid the second.
+- **Loaded weights.** Weights loaded into a lazy layer before its first forward materialize it at that forward, as torch does. That leaves `in_channels` / `num_features` of lazy conv and norm layers at 0, where a dry run sets them. Older torch also leaves `nn.LazyLinear`'s `in_features` at 0. When `NNModel` takes the descriptor afresh, it sets those attributes as a dry run does, on the lazy layers it saw pending only. A run that takes this path is then described, and reloads, as a dry-run one. The adjustment changes no output. It changes the `repr`, and it lets InstanceNorm's input-width check pass. It happens at the wrap, and at a later `model.params` read that finds the module changed: a registration since the last walk that brought a pending lazy layer (or any registration made while `torch.compile` or `torch.export` traced), every tracked lazy layer having materialized, or one of them replaced.
+- **Lazy layers written into `_modules`.** NNx sees a lazy layer that is set as an attribute, added through `add_module`, `__setitem__` or `append`. One written straight into a parent's `_modules` (by hand, through `insert`, or in place of a layer removed by `pop` or `del`) at a name where NNx saw no lazy layer is not seen until a later read. It keeps torch's form if it materializes first.
+- **Torch's loaded-instance-norm limit.** Torch's own forward fails on a loaded affine `nn.LazyInstanceNorm`, and warns on one with running statistics only. Dry-run such a module before loading.
+- **Matching a descriptor.** A module whose lazy layers hold loaded weights does not match a descriptor taken before materialization. Pass a fresh, unmaterialized instance instead (`NNModel.from_checkpoint` loads the saved weights into one). A module loaded and forwarded before the wrap keeps torch's form and is never described, so its runs reload only into a module prepared the same way: weights loaded, then one forward. The wrap leaves a module as given, except that a module with loaded weights is materialized as a dry run would be when its descriptor is taken after materialization.
+- **Reloads with `module=`.** `NNModel(...)`, `NNModel.from_checkpoint` and `VisUtils.two_dim_tsne_checkpoint_logits` accept `module=` under one rule:
+    - A module that matches the descriptor exactly is accepted.
+    - A module of the same class whose lazy layers are still to materialize is checked against the saved weights first: parameter names and shapes, then the topology those weights materialize, layer hyperparameters and dtypes included. The weights then load and materialize the module as a dry run would. So a fresh lazy instance reloads a run wrapped uninitialized or after a dry run.
+    - A checkpoint with recorded transforms (a QAT run, say) holds the transformed module's weights, which give no shapes to check. It reloads only into a dry-run (materialized) instance.
+    - A different class, different hyperparameters or dtypes, or a real shape mismatch is refused before any weight loads, and the module is left as given.
+- **`NNModel(...)` has no saved weights.** An uninitialized lazy module matches only a pre-materialization descriptor. So wrapping a fresh lazy instance with a materialized run's params is refused. For a post-materialization descriptor, dry-run the module first, or load the run's weights into it (they are then checked the same way). The refusal names lazy materialization and these remedies.
+- **Lazy layers torch does not ship.** Their attributes are inferred only at a forward, so NNx cannot check a fresh instance against a materialized descriptor. Such a module keeps its wrap-time descriptor. A run wrapped uninitialized reloads into a fresh instance, and one wrapped after a dry run reloads into a dry-run instance.
+- **Hook.** NNx puts no hook on the wrapped module. It counts submodule registrations with torch's global `register_module_module_registration_hook`, installed at the first wrap of a module with a pending lazy layer in a process. On torch newer than 2.4, that install makes a function compiled earlier in the process recompile once, if its trace registered a module (for example, slicing a `ModuleList` or `nn.Sequential`, as `FeedFwdNN` does).
 
 A runtime module trains, evaluates, predicts, checkpoints and resumes like any model, but no factory can rebuild it:
 
@@ -474,7 +457,7 @@ The versioned sidecar restores:
 
 - optimizer type and parameter topology/state;
 - scheduler identity/state (a plateau state saved under another improvement rule than the run builds is refused before the model is touched — §6.4);
-- the FP16 loss scaler and the run's resolved precision record. A stateful resume into another effective precision is refused before the model is touched. A weights-only warm start may switch ([Quickstart §2.2](quickstart.md#22-precision-fp32-fp16-and-bf16));
+- the FP16 loss scaler and the run's resolved precision record. A stateful resume into another effective precision is refused before the model is touched. A weights-only warm start may switch ([Quickstart recipes §2.2](quickstart-recipes.md#22-precision-fp32-fp16-and-bf16));
 - completed epoch, Python and NumPy state, PyTorch CPU/CUDA/MPS state;
 - loader/sampler generators matched by stable seed identity.
 
@@ -679,6 +662,9 @@ The component is optional: resuming from a checkpoint without it keeps the fresh
 `NNModel.train()` runs a supervised loop by default: for every batch, it does `loss_fn(net(X), Y)` → backward → step. Some tasks don't fit that shape, such as autoencoders, VAEs, recommendation pairwise losses and diffusion noise prediction. For those, pass a `train_step_fn`. Link prediction with leakage-checked edge splits and negatives is built in (`nnx.link_tasks`, §26).
 
 ```python
+import torch
+import torch.nn.functional as F
+
 from nnx import TrainStepContext, NNEvaluationDataPoint
 
 def my_step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
@@ -1849,7 +1835,9 @@ netron_export(model, "model.onnx", torch.randn(1, 8))         # write graph for 
 ## 13. Reproducibility
 
 ```python
-from nnx import set_seed, dataloader_worker_init_fn
+from torch.utils.data import DataLoader
+
+from nnx import NNTrainParams, dataloader_worker_init_fn, set_seed
 
 set_seed(42, strict=True)                    # pins torch / numpy / python / cudnn
 loader = DataLoader(..., worker_init_fn=dataloader_worker_init_fn)
@@ -2569,7 +2557,7 @@ held-out logits ──► calibrator.transform(..., labels=..., model_id=...) �
   `f"{run.id}:BEST"` also works.
 - **Raw and calibrated views.** `transform` accepts arrays, tensors or a
   categorical `PredictionResult`
-  ([Quickstart §2.13](quickstart.md#213-probabilities-decoded-labels-and-sample-ids)).
+  ([Quickstart recipes §2.13](quickstart-recipes.md#213-probabilities-decoded-labels-and-sample-ids)).
   A prediction's spec supplies the labels, and its `sample_ids` are kept.
   `sample_ids=` names an array's rows (default `0..N-1`) and must equal a
   prediction's own.

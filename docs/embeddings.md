@@ -1,4 +1,4 @@
-# 6. Embeddings — Contrastive Trainer + FAISS Export
+# 7. Embeddings — Contrastive Trainer + FAISS Export
 
 `nnx.embeddings` is NNx's one RAG-adjacent surface. It trains a domain-specific text embedder via the existing SimCLR / NT-Xent contrastive machinery. It then exports the trained model to a FAISS index for downstream retrieval.
 
@@ -95,7 +95,7 @@ NNx's job ends here. Pick the retrieval framework that fits your stack — they 
 
 ### 4.1. `ContrastiveTextDataset`
 
-```python
+```text
 ContrastiveTextDataset(pairs: list[tuple[str, str]])
 ```
 
@@ -105,7 +105,7 @@ Raises `ValueError` on empty input or non-string entries. One pair is enough for
 
 ### 4.2. `pair_collate`
 
-```python
+```text
 pair_collate(batch: Iterable[tuple[str, str]]) -> tuple[list[str], list[str]]
 ```
 
@@ -125,7 +125,7 @@ loader = DataLoader(
 
 ### 4.3. `train_contrastive`
 
-```python
+```text
 train_contrastive(
     backbone,                       # SentenceTransformer or any nn.Module(list[str]) -> Tensor[B, D]
     dataset,                        # ContrastiveTextDataset or raw list of (anchor, positive)
@@ -149,7 +149,7 @@ For the full callback / checkpoint / `runs/<id>/` machinery, drop down to `text_
 
 ### 4.4. `embed_texts`
 
-```python
+```text
 embed_texts(
     backbone,
     texts: list[str],
@@ -164,7 +164,7 @@ Inference helper. Runs in `torch.no_grad()` + `eval()` mode. The same call that 
 
 ### 4.5. `text_contrastive_train_step_factory`
 
-```python
+```text
 text_contrastive_train_step_factory(*, temperature=0.5) -> TrainStepFn
 ```
 
@@ -172,7 +172,7 @@ Lower-level: returns an `nnx.TrainStepFn` suitable for `NNModel.train(train_step
 
 ### 4.6. `export_to_faiss`
 
-```python
+```text
 export_to_faiss(
     backbone,
     corpus: list[str],
@@ -193,7 +193,7 @@ For approximate search at scale, switch `index_type="IndexHNSWFlat"`. The wrappe
 
 ### 4.7. `export_to_safetensors`
 
-```python
+```text
 export_to_safetensors(backbone, out_path) -> str
 ```
 

@@ -156,3 +156,13 @@ class JsonArtifact:
     def save(self, path: Union[str, os.PathLike[str]]) -> None:
         """Write :meth:`to_json` to ``path`` atomically."""
         atomic_write(path, self.to_json())
+
+
+def file_sha256(path: str) -> str:
+    """SHA-256 of a file's bytes, read in 1 MiB blocks. Export and checkpoint
+    verification both use it, so one digest rule covers every artifact."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()

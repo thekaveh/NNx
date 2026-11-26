@@ -1,4 +1,4 @@
-# 8. I-JEPA — Joint Embedding Predictive Architecture
+# 9. I-JEPA — Joint Embedding Predictive Architecture
 
 NNx ships I-JEPA (Assran et al., CVPR 2023) as a `TrainStepFn` factory
 alongside the other self-supervised paradigms. JEPA predicts in
@@ -124,7 +124,7 @@ puts the predictor's weights in the same checkpoint. Rebuild the encoder
 without them:
 
 ```python
-from nnx import Checkpoints, NNCheckpoint
+from nnx import Checkpoints, NNCheckpoint, NNModel
 
 checkpoint = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
 encoder = NNModel.from_checkpoint(checkpoint, exclude_submodules=("_jepa_predictor",))
@@ -136,6 +136,7 @@ submodules and the option of the entry point you called. The other two
 rebuild paths take the same option:
 
 ```python
+from nnx import NNModel
 from nnx.bundles import export_bundle, reconstruct_bundle
 
 export_bundle(run.id, "jepa-bundle")  # a run bundle of the checkpoint
@@ -188,7 +189,7 @@ correctly leaves them alone. Mismatches the other direction
 ### 4.4. Loss reporting
 
 JEPA has no classification metric. The returned
-`NNEvaluationDataPoint` reports the L2 loss in both `.loss` and
+`NNEvaluationDataPoint` reports the MSE loss in both `.loss` and
 `.error` so `BEST` checkpoint tracking and `ReduceLROnPlateau` have
 a signal to lock onto. The other classification fields stay zero.
 
@@ -221,9 +222,8 @@ a signal to lock onto. The other classification fields stay zero.
   network stays trainable either way. `jepa_objective` runs the same check,
   with the same wording, before any run is reserved (§5).
 
-    The factory leaves its target alone, so
-    `jepa_train_step_factory(model.net, ...)` keeps the online network
-    trainable and the first step names the placement. Each step freezes the target and pins it to `eval()` before
+    Passing `model.net` itself as the target, as in
+    `jepa_train_step_factory(model.net, ...)`, is not frozen at build time: the first step raises `ValueError` before any freeze or mode change, so the online network stays trainable. Each step freezes the target and pins it to `eval()` before
     its forward. A hand-made copy, or one that other code switched to train
     mode, still gives eval-mode targets. Move the target with the net
     (`target.to(...)`, `target.double()`) instead of registering it under the

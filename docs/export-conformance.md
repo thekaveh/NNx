@@ -1,4 +1,4 @@
-# 14. Export conformance
+# 15. Export conformance
 
 `NNModel.to_onnx` writes a graph; `onnx.checker` proves the file is well
 formed. Neither says what a runtime computes from it. `nnx.export_conformance`
@@ -211,5 +211,5 @@ required check; see CONTRIBUTING §6) runs in four steps:
    external-data file, and the test report — as the `export-conformance`
    artifact.
 
-`uv.lock` resolves with `--all-extras`. The CPU profiles are not run on the
+CI installs the frozen `uv.lock` with `--all-extras` (`lint-and-test`, `feature-composition`). The CPU profiles are not run on the
 `floor-deps` lane (torch 2.4.1, core plus the `domains` extra).

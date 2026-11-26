@@ -92,10 +92,10 @@ def _default_kwargs(method: str, x: torch.Tensor) -> dict[str, Any]:
     return {}
 
 
-def _attribution_to_figure(attr: torch.Tensor, x: torch.Tensor) -> go.Figure:
+def _attribution_to_figure(attr: torch.Tensor) -> go.Figure:
     """Render an attribution tensor as a Plotly heatmap.
 
-    The tensor is batched like `x`: a 3-D / 4-D one renders its first
+    The tensor is batched like the input: a 3-D / 4-D one renders its first
     sample (4-D also averaged over channels) and a 2-D one a row per
     sample, so the result is always a 2-D heatmap.
     """
@@ -180,5 +180,5 @@ def attribute(
     finally:
         _restore_training_modes(training_modes)
 
-    figure = _attribution_to_figure(attr_tensor, x)
+    figure = _attribution_to_figure(attr_tensor)
     return attr_tensor, figure

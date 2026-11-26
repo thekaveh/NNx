@@ -3,33 +3,34 @@ numbering: navigation
 sections:
   - {number: "1", title: Home, source: docs/index.md, slug: Home, numbered_h1: false}
   - {number: "2", title: Quickstart, source: docs/quickstart.md}
+  - {number: "3", title: Quickstart recipes, source: docs/quickstart-recipes.md}
   - title: Core guides
     children:
-      - {number: "3", title: Concepts, source: docs/concepts.md}
-      - {number: "4", title: Model surgery, source: docs/surgery.md}
-      - {number: "5", title: HuggingFace Hub, source: docs/hub.md}
-      - {number: "6", title: Embeddings, source: docs/embeddings.md}
-      - {number: "7", title: Language modeling, source: docs/lm.md}
-      - {number: "8", title: I-JEPA, source: docs/jepa.md}
-      - {number: "9", title: Experimental GGUF export, source: docs/gguf.md}
-      - {number: "10", title: DPO, source: docs/dpo.md}
-      - {number: "11", title: Typed decisions, source: docs/decisions.md}
+      - {number: "4", title: Concepts, source: docs/concepts.md}
+      - {number: "5", title: Model surgery, source: docs/surgery.md}
+      - {number: "6", title: HuggingFace Hub, source: docs/hub.md}
+      - {number: "7", title: Embeddings, source: docs/embeddings.md}
+      - {number: "8", title: Language modeling, source: docs/lm.md}
+      - {number: "9", title: I-JEPA, source: docs/jepa.md}
+      - {number: "10", title: Experimental GGUF export, source: docs/gguf.md}
+      - {number: "11", title: DPO, source: docs/dpo.md}
+      - {number: "12", title: Typed decisions, source: docs/decisions.md}
   - title: Reference
     children:
-      - {number: "12", title: API reference, source: docs/api.md}
-      - {number: "13", title: External dependency contracts, source: docs/external-contracts.md}
-      - {number: "14", title: Export conformance, source: docs/export-conformance.md}
-      - {number: "15", title: Framework comparison, source: docs/comparison.md}
-      - {number: "16", title: Architecture, source: docs/architecture.md}
-      - {number: "17", title: Capability reference, source: docs/capabilities.md}
+      - {number: "13", title: API reference, source: docs/api.md}
+      - {number: "14", title: External dependency contracts, source: docs/external-contracts.md}
+      - {number: "15", title: Export conformance, source: docs/export-conformance.md}
+      - {number: "16", title: Framework comparison, source: docs/comparison.md}
+      - {number: "17", title: Architecture, source: docs/architecture.md}
+      - {number: "18", title: Capability reference, source: docs/capabilities.md}
   - title: Project
     children:
-      - {number: "18", title: Repository overview, source: README.md, slug: Repository-Overview, numbered_h1: false}
-      - {number: "19", title: Examples, source: examples/README.md}
-      - {number: "20", title: Contributing, source: CONTRIBUTING.md}
-      - {number: "21", title: Security policy, source: SECURITY.md, slug: Security-Policy}
-      - {number: "22", title: Test import boundaries, source: tests/README.md, slug: Test-Import-Boundaries}
-      - {number: "23", title: Changelog, source: CHANGELOG.md}
-      - {number: "24", title: License, source: LICENSE}
-      - {number: "25", title: Decision-model pilot, source: docs/decision-model-pilot.md}
-      - {number: "26", title: Feature composition, source: docs/feature-composition.md}
+      - {number: "19", title: Repository overview, source: README.md, slug: Repository-Overview, numbered_h1: false}
+      - {number: "20", title: Examples, source: examples/README.md}
+      - {number: "21", title: Contributing, source: CONTRIBUTING.md}
+      - {number: "22", title: Security policy, source: SECURITY.md, slug: Security-Policy}
+      - {number: "23", title: Test import boundaries, source: tests/README.md, slug: Test-Import-Boundaries}
+      - {number: "24", title: Changelog, source: CHANGELOG.md}
+      - {number: "25", title: License, source: LICENSE}
+      - {number: "26", title: Decision-model pilot, source: docs/decision-model-pilot.md}
+      - {number: "27", title: Feature composition, source: docs/feature-composition.md}

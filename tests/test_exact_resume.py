@@ -497,7 +497,7 @@ def _hashed_while_loading(monkeypatch) -> list[str]:
 
     hashed: list[str] = []
     loading: list[bool] = []
-    real_sha256, real_load = nn_checkpoint._sha256, NNCheckpoint._load_resume_point
+    real_sha256, real_load = nn_checkpoint.file_sha256, NNCheckpoint._load_resume_point
 
     def counting_sha256(path):
         if loading:
@@ -511,7 +511,7 @@ def _hashed_while_loading(monkeypatch) -> list[str]:
         finally:
             loading.pop()
 
-    monkeypatch.setattr(nn_checkpoint, "_sha256", counting_sha256)
+    monkeypatch.setattr(nn_checkpoint, "file_sha256", counting_sha256)
     monkeypatch.setattr(NNCheckpoint, "_load_resume_point", staticmethod(tracked_load))
     return hashed
 
