@@ -1,4 +1,4 @@
-# 5. HuggingFace Hub integration
+# 6. HuggingFace Hub integration
 
 NNx ships first-class interop with the HuggingFace ecosystem:
 
@@ -40,8 +40,8 @@ Use safetensors when **any** of the following is true:
 
 Pickle remains the default. It is the right choice for local-only
 training runs where the convenience of `torch.save`-ing the full
-dataclass outweighs the security trade-off. That save preserves the
-`OrderedDict` key order and the `NNCheckpoint` identity.
+dataclass outweighs the security trade-off. A pickle checkpoint (`torch.save` of the whole
+`NNCheckpoint`) preserves the `OrderedDict` key order and the dataclass identity.
 
 ### 1.2. Writing a safetensors checkpoint
 
@@ -63,7 +63,7 @@ ckpt.to_file("checkpoint.pt")                            # legacy default
 ckpt.to_file("checkpoint.safetensors", format="safetensors")
 ```
 
-`NNParams`, `NNModelParams`, and `NNIterationDataPoint` are
+`NNParams`, `NNModelParams`, `NNIterationDataPoint` and the transform recipe are
 JSON-serialized into the safetensors `metadata` dict. The format spec
 limits metadata to `str -> str`, so a JSON wrapper is the cleanest
 fit. The net's tensors are detached and cloned, because safetensors refuses
@@ -140,7 +140,7 @@ This writes three files into `./my-model/`:
     A recorded recipe (`nnx.transforms`, see
     [Surgery §8](surgery.md#8-recorded-recipes-surgery-that-checkpoints-can-rebuild))
     can change a model's topology. Such a model writes its ordered operations
-    to `"transforms"`, each with its id, version, targets and config. A
+    to `"transforms"`, each with its `name`, `version` and `options` (the operation's own state). A
     torchao QAT conversion (`QATLifecycleCallback`) is recorded there too.
     A model with neither has an empty list.
     It is saved only while its topology is exactly its base plus that recipe.
@@ -157,6 +157,8 @@ This writes three files into `./my-model/`:
 
 - `README.md` — auto-generated model card from the mixin.
 
+The weights and `config.json` are each written atomically: `model.safetensors` is staged as `model.safetensors.partial` and renamed into place when complete, and `config.json` is replaced atomically. `huggingface_hub` writes `README.md` non-atomically and only when it is absent, so delete it to regenerate the card. An interrupted export can leave some files without a completion marker, so treat a directory whose `config.json` or weights are missing as incomplete. Running `save_pretrained` again into the same directory overwrites the weights and `config.json`.
+
 ### 2.3. Load from a local directory
 
 ```python
@@ -164,8 +166,8 @@ from nnx import NNModel
 model = NNModel.from_pretrained("./my-model")
 ```
 
-`from_pretrained` reads `config.json` and rebuilds `NNParams` and
-`NNModelParams` via their public `from_state` constructors. It replays any
+`from_pretrained` reads `config.json` and rebuilds `NNParams` via `NNParams.resolve_from_state`
+(LM configs become `NNTransformerParams`) and `NNModelParams` via `from_state`. It replays any
 recorded `"transforms"` on the fresh base: LoRA wrappers are rebuilt, and
 low-rank factors are allocated in their recorded shape (no SVD). It then
 loads the safetensors weights into the freshly-built `self.net`.
@@ -175,9 +177,9 @@ operation or version is refused before any tensor is loaded. The error names
 both possible causes: an operation of a newer NNx, or a callback's own
 transform that only its producer can rebuild. Tensors round-trip bit-exactly.
 
-The params' `state()` round-trips too, except `NNModelParams.device`. It
-takes `map_location` (default `"cpu"`), so a GPU or MPS model reloads on the
-CPU unless you pass one.
+The params' `state()` round-trips too, except `NNModelParams.device`.
+`from_pretrained(map_location=...)`, default `"cpu"`, sets it, so a GPU or MPS model
+reloads on the CPU unless you pass one.
 
 The saved precision policy is resolved again on the destination device.
 `precision=` replaces it, and the legacy `mixed_precision` flag with it.

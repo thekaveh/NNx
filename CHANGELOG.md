@@ -1,10 +1,14 @@
-# 23. Changelog
+# 24. Changelog
 
 All notable changes to NNx are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is roughly [SemVer](https://semver.org/) — pre-1.0, we allow behavior changes (typically bug fixes) without renaming public APIs.
 
 This file intentionally keeps the standard Keep a Changelog heading format rather than the hierarchical numbering used by the rest of the documentation.
 
 ## [Unreleased]
+
+### Fixed
+
+- **Hub and Ollama exports are atomic.** `NNModel.save_pretrained` and `export_ollama_modelfile` write each file to a temporary name and rename it into place, so an interrupted export leaves no truncated `model.safetensors` or `config.json` behind.
 
 ## [0.5.0](https://github.com/thekaveh/NNx/compare/v0.4.4...v0.5.0) (2026-11-26)
 
