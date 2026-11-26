@@ -1,4 +1,4 @@
-# 21. Security Policy
+# 22. Security Policy
 
 ## 1. Supported Versions
 

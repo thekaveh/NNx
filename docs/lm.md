@@ -1,4 +1,4 @@
-# 7. Language modeling (decoder-only)
+# 8. Language modeling (decoder-only)
 
 NNx ships a TinyStories-class decoder-only Transformer alongside the GNN and
 FeedFwd architectures. Use it for small autoregressive experiments. It
@@ -142,7 +142,16 @@ round-trip through `state()` / `from_state()` interchangeably.
 
 To vary an existing config, such as a longer context for a second run,
 rebuild a builder from it instead of retyping the chain:
-`NNTransformerParamsBuilder.from_params(net_params).context(max_seq_len=256, rope_base=net_params.rope_base).build()`.
+
+
+```python
+from nnx import NNTransformerParamsBuilder
+
+longer = (NNTransformerParamsBuilder.from_params(net_params)
+          .context(max_seq_len=256, rope_base=net_params.rope_base)
+          .build())
+```
+
 `from_params` carries every field, including inherited `NNParams`
 fields no setter exposes. `.copy()` branches a builder in progress
 (see [Concepts §2.4](concepts.md#24-variant-gated-construction-via-builder)).
@@ -349,8 +358,8 @@ offline.
       NLL over the valid-token count, independent of batching and right
       padding. It also reports
       `metrics["perplexity"]` (`exp(NLL)`, `+inf` on overflow, never a
-      clipped value) and `metrics["token_accuracy"]`. An all-masked epoch is
-      reported unavailable. No classification field is fabricated, and
+      clipped value) and `metrics["token_accuracy"]`. An all-masked epoch yields an empty
+      record (`status="empty"`, no loss or metrics). No classification field is fabricated, and
       `MonitorSpec("nll")` (with `MetricSpec("nll")` declared) selects BEST on
       validation NLL.
     - The model never receives the attention mask. A mapping batch whose
@@ -446,9 +455,9 @@ offline.
     kernel's vector width (8 tokens on AVX2, 16 on AVX512). FP16/BF16/FP32
     queries are unaffected and receive the mask unchanged.
 
-    The RoPE cos/sin tables are computed in FP32 at construction and only
-    cast by `.double()`, so a double model's rotations carry FP32-level
-    rounding. `from_checkpoint` rebuilds the net in the default dtype. Call
+    The RoPE cos/sin tables are computed in FP32 at construction. A module-wide dtype change such as
+    `.double()` casts them as well, so a double model's rotations carry
+    FP32-level rounding. `from_checkpoint` rebuilds the net in the default dtype. Call
     `.double()` and reload the FP64 `net_state` to restore a double model
     exactly.
 

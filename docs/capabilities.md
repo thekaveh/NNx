@@ -1,4 +1,4 @@
-# 17. Capability reference
+# 18. Capability reference
 
 This page lists the main capabilities of NNx, grouped by task. Each entry names
 its entry points and links to the guide or example that shows it. It describes
@@ -19,7 +19,7 @@ first trained model, see the [README](../README.md#2-install) and the
   scheduler steps once per epoch by default, or once per committed optimizer
   update with `NNSchedulerParams(clock="optimizer_update")`.
 - **Precision.** `PrecisionPolicy` selects FP32, FP16 or BF16 explicitly.
-- **Metrics and monitors.** `NNTrainParams.extra_metrics` accepts any
+- **Metrics and monitors.** `NNTrainParams.extra_metrics` maps a name to any
   `callable(y_true, y_pred) -> float`. Declared metrics (`MetricSpec`) and one
   named monitor (`MonitorSpec`) drive BEST selection, plateau scheduling and
   an `EarlyStopping` given the same monitor.
@@ -57,7 +57,7 @@ first trained model, see the [README](../README.md#2-install) and the
   one process per device under `torchrun` on one machine. NNx partitions the
   data and keeps every update equal to the union batch's, and one rank writes
   the run. See
-  [Quickstart §3.10](quickstart.md#310-data-parallel-training-on-one-machine).
+  [Quickstart recipes §3.10](quickstart-recipes.md#310-data-parallel-training-on-one-machine).
 - **Opt-in compilation.** `model.train(params, compile=CompileSpec())` compiles
   the built-in step's FP32 forward pass; checkpoints, export and later
   inference stay eager. It records requested and effective state and never
@@ -184,7 +184,7 @@ clipping.
 - **Causal language-model task.** `nnx.lm_tasks.CausalLMTask` provides the
   next-token objective and evaluation for a `TransformerNN`, reporting token
   NLL, perplexity and accuracy. See
-  [Quickstart §3.6](quickstart.md#36-causal-language-models).
+  [Quickstart recipes §3.6](quickstart-recipes.md#36-causal-language-models).
 - **Language modeling.** `TransformerNN` is a decoder-only model with
   RMSNorm, RoPE, SwiGLU, tied embeddings and a KV cache.
   `GenerativeNNModel.generate()` supports greedy, top-k, top-p and

@@ -1117,13 +1117,13 @@ def scenario(name: str, rank: int, world_size: int) -> dict:
         import nnx.nn.params.nn_checkpoint as nn_checkpoint
 
         hashed: list[str] = []  # FEAT-046: the files this rank hashes to verify the resume point
-        real_sha256 = nn_checkpoint._sha256
+        real_sha256 = nn_checkpoint.file_sha256
 
         def counting_sha256(path):
             hashed.append(path)
             return real_sha256(path)
 
-        nn_checkpoint._sha256 = counting_sha256
+        nn_checkpoint.file_sha256 = counting_sha256
         verified: list[str] = []  # the ranks' NNCheckpoint.verify calls
         real_verify = nn_checkpoint.NNCheckpoint.verify
 

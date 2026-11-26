@@ -1,4 +1,4 @@
-# 20. Contributing to NNx
+# 21. Contributing to NNx
 
 Thanks for being interested in contributing. NNx is a small library; the goal is to keep it small, tested, and useful for the existing notebook consumers while inviting new ones.
 
@@ -202,8 +202,9 @@ evidence: a run of that job (or the manual run) with no failure or skip.
 - Wait for every CI job to go green. The jobs are lint, format, tests and
   mkdocs on Python 3.11–3.14. They also include the feature-composition,
   export-conformance, installed-profile and `floor-deps` lanes.
-- The branch ruleset requires only `lint-and-test` and `pip-audit` on
-  3.11–3.12. Check the other lanes before you arm auto-merge.
+- The branch ruleset requires `lint-and-test` on 3.11–3.14, `pip-audit` on
+  3.11–3.12, and `floor-deps` (torch 2.4.1, Python 3.11). Check the other lanes
+  before you arm auto-merge.
 - The `security.yml` and `release.yml` audits run on every matrix Python with no
   ignored advisories.
 - Address review comments by pushing new commits; pull requests merge with a merge commit.

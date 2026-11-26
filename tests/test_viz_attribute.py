@@ -116,7 +116,7 @@ def test_a_three_dimensional_attribution_renders_its_first_sample():
     from nnx.viz.attribute import _attribution_to_figure
 
     attr = torch.stack([torch.zeros(2, 3), torch.ones(2, 3)])
-    fig = _attribution_to_figure(attr, attr)
+    fig = _attribution_to_figure(attr)
     assert torch.equal(torch.tensor(fig.data[0].z), torch.zeros(2, 3, dtype=torch.float64))
 
 

@@ -473,7 +473,7 @@ def test_reproducibility_dataloader_worker_init_fn():
 
 
 def test_reproducibility_lr_finder():
-    """Quickstart §2.8 / Reproducibility — lr_finder runs and returns LRFinderResult."""
+    """Quickstart recipes §2.9 / Reproducibility — lr_finder runs and returns LRFinderResult."""
     from nnx import lr_finder
 
     torch.manual_seed(0)

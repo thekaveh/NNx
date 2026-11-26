@@ -1,4 +1,4 @@
-# 15. NNx vs Lightning / HF / fastai / Composer
+# 16. NNx vs Lightning / HF / fastai / Composer
 
 An evidence-oriented, scope-explicit comparison of NNx against nearby PyTorch
 training and specialization toolkits. Comparing your own runs (repeated
@@ -11,7 +11,7 @@ NNx's own claims about **combinations** of its features live in the
 [feature-composition matrix](feature-composition.md). It records which
 combinations are verified, refused or unverified on which profile. Examples
 are accumulation `TC-01`, DDP parity `TC-04`, compile and resume `CR-02`,
-compile with QAT refused `MT-01`, and CUDA AMP unverified on CPU `TC-06`. The
+compile with QAT refused `MT-01`, and FP16 AMP on CUDA unverified `TC-06`. The
 rows below describe single capabilities.
 
 ## 1. Quick decision matrix
@@ -162,7 +162,7 @@ NNx publishes to the same Hub HF uses; there's no separate NNx model zoo.
 | Model loading | Never: the caller passes a loaded model and tokenizer (and records the revision) | A Hub name (downloaded) or an already-loaded model and tokenizer passed to the pipeline | The caller loads a checkpoint (`GLiClassModel.from_pretrained`, a Hub name or a local path) and passes the model and tokenizer to its pipeline |
 | Scoring recorded with each result | Templates, label ids, scoring method, truncation, revision; `calibrated: False` | Scores only | Scores only |
 
-NNx ships only the NLI baseline as a provider. Transfer to a decision task is
+Among label-conditioned providers, NNx ships only the NLI baseline (`NLIProvider`); GLiClass is a follow-on comparison under the same provider contract, not a shipped adapter. Transfer to a decision task is
 measured on labelled records, never assumed. GLiClass is a follow-on
 comparison under the same provider contract rather than a shipped adapter.
 

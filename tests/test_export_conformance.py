@@ -579,7 +579,7 @@ def test_an_unreadable_artifact_and_a_broken_install_are_classified(tmp_path, mo
         raise PermissionError("denied")
 
     with monkeypatch.context() as patch:
-        patch.setattr(conformance, "_sha256", unreadable)
+        patch.setattr(conformance, "file_sha256", unreadable)
         replay = execute(record, tmp_path)
     assert replay["failure"] == "hash-mismatch" and "PermissionError" in replay["stages"]["load"]["detail"]
 

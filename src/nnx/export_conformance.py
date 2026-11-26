@@ -67,6 +67,8 @@ from typing import Any, Optional, Union
 import numpy as np
 import torch
 
+from ._artifacts import file_sha256
+
 __all__ = [
     "EXIT_CODES",
     "FAILURES",
@@ -523,14 +525,6 @@ def _source(revision: Optional[str]) -> dict[str, Any]:
 # --- artifacts -------------------------------------------------------------------------------------------------
 
 
-def _sha256(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _external_locations(model: Any) -> set[str]:
     """Files the model's tensors live in (``external_data`` locations)."""
     import onnx
@@ -592,7 +586,7 @@ def _manifest(directory: str) -> list[dict[str, Any]]:
         if os.path.islink(path) or not os.path.isfile(path):
             raise ConformanceError(f"the exporter wrote {name!r}, which is not a regular file")
         role = "model" if name == MODEL_FILE else "external-data" if name in external else "sidecar"
-        files.append({"path": name, "role": role, "bytes": os.path.getsize(path), "sha256": _sha256(path)})
+        files.append({"path": name, "role": role, "bytes": os.path.getsize(path), "sha256": file_sha256(path)})
     missing = sorted(external - {entry["path"] for entry in files})
     if missing:
         raise ConformanceError(f"external data {missing} is referenced but was not written")
@@ -634,7 +628,7 @@ def _verify_artifacts(record: Mapping[str, Any], directory: Union[str, os.PathLi
             problems.append(f"{name}: a symlink, not a written file")
         elif not os.path.isfile(path):
             problems.append(f"{name}: missing")
-        elif os.path.getsize(path) != entry["bytes"] or _sha256(path) != entry["sha256"]:
+        elif os.path.getsize(path) != entry["bytes"] or file_sha256(path) != entry["sha256"]:
             problems.append(f"{name}: hash mismatch (recorded sha256 {entry['sha256'][:12]}…)")
     if os.path.isdir(root):
         extra = sorted(set(_files(root)) - names)

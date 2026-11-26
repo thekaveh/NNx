@@ -93,7 +93,7 @@ class _ReadSpy:
         def no_read_back(path):
             raise AssertionError(f"read back to hash: {path}")
 
-        monkeypatch.setattr(nn_checkpoint, "_sha256", no_read_back)
+        monkeypatch.setattr(nn_checkpoint, "file_sha256", no_read_back)
 
     def payloads(self) -> list[str]:
         """Reads of anything but a manifest (read to number the generation),
@@ -136,7 +136,7 @@ def test_a_training_run_reads_no_resume_point_back_while_saving(tmp_path, monkey
         raise AssertionError(f"read back to hash: {path}")
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(nn_checkpoint, "_sha256", no_read_back)
+        scoped.setattr(nn_checkpoint, "file_sha256", no_read_back)
         trained = _train()
     for tag in (Checkpoints.LAST, Checkpoints.BEST):
         assert NNCheckpoint.verify(trained.id, tag) is not None

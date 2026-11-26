@@ -1,4 +1,4 @@
-# 25. Decision-model pilot
+# 26. Decision-model pilot
 
 *Status: **experimental — no-go**. The mechanics are verified offline. The
 empirical study is **blocked**: its resources are not supplied, and its
@@ -28,8 +28,8 @@ is no new `Nets` member, and the fixed-head `predict` is unchanged.
 - **Choice** softmaxes the candidates' scores (cross-entropy across
   candidates); a **Boolean** scores its one proposition with one logit
   (binary cross-entropy). The pilot's training step trains both on the fit
-  families. On the synthetic families the Boolean path's measured effect is
-  near the trivial baseline — mechanics wiring, not a result. **Score**
+  families. Mechanics runs report held-out accuracy per family. No measured result is recorded
+  here; the Boolean path is exercised for wiring only. **Score**
   decisions are refused.
 - The trained scorer answers as a `DecisionProvider`. Its predictions go
   through `nnx.decisions.benchmark.collect` into replay records
@@ -58,8 +58,8 @@ the operator supplies the resources. Its blocked report lists them as
 unrecorded. A manifest lacking a split, the budget or the model identity is
 rejected.
 
-Held-out families never enter fitting or selection; they are scored once, at
-the end. The compute cap is enforced at the update boundary: `max_steps`
+Held-out families never enter fitting or selection; they are scored only at
+the end, after fitting and selection. The compute cap is enforced at the update boundary: `max_steps`
 committed updates or `max_seconds`, whichever comes first. A run that reaches
 it writes a stop record and keeps every artifact. If no epoch completed, there
 is no checkpoint, and it is marked unproduced.
