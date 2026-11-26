@@ -175,7 +175,11 @@ builds a tensor on the MPS device has no CPU pin; an `mps` test covers it.
   usable device. It runs `pytest tests -m mps` with `NNX_REQUIRE_MPS=1` and
   fails on any skip. The `mps-gate-without-mps` job runs the same probe and
   tests on a hosted Linux runner, which has no MPS, and must see every `mps`
-  test fail with the gate message. Pull requests from forks never run on it. While the
+  test fail with the gate message. Each GPU step of the `mps-evidence` job first
+  takes the shared Mac GPU lock, `~/.cache/mac-gpu.lock`, through
+  `scripts/with_mac_gpu_lock.py`, and gives up after 15 minutes. Any other GPU job
+  on the same Mac must take that lock with `fcntl.flock`, or the two can overlap
+  and exhaust unified memory. Pull requests from forks never run on it. While the
   runner is offline, a run waits in its queue; it is a workflow of its own,
   so the CI run is not held, and a newer commit replaces the waiting run.
   Unset the variable to stop queuing runs. Hosted macOS

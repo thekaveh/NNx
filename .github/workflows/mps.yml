@@ -37,7 +37,8 @@ jobs:
     name: MPS tests (self-hosted Apple silicon)
     if: vars.NNX_MPS_RUNNER == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, macos, arm64]
-    timeout-minutes: 30
+    # Each GPU step waits up to 15 minutes for the shared Mac GPU lock (scripts/with_mac_gpu_lock.py).
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,7 +56,7 @@ jobs:
 
       - name: Probe the MPS device (fails without one)
         run: |
-          uv run --frozen --no-sync python - <<'PY'
+          python3 scripts/with_mac_gpu_lock.py -- uv run --frozen --no-sync python - <<'PY'
           import platform, torch
           built, available = torch.backends.mps.is_built(), torch.backends.mps.is_available()
           print("torch", torch.__version__, platform.platform(), "mps built:", built, "available:", available)
@@ -69,7 +70,7 @@ jobs:
           NNX_TQDM_DISABLE: "1"
         run: |
           mkdir -p mps-evidence
-          uv run --frozen --no-sync pytest tests -m mps -p no:cacheprovider -rs -q --junitxml=mps-evidence/pytest.xml
+          python3 scripts/with_mac_gpu_lock.py -- uv run --frozen --no-sync pytest tests -m mps -p no:cacheprovider -rs -q --junitxml=mps-evidence/pytest.xml
           uv run --frozen --no-sync python - <<'PY'
           import xml.etree.ElementTree as ET
           suite = ET.parse("mps-evidence/pytest.xml").getroot().find("testsuite")
