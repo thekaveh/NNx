@@ -93,7 +93,7 @@ def test_all_workflows_use_pinned_uv_action_and_no_unlocked_tool_install():
             # Every step carries it, so a bump that misses one step stays red.
             steps = re.findall(r"astral-sh/setup-uv@.*", workflow)
             assert steps, path
-            assert set(steps) == {"astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3"}, path
+            assert set(steps) == {"astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0"}, path
 
 
 def test_security_runs_for_pushes_and_pull_requests_on_gitflow_branches():
