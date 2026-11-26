@@ -4,25 +4,9 @@ All notable changes to NNx are documented here. Format follows [Keep a Changelog
 
 This file intentionally keeps the standard Keep a Changelog heading format rather than the hierarchical numbering used by the rest of the documentation.
 
-## [0.5.0](https://github.com/thekaveh/NNx/compare/v0.4.4...v0.5.0) (2026-11-26)
-
-
-### ⚠ BREAKING CHANGES
-
-* NNx requires Python 3.11 or later. Users on Python 3.10 stay on 0.4.x, which pip selects for them.
-
-### Features
-
-* drop Python 3.10 support ([0fe70ec](https://github.com/thekaveh/NNx/commit/0fe70ecca922b012a53a58b364c913c1f78fc6ab))
-
-
-### Documentation
-
-* **changelog:** record the Python 3.10 drop as a breaking change ([34eaf02](https://github.com/thekaveh/NNx/commit/34eaf02efe5534255a9ac639574c1e1d7590711b)), closes [#759](https://github.com/thekaveh/NNx/issues/759)
-* **changelog:** restore the released 0.4.4 section and keep one Unreleased 3.10 entry ([1ed33f4](https://github.com/thekaveh/NNx/commit/1ed33f4522dbfb9b874a49cf69cee5aafb8208ef))
-* move the supported Python floor to 3.11 ([38d6168](https://github.com/thekaveh/NNx/commit/38d61681e6c7f23c3ecd5ed628cbc288cc2ddd19)), closes [#759](https://github.com/thekaveh/NNx/issues/759)
-
 ## [Unreleased]
+
+## [0.5.0](https://github.com/thekaveh/NNx/compare/v0.4.4...v0.5.0) (2026-11-26)
 
 ### Changed
 

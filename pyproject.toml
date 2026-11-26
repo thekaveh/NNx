@@ -11,8 +11,8 @@ release = [
 ]
 docs-publish = [
     "cairosvg==2.9.1",
-    "markdown==3.10.3",
-    "pyyaml==6.0.3",
+    "markdown==3.11.3",
+    "pyyaml==6.0.4",
 ]
 
 [project]
