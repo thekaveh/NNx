@@ -1,8 +1,10 @@
-# 12. API Reference
+# 13. API Reference
 
 Generated from runtime signatures and source docstrings as portable Markdown so the same reference is readable in the repository, on the documentation site, and in the wiki. Sections are ordered from foundational APIs to specialized modules.
 
 ## 1. Top-level package
+
+### 1.1. Package-level exports
 
 @api nnx members=__version__,set_seed,dataloader_worker_init_fn,env_snapshot,LRFinderResult,lr_finder
 
@@ -694,6 +696,8 @@ Through Optuna (extra `optuna`); see Concepts §29.
 
 ## 3. Params
 
+### 3.1. Params classes
+
 @api nnx.nn.params.nn_params.NNParams
 
 @api nnx.nn.params.nn_model_params.NNModelParams
@@ -736,7 +740,7 @@ Through Optuna (extra `optuna`); see Concepts §29.
 
 @api nnx.nn.params.nn_evaluation_data_point.NNEvaluationDataPoint
 
-### 3.1. Bounded history journal (`nnx.history`)
+### 3.2. Bounded history journal (`nnx.history`)
 
 @api nnx.history.HistoryJournal
 
@@ -749,6 +753,8 @@ Through Optuna (extra `optuna`); see Concepts §29.
 @api nnx.history.HistoryCorruptionError
 
 ## 4. Networks
+
+### 4.1. Network classes
 
 @api nnx.nn.net.feed_fwd_nn.FeedFwdNN
 
@@ -774,6 +780,8 @@ Through Optuna (extra `optuna`); see Concepts §29.
 
 ## 5. Datasets
 
+### 5.1. Dataset classes
+
 @api nnx.nn.dataset.nn_dataset_base.NNDatasetBase
 
 @api nnx.nn.dataset.nn_dataset.NNDataset
@@ -785,6 +793,8 @@ Through Optuna (extra `optuna`); see Concepts §29.
 @api nnx.nn.dataset.nn_preference_dataset.NNPreferenceDataset
 
 ## 6. Enums
+
+### 6.1. Enums
 
 @api nnx.nn.enum.activations.Activations
 
@@ -802,6 +812,8 @@ Through Optuna (extra `optuna`); see Concepts §29.
 
 ## 7. Callbacks
 
+### 7.1. Callbacks
+
 @api nnx.nn.callbacks.Callback
 
 @api nnx.nn.callbacks.EarlyStopping
@@ -815,6 +827,8 @@ Through Optuna (extra `optuna`); see Concepts §29.
 @api nnx.nn.callbacks.WandbCallback
 
 ## 8. Fine-tuning (`nnx.finetune`)
+
+### 8.1. Freezing and transfer learning
 
 @api nnx.finetune.freezing.freeze
 
@@ -882,11 +896,15 @@ LoRA + DoRA + IA3 + Prefix-Tuning + Prompt-Tuning + Adapters. The `apply_*_to` h
 
 ## 10. Pruning (`nnx.prune`)
 
+### 10.1. Pruning
+
 @api nnx.prune.magnitude.magnitude_prune
 
 @api nnx.prune.semi_structured.semi_structured_24
 
 ## 11. Model surgery (`nnx.surgery`)
+
+### 11.1. Surgery primitives
 
 Walkthrough at [Model surgery](surgery.md). Every primitive returns a fresh module (`expand_embedding` also returns a frozen-row mask) and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop.
 
@@ -902,6 +920,8 @@ Walkthrough at [Model surgery](surgery.md). Every primitive returns a fresh modu
 
 ## 12. Quantization (`nnx.quantize`)
 
+### 12.1. Quantization
+
 PTQ INT8 weight-only + QAT 8da4w via [`torchao`](https://github.com/pytorch/ao) (the replacement for the removed `torch.ao.quantization`). Opt-in via `pip install "thekaveh-nnx[quantize]"`.
 
 @api nnx.quantize.ptq.quantize_int8
@@ -911,6 +931,8 @@ PTQ INT8 weight-only + QAT 8da4w via [`torchao`](https://github.com/pytorch/ao) 
 @api nnx.quantize.qat.QATLifecycleCallback
 
 ## 13. Diffusion (`nnx.diffusion`)
+
+### 13.1. Schedules and samplers
 
 @api nnx.diffusion.schedules.NoiseSchedulers
 
@@ -1014,6 +1036,8 @@ Walkthrough at [DPO](dpo.md).
 
 ## 15. Embeddings (`nnx.embeddings`)
 
+### 15.1. Embedding classes
+
 End-to-end walkthrough at [Embeddings](embeddings.md). Opt-in via `pip install "thekaveh-nnx[embeddings]"`.
 
 @api nnx.embeddings.contrastive_trainer.ContrastiveTextDataset
@@ -1081,6 +1105,8 @@ Walkthrough at [HuggingFace Hub](hub.md).
 
 ## 18. Generation (`nnx.generation`)
 
+### 18.1. Logits processors
+
 `LogitsProcessor` chain for autoregressive sampling. Used by `GenerativeNNModel.generate()` (§2.2). Pure-torch — no optional deps.
 
 @api nnx.generation.LogitsProcessor
@@ -1147,8 +1173,10 @@ Opt-in via `pip install "thekaveh-nnx[viz]"` (pulls `torchinfo` + `captum`) and 
 
 ## 20. Utilities
 
+### 20.1. Utility functions
+
 @api nnx.utils members=print_tree,print_table,flatten_dict
 
-### 20.1. `Utils` back-compat facade
+### 20.2. `Utils` back-compat facade
 
 `nnx.Utils` is a thin staticmethod facade over the module-level functions above, kept so existing notebook code that calls `Utils.print_tree(...)` / `Utils.print_table(...)` / `Utils.flatten_dict(...)` continues to work. New code should prefer the module-level functions directly.

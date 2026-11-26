@@ -111,7 +111,9 @@ from .params.nn_model_params import NNModelParams
 from .params.nn_optim_params import NNOptimParams, _validate_step_knobs
 from .params.nn_params import NNParams
 from .params.nn_run import (
+    _CREATED_FILE_MODE,
     NNRun,
+    _atomic_write_text,
     _best_err,
     _may_name_best_pointer,
     _print_run_saved,
@@ -4448,7 +4450,17 @@ class NNModel(_HubMixinBase):
         # tie on reload by copying both identical keys into the shared
         # parameter.
         tensors = _tensor_state_dict(self.net.state_dict(), operation="Hugging Face Hub export")
-        save_file(tensors, str(save_dir / _HUB_MODEL_FILENAME))
+        # The weights are written to a partial file and renamed into place, so an
+        # interrupted export never leaves a truncated weights file under the final name.
+        weights_path = save_dir / _HUB_MODEL_FILENAME
+        partial_path = save_dir / (_HUB_MODEL_FILENAME + ".partial")
+        try:
+            save_file(tensors, str(partial_path))
+            os.replace(partial_path, weights_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(partial_path)
+            raise
 
         config: dict[str, Any] = {
             "params": self.params.state(),
@@ -4463,8 +4475,11 @@ class NNModel(_HubMixinBase):
         # the host locale's default encoding could mis-encode unicode
         # paths or non-ASCII tokenizer names round-tripped via
         # `params.state()`.
-        with open(save_dir / _HUB_CONFIG_FILENAME, "w", encoding="utf-8") as f:
-            json.dump(config, f, sort_keys=True, indent=2)
+        _atomic_write_text(
+            str(save_dir / _HUB_CONFIG_FILENAME),
+            json.dumps(config, sort_keys=True, indent=2),
+            mode=_CREATED_FILE_MODE,  # the mode a plain write gave before this path was atomic
+        )
 
     def _hub_reconstruction_config(self, save_directory) -> dict[str, Any]:
         """Persist subclass-owned artifacts and return their config fragment."""

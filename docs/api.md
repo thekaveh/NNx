@@ -1,8 +1,10 @@
-# 12. API Reference
+# 13. API Reference
 
 Generated from runtime signatures and source docstrings as portable Markdown so the same reference is readable in the repository, on the documentation site, and in the wiki. Sections are ordered from foundational APIs to specialized modules.
 
 ## 1. Top-level package
+
+### 1.1. Package-level exports
 
 #### `nnx`
 
@@ -10344,6 +10346,8 @@ A split, batch or setting that would leak or cannot be served.
 
 ## 3. Params
 
+### 3.1. Params classes
+
 #### `nnx.nn.params.nn_params.NNParams`
 
 ```python
@@ -12077,7 +12081,7 @@ nnx.nn.params.nn_evaluation_data_point.NNEvaluationDataPoint.from_state(state: '
 No public description is currently available.
 
 
-### 3.1. Bounded history journal (`nnx.history`)
+### 3.2. Bounded history journal (`nnx.history`)
 
 #### `nnx.history.HistoryJournal`
 
@@ -12187,6 +12191,8 @@ A history journal whose committed files do not match its manifest: a chunk whose
 
 
 ## 4. Networks
+
+### 4.1. Network classes
 
 #### `nnx.nn.net.feed_fwd_nn.FeedFwdNN`
 
@@ -12686,6 +12692,8 @@ No public description is currently available.
 
 ## 5. Datasets
 
+### 5.1. Dataset classes
+
 #### `nnx.nn.dataset.nn_dataset_base.NNDatasetBase`
 
 ```python
@@ -12912,6 +12920,8 @@ and an explicit size is kept).
 
 
 ## 6. Enums
+
+### 6.1. Enums
 
 #### `nnx.nn.enum.activations.Activations`
 
@@ -13314,6 +13324,8 @@ Enum value `linear_warmup_decay`.
 
 ## 7. Callbacks
 
+### 7.1. Callbacks
+
 #### `nnx.nn.callbacks.Callback`
 
 ```python
@@ -13664,6 +13676,8 @@ No public description is currently available.
 
 
 ## 8. Fine-tuning (`nnx.finetune`)
+
+### 8.1. Freezing and transfer learning
 
 #### `nnx.finetune.freezing.freeze`
 
@@ -14718,6 +14732,8 @@ No public description is currently available.
 
 ## 10. Pruning (`nnx.prune`)
 
+### 10.1. Pruning
+
 #### `nnx.prune.magnitude.magnitude_prune`
 
 ```python
@@ -14839,6 +14855,8 @@ training after this call.
 
 
 ## 11. Model surgery (`nnx.surgery`)
+
+### 11.1. Surgery primitives
 
 Walkthrough at [Model surgery](surgery.md). Every primitive returns a fresh module (`expand_embedding` also returns a frozen-row mask) and composes with `NNModel.train()` for the "load checkpoint → surgery → refine" loop.
 
@@ -15089,6 +15107,8 @@ Raises:
 
 ## 12. Quantization (`nnx.quantize`)
 
+### 12.1. Quantization
+
 PTQ INT8 weight-only + QAT 8da4w via [`torchao`](https://github.com/pytorch/ao) (the replacement for the removed `torch.ao.quantization`). Opt-in via `pip install "thekaveh-nnx[quantize]"`.
 
 #### `nnx.quantize.ptq.quantize_int8`
@@ -15308,6 +15328,8 @@ Describe the completed conversion so checkpoint loaders can replay it.
 
 
 ## 13. Diffusion (`nnx.diffusion`)
+
+### 13.1. Schedules and samplers
 
 #### `nnx.diffusion.schedules.NoiseSchedulers`
 
@@ -16931,6 +16953,8 @@ Raises:
 
 ## 15. Embeddings (`nnx.embeddings`)
 
+### 15.1. Embedding classes
+
 End-to-end walkthrough at [Embeddings](embeddings.md). Opt-in via `pip install "thekaveh-nnx[embeddings]"`.
 
 #### `nnx.embeddings.contrastive_trainer.ContrastiveTextDataset`
@@ -17577,6 +17601,8 @@ Opt-in via `pip install "thekaveh-nnx[hub]"`. Two integration surfaces:
 Walkthrough at [HuggingFace Hub](hub.md).
 
 ## 18. Generation (`nnx.generation`)
+
+### 18.1. Logits processors
 
 `LogitsProcessor` chain for autoregressive sampling. Used by `GenerativeNNModel.generate()` (§2.2). Pure-torch — no optional deps.
 
@@ -18516,6 +18542,8 @@ Raises:
 
 ## 20. Utilities
 
+### 20.1. Utility functions
+
 #### `nnx.utils`
 
 ```python
@@ -18579,6 +18607,6 @@ Flatten a nested dict so nested keys become ``parent.child`` style.
 ```
 
 
-### 20.1. `Utils` back-compat facade
+### 20.2. `Utils` back-compat facade
 
 `nnx.Utils` is a thin staticmethod facade over the module-level functions above, kept so existing notebook code that calls `Utils.print_tree(...)` / `Utils.print_table(...)` / `Utils.flatten_dict(...)` continues to work. New code should prefer the module-level functions directly.

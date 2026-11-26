@@ -330,6 +330,13 @@ def test_export_ollama_modelfile_emits_gguf_and_modelfile(tmp_path):
     assert (out_dir / "Modelfile").exists()
     # The returned path is the Modelfile.
     assert str(mf_path) == str(out_dir / "Modelfile")
+    import os
+    import stat
+
+    if os.name != "nt":  # the Modelfile keeps the mode a plain write gives, not mkstemp's 0600
+        reference = tmp_path / "reference.txt"
+        reference.write_text("x", encoding="utf-8")
+        assert stat.S_IMODE((out_dir / "Modelfile").stat().st_mode) == stat.S_IMODE(reference.stat().st_mode)
 
     text = (out_dir / "Modelfile").read_text()
     # The FROM line is required by Modelfile syntax. Runtime architecture

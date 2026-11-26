@@ -196,7 +196,7 @@ def _validate_run_id(run_id: str) -> str:
     return run_id
 
 
-def _atomic_write_text(path: str, content: str) -> None:
+def _atomic_write_text(path: str, content: str, *, mode: Optional[int] = None) -> None:
     """Write `content` to `path` atomically — fsync, rename. A
     KeyboardInterrupt during the rename either leaves the prior file
     intact OR the new file fully written; never a half-written file.
@@ -215,7 +215,9 @@ def _atomic_write_text(path: str, content: str) -> None:
     previous content (#552). Once the rename has returned, the temp name is
     never touched again. (FIX-025; ordinary exceptions only — SIGKILL or
     power loss can still leave a stale temp.) The rename itself is not
-    flushed: a caller that needs it durable flushes the directory.
+    flushed: a caller that needs it durable flushes the directory. ``mode``,
+    when given, replaces the temporary file's 0600 permission bits before the
+    rename.
     """
     directory = os.path.dirname(os.path.abspath(path))
     fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=directory)
@@ -252,6 +254,8 @@ def _atomic_write_text(path: str, content: str) -> None:
             # Idempotent: FileIO releases the descriptor at most once, even
             # when the text wrapper's close raised part-way.
             _quietly(raw.close)
+        if mode is not None:
+            os.chmod(tmp, mode)
         os.replace(tmp, path)
         committed = True
     except BaseException:
@@ -259,6 +263,17 @@ def _atomic_write_text(path: str, content: str) -> None:
             # Still ours: the rename did not happen.
             _quietly(os.unlink, tmp)
         raise
+
+
+def _created_file_mode() -> int:
+    """The mode ``open(path, "w")`` creates a file with under the current umask."""
+    umask = os.umask(0)
+    os.umask(umask)
+    return 0o666 & ~umask
+
+
+# Read once at import: os.umask is process-wide, so it is not re-read per write.
+_CREATED_FILE_MODE = _created_file_mode()
 
 
 def _quietly(fn, *args) -> None:
