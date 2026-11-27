@@ -726,3 +726,121 @@ def test_a_response_with_one_valid_token_still_trains(tmp_path, monkeypatch):
     rejected = torch.tensor([[9, 10], [11, 1]])
     loader = DataLoader(TensorDataset(prompts, chosen, rejected), batch_size=2, shuffle=False)
     _dpo_fit(policy, loader, step_fn)
+
+
+# ---------- prompt packing: the response follows the valid prompt ----------
+
+
+def _pair_step(policy, ref_model, batch, **factory_kwargs):
+    """One DPO step on ``batch`` (lr 0, so the policy does not move); returns the
+    emitted :class:`NNEvaluationDataPoint`. Callers pass copies of the models."""
+    from nnx.nn.nn_model import TrainStepContext
+
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1, **factory_kwargs)
+    ctx = TrainStepContext(
+        model=policy,
+        batch=batch,
+        optimizer=torch.optim.SGD(policy.net.parameters(), lr=0.0),
+        scaler=None,
+        grad_clip_norm=None,
+        extra_metrics=None,
+        accumulate_grad_batches=1,
+        batch_idx=0,
+        epoch_idx=0,
+    )
+    return step_fn(ctx)
+
+
+def test_prompt_packing_matches_an_unpadded_prompt(tmp_path, monkeypatch):
+    """With prompt_packing=True a right-padded prompt scores its response exactly
+    as the same row built with no padding: the response follows the valid prompt
+    and the trailing pads cannot reach it. The default layout does not match,
+    since the prompt's pads sit between prompt and response."""
+    monkeypatch.chdir(tmp_path)
+    tokenizer = _make_tokenizer(tmp_path)
+    set_seed(0)
+    policy = _make_model(tokenizer)
+    set_seed(1)
+    ref_model = _make_model(tokenizer)  # a different reference, so the rewards are not all zero
+    # pad id 1 ("<pad>"); the responses are right-padded as the dataset pads them.
+    padded = (torch.tensor([[5, 6, 1, 1]]), torch.tensor([[7, 8, 1]]), torch.tensor([[9, 10, 1]]))
+    unpadded = (torch.tensor([[5, 6]]), torch.tensor([[7, 8]]), torch.tensor([[9, 10]]))
+
+    def rewards(batch, **factory_kwargs):
+        edp = _pair_step(copy.deepcopy(policy), copy.deepcopy(ref_model), batch, **factory_kwargs)
+        return edp.extra["reward_chosen"], edp.extra["reward_rejected"]
+
+    reference = rewards(unpadded, prompt_packing=True)
+    assert rewards(padded, prompt_packing=True) == pytest.approx(reference, abs=1e-5)
+    # Sensitivity: the padded layout, the default, scores the pads and does not match.
+    assert rewards(padded, prompt_packing=False) != pytest.approx(reference, abs=1e-3)
+
+
+def test_prompt_packing_default_leaves_results_unchanged(tmp_path, monkeypatch):
+    """The default (keyword omitted, or False) keeps the padded layout: the loss
+    and the implicit rewards equal the legacy _response_logprob values computed by
+    hand, and the keyword changes nothing when it is passed as False."""
+    from nnx.paradigms.dpo import _response_logprob
+
+    monkeypatch.chdir(tmp_path)
+    tokenizer = _make_tokenizer(tmp_path)
+    set_seed(0)
+    policy = _make_model(tokenizer)
+    set_seed(1)
+    ref_model = _make_model(tokenizer)
+    loader = _preference_loader(tokenizer, n_pairs=4, batch_size=4)
+    prompt_ids, chosen_ids, rejected_ids = next(iter(loader))
+    prompt_len, beta = prompt_ids.shape[1], 0.1
+
+    with torch.no_grad():
+        pol = [
+            _response_logprob(policy.net, torch.cat([prompt_ids, r], dim=1), prompt_len, pad_token_id=1)
+            for r in (chosen_ids, rejected_ids)
+        ]
+        ref = [
+            _response_logprob(ref_model.net, torch.cat([prompt_ids, r], dim=1), prompt_len, pad_token_id=1)
+            for r in (chosen_ids, rejected_ids)
+        ]
+    expected_loss = -torch.nn.functional.logsigmoid(beta * ((pol[0] - pol[1]) - (ref[0] - ref[1]))).mean()
+    expected_rewards = (float((beta * (pol[0] - ref[0])).mean()), float((beta * (pol[1] - ref[1])).mean()))
+
+    batch = (prompt_ids, chosen_ids, rejected_ids)
+    omitted = _pair_step(copy.deepcopy(policy), copy.deepcopy(ref_model), batch)
+    explicit = _pair_step(copy.deepcopy(policy), copy.deepcopy(ref_model), batch, prompt_packing=False)
+    assert omitted.loss == pytest.approx(float(expected_loss), abs=1e-6)
+    assert (omitted.loss, omitted.extra) == (explicit.loss, explicit.extra)
+    assert (omitted.extra["reward_chosen"], omitted.extra["reward_rejected"]) == pytest.approx(
+        expected_rewards, abs=1e-6
+    )
+
+
+@pytest.mark.parametrize("flag", [1, 0, "yes", None])
+def test_dpo_refuses_a_prompt_packing_that_is_not_a_bool(flag, tmp_path):
+    """prompt_packing selects the layout, so anything but a bool is refused when
+    the step is built, before a truthy 1 or a string silently picks one."""
+    ref_model = _make_model(_make_tokenizer(tmp_path))
+    with pytest.raises(ValueError, match="prompt_packing"):
+        dpo_train_step_factory(ref_model, pad_token_id=1, prompt_packing=flag)  # type: ignore[arg-type]
+
+
+def test_prompt_packing_refuses_a_prompt_with_no_valid_token(tmp_path, monkeypatch):
+    """Packed, a row whose prompt is all pad would start its response at position 0
+    with nothing to predict it from. The batch is refused, naming the row, before
+    any freeze or update."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    tokenizer = _make_tokenizer(tmp_path)
+    ref_model = _make_model(tokenizer)
+    policy = _make_model(tokenizer)
+    prompts = torch.tensor([[5, 6], [1, 1]])
+    chosen = torch.tensor([[7, 8], [9, 1]])
+    rejected = torch.tensor([[9, 10], [11, 1]])
+    loader = DataLoader(TensorDataset(prompts, chosen, rejected), batch_size=2, shuffle=False)
+    before = {k: v.clone() for k, v in policy.net.state_dict().items()}
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1, prompt_packing=True)
+
+    with pytest.raises(ValueError, match=r"DPO prompt of batch row 1 has no valid tokens"):
+        _dpo_fit(policy, loader, step_fn)
+
+    assert all(torch.equal(v, before[k]) for k, v in policy.net.state_dict().items())
+    assert all(p.requires_grad for p in ref_model.net.parameters())

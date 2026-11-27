@@ -88,7 +88,7 @@ from ._probability import (
     row_ids,
     same_ids,
 )
-from ._validation import checked, require_count, require_finite_real, required_id
+from ._validation import checked, require_count, require_finite_real, required_id, warn_omitted_test_split
 
 __all__ = [
     "FORMAT",
@@ -228,6 +228,19 @@ def _check_tuning_split(split_id: Any, test_split_id: Any) -> str:
     if test_split_id is not None and _id(test_split_id, "test_split_id") == tuning:
         raise AbstentionError(f"the tuning split {tuning!r} is the test split; tune on a separate validation split")
     return tuning
+
+
+def _check_not_calibration_split(source: Any, tuning: str) -> None:
+    """A calibrated view's calibration split may not be the tuning split:
+    the temperature was fitted there, so a threshold tuned there is fitted
+    on the same rows twice."""
+    from .calibration import CalibratedPrediction
+
+    if isinstance(source, CalibratedPrediction) and source.calibration_split_id == tuning:
+        raise AbstentionError(
+            f"the tuning split {tuning!r} is the calibration split {source.calibration_split_id!r} the calibrator "
+            "was fitted on; tune the threshold on a separate validation split"
+        )
 
 
 def _within(part: np.ndarray, whole: np.ndarray) -> bool:
@@ -1353,9 +1366,18 @@ def select_threshold(
     higher, more conservative threshold.
     Nothing feasible gives ``status="no_feasible_policy"``. A ``split_id``
     equal to ``test_split_id`` is refused: tuning on the test split would
-    leak it. The ceiling is empirical — met on this split, not guaranteed.
+    leak it; so is a calibrated view's own calibration split, where its
+    temperature was fitted. The ceiling is empirical — met on this split, not
+    guaranteed.
+
+    Omitting ``test_split_id`` (or passing ``None``) is deprecated: it emits
+    a ``DeprecationWarning``, and the argument will be required in the next
+    minor release.
     """
+    if test_split_id is None:
+        warn_omitted_test_split("select_threshold")
     tuning = _check_tuning_split(split_id, test_split_id)
+    _check_not_calibration_split(source, tuning)
     policy_kind = _kind(kind)
     ceiling = _unit(risk_ceiling, "risk_ceiling")
     declared = _declared(

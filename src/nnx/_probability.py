@@ -43,6 +43,13 @@ import numpy as np
 NLL_EPSILON = 1e-12
 SUM_TOLERANCE = 1e-6
 """Smallest row-sum tolerance of :func:`categorical_probabilities`."""
+FULL_PRECISION_FACTOR = 4
+"""``K`` of the row-sum bound ``K * eps * (1 + log2 C)`` for float32 and float64 rows (and integers)."""
+LOW_PRECISION_FACTOR = 2
+"""``K`` of the row-sum bound for float16 and bfloat16 rows. Measured on torch's softmax (float16 and bfloat16,
+C in {2, 3, 64, 1100, 152064}, logit scales 2 and 4, five seeds): the largest row-sum error, times 2 and divided
+by ``eps * (1 + log2 C)``, is 0.29 at most, so 2 is the smallest integer at or above twice the largest observed
+error. A bfloat16 row [0.5, 0.56] (sum 1.0586) is refused; so is a float16 row [0.6, 0.4, 0.01] (sum 1.0096)."""
 SET_ITERATOR = type(iter(set()))
 """The built-in iterator over a set or frozenset, refused by
 :func:`class_labels` as the set is."""
@@ -173,12 +180,16 @@ def categorical_probabilities(
     return categorical_probabilities_eps(value, error=error, allow_empty=allow_empty, what=what, copy=copy)[0]
 
 
-def rounding_tolerance(eps: float, terms: int = 1, *, floor: float = SUM_TOLERANCE) -> float:
+def rounding_tolerance(
+    eps: float, terms: int = 1, *, floor: float = SUM_TOLERANCE, factor: int = FULL_PRECISION_FACTOR
+) -> float:
     """How far rounding at machine epsilon ``eps`` can move a sum of
     ``terms`` entries (a single entry by default): each entry's own rounding
-    plus a pairwise sum's, which grows like ``eps * log2(terms)``. ``4 eps (1
-    + log2 terms)`` allows for both, floored at ``floor``."""
-    return max(floor, 4 * eps * (1 + math.log2(max(terms, 1))))
+    plus a pairwise sum's, which grows like ``eps * log2(terms)``. ``factor *
+    eps * (1 + log2 terms)`` allows for both (``factor`` 4 by default; row sums
+    of float16 and bfloat16 pass :data:`LOW_PRECISION_FACTOR`), floored at
+    ``floor``."""
+    return max(floor, factor * eps * (1 + math.log2(max(terms, 1))))
 
 
 def categorical_probabilities_eps(
@@ -199,9 +210,12 @@ def categorical_probabilities_eps(
     if array.shape[0] == 0 and not allow_empty:
         raise error(f"{what} hold no rows")
     # Row sums carry the input's own rounding, which stays far below 1 (float16
-    # at C = 1e9 still rejects rows off by 0.12).
+    # at C = 1e9 still rejects rows off by 0.07).
     eps = source_eps if source_eps is not None else float(np.finfo(array.dtype).eps) if array.dtype.kind == "f" else 0.0
-    tolerance = rounding_tolerance(eps, array.shape[1])
+    low_precision = source_eps is not None or array.dtype == np.float16
+    tolerance = rounding_tolerance(
+        eps, array.shape[1], factor=LOW_PRECISION_FACTOR if low_precision else FULL_PRECISION_FACTOR
+    )
     # The cast below, or a list read into a new array, is this call's own
     # memory; anything else (an ndarray, a tensor, a pandas frame) may be shared.
     fresh = array.dtype != np.float64 or isinstance(value, (list, tuple))

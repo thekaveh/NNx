@@ -129,7 +129,7 @@ model = NNModel(
 model.save_pretrained("./my-model")
 ```
 
-This writes three files into `./my-model/`:
+This writes these files into `./my-model/`:
 
 - `model.safetensors` — `self.net.state_dict()` as safetensors.
 - `config.json` — `{"net_params": <state>, "params": <state>}`, using
@@ -155,9 +155,10 @@ This writes three files into `./my-model/`:
     `nnx.bundles.export_bundle` does. Keep such a model in its run's pickle
     checkpoints.
 
+- `nnx_hub_manifest.json` — the SHA-256 and size of each file above, written last. `from_pretrained` verifies it before it builds anything.
 - `README.md` — auto-generated model card from the mixin.
 
-The weights and `config.json` are each written atomically: `model.safetensors` is staged as `model.safetensors.partial` and renamed into place when complete, and `config.json` is replaced atomically. `huggingface_hub` writes `README.md` non-atomically and only when it is absent, so delete it to regenerate the card. An interrupted export can leave some files without a completion marker, so treat a directory whose `config.json` or weights are missing as incomplete. Running `save_pretrained` again into the same directory overwrites the weights and `config.json`.
+A save is staged in a temporary directory beside the target, and each file moves into place only after the whole save succeeds, so a refused or failed save leaves the previous artifact intact. An existing `README.md` is kept. A `tokenizer.json` that this save does not produce is removed only if an earlier NNx save wrote it (the previous manifest lists it).
 
 ### 2.3. Load from a local directory
 
@@ -171,6 +172,8 @@ model = NNModel.from_pretrained("./my-model")
 recorded `"transforms"` on the fresh base: LoRA wrappers are rebuilt, and
 low-rank factors are allocated in their recorded shape (no SVD). It then
 loads the safetensors weights into the freshly-built `self.net`.
+
+Before it builds anything, `from_pretrained` verifies `nnx_hub_manifest.json`: every listed file must exist and match its digest, and paths must stay inside the directory. It also checks the declared shapes on the meta device, so a config asking for a huge network is refused before any memory is allocated. A directory saved before manifests existed still loads, with a `UserWarning`.
 
 An unknown
 operation or version is refused before any tensor is loaded. The error names

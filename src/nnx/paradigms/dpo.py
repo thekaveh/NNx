@@ -50,6 +50,7 @@ def dpo_train_step_factory(
     *,
     beta: float = 0.1,
     pad_token_id: Optional[int] = None,
+    prompt_packing: bool = False,
 ) -> TrainStepFn:
     """Build a Direct Preference Optimization :class:`TrainStepFn`.
 
@@ -81,7 +82,19 @@ def dpo_train_step_factory(
             inside a response is dropped too (pick a dedicated pad id);
             and prompt-side padding remains visible to the model (no
             attention mask) — a pre-existing modeling bias this knob
-            doesn't address.
+            doesn't address unless ``prompt_packing`` is on.
+        prompt_packing: opt-in fix for the prompt-side padding above. The
+            default ``False`` keeps the prompt's right-padding in front of
+            the response, so the model conditions on pad tokens. ``True``
+            packs each row as its valid prompt tokens, then its valid
+            response tokens, then padding at the end only; the response
+            log-probs are read at the positions the packed row places it
+            (a causal model's logits there never see the trailing padding),
+            so they match the same row built without padding. Packing drops
+            every pad id from the prompt and the response, including one
+            inside them, as the pad mask already does for responses. A
+            prompt with no valid token is refused at the first step, since
+            its response would have no prompt position to be predicted from.
 
     Returns:
         A ``TrainStepFn`` for ``NNModel.train(..., train_step_fn=...)``.
@@ -95,8 +108,9 @@ def dpo_train_step_factory(
         lengths, as ``NNPreferenceDataset`` yields them.
 
     Raises:
-        ValueError: if ``beta`` is not a finite positive number, or if
-            ``pad_token_id`` is not a non-negative integer. At the first
+        ValueError: if ``beta`` is not a finite positive number, if
+            ``pad_token_id`` is not a non-negative integer, or if
+            ``prompt_packing`` is not a ``bool``. At the first
             step, before anything is frozen or run: a reference that is
             the policy's net, lies inside it or shares a parameter with it
             (freezing it would freeze the policy).
@@ -113,6 +127,11 @@ def dpo_train_step_factory(
     )
     if pad_token_id is not None:  # a bool or a negative id would mask nothing
         pad_token_id = require_count(pad_token_id, "pad_token_id", owner="dpo_train_step_factory", minimum=0)
+    if not isinstance(prompt_packing, bool):  # 1 or "yes" would silently select a layout
+        raise ValueError(
+            "dpo_train_step_factory requires prompt_packing to be a bool, "
+            f"got {shown(prompt_packing)} of type {type(prompt_packing).__name__}"
+        )
 
     if not isinstance(getattr(ref_model, "net", None), torch.nn.Module):
         raise TypeError(
@@ -131,38 +150,41 @@ def dpo_train_step_factory(
         rejected_ids = rejected_ids.to(m.device)
         _require_response_tokens(chosen_ids, pad_token_id, "chosen")
         _require_response_tokens(rejected_ids, pad_token_id, "rejected")
+        if prompt_packing:
+            _require_prompt_tokens(prompt_ids, pad_token_id)
         # Before any mode change or forward: refuse a reference that is, lies
         # in or shares parameters with the policy's net, then freeze it.
         freeze_apart(m.net, ref_model.net, role="DPO reference model", remedy=_REFERENCE_REMEDY)
         m.net.train()
         m.net.zero_grad()
 
-        # Build the (prompt + response) sequences. We compute the
-        # response log-prob conditional on the prompt by summing the
-        # per-token log-probs over the response positions only.
-        chosen_seq = torch.cat([prompt_ids, chosen_ids], dim=1)
-        rejected_seq = torch.cat([prompt_ids, rejected_ids], dim=1)
-        prompt_len = prompt_ids.shape[1]
-
-        # Policy log-probs (with gradient).
-        policy_chosen_logp = _response_logprob(m.net, chosen_seq, prompt_len, pad_token_id=pad_token_id)
-        policy_rejected_logp = _response_logprob(m.net, rejected_seq, prompt_len, pad_token_id=pad_token_id)
+        # Policy log-probs (with gradient). Each is the sum of per-token
+        # log-probs over the response positions only; _response_logprobs
+        # picks the padded or the packed layout.
+        policy_chosen_logp = _response_logprobs(
+            m.net, prompt_ids, chosen_ids, pad_token_id=pad_token_id, prompt_packing=prompt_packing
+        )
+        policy_rejected_logp = _response_logprobs(
+            m.net, prompt_ids, rejected_ids, pad_token_id=pad_token_id, prompt_packing=prompt_packing
+        )
 
         # Reference log-probs — no gradient, but move tensors through
         # ref_model's device frame in case it lives elsewhere.
         # m.net.train() or a callback may have switched the reference to train mode; its modes are given back after.
         with pinned_eval(ref_model.net), torch.no_grad():
-            ref_chosen_logp = _response_logprob(
+            ref_chosen_logp = _response_logprobs(
                 ref_model.net,
-                chosen_seq.to(ref_model.device),
-                prompt_len,
+                prompt_ids.to(ref_model.device),
+                chosen_ids.to(ref_model.device),
                 pad_token_id=pad_token_id,
+                prompt_packing=prompt_packing,
             ).to(m.device)
-            ref_rejected_logp = _response_logprob(
+            ref_rejected_logp = _response_logprobs(
                 ref_model.net,
-                rejected_seq.to(ref_model.device),
-                prompt_len,
+                prompt_ids.to(ref_model.device),
+                rejected_ids.to(ref_model.device),
                 pad_token_id=pad_token_id,
+                prompt_packing=prompt_packing,
             ).to(m.device)
 
         # DPO loss: −log σ(β · ((logπ_w − logπ_l) − (logπref_w − logπref_l))).
@@ -246,6 +268,25 @@ def _require_response_tokens(response_ids: torch.Tensor, pad_token_id: Optional[
         )
 
 
+def _require_prompt_tokens(prompt_ids: torch.Tensor, pad_token_id: Optional[int]) -> None:
+    """Refuse a prompt row with no valid token under ``prompt_packing``. Packed,
+    its response would start at position 0 with no earlier logit to predict
+    it from, and the first response token would be silently left unscored."""
+    if pad_token_id is None:
+        counts = prompt_ids.new_full((prompt_ids.shape[0],), prompt_ids.shape[1])
+    else:
+        counts = (prompt_ids != pad_token_id).sum(dim=-1)
+    empty = (counts == 0).nonzero(as_tuple=False)
+    if empty.numel():
+        row = int(empty[0, 0])
+        reason = "it is empty" if pad_token_id is None else f"every position is the pad id {pad_token_id}"
+        raise ValueError(
+            f"DPO prompt of batch row {row} has no valid tokens ({reason}): with prompt_packing the response "
+            "is placed right after the prompt, so it needs a prompt token to be predicted from. "
+            "Drop that row from the dataset."
+        )
+
+
 def _response_logprob(
     net: torch.nn.Module,
     full_ids: torch.Tensor,
@@ -293,3 +334,77 @@ def _response_logprob(
         token_logp = token_logp * (response_targets != pad_token_id)
     # Sum across the response positions for a per-row total log-prob.
     return token_logp.sum(dim=-1)
+
+
+def _response_logprobs(
+    net: torch.nn.Module,
+    prompt_ids: torch.Tensor,
+    response_ids: torch.Tensor,
+    *,
+    pad_token_id: Optional[int],
+    prompt_packing: bool,
+) -> torch.Tensor:
+    """``(B,)`` response log-probs under the padded layout (the default) or
+    the packed one (``prompt_packing=True``).
+
+    Padded: ``[prompt (incl. its pads) | response (incl. its pads)]``, scored
+    by :func:`_response_logprob` at ``prompt_len = T_p``. Packed: each row is
+    ``[valid prompt | valid response | pad...]``, so the response sits right
+    after the prompt and the trailing pads cannot affect it under causal
+    attention; :func:`_packed_response_logprob` scores it at its per-row start.
+    """
+    if not prompt_packing:
+        full_ids = torch.cat([prompt_ids, response_ids], dim=1)
+        return _response_logprob(net, full_ids, prompt_ids.shape[1], pad_token_id=pad_token_id)
+    packed_ids, prompt_lens = _pack_prompt_first(prompt_ids, response_ids, pad_token_id)
+    return _packed_response_logprob(net, packed_ids, prompt_lens, pad_token_id=pad_token_id)
+
+
+def _pack_prompt_first(
+    prompt_ids: torch.Tensor,
+    response_ids: torch.Tensor,
+    pad_token_id: Optional[int],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pack each row as its valid prompt tokens, then its valid response tokens,
+    then padding at the end only.
+
+    Returns ``(packed_ids, prompt_lens)``: the ``(B, T_p + T_r)`` packed rows and
+    the ``(B,)`` count of valid prompt tokens, which is where each row's
+    response starts. Without ``pad_token_id`` every position is valid, so the
+    rows are returned as concatenated and each prompt keeps its full width.
+    """
+    full_ids = torch.cat([prompt_ids, response_ids], dim=1)
+    if pad_token_id is None:
+        prompt_lens = torch.full((full_ids.shape[0],), prompt_ids.shape[1], dtype=torch.long, device=full_ids.device)
+        return full_ids, prompt_lens
+    # A stable sort on "is pad" keeps the valid tokens in their order (prompt
+    # before response) and moves every pad to the end of the row.
+    order = torch.sort((full_ids == pad_token_id).to(torch.uint8), dim=1, stable=True).indices
+    packed_ids = full_ids.gather(dim=1, index=order)
+    prompt_lens = (prompt_ids != pad_token_id).sum(dim=1)
+    return packed_ids, prompt_lens
+
+
+def _packed_response_logprob(
+    net: torch.nn.Module,
+    packed_ids: torch.Tensor,
+    prompt_lens: torch.Tensor,
+    *,
+    pad_token_id: Optional[int],
+) -> torch.Tensor:
+    """Sum of per-token log-probs of each packed row's response, ``(B,)``.
+
+    ``packed_ids`` rows are ``[valid prompt | valid response | pad...]`` with
+    ``prompt_lens`` valid prompt tokens. The logit at position ``t-1`` predicts
+    the token at ``t``, so every position ``t >= 1`` is scored and kept only if
+    it is at or past its row's response start and is not a pad.
+    """
+    logits = net(packed_ids)
+    log_probs = F.log_softmax(logits, dim=-1)
+    targets = packed_ids[:, 1:]
+    token_logp = log_probs[:, :-1, :].gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
+    positions = torch.arange(1, packed_ids.shape[1], device=packed_ids.device)
+    in_response = positions.unsqueeze(0) >= prompt_lens.to(packed_ids.device).unsqueeze(1)
+    if pad_token_id is not None:
+        in_response = in_response & (targets != pad_token_id)
+    return (token_logp * in_response).sum(dim=-1)
