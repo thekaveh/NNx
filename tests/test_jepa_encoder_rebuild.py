@@ -131,6 +131,8 @@ def test_a_hub_save_with_the_predictor_attached_rebuilds_its_encoder(jepa, tmp_p
 
 
 def test_hub_exclusion_stays_strict_for_every_other_key(jepa, tmp_path):
+    from tests.test_hub_mixin import _resign  # skips only this test when the hub extras are absent
+
     pytest.importorskip("huggingface_hub")
     pytest.importorskip("safetensors")
     from safetensors.torch import load_file, save_file
@@ -143,6 +145,7 @@ def test_hub_exclusion_stays_strict_for_every_other_key(jepa, tmp_path):
     dropped = next(key for key in state if not key.startswith(f"{PREDICTOR}."))
     del state[dropped]
     save_file(state, weights)
+    _resign(saved)  # the edit is on purpose: the test is about the strict key check, not the manifest
     with pytest.raises(RuntimeError, match="Missing key"):
         NNModel.from_pretrained(str(saved), exclude_submodules=(PREDICTOR,))
 

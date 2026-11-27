@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import math
 import numbers
+import warnings
 from typing import Any, Optional
 
 
@@ -247,3 +248,15 @@ def required_id(value: Any, what: str, *, error: type[Exception]) -> str:
     if not isinstance(value, str) or not value:
         raise error(f"{what} must be a non-empty string, got {value!r}")
     return value
+
+
+def warn_omitted_test_split(function: str) -> None:
+    """The ``DeprecationWarning`` of a public function called without
+    ``test_split_id`` (``None`` counts as omitted); the caller keeps its
+    behaviour. Call it directly from the public function."""
+    warnings.warn(
+        f"{function}() without test_split_id is deprecated: test_split_id will be required in the next minor "
+        "release. Pass the id of the held-out test split (it must differ from split_id).",
+        DeprecationWarning,
+        stacklevel=3,
+    )

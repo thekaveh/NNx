@@ -66,7 +66,7 @@ from ._probability import (
     same_ids,
     softmax_,
 )
-from ._validation import checked, require_count, require_finite_real, required_id
+from ._validation import checked, require_count, require_finite_real, required_id, warn_omitted_test_split
 
 __all__ = [
     "DEFAULT_EPSILON",
@@ -466,6 +466,9 @@ class CalibratedPrediction:
         temperature: the calibrator's temperature.
         override: ``None``, or the named override and the label / model-id
             mismatches it accepted.
+        calibration_split_id: the split the calibrator was fitted on
+            (``TemperatureCalibrator.split_id``); ``nnx.abstention`` refuses to
+            tune a threshold on it. ``None`` when not known.
     """
 
     logits: np.ndarray
@@ -478,6 +481,7 @@ class CalibratedPrediction:
     model_id: str
     temperature: float
     override: Optional[Mapping[str, Any]] = None
+    calibration_split_id: Optional[str] = None
 
     def decoded_labels(self) -> np.ndarray:
         """Decoded class names."""
@@ -731,6 +735,7 @@ class TemperatureCalibrator(JsonArtifact):
             model_id=model_id,
             temperature=self.temperature,
             override=record,
+            calibration_split_id=self.split_id,
         )
 
     def report(
@@ -928,7 +933,13 @@ def fit_temperature(
     boundary temperature — when the optimum lies outside the search range (a
     separable split, logits no better than uniform), the NLL does not depend
     on ``T`` (constant logits), or the search does not converge.
+
+    Omitting ``test_split_id`` (or passing ``None``) is deprecated: it emits
+    a ``DeprecationWarning``, and the argument will be required in the next
+    minor release.
     """
+    if test_split_id is None:
+        warn_omitted_test_split("fit_temperature")
     calibration_split = _id(split_id, "split_id")
     train = _optional_id(train_split_id, "train_split_id")
     test = _optional_id(test_split_id, "test_split_id")

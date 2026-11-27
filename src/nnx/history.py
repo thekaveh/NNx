@@ -455,14 +455,26 @@ class _JournalWriter:
         published manifest — an uncommitted tail every reader ignores — and
         the counters return to the published manifest's, so
         :meth:`materialize` and the next chunk agree with it. The index's
-        uncommitted lines are cut, so a later append extends the committed
-        chain."""
+        and the epoch rows' uncommitted bytes are cut, so a later append
+        extends the committed chain and the committed series. A file shorter
+        than its committed prefix is corruption: refused before anything
+        changes, never extended."""
+        cuts = (
+            (os.path.join(self.directory, _INDEX), self._committed[2]),
+            (os.path.join(self.directory, _EPOCHS), self._committed[5]),
+        )
+        for path, committed_bytes in cuts:
+            if os.path.exists(path) and os.path.getsize(path) < committed_bytes:
+                raise HistoryCorruptionError(
+                    f"{path} is shorter than its committed {committed_bytes} bytes (altered); it cannot be discarded"
+                )
         self._pending.clear()
         self._lines.clear()
         self._stats = _EpochStats()
-        if self.index_bytes != self._committed[2]:
-            with open(os.path.join(self.directory, _INDEX), "r+b") as handle:
-                handle.truncate(self._committed[2])
+        for path, committed_bytes in cuts:
+            if os.path.exists(path) and os.path.getsize(path) > committed_bytes:
+                with open(path, "r+b") as handle:
+                    handle.truncate(committed_bytes)
         (self.chunks, self.records, self.index_bytes, self.index_chain, self.epochs, self.epochs_bytes) = (
             self._committed
         )
