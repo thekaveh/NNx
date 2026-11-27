@@ -520,7 +520,13 @@ class Trainer:
         }
         if objective is not None:
             # FEAT-040: the objective's own refusals, before any run exists.
-            _check_objective_run(objective, self.model, optimizers=optimizers, callbacks=callbacks)
+            _check_objective_run(
+                objective,
+                self.model,
+                optimizers=optimizers,
+                callbacks=callbacks,
+                accumulate_grad_batches=_objective_window(params),
+            )
         if precision.uses_scaler:  # only an objective runs a reduced policy here
             check_scaler_ownership(optimizers)  # a shared parameter would be unscaled twice
         elif objective is not None:

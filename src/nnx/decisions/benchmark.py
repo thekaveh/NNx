@@ -1264,6 +1264,11 @@ def evaluate(
 
         if not isinstance(policy, AbstentionPolicy):
             raise BenchmarkError(f"policy must be an nnx.abstention.AbstentionPolicy, got {type(policy).__name__}")
+        if policy.tuning_split_id == split:
+            raise BenchmarkError(
+                f"evaluate(split={split!r}) would score a policy tuned on split {policy.tuning_split_id!r}: "
+                "the evaluation split must differ from the tuning split"
+            )
         _text(model_id, "model_id")
     if resources is not None and not isinstance(resources, Resources):
         raise BenchmarkError(f"resources must be a Resources, got {type(resources).__name__}")
@@ -1285,17 +1290,36 @@ def evaluate(
         resources=resources if resources is not None else Resources(),
         extra=extra,
         sample_set=_sample_set(samples),
+        revisions=_recorded_values(records, "revision"),
+        prompt_identities=_recorded_values(records, "prompt_identity"),
     )
 
 
+def _input_digest(sample: Sample) -> str:
+    """The digest of a sample's input, for the sample set: a report that
+    cannot fingerprint its inputs cannot say which samples it scored."""
+    try:
+        return _fingerprint(sample.input)
+    except BenchmarkError as error:
+        raise BenchmarkError(f"sample {sample.id!r} cannot be fingerprinted for the report: {error}") from error
+
+
+def _recorded_values(records: Sequence[Record], field_name: str) -> tuple[str, ...]:
+    """The distinct, sorted values a record field took (``None`` = unrecorded
+    is left out), so two reports of different revisions or prompts differ."""
+    return tuple(sorted({getattr(record, field_name) for record in records} - {None}))
+
+
 def _sample_set(samples: Sequence[Sample]) -> str:
-    """Which samples a report scored — their ids, question digests, labels
-    and slicing (family, held-out, perturbation, grouping unit) — order-free."""
+    """Which samples a report scored — their ids, question digests, inputs,
+    labels and slicing (family, held-out, perturbation, grouping unit) —
+    order-free."""
     rows = sorted(
         json.dumps(
             [
                 sample.id,
                 sample.digest,
+                _input_digest(sample),
                 sample.true_label,
                 sample.family,
                 sample.heldout,
@@ -1437,15 +1461,22 @@ class BenchmarkReport:
     slices: Mapping[str, SliceReport]
     resources: Resources = field(default_factory=Resources)
     extra: int = 0  # records for no sample (benchmark-wide)
-    sample_set: Optional[str] = None  # a digest of the samples' ids, questions, labels and slicing
+    sample_set: Optional[str] = None  # a digest of the samples' ids, questions, inputs, labels and slicing
+    revisions: tuple[str, ...] = ()  # the distinct model revisions of the records scored
+    prompt_identities: tuple[str, ...] = ()  # the distinct prompt identities of the records scored
 
     def __post_init__(self) -> None:
         identity = _snapshot(self.metric_identity, "BenchmarkReport.metric_identity", deep=True)
         object.__setattr__(self, "metric_identity", identity)
         object.__setattr__(self, "slices", _snapshot(self.slices, "BenchmarkReport.slices"))
+        for name in ("revisions", "prompt_identities"):
+            values = getattr(self, name)
+            if not isinstance(values, (tuple, list)) or any(not isinstance(v, str) or not v for v in values):
+                raise BenchmarkError(f"BenchmarkReport.{name} must be a sequence of non-empty strings, got {values!r}")
+            object.__setattr__(self, name, tuple(sorted(set(values))))
 
     def state(self) -> dict[str, Any]:
-        return {
+        state = {
             "format": FORMAT,
             "split": self.split,
             "provider": self.provider,
@@ -1455,6 +1486,11 @@ class BenchmarkReport:
             "resources": self.resources.state(),
             "slices": {name: report.state() for name, report in self.slices.items()},
         }
+        # Omitted when empty (no record carried one), so reports without them keep their shape.
+        for name in ("revisions", "prompt_identities"):
+            if getattr(self, name):
+                state[name] = list(getattr(self, name))
+        return state
 
     def to_json(self) -> str:
         return json.dumps(self.state(), sort_keys=True, indent=2, allow_nan=False) + "\n"
@@ -1566,10 +1602,10 @@ def compare_reports(
     a: Union[BenchmarkReport, Mapping[str, Any]], b: Union[BenchmarkReport, Mapping[str, Any]]
 ) -> dict[str, dict[str, Optional[float]]]:
     """``b - a`` per slice and metric, for two reports of the same split and
-    metric identity and — when both record it — the same sample set (a
-    :class:`BenchmarkReport` or a saved report's state); anything else
-    raises :class:`BenchmarkError`. A metric unavailable on
-    either side has no delta."""
+    metric identity, the same model revisions and prompt identities, and —
+    when both record it — the same sample set (a :class:`BenchmarkReport` or
+    a saved report's state); anything else raises :class:`BenchmarkError`. A
+    metric unavailable on either side has no delta."""
     left, right = _report_state(a), _report_state(b)
     if left["split"] != right["split"]:
         raise BenchmarkError(f"the reports cover different splits: {left['split']!r} and {right['split']!r}")
@@ -1582,6 +1618,11 @@ def compare_reports(
         raise BenchmarkError(
             f"the reports scored different samples of split {left['split']!r}: {sets[0]} and {sets[1]}"
         )
+    # A report without the key recorded no revision or prompt, which is the same as none.
+    for key, what in (("revisions", "model revisions"), ("prompt_identities", "prompt identities")):
+        recorded = (list(left.get(key) or []), list(right.get(key) or []))
+        if recorded[0] != recorded[1]:
+            raise BenchmarkError(f"the reports scored with different {what}: {recorded[0]} and {recorded[1]}")
     deltas: dict[str, dict[str, Optional[float]]] = {}
     for name in sorted(set(left["slices"]) & set(right["slices"])):
         row = {}

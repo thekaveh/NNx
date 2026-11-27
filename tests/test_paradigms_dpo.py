@@ -6,6 +6,7 @@ import copy
 
 import pytest
 import torch
+from torch.utils.data import DataLoader, TensorDataset
 
 pytest.importorskip("tokenizers")
 
@@ -594,7 +595,25 @@ def test_the_run_freezes_the_reference_not_building_the_step(tmp_path, monkeypat
     step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
     assert all(p.requires_grad for p in ref_model.net.parameters()) and ref_model.net.training
     _dpo_fit(policy, _preference_loader(tokenizer, n_pairs=4, batch_size=2), step_fn)
-    assert not any(p.requires_grad for p in ref_model.net.parameters()) and not ref_model.net.training
+    # The freeze stays; the reference's train mode is given back after each forward (it was training before).
+    assert not any(p.requires_grad for p in ref_model.net.parameters()) and ref_model.net.training
+
+
+def test_a_run_gives_the_reference_back_its_mixed_modes(tmp_path, monkeypatch):
+    """The reference is in eval mode around its forwards only: a reference
+    with mixed modes before the run has the same modes after it."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    tokenizer = _make_tokenizer(tmp_path)
+    ref_model = _make_model(tokenizer, resid_dropout=0.5)
+    ref_model.net.train()
+    list(ref_model.net.modules())[3].eval()  # a mixed tree
+    modes = [m.training for m in ref_model.net.modules()]
+    assert True in modes and False in modes
+    policy = _make_model(tokenizer)
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
+    _dpo_fit(policy, _preference_loader(tokenizer, n_pairs=4, batch_size=2), step_fn)
+    assert [m.training for m in ref_model.net.modules()] == modes
 
 
 def test_a_separate_reference_trains_as_one_frozen_before_the_step_was_built(tmp_path):
@@ -614,7 +633,8 @@ def test_a_separate_reference_trains_as_one_frozen_before_the_step_was_built(tmp
         with pytest.MonkeyPatch.context() as mp:
             mp.chdir(tmp_path / str(by_hand))
             _dpo_fit(policy, _preference_loader(tokenizer, n_pairs=4, batch_size=2), step_fn)
-        assert not any(p.requires_grad for p in ref_model.net.parameters()) and not ref_model.net.training
+        # Frozen, and in the mode it came with (train for the fresh reference, eval for the hand-set one).
+        assert not any(p.requires_grad for p in ref_model.net.parameters()) and ref_model.net.training is not by_hand
         trained.append({**policy.net.state_dict(), **{f"r.{k}": v for k, v in ref_model.net.state_dict().items()}})
     assert trained[0].keys() == trained[1].keys()
     assert all(torch.equal(trained[0][k], trained[1][k]) for k in trained[0])
@@ -664,3 +684,45 @@ def test_the_factory_refuses_a_reference_that_is_not_a_model():
     ``net`` module is still refused when the step is built."""
     with pytest.raises(TypeError, match="dpo_train_step_factory needs an NNModel reference"):
         dpo_train_step_factory(torch.nn.Linear(2, 2), beta=0.1)  # type: ignore[arg-type]
+
+
+# ---------- a response with no valid token is refused before any update ----------
+
+
+@pytest.mark.parametrize("side", ["chosen", "rejected"])
+def test_a_fully_padded_response_is_refused_before_any_update(side, tmp_path, monkeypatch):
+    """A response whose every position is the pad id scores exactly 0 with no
+    gradient, yet it entered the batch mean as a preference pair. The batch
+    is refused, naming its row, before the policy changes."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    tokenizer = _make_tokenizer(tmp_path)
+    ref_model = _make_model(tokenizer)
+    policy = _make_model(tokenizer)
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
+    prompts = torch.tensor([[5, 6], [5, 6]])
+    chosen = torch.tensor([[7, 8], [1, 1]]) if side == "chosen" else torch.tensor([[7, 8], [9, 10]])
+    rejected = torch.tensor([[9, 10], [11, 12]]) if side == "chosen" else torch.tensor([[9, 10], [1, 1]])
+    loader = DataLoader(TensorDataset(prompts, chosen, rejected), batch_size=2, shuffle=False)
+    before = {k: v.clone() for k, v in policy.net.state_dict().items()}
+
+    with pytest.raises(ValueError, match=rf"DPO {side} response of batch row 1 has no valid tokens"):
+        _dpo_fit(policy, loader, step_fn)
+
+    assert all(torch.equal(v, before[k]) for k, v in policy.net.state_dict().items())
+
+
+def test_a_response_with_one_valid_token_still_trains(tmp_path, monkeypatch):
+    """The refusal is for a response with no valid token at all: a single
+    valid token is scored and the step runs."""
+    monkeypatch.chdir(tmp_path)
+    set_seed(0)
+    tokenizer = _make_tokenizer(tmp_path)
+    ref_model = _make_model(tokenizer)
+    policy = _make_model(tokenizer)
+    step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
+    prompts = torch.tensor([[5, 6], [5, 6]])
+    chosen = torch.tensor([[7, 8], [9, 1]])
+    rejected = torch.tensor([[9, 10], [11, 1]])
+    loader = DataLoader(TensorDataset(prompts, chosen, rejected), batch_size=2, shuffle=False)
+    _dpo_fit(policy, loader, step_fn)

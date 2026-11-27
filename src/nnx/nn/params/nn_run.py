@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import errno
 import hashlib
 import html
@@ -28,7 +29,13 @@ from ...history import HISTORY_DIR, HistoryCorruptionError, _journal_epoch_serie
 from ...precision import ResolvedPrecision
 from ...provenance import ProvenanceRecord, load_provenance
 from ..enum.checkpoints import Checkpoints
-from ..params.nn_checkpoint import _UNSUPPORTED_FLUSH, NNCheckpoint, NNCheckpointTransform, _fsync_directory
+from ..params.nn_checkpoint import (
+    _UNSUPPORTED_FLUSH,
+    NNCheckpoint,
+    NNCheckpointTransform,
+    _fsync_directory,
+    _full_fsync,
+)
 from ..params.nn_iteration_data_point import NNIterationDataPoint
 from ..params.nn_model_params import NNModelParams
 from ..params.nn_optim_params import NNOptimParams
@@ -274,6 +281,41 @@ def _created_file_mode() -> int:
 
 # Read once at import: os.umask is process-wide, so it is not re-read per write.
 _CREATED_FILE_MODE = _created_file_mode()
+
+
+def _reserve_partial(path: str) -> str:
+    """An empty, uniquely named file beside ``path``, for a writer to fill
+    before :func:`_commit_partial` renames it onto ``path`` (the same
+    filesystem, so the rename is atomic)."""
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, partial = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", suffix=".partial", dir=directory)
+    os.close(fd)
+    return partial
+
+
+def _fsync_file(path: str) -> None:
+    """Flush the file at ``path`` to stable storage (through a read-only descriptor)."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        _full_fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _commit_partial(partial: str, path: str) -> None:
+    """Flush the finished ``partial`` to stable storage, give it the mode a
+    plain write creates (``mkstemp`` makes it 0600), and rename it onto
+    ``path``. A failure before the rename leaves ``path`` untouched; the
+    caller discards ``partial`` (:func:`_discard_partial`)."""
+    _fsync_file(partial)
+    os.chmod(partial, _CREATED_FILE_MODE)
+    os.replace(partial, path)
+
+
+def _discard_partial(partial: str) -> None:
+    """Remove a partial file a failed write left behind (if it still exists)."""
+    with contextlib.suppress(OSError):
+        os.unlink(partial)
 
 
 def _quietly(fn, *args) -> None:

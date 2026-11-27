@@ -1368,6 +1368,8 @@ def select_threshold(
         default_field=None,  # a CalibratedPrediction must say which view to tune on
     )
     p, _, decoded = _read(declared, copy=False)  # only read; the ids are checked for form, then unused
+    if p.shape[0] == 0:  # a threshold tuned on no rows would read as "no feasible policy"
+        raise AbstentionError(f"select_threshold needs at least one tuning row on split {tuning!r}, got none")
     points = _points(p, decoded, targets, policy_kind, candidates)
     best = _best(points, ceiling)
     policy = None

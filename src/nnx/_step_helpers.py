@@ -15,7 +15,8 @@ coupling beyond the TrainStepContext type.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+import contextlib
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Optional, TypeVar, cast
 
@@ -28,6 +29,7 @@ from .models import _as_inputs
 from .nn.nn_model import TrainStepContext
 from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 from .tasks import STEP_TASKS, TaskAdapter, _StepTasks
+from .utils import _capture_training_modes, _restore_training_modes
 
 # Marks an imperative paradigm step (it steps the optimizer itself) with its
 # paradigm's name, so passing it as ``objective=`` is refused before any run
@@ -90,9 +92,26 @@ def pin_eval(module: torch.nn.Module) -> None:
     """Put a frozen model's net (a KD teacher, a DPO reference) back in eval
     mode before its forward. A callback or user code may switch it to train
     mode; its dropout and BatchNorm would then change its outputs. A module
-    already in eval mode throughout is left untouched."""
+    already in eval mode throughout is left untouched. Use
+    :func:`pinned_eval`, which also gives the modes back afterwards."""
     if any(sub.training for sub in module.modules()):
         module.eval()
+
+
+@contextlib.contextmanager
+def pinned_eval(module: torch.nn.Module) -> Iterator[None]:
+    """A frozen model's forward in eval mode (:func:`pin_eval`), after which
+    the submodules' training flags are given back, so the caller's modes
+    survive the call. The modes are restored only when one of them changed
+    (a module that was in eval mode all along is never touched again). The
+    restore runs in a ``finally``, so a forward that raises restores them too."""
+    modes = _capture_training_modes(module)
+    try:
+        pin_eval(module)
+        yield
+    finally:
+        if any(sub.training != training for sub, training in modes):
+            _restore_training_modes(modes)
 
 
 def submodule_path(root: torch.nn.Module, module: torch.nn.Module) -> Optional[str]:
@@ -121,7 +140,7 @@ def freeze_apart(net: torch.nn.Module, frozen: torch.nn.Module, *, role: str, re
     trained): refuse, before any parameter is frozen, one that is ``net``,
     is part of it or shares a parameter with it, since freezing it would
     freeze (part of) the trained network. The JEPA target's rule (#531).
-    Its mode is left to :func:`pin_eval`, before each forward."""
+    Its mode is left to :func:`pinned_eval`, around each forward."""
     path, shared = placement_in(net, frozen)
     if path is not None:
         if path == "":  # the trained network itself

@@ -1210,7 +1210,14 @@ def export_bundle(
     if _addresses_best_pointer(run_id, root):  # a moving alias: a bundle records the run it came from
         raise BundleError('export a run by its own id, not the "best" pointer (NNRun.best_id() names it)')
     label = str(_resume_checkpoint_type(checkpoint))
-    ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=label, root=root)  # type: ignore[arg-type]
+    # The resume path verifies a resume point before it restores from it (#394, #537); an export
+    # publishes the same point, so it is checked the same way: a torn, mixed or corrupted point is
+    # refused here, before anything is written.
+    manifest = NNCheckpoint.verify(run=run_id, type=label, root=root)  # type: ignore[arg-type]
+    if manifest is None:  # a checkpoint without a manifest loads as before
+        ckpt, training_state = NNCheckpoint.load_with_training_state(run=run_id, type=label, root=root)  # type: ignore[arg-type]
+    else:
+        ckpt, training_state = NNCheckpoint._load_resume_point(run_id, label, manifest, root=root)  # type: ignore[arg-type]
     if ckpt is None:
         raise BundleError(f"run {run_id!r} has no {label!r} checkpoint under {os.path.join(root or '.', 'runs')}")
     if not ckpt.reconstructible:

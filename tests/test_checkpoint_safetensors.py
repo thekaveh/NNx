@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import errno
 import os
+import uuid
 from collections import OrderedDict
 from dataclasses import replace
 
@@ -820,3 +821,20 @@ def test_safetensors_still_writes_a_replayable_checkpoint(tmp_path):
     checkpoint.to_file(str(path), format="safetensors")
     assert path.exists()
     assert NNCheckpoint.from_file(str(path)).transforms == (transform,)
+
+
+@pytest.mark.parametrize("training_state_id", ["_/../../../victim", "../victim", "0" * 31, "0" * 33, "A" * 32])
+def test_a_safetensors_training_state_id_outside_the_writers_form_is_refused(tmp_path, training_state_id):
+    """The id names the generation sidecar a resume reads, so only the writer's uuid4 hex form is a valid id."""
+    checkpoint = replace(_build_checkpoint(_tiny_model()), training_state_id=training_state_id)
+    path = tmp_path / "ckpt.safetensors"
+    checkpoint.to_file(str(path), format="safetensors")
+    with pytest.raises(ValueError, match="malformed training-state id"):
+        NNCheckpoint.from_file(str(path))
+
+
+def test_a_safetensors_training_state_id_in_the_writers_form_round_trips(tmp_path):
+    checkpoint = replace(_build_checkpoint(_tiny_model()), training_state_id=uuid.uuid4().hex)
+    path = tmp_path / "ckpt.safetensors"
+    checkpoint.to_file(str(path), format="safetensors")
+    assert NNCheckpoint.from_file(str(path)).training_state_id == checkpoint.training_state_id
