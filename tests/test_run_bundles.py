@@ -430,6 +430,29 @@ def test_export_refuses_extra_state_and_non_bundle_destinations():
     assert bundles.BUNDLE_VERSION == 1
 
 
+def test_export_refuses_a_resume_point_whose_tensor_bytes_changed_and_publishes_nothing():
+    """The resume path verifies a resume point before it restores from it; an export of the same
+    point is checked the same way, so a flipped byte of a tensor is refused before any bundle is
+    written."""
+    _, batches = _data()
+    torch.manual_seed(7)
+    run = _classifier().train(params=_params(1, "tampered", batches))
+    path = os.path.join("runs", run.id, "checkpoints", "last.pt")
+    first_tensor = next(iter(nn_checkpoint.NNCheckpoint.load(run=run.id, type="last").net_state.values()))
+    raw = first_tensor.detach().contiguous().numpy().tobytes()
+    data = bytearray(open(path, "rb").read())
+    offset = data.find(raw)
+    assert offset >= 0
+    data[offset] ^= 0x01  # one byte of a stored tensor
+    with open(path, "wb") as handle:
+        handle.write(bytes(data))
+    with pytest.raises(nn_checkpoint.ResumePointError, match="digest mismatch.*last.pt"):
+        nn_checkpoint.NNCheckpoint.verify(run.id, "last")  # the resume path refuses this point
+    with pytest.raises(nn_checkpoint.ResumePointError, match="digest mismatch.*last.pt"):
+        export_bundle(run.id, "bundle")
+    assert not os.path.exists("bundle")
+
+
 def test_tensor_payloads_are_standard_safetensors():
     from nnx.bundles import _load_tensors, _save_tensors
 

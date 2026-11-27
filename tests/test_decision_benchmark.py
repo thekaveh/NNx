@@ -15,6 +15,7 @@ import io
 import json
 import math
 import random
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -1301,3 +1302,52 @@ def test_reports_are_read_only_and_hash_by_value(tmp_path):
     assert saved == state
     deltas = compare_reports(report, saved)
     assert all(value in (0.0, None) for row in deltas.values() for value in row.values())
+
+
+def test_evaluate_refuses_a_policy_tuned_on_the_evaluated_split():
+    samples, records = fixture()
+    policy = AbstentionPolicy("max_probability", 0.75, labels=("a", "b"), model_id="stub-v1", tuning_split_id="val")
+    with pytest.raises(BenchmarkError, match="tuned on split 'val': the evaluation split must differ"):
+        evaluate(samples, records, split="val", policy=policy, model_id="stub-v1")
+    assert evaluate(samples, records, split="test", policy=policy, model_id="stub-v1").split == "test"
+
+
+def test_sample_set_follows_the_input_text():
+    samples, records = fixture()
+    base = evaluate(samples, records, split="x")
+    reworded = [Sample(s.id, s.question, f"{s.input} (reworded)", s.label) for s in samples]
+    changed = evaluate(reworded, records, split="x")
+    assert changed.sample_set != base.sample_set
+    with pytest.raises(BenchmarkError, match="different samples"):
+        compare_reports(base, changed)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "phrase"),
+    [("revision", "r@2", "model revisions"), ("prompt_identity", "sha256:beef", "prompt identities")],
+)
+def test_compare_refuses_records_differing_only_in_revision_or_prompt(field, value, phrase):
+    samples, records = fixture()
+    stamped = [replace(record, revision="r@1", prompt_identity="sha256:feed") for record in records]
+    base = evaluate(samples, stamped, split="x")
+    other = evaluate(samples, [replace(record, **{field: value}) for record in stamped], split="x")
+    assert base.sample_set == other.sample_set and base.metric_identity == other.metric_identity
+    with pytest.raises(BenchmarkError, match=f"different {phrase}"):
+        compare_reports(base, other)
+
+
+def test_report_state_carries_revisions_only_when_records_record_them():
+    samples, records = fixture()
+    bare = evaluate(samples, records, split="x")
+    assert "revisions" not in bare.state() and "prompt_identities" not in bare.state()
+    stamped = evaluate(samples, [replace(record, revision="r@1") for record in records], split="x")
+    assert stamped.state()["revisions"] == ["r@1"] and "prompt_identities" not in stamped.state()
+    with pytest.raises(BenchmarkError, match="different model revisions"):
+        compare_reports(bare, stamped)
+
+
+def test_evaluate_names_a_sample_whose_input_has_no_stable_digest():
+    samples, records = fixture()
+    opaque = [Sample(samples[0].id, AB, object(), "a")] + samples[1:]
+    with pytest.raises(BenchmarkError, match="'s0' cannot be fingerprinted"):
+        evaluate(opaque, records, split="x")

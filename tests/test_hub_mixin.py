@@ -710,3 +710,130 @@ def test_a_top_level_tensor_or_submodule_is_excluded_strictly(tmp_path, kind):
     save_file(state, str(weights))
     with pytest.raises(RuntimeError, match=r'Missing key\(s\) in state_dict: "layers.0.weight"'):
         NNModel.from_pretrained(str(saved), exclude_submodules=(name,))
+
+
+def _with_extra_state(model: NNModel) -> NNModel:
+    """A model whose net state_dict holds a non-tensor entry (module extra state)."""
+
+    class ExtraStateNet(type(model.net)):
+        def get_extra_state(self):
+            return {"labels": ["class-a"]}
+
+        def set_extra_state(self, state):
+            self.extra_state = state
+
+    model.net.__class__ = ExtraStateNet
+    return model
+
+
+def test_a_refused_resave_keeps_the_previous_artifact(tmp_path):
+    """A re-save the Hub export refuses writes nothing: huggingface_hub unlinks config.json
+    before it calls _save_pretrained, so the refusal used to leave the previous weights
+    without their config."""
+    _tiny_model().save_pretrained(str(tmp_path))
+    config_before = (tmp_path / "config.json").read_bytes()
+    weights_before = (tmp_path / "model.safetensors").read_bytes()
+
+    with pytest.raises(TypeError, match="Hugging Face Hub export.*non-tensor state_dict"):
+        _with_extra_state(_tiny_model()).save_pretrained(str(tmp_path))
+
+    assert (tmp_path / "config.json").read_bytes() == config_before
+    assert (tmp_path / "model.safetensors").read_bytes() == weights_before
+
+
+def test_a_failed_resave_keeps_the_previous_config(tmp_path, monkeypatch):
+    """A re-save whose weights write fails must not delete the previous config.json."""
+    import safetensors.torch
+
+    _tiny_model().save_pretrained(str(tmp_path))
+    config_before = (tmp_path / "config.json").read_bytes()
+
+    def failing_save(tensors, path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(safetensors.torch, "save_file", failing_save)
+    with pytest.raises(OSError, match="disk full"):
+        _tiny_model().save_pretrained(str(tmp_path))
+
+    assert (tmp_path / "config.json").read_bytes() == config_before
+    assert (tmp_path / "model.safetensors").exists()
+
+
+def test_a_failed_save_leaves_no_staging_directory(tmp_path, monkeypatch):
+    import safetensors.torch
+
+    def failing_save(tensors, path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(safetensors.torch, "save_file", failing_save)
+    with pytest.raises(OSError, match="disk full"):
+        _tiny_model().save_pretrained(str(tmp_path / "artifact"))
+    assert not [name for name in os.listdir(tmp_path) if name.startswith(".nnx-hub-")]
+    assert not (tmp_path / "artifact" / "config.json").exists()
+
+
+def test_an_existing_model_card_is_kept(tmp_path):
+    (tmp_path / "README.md").write_text("my own card", encoding="utf-8")
+    _tiny_model().save_pretrained(str(tmp_path))
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == "my own card"
+    assert (tmp_path / "config.json").exists()
+
+
+def test_hub_weights_are_flushed_before_they_are_renamed_into_place(tmp_path, monkeypatch):
+    """The weights partial file is fsynced before its rename, so a power loss cannot leave
+    an unflushed weights file under the final name."""
+    import nnx.nn.params.nn_run as nn_run
+
+    events: list[object] = []
+    real_replace = os.replace
+
+    def recording_flush(fd):
+        events.append("fsync")
+
+    def recording_replace(src, dst):
+        events.append(("replace", os.path.basename(os.fspath(src))))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(nn_run, "_full_fsync", recording_flush, raising=False)
+    monkeypatch.setattr(os, "replace", recording_replace)
+    _tiny_model().save_pretrained(str(tmp_path))
+
+    weights_renamed = events.index(("replace", "model.safetensors.partial"))
+    assert "fsync" in events[:weights_renamed]
+
+
+def test_push_to_hub_refuses_non_tensor_state_before_creating_the_repository(monkeypatch):
+    """The non-tensor refusal happens before create_repo, as every other save-side refusal does."""
+    api = _mocked_hf_api(monkeypatch)
+    with pytest.raises(TypeError, match="Hugging Face Hub export.*non-tensor state_dict"):
+        _with_extra_state(_tiny_model()).push_to_hub("owner/repo")
+    api.create_repo.assert_not_called()
+    api.upload_folder.assert_not_called()
+
+
+def test_a_duplicate_key_in_the_hub_config_is_refused(tmp_path):
+    """config.json is read with the strict parser: a repeated key would otherwise load with its last value."""
+    _tiny_model().save_pretrained(str(tmp_path))
+    config = tmp_path / "config.json"
+    config.write_text(config.read_text(encoding="utf-8").replace("{", '{"transforms": [], ', 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="repeats the key 'transforms'"):
+        NNModel.from_pretrained(str(tmp_path))
+
+
+def test_a_nan_in_the_hub_config_is_refused(tmp_path):
+    _tiny_model().save_pretrained(str(tmp_path))
+    config = tmp_path / "config.json"
+    config.write_text(config.read_text(encoding="utf-8").replace("{", '{"loss_probe": NaN, ', 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="NaN is not a JSON number"):
+        NNModel.from_pretrained(str(tmp_path))
+
+
+def test_parse_json_refuses_a_repeated_key_at_any_depth():
+    """The strict parse behind every JSON artifact loader refuses a repeated key anywhere in the file."""
+    from nnx._artifacts import parse_json
+
+    assert parse_json('{"a": {"b": 1}, "c": [1, 2]}', "x", ValueError) == {"a": {"b": 1}, "c": [1, 2]}
+    with pytest.raises(ValueError, match="repeats the key 'a'"):
+        parse_json('{"a": 1, "a": 2}', "x", ValueError)
+    with pytest.raises(ValueError, match="repeats the key 'b'"):
+        parse_json('{"outer": {"b": 1, "b": 1}}', "x", ValueError)

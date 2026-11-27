@@ -950,6 +950,13 @@ def test_the_row_sum_check_stays_meaningful_for_many_float16_classes():
         negative_log_likelihood(np.zeros((3, 1100), dtype=np.float16), [0, 1, 2])
 
 
+def test_row_sum_check_still_passes_a_float32_softmax_row():
+    logits = np.random.default_rng(3).normal(scale=4.0, size=(16, 7)).astype(np.float32)
+    shifted = np.exp(logits - logits.max(axis=1, keepdims=True))
+    probabilities = (shifted / shifted.sum(axis=1, keepdims=True)).astype(np.float32)
+    assert math.isfinite(brier_score(probabilities, np.arange(16) % 7))
+
+
 def test_model_fingerprint_materializes_conjugate_views():
     module = torch.nn.Module()
     module.register_buffer("z", torch.tensor([1 + 2j]).conj())

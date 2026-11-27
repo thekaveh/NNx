@@ -3386,7 +3386,9 @@ batch = (features, query_ids, candidate_ids, relevance[, mask])   # or a mapping
   microbatch's queries accumulates in full precision; `pairwise_logistic_loss`
   itself also widens float16 / bfloat16 scores.
 - **Training batches.** Pairs are formed within a microbatch, so keep a
-  query's candidates in one batch when training. The scorer takes the
+  query's candidates in one batch when training, and train with
+  `accumulate_grad_batches=1` (a larger update window is refused before the
+  run starts). The scorer takes the
   features as its one input. Every row goes through it, masked ones too, so
   pad masked rows with finite features.
 - **The evaluation** buffers the whole validation stream (at most

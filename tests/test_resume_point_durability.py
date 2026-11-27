@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import errno
 import os
+import signal
 import types
 
 import pytest
@@ -147,3 +148,27 @@ def test_the_real_platform_call_succeeds_on_a_directory(tmp_path):
         nn_checkpoint._full_fsync(fd)
     finally:
         os.close(fd)
+
+
+@pytest.fixture
+def default_sigint():
+    """The default SIGINT handler (a Ctrl-C raises KeyboardInterrupt) for the test, whatever the runner
+    inherited; restored afterwards."""
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    yield
+    if previous is not None:
+        signal.signal(signal.SIGINT, previous)
+
+
+def test_a_ctrl_c_held_during_a_body_that_raises_is_raised_over_that_exception(default_sigint):
+    with pytest.raises(KeyboardInterrupt) as raised:
+        with nn_checkpoint._deferred_interrupt():
+            signal.raise_signal(signal.SIGINT)
+            raise OSError("disk full")
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_a_ctrl_c_held_during_a_normal_body_is_raised_after_it(default_sigint):
+    with pytest.raises(KeyboardInterrupt):
+        with nn_checkpoint._deferred_interrupt():
+            signal.raise_signal(signal.SIGINT)

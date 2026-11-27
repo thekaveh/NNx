@@ -1225,8 +1225,9 @@ def test_a_recipe_travels_in_a_run_bundle_and_a_callback_operation_does_not(tmp_
     future = NNCheckpointTransform(name="lora", version=7, options={"targets": ["layers.0"], "r": 4})
     last = NNCheckpoint.load(run=run.id, type=Checkpoints.LAST)
     assert last is not None
+    # The export reads a manifest-backed point through _load_resume_point (the verified read).
     with mock.patch.object(
-        NNCheckpoint, "load_with_training_state", return_value=(replace(last, transforms=(future,)), None)
+        NNCheckpoint, "_load_resume_point", return_value=(replace(last, transforms=(future,)), None)
     ):
         with pytest.raises(BundleError, match=r"topology transform 0 \('lora' version 7\) has a version"):
             export_bundle(run.id, tmp_path / "future")

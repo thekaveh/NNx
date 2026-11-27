@@ -746,3 +746,35 @@ def test_streaming_numpy_labels_are_stored_as_plain_str():
     acc = StreamingMetrics([MetricSpec("accuracy")], "categorical", labels=np.array(["a", "b"]))
     assert acc.labels == ("a", "b") and all(type(label) is str for label in acc.labels) and acc.num_outputs == 2
     acc.merge(StreamingMetrics([MetricSpec("accuracy")], "categorical", labels=["a", "b"]))
+
+
+@pytest.mark.parametrize(
+    ("bad", "message"),
+    [
+        ([[0.5, np.nan], [0.5, 0.5]], "non-finite"),
+        ([[0.5, np.inf], [0.5, 0.5]], "non-finite"),
+        ([[1.5, -0.5], [0.5, 0.5]], r"\[0, 1\]"),
+        ([[0.9, 0.9], [0.5, 0.5]], "sum to 1"),
+    ],
+)
+def test_streaming_update_refuses_invalid_categorical_probabilities(bad, message):
+    acc = _probability_metrics()
+    acc.update(TARGETS, probabilities=PROBABILITIES)
+    with pytest.raises(ValueError, match=message):
+        acc.update(TARGETS, probabilities=np.array(bad))
+    snapshot = acc.finalize()  # the refused batch accumulated nothing
+    assert snapshot.count == 2 and snapshot.values["brier"] == pytest.approx(0.20, abs=1e-12)
+
+
+def test_streaming_update_accepts_bfloat16_rounding_within_the_row_sum_bound():
+    acc = _probability_metrics()
+    # Within bfloat16's own rounding (0.2 + 0.8 stores as 1.00098; 0.0156 allowed): accepted, not float32's 1e-6.
+    rounded = torch.tensor([[0.2, 0.8], [0.5, 0.5]], dtype=torch.bfloat16)
+    assert float(rounded.float().sum(dim=1)[0]) != 1.0
+    assert acc.update(TARGETS, probabilities=rounded) == 2
+
+
+def test_streaming_update_scores_only_the_rows_it_keeps():
+    acc = _probability_metrics()
+    probabilities = np.array([[np.nan, np.nan], [0.2, 0.8]])  # row 0 excluded by valid
+    assert acc.update(TARGETS, probabilities=probabilities, valid=np.array([False, True])) == 1

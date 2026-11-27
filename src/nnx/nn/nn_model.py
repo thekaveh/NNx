@@ -9,10 +9,13 @@ import json
 import math
 import os
 import re
+import shutil
+import tempfile
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Self, Union, cast
 
@@ -23,7 +26,9 @@ from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from .._artifacts import parse_json
 from .._confusion import LabelCounts, label_counts, label_kind, record_scores
+from .._json_depth import MAX_JSON_DEPTH
 from .._metrics import _resolve_metric_with_provenance, _resolve_scheduler_metric, classification_edp
 from .._optional import require_onnx
 from .._reparameterization import UNNAMED, legacy_reparameterizations
@@ -102,6 +107,7 @@ from .params.nn_checkpoint import (
     NNCheckpoint,
     NNCheckpointTransform,
     ResumePointError,
+    _refuse_non_tensor_state,
     _snapshot_state_dict,
     _tensor_state_dict,
 )
@@ -115,9 +121,13 @@ from .params.nn_run import (
     NNRun,
     _atomic_write_text,
     _best_err,
+    _commit_partial,
+    _discard_partial,
+    _fsync_file,
     _may_name_best_pointer,
     _print_run_saved,
     _recorded_attempt_token,
+    _reserve_partial,
     _resolve_run_id,
     _runs_root,
     _validate_run_id,
@@ -4090,6 +4100,10 @@ class NNModel(_HubMixinBase):
         # embed_texts / lr_finder / viz.activation_map / viz.attribute /
         # viz.netron_export). The bare `self.net.eval()` here was the lone
         # exception.
+        # The export is written beside ``path`` and renamed onto it only once
+        # complete: torch's legacy writer opens its target with "wb", so a
+        # failed export would otherwise truncate an existing model.onnx.
+        partial = _reserve_partial(path)
         training_modes = _capture_training_modes(self.net)
         self.net.eval()
         # torch>=2.9 defaults torch.onnx.export to the dynamo-based exporter,
@@ -4097,47 +4111,52 @@ class NNModel(_HubMixinBase):
         # the default (False) keeps the legacy tracing path regardless of
         # the installed torch version — plain `pip install onnx` is enough.
         try:
-            export_accepts_dynamo = "dynamo" in inspect.signature(torch.onnx.export).parameters
-            if dynamo:
-                if not export_accepts_dynamo:
-                    raise RuntimeError(
-                        "to_onnx(dynamo=True) requires torch>=2.5 (the dynamo-based "
-                        "ONNX exporter wasn't available before then). Upgrade torch or "
-                        "call with dynamo=False."
+            try:
+                export_accepts_dynamo = "dynamo" in inspect.signature(torch.onnx.export).parameters
+                if dynamo:
+                    if not export_accepts_dynamo:
+                        raise RuntimeError(
+                            "to_onnx(dynamo=True) requires torch>=2.5 (the dynamo-based "
+                            "ONNX exporter wasn't available before then). Upgrade torch or "
+                            "call with dynamo=False."
+                        )
+                    torch.onnx.export(
+                        self.net,
+                        example_input,
+                        partial,
+                        input_names=in_names,
+                        output_names=out_names,
+                        dynamic_shapes=dynamic_shapes,
+                        opset_version=opset_version,
+                        dynamo=True,
                     )
-                torch.onnx.export(
-                    self.net,
-                    example_input,
-                    path,
-                    input_names=in_names,
-                    output_names=out_names,
-                    dynamic_shapes=dynamic_shapes,
-                    opset_version=opset_version,
-                    dynamo=True,
-                )
-            elif export_accepts_dynamo:
-                torch.onnx.export(
-                    self.net,
-                    example_input,
-                    path,
-                    input_names=in_names,
-                    output_names=out_names,
-                    dynamic_axes=dynamic_axes,
-                    opset_version=opset_version,
-                    dynamo=False,
-                )
-            else:
-                torch.onnx.export(
-                    self.net,
-                    example_input,
-                    path,
-                    input_names=in_names,
-                    output_names=out_names,
-                    dynamic_axes=dynamic_axes,
-                    opset_version=opset_version,
-                )
-        finally:
-            _restore_training_modes(training_modes)
+                elif export_accepts_dynamo:
+                    torch.onnx.export(
+                        self.net,
+                        example_input,
+                        partial,
+                        input_names=in_names,
+                        output_names=out_names,
+                        dynamic_axes=dynamic_axes,
+                        opset_version=opset_version,
+                        dynamo=False,
+                    )
+                else:
+                    torch.onnx.export(
+                        self.net,
+                        example_input,
+                        partial,
+                        input_names=in_names,
+                        output_names=out_names,
+                        dynamic_axes=dynamic_axes,
+                        opset_version=opset_version,
+                    )
+            finally:
+                _restore_training_modes(training_modes)
+            _commit_partial(partial, path)
+        except BaseException:
+            _discard_partial(partial)
+            raise
         return path
 
     @classmethod
@@ -4339,7 +4358,26 @@ class NNModel(_HubMixinBase):
         predictor, a ``logit_scale``) are saved; ``from_pretrained`` leaves
         them out through ``exclude_submodules``."""
         self._refuse_unloadable_hub_artifact("save_pretrained refused before writing anything")
-        return super().save_pretrained(save_directory, *args, **kwargs)
+        target = Path(save_directory)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if kwargs.get("push_to_hub") and kwargs.get("repo_id") is None:
+            # huggingface_hub names the repository after the directory it saves into: the staging one is not that.
+            kwargs["repo_id"] = target.name
+        # The whole save is staged beside the target and moved in only once it has succeeded: huggingface_hub
+        # unlinks config.json before it writes the files, so a save refused or failed in place would leave the
+        # previous artifact without its config.
+        staging = tempfile.mkdtemp(prefix=".nnx-hub-", dir=str(target.parent))
+        try:
+            result = super().save_pretrained(staging, *args, **kwargs)
+            target.mkdir(parents=True, exist_ok=True)
+            # config.json moves last, so an interrupted move leaves the previous config beside at most the new weights.
+            for name in sorted(os.listdir(staging), key=lambda produced: produced == _HUB_CONFIG_FILENAME):
+                if name == "README.md" and (target / name).exists():
+                    continue  # huggingface_hub does not overwrite an existing model card
+                os.replace(os.path.join(staging, name), target / name)
+            return result
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
     def push_to_hub(self, repo_id: str, *args: Any, **kwargs: Any) -> Any:
         """Hub upload (``huggingface_hub.PyTorchModelHubMixin.push_to_hub``):
@@ -4389,6 +4427,9 @@ class NNModel(_HubMixinBase):
             drift = None if not transforms and self._only_attached_submodules() else self._topology_drift()
             if drift is not None:
                 raise ValueError(f"{refused}: {drift}")
+        # Last, as it was when _save_pretrained ran after these: a non-tensor entry must be refused before
+        # create_repo (push_to_hub) or any file is written, and checking it copies no tensor.
+        _refuse_non_tensor_state(self.net.state_dict(), operation="Hugging Face Hub export")
 
     def _only_attached_submodules(self) -> bool:
         """The live state is the base exactly, plus tensors under top-level
@@ -4430,8 +4471,6 @@ class NNModel(_HubMixinBase):
         ``README.md`` model card via ``generate_model_card()``; that's
         emitted on top of these two files by the base implementation.
         """
-        from pathlib import Path
-
         self._require_portable("save_pretrained")
         try:
             from safetensors.torch import save_file
@@ -4456,6 +4495,7 @@ class NNModel(_HubMixinBase):
         partial_path = save_dir / (_HUB_MODEL_FILENAME + ".partial")
         try:
             save_file(tensors, str(partial_path))
+            _fsync_file(str(partial_path))
             os.replace(partial_path, weights_path)
         except BaseException:
             with contextlib.suppress(OSError):
@@ -4600,7 +4640,8 @@ class NNModel(_HubMixinBase):
             weights_path = os.path.join(snapshot_path, _HUB_MODEL_FILENAME)
 
         with open(config_path, encoding="utf-8") as f:
-            config = json.load(f)
+            # The strict parse: a duplicate key or NaN would otherwise load silently (last key wins).
+            config = parse_json(f.read(), "config.json", ValueError, max_depth=MAX_JSON_DEPTH)
         overridden = sorted(key for key, value in passed.items() if value != config.get(key))
         if overridden:
             raise TypeError(
@@ -4886,7 +4927,13 @@ class NNModel(_HubMixinBase):
         if objective is not None:
             # FEAT-040: an objective refuses what it cannot train (say, a JEPA
             # predictor the optimizer does not own) before any run exists.
-            _check_objective_run(objective, self, optimizers={"default": optimizer}, callbacks=callbacks)
+            _check_objective_run(
+                objective,
+                self,
+                optimizers={"default": optimizer},
+                callbacks=callbacks,
+                accumulate_grad_batches=params.optim.accumulate_grad_batches,
+            )
         # The fp16 scaler, through the override hook and checked against the
         # policy (FEAT-028) before any run is reserved.
         scaler = self._build_grad_scaler()

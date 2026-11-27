@@ -22,6 +22,7 @@ test file is harmless on a minimal install.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 from typing import Any
 
@@ -705,8 +706,9 @@ def test_an_unbaked_reparameterization_is_refused_before_anything_is_written(tmp
 
 
 def test_the_refusal_detects_the_hooks_by_type_not_by_parameter_names():
-    """Plain parameters that merely share the reparameterizations' names
-    export; a prune hook on a non-projection module is still refused."""
+    """Plain parameters that merely share the reparameterizations' names are
+    not hooks: they are refused as state no GGUF tensor carries (naming them),
+    not as a prune hook; a prune hook on a non-projection module is still refused."""
     import torch
 
     from nnx.interop.gguf.tensor_name_map import map_tensors
@@ -715,12 +717,91 @@ def test_the_refusal_detects_the_hooks_by_type_not_by_parameter_names():
     lin = net.blocks[0].ffn.w1
     for suffix in ("_orig", "_mask", "_g", "_v"):
         lin.register_parameter(f"weight{suffix}", torch.nn.Parameter(torch.zeros_like(lin.weight)))
-    assert "blk.0.ffn_gate.weight" in map_tensors(net)
+    with pytest.raises(TypeError, match="no tensor slot for blocks.0.ffn.w1.weight_orig") as refused:
+        map_tensors(net)
+    assert "prune mask" not in str(refused.value)
 
     net = _tiny_transformer()
     torch.nn.utils.prune.random_unstructured(net.norm_out, "weight", amount=0.5)
     with pytest.raises(TypeError, match=r"norm_out\.weight"):
         map_tensors(net)
+
+
+@pytest.mark.parametrize("extra", ["logit_scale", "aux_head"])
+def test_the_map_refuses_a_state_entry_no_tensor_carries(extra):
+    """A state_dict entry the map does not read (an auxiliary head, a logit_scale) used to be
+    dropped without a word; the map now refuses it, naming the key."""
+    import torch
+
+    from nnx.interop.gguf.tensor_name_map import map_tensors
+
+    net = _tiny_transformer()
+    if extra == "logit_scale":
+        net.logit_scale = torch.nn.Parameter(torch.zeros(()))
+        key = "logit_scale"
+    else:
+        net.aux_head = torch.nn.Linear(32, 64)
+        key = "aux_head.weight"
+    with pytest.raises(TypeError, match=rf"no tensor slot for .*{re.escape(key)}"):
+        map_tensors(net)
+
+
+@pytest.mark.parametrize("tie", [True, False])
+def test_a_valid_export_passes_the_unmapped_state_check(tie, tmp_path):
+    """Tied (the head's state_dict key is the embedding's weight) and untied exports both write."""
+    from nnx.interop.gguf import write_gguf
+
+    params = NNTransformerParams(
+        input_dim=64,
+        output_dim=64,
+        dropout_prob=0.0,
+        vocab_size=64,
+        n_layers=2,
+        n_heads=4,
+        d_model=32,
+        ffn_mult=4,
+        max_seq_len=16,
+        tie_embeddings=tie,
+    )
+    net = TransformerNN(params=params)
+    out = write_gguf(net, _tiny_tokenizer(tmp_path), tmp_path / "model.gguf", quantization="F32")
+    assert (tmp_path / "model.gguf").exists() and out.endswith("model.gguf")
+
+
+def test_an_unmapped_state_entry_refuses_the_write_before_any_file_is_made(tmp_path):
+    import torch
+
+    from nnx.interop.gguf import write_gguf
+
+    net = _tiny_transformer()
+    net.logit_scale = torch.nn.Parameter(torch.zeros(()))
+    with pytest.raises(TypeError, match="logit_scale"):
+        write_gguf(net, _tiny_tokenizer(tmp_path), tmp_path / "out" / "model.gguf")
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_failed_write_leaves_the_previous_gguf_intact(tmp_path, monkeypatch):
+    """The file is renamed onto the destination only once complete: a write that fails
+    part-way leaves the previous model.gguf byte-identical and no partial behind."""
+    import gguf
+
+    from nnx.interop.gguf import write_gguf
+
+    net = _tiny_transformer()
+    tokenizer = _tiny_tokenizer(tmp_path)
+    out = tmp_path / "model.gguf"
+    write_gguf(net, tokenizer, str(out), quantization="F32")
+    previous = out.read_bytes()
+
+    def failing_tensors(self):
+        raise OSError("disk full")  # after the header and key-values have been written
+
+    monkeypatch.setattr(gguf.GGUFWriter, "write_tensors_to_file", failing_tensors)
+    with pytest.raises(OSError, match="disk full"):
+        write_gguf(_tiny_transformer(), tokenizer, str(out), quantization="F32")
+
+    assert out.read_bytes() == previous
+    assert not [name for name in os.listdir(tmp_path) if name.endswith(".partial")]
 
 
 @pytest.mark.parametrize(
