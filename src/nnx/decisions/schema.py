@@ -352,14 +352,24 @@ class BooleanResult:
     p_true: float
     provider: Optional[str] = None
     raw: Any = field(default=None, compare=False, repr=False)
+    # The provider's own p_false when it gave one: kept as given, and checked against p_true within
+    # PROBABILITY_TOLERANCE. Left None, p_false is 1 - p_true.
+    given_p_false: Optional[float] = field(default=None, compare=False)
     kind: ClassVar[str] = "boolean"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "p_true", _probability(self.p_true, what="BooleanResult p_true"))
+        if self.given_p_false is not None:
+            given = _probability(self.given_p_false, what="BooleanResult p_false")
+            if abs(self.p_true + given - 1.0) > PROBABILITY_TOLERANCE:
+                raise InvalidDecisionResponse(
+                    f"p['true'] + p['false'] = {self.p_true + given!r}, not 1; never renormalized"
+                )
+            object.__setattr__(self, "given_p_false", given)
 
     @property
     def p_false(self) -> float:
-        return 1.0 - self.p_true
+        return self.given_p_false if self.given_p_false is not None else 1.0 - self.p_true
 
 
 @dataclass(frozen=True)
@@ -451,14 +461,15 @@ def validate_response(
                     f"a Boolean response keys 'true' and 'false', got {sorted(map(str, keys))}"
                 )
             p_true = _probability(response["true"], what="p['true']")
-            p_false = _probability(response["false"], what="p['false']")
-            if abs(p_true + p_false - 1.0) > PROBABILITY_TOLERANCE:
+            given_p_false = _probability(response["false"], what="p['false']")
+            if abs(p_true + given_p_false - 1.0) > PROBABILITY_TOLERANCE:
                 raise InvalidDecisionResponse(
-                    f"p['true'] + p['false'] = {p_true + p_false!r}, not 1; never renormalized"
+                    f"p['true'] + p['false'] = {p_true + given_p_false!r}, not 1; never renormalized"
                 )
         else:
             p_true = _probability(response, what="p_true")
-        return BooleanResult(digest, p_true, provider=provider, raw=raw)
+            given_p_false = None
+        return BooleanResult(digest, p_true, provider=provider, raw=raw, given_p_false=given_p_false)
 
     expected = question.option_ids
     seen: dict[str, float] = {}

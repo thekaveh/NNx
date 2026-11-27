@@ -322,3 +322,22 @@ def test_the_digest_of_non_ascii_text_is_unchanged():
     assert Boolean("Is this spam? 😀").digest() == "2987f32a79f06e32fb800b807818e88fa6ed69f9983c7541298903d49620bbf0"
     assert score.digest() == "6615425b1cf6cbf965c0b85144ebc0f9868753f1435cd59079d9a000dcea3865"
     assert question_from_state(json.loads(json.dumps(choice.state()))).digest() == choice.digest()
+
+
+def test_a_boolean_pair_is_kept_as_given_not_recomputed():
+    # 0.7 + 0.3000005 is within PROBABILITY_TOLERANCE of 1: both given values are kept, so p_false is
+    # the provider's own 0.3000005, not 1 - 0.7 (= 0.30000000000000004).
+    rain = Boolean("Is it raining?")
+    result = validate_response(rain, {"true": 0.7, "false": 0.3000005})
+    assert result.p_true == 0.7 and result.p_false == 0.3000005
+    assert validate_response(rain, {"true": 0.7, "false": 0.3}).p_false == 0.3
+    # a single p_true still derives p_false
+    assert validate_response(rain, 0.7).p_false == 1.0 - 0.7
+    with pytest.raises(InvalidDecisionResponse, match="never renormalized"):
+        validate_response(rain, {"true": 0.7, "false": 0.31})
+
+
+def test_boolean_result_refuses_a_given_false_probability_that_does_not_complete_it():
+    question = Boolean("Is it raining?")
+    with pytest.raises(InvalidDecisionResponse, match="never renormalized"):
+        BooleanResult(question.digest(), 0.7, given_p_false=0.31)
