@@ -18,7 +18,9 @@ lists of strings; relevance grades are integers in ``0..max_relevance``.
   skipped. ``weighting="query"`` averages each query's pairs and then the
   queries (a query weighs the same however many pairs it has);
   ``weighting="pair"`` weighs every pair equally. Pairs are formed within a
-  microbatch. Checkpointed as component ``"ranking.task"``.
+  microbatch, so a training run must use ``accumulate_grad_batches=1``
+  (a larger update window is refused). Checkpointed as component
+  ``"ranking.task"``.
 - :meth:`RankingTask.eval_step` — an ``eval_step_fn``: it buffers the whole
   validation stream (at most ``max_buffered`` candidate rows), groups it by
   query — so a query split across batches is joined, in any order — and
@@ -594,6 +596,19 @@ class RankingObjective(Objective):
             raise RankingError(f"a RankingTask is needed, got {type(task).__name__}")
         self.task = task
         self.units = 0  # pairs (weighting="pair") or queries ("query") scored in this run
+
+    def check_accumulation(self, accumulate_grad_batches: int) -> None:
+        """Refuse an update window of several microbatches, before any run is
+        reserved: pairs are formed within one microbatch, so a query split
+        across the microbatches of a window loses its cross-batch pairs and,
+        under ``weighting="query"``, is counted twice in the denominator."""
+        if accumulate_grad_batches != 1:
+            raise RankingError(
+                f"RankingObjective needs accumulate_grad_batches=1, got {accumulate_grad_batches}: pairs are formed "
+                "within one microbatch, so a query split across the microbatches of an update window loses its "
+                "cross-batch pairs (and, under weighting='query', is counted twice). Set accumulate_grad_batches=1 "
+                "and use a larger batch_size instead, so every query's candidates sit in one batch."
+            )
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
         _no_extra_metrics(ctx)

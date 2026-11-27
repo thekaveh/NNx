@@ -1226,3 +1226,40 @@ def test_the_ranking_objective_trains_through_nnmodel_and_trainer_with_host_grou
         losses.append((run.idps[0].train_edp.loss, float(reference) / count))
     assert len(calls) == 2 and set(calls) == {(0, 0, 0, 1)}
     assert all(loss == pytest.approx(expected, rel=1e-6) for loss, expected in losses)
+
+
+# --- an update window of several microbatches is refused before any run ----------------------------
+
+
+@pytest.mark.parametrize("api", ["model", "trainer"])
+@pytest.mark.parametrize("accumulate", [2, 4])
+def test_an_update_window_of_several_microbatches_is_refused_before_any_run(api, accumulate, tmp_path):
+    """Pairs are formed within one microbatch, so a query split across the
+    microbatches of an update window would lose its cross-batch pairs (and,
+    under weighting="query", be counted twice). Both training entry points
+    refuse the window before any run is reserved, and say how to fix it."""
+    from nnx import NNTrainerParams, Optims, Trainer
+    from tests._task_steps import no_run_left
+
+    task = RankingTask(k=(1, 2), max_relevance=2, candidate_sets="exhaustive", group_size=GROUP)
+    optim = NNOptimParams(
+        name=Optims.SGD, max_lr=0.2, momentum=0.0, weight_decay=0.0, accumulate_grad_batches=accumulate
+    )
+    with pytest.raises(ValueError, match=rf"needs accumulate_grad_batches=1, got {accumulate}") as caught:
+        if api == "model":
+            _scorer().train(
+                params=NNTrainParams(n_epochs=1, train_loader=_loader(_data(6), batch_size=8), optim=optim),
+                objective=task.objective(),
+            )
+        else:
+            params = (
+                NNTrainerParams.builder()
+                .n_epochs(1)
+                .train_loader(_loader(_data(6), batch_size=8))
+                .optimizer("default", optim)
+                .build()
+            )
+            Trainer(_scorer()).train(params=params, objective=task.objective())
+    assert "larger batch_size" in str(caught.value)
+    assert no_run_left(tmp_path)
+    task.objective().check_accumulation(1)  # the window the objective trains: accepted

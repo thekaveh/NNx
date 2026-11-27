@@ -59,7 +59,7 @@ import numpy as np
 import torch
 
 from ._confusion import integers
-from ._probability import class_labels, to_numpy
+from ._probability import categorical_probabilities, class_labels, to_numpy
 from ._validation import require_finite_real, shown
 from .monitors import (
     MetricAccumulator,
@@ -542,6 +542,9 @@ class StreamingMetrics:
                         f"categorical probabilities must be (N, C) with N={target_np.shape[0]}, got {probs.shape}"
                     )
                 width = self._check_width(probs.shape[1], "probabilities")
+                # The scored rows, checked as categorical probabilities in their input's own
+                # dtype (a bfloat16 tensor's rounding), before anything is accumulated.
+                categorical_probabilities(_scored_rows(probabilities, mask), error=ValueError, allow_empty=True)
                 inputs["probabilities"] = probs[mask]
             if given["labels"] is not None:
                 inputs["labels"] = integers(_same_rows(given["labels"], target_np, "labels")[mask], "labels")
@@ -845,6 +848,15 @@ def _same_rows(array: np.ndarray, target: np.ndarray, name: str) -> np.ndarray:
     if array.shape != target.shape:
         raise ValueError(f"{name} must be shaped like the targets {target.shape}, got {array.shape}")
     return array
+
+
+def _scored_rows(probabilities: Any, mask: np.ndarray) -> Any:
+    """The rows of a batch's probabilities that ``mask`` keeps, still in the
+    input's own type and dtype (a tensor stays a tensor, so its rounding is
+    its own dtype's)."""
+    if isinstance(probabilities, torch.Tensor):
+        return probabilities[torch.as_tensor(mask, device=probabilities.device)]
+    return np.asarray(probabilities)[mask]
 
 
 # --- bounded validation ---------------------------------------------------------------------------

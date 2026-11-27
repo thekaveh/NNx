@@ -184,14 +184,20 @@ def _snapshot_state_dict(state: Any) -> Any:
     return deepcopy(state)
 
 
-def _tensor_state_dict(state: Any, *, operation: str) -> dict[str, torch.Tensor]:
-    """Clone a tensor-only state dict or explain the export limitation."""
+def _refuse_non_tensor_state(state: Any, *, operation: str) -> None:
+    """Raise ``TypeError`` if ``state`` holds a non-tensor entry (module extra
+    state), which a tensor-only export cannot store. Copies nothing."""
     non_tensor_keys = [key for key, value in state.items() if not isinstance(value, torch.Tensor)]
     if non_tensor_keys:
         raise TypeError(
             f"{operation} does not support non-tensor state_dict entries {non_tensor_keys}; "
             "use NNCheckpoint pickle format to preserve module extra state"
         )
+
+
+def _tensor_state_dict(state: Any, *, operation: str) -> dict[str, torch.Tensor]:
+    """Clone a tensor-only state dict or explain the export limitation."""
+    _refuse_non_tensor_state(state, operation=operation)
     return {key: value.detach().contiguous().clone() for key, value in state.items()}
 
 
@@ -385,10 +391,17 @@ def _deferred_interrupt():
             raise KeyboardInterrupt
 
     previous = signal.signal(signal.SIGINT, hold)
+    body_error: Optional[BaseException] = None
     try:
         yield
+    except BaseException as error:
+        body_error = error
+        raise
     finally:
         signal.signal(signal.SIGINT, previous)
+        # A body that raised must not swallow the held Ctrl-C: it is raised over that exception.
+        if received and body_error is not None:
+            raise KeyboardInterrupt from body_error
     if received:
         if previous is signal.default_int_handler or not callable(previous):
             raise KeyboardInterrupt
@@ -1223,6 +1236,14 @@ class NNCheckpoint:
                 f"unsupported safetensors checkpoint format version {version!r}; "
                 f"expected {_SAFETENSORS_FORMAT_VERSION!r}"
             )
+        # The id names the generation sidecar a resume reads, so it is a path component: only the
+        # uuid4 hex form the writer records is accepted (never a separator or a ".." segment).
+        training_state_id = meta.get("training_state_id") or None
+        if training_state_id is not None and not re.fullmatch(r"[0-9a-f]{32}", training_state_id):
+            raise ValueError(
+                f"malformed training-state id {training_state_id!r} in {path!r}: expected the 32-character "
+                "lowercase hex id the writer records"
+            )
         return NNCheckpoint(
             idp=_idp_from_nested_state(json.loads(meta["idp"])),
             model_params=NNModelParams.from_state(json.loads(meta["model_params"])),
@@ -1231,7 +1252,7 @@ class NNCheckpoint:
             transforms=tuple(
                 NNCheckpointTransform.from_state(state) for state in json.loads(meta.get("transforms", "[]"))
             ),
-            training_state_id=meta.get("training_state_id") or None,
+            training_state_id=training_state_id,
             training_state_present=json.loads(meta.get("training_state_present", "null")),
         )
 

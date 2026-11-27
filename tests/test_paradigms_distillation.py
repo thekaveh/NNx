@@ -458,7 +458,8 @@ def test_the_run_freezes_the_teacher_not_building_the_step(kind, tmp_path, monke
     step = _kd_step(kind, teacher)
     assert all(p.requires_grad for p in teacher.net.parameters()) and teacher.net.training
     _distill(student, step)
-    assert not any(p.requires_grad for p in teacher.net.parameters()) and not teacher.net.training
+    # The freeze stays; the teacher's train mode is given back after each forward (it was training before).
+    assert not any(p.requires_grad for p in teacher.net.parameters()) and teacher.net.training
 
 
 @pytest.mark.parametrize("kind", ["kd", "feature_kd", "kd_objective"])
@@ -477,7 +478,8 @@ def test_a_separate_teacher_trains_as_one_frozen_before_the_step_was_built(kind,
         with pytest.MonkeyPatch.context() as mp:
             mp.chdir(tmp_path / str(by_hand))
             _distill(student, step)
-        assert not any(p.requires_grad for p in teacher.net.parameters()) and not teacher.net.training
+        # Frozen, and in the mode it came with (train for the fresh teacher, eval for the hand-set one).
+        assert not any(p.requires_grad for p in teacher.net.parameters()) and teacher.net.training is not by_hand
         trained.append({**student.net.state_dict(), **{f"t.{k}": v for k, v in teacher.net.state_dict().items()}})
     assert trained[0].keys() == trained[1].keys()
     assert all(torch.equal(trained[0][k], trained[1][k]) for k in trained[0])
@@ -521,3 +523,111 @@ def test_a_teacher_in_or_sharing_the_students_net_is_refused_before_any_freeze(k
     assert forwards == []
     if kind == "kd_objective":  # its check_run refuses before any run is reserved
         assert tasks.no_run_left(tmp_path)
+
+
+# ---------- alpha=1 scores nothing; the teacher's modes survive the call ----------
+
+
+def _expected_distillation_loss(student: NNModel, teacher: NNModel, X: torch.Tensor, beta: float | None) -> float:
+    """The alpha=1 loss a step must report, computed before its update: the
+    soft term, plus ``beta`` times the layers.0 feature MSE when ``beta`` is
+    given (feature KD)."""
+    acts: dict[str, torch.Tensor] = {}
+
+    def capture(name):
+        def hook(_module, _inputs, output):
+            acts[name] = output
+
+        return hook
+
+    handles = [
+        student.net.get_submodule("layers.0").register_forward_hook(capture("student")),
+        teacher.net.get_submodule("layers.0").register_forward_hook(capture("teacher")),
+    ]
+    try:
+        with torch.no_grad():
+            student_logits = student.net(X)
+            teacher_logits = teacher.net(X)
+    finally:
+        for handle in handles:
+            handle.remove()
+    loss = softened_kl(student_logits, teacher_logits, 4.0)
+    if beta is not None:
+        loss = loss + beta * F.mse_loss(acts["student"], acts["teacher"])
+    return float(loss)
+
+
+def _distill_once(kind: str, student: NNModel, teacher: NNModel, X: torch.Tensor, Y: torch.Tensor, alpha: float):
+    """One distillation batch through the step (or the objective), returning
+    its record."""
+    from nnx.objectives import ObjectiveContext
+
+    if kind == "kd_objective":
+        result = kd_objective(teacher, alpha=alpha, temperature=4.0)(
+            ObjectiveContext(model=student, batch=(X, Y), epoch_idx=0, batch_idx=0)
+        )
+        return result.record
+    if kind == "kd":
+        step = kd_train_step_factory(teacher, alpha=alpha, temperature=4.0)
+    else:
+        step = feature_kd_train_step_factory(teacher, auxiliary_layers={"layers.0": "layers.0"}, alpha=alpha)
+    return _step_once(student, step, (X, Y))
+
+
+@pytest.mark.parametrize(
+    ("kind", "beta"),
+    [("kd", None), ("feature_kd", 0.5), ("kd_objective", None)],
+)
+def test_alpha_1_scores_no_placeholder_label(kind, beta):
+    """At alpha=1 without a task the labels are placeholders the loss never
+    reads, so the record carries the loss alone. Scoring them gave an
+    accuracy equal to the share of rows predicted as the placeholder class.
+    The loss itself is the soft term (plus the feature term), unchanged."""
+    set_seed(0)
+    teacher = _make_classifier(32)
+    student = _make_classifier(32)
+    torch.manual_seed(1)
+    X = torch.randn(16, 8)
+    placeholders = torch.zeros(16, dtype=torch.long)
+    expected = _expected_distillation_loss(student, teacher, X, beta)  # before the step updates the student
+
+    record = _distill_once(kind, student, teacher, X, placeholders, alpha=1.0)
+
+    assert record.accuracy is None and record.f1 is None and record.precision is None and record.recall is None
+    assert record.error is None and not record.extra
+    assert record.loss == pytest.approx(expected, rel=1e-5, abs=1e-7)
+
+
+@pytest.mark.parametrize("kind", ["kd", "feature_kd", "kd_objective"])
+def test_a_call_gives_the_teacher_back_its_train_and_eval_modes(kind):
+    """The teacher is in eval mode around its forward only: a teacher with
+    mixed modes (or in train mode) before a call has the same modes after it.
+    Before the fix the pin left it in eval mode for good."""
+    set_seed(0)
+    teacher = _make_classifier(32, dropout_prob=0.5)
+    student = _make_classifier(32)
+    teacher.net.train()
+    teacher.net.get_submodule("layers.0").eval()  # a mixed tree: the root trains, one submodule does not
+    modes = [m.training for m in teacher.net.modules()]
+    assert True in modes and False in modes
+    torch.manual_seed(1)
+    X, Y = torch.randn(16, 8), torch.randint(0, 3, (16,))
+
+    _distill_once(kind, student, teacher, X, Y, alpha=0.5)
+
+    assert [m.training for m in teacher.net.modules()] == modes
+
+
+def test_pinned_eval_gives_the_modes_back_even_when_the_forward_raises():
+    from torch import nn
+
+    from nnx._step_helpers import pinned_eval
+
+    net = nn.Sequential(nn.Linear(2, 2), nn.Dropout(0.5))
+    net.train()
+    net[0].eval()
+    modes = [m.training for m in net.modules()]
+    with pytest.raises(RuntimeError, match="boom"), pinned_eval(net):
+        assert not any(m.training for m in net.modules())  # eval around the forward
+        raise RuntimeError("boom")
+    assert [m.training for m in net.modules()] == modes

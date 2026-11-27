@@ -620,6 +620,12 @@ print(report.text())
     replay NLL is exact by default, where the named `nll` floors
     probabilities at `1e-12`. A Boolean is the options `("true", "false")`.
 
+    Macro-F1 is the unweighted mean of each label's F1 over every label that
+    is true or predicted in the slice. Where a ratio's denominator is 0 it is
+    taken as 0 (the scikit-learn `zero_division=0` convention). So a label
+    the provider predicts but never has as its true answer (or the reverse)
+    scores F1 0 and lowers the mean; it is not left out of it.
+
 - **Resources** (`Resources`) say how cost was obtained: warmup, hardware,
   timing boundary, concurrency, batch count and seconds. They also say
   whether the numbers were `measured` (hardware required) or `supplied`.
@@ -647,8 +653,14 @@ print(report.text())
   for reports that share all of these:
     - the same split;
     - the same metric identity (metric set, `epsilon`, `n_bins`, policy);
-    - the same sample set (a digest of the samples' ids, questions, labels
-      and slicing), when both reports record it.
+    - the same model revisions and prompt identities (the distinct values
+      the scored records carry; a report that records none matches only one
+      that records none);
+    - the same sample set (a digest of the samples' ids, questions, inputs,
+      labels and slicing), when both reports record it.
+- **Policy split.** `evaluate` refuses a policy tuned on the evaluation
+  split (`tuning_split_id` equal to `split`): its coverage and risk would be
+  measured on the rows it was chosen on.
 - **Duplicates.** `collect` refuses duplicate sample ids before any call.
 
 It is not a leaderboard. No paid remote run is a default, and it never

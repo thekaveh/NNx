@@ -20,13 +20,14 @@ Both factories return a :class:`nnx.TrainStepFn` that plugs straight
 into :meth:`NNModel.train` via the ``train_step_fn=`` hook. Each step
 first checks that the teacher is apart from the student's net (not the
 net, not inside it, sharing none of its parameters), then freezes the
-teacher's parameters, so training can never drift the teacher's weights;
-restored on tear-down would be tidy but unnecessary in practice — once a
-teacher is a teacher, it stays one. Building the step leaves the teacher
-alone: until a step sees the student, freezing it could freeze (part of)
-the student. Every step puts the teacher back in eval mode before its
+teacher's parameters, so training can never drift the teacher's weights.
+The freeze is not undone afterwards: the teacher's parameters keep
+``requires_grad=False`` after training. Building the step leaves the
+teacher alone: until a step sees the student, freezing it could freeze
+(part of) the student. Every step puts the teacher in eval mode around its
 forward, so a teacher that a callback switched to train mode still gives
-its eval-mode soft targets.
+its eval-mode soft targets, and then gives each submodule's training flag
+back, so the teacher's modes are the same after the call as before it.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from .._step_helpers import (
     finalize_task_step,
     freeze_apart,
     imperative_step,
-    pin_eval,
+    pinned_eval,
     predicted_labels,
     require_row_logits,
     softened_kl,
@@ -118,9 +119,9 @@ def kd_train_step_factory(
             its parameters. Building the step leaves it alone; each step
             checks that placement first, then freezes the teacher's
             parameters (``requires_grad=False``) and puts its net in eval
-            mode before every teacher forward (one a callback switches to
+            mode around every teacher forward (one a callback switches to
             train mode would otherwise run its dropout and BatchNorm in
-            train mode).
+            train mode), then gives each submodule's training flag back.
         alpha: weight on the distillation (soft) loss. The hard-label
             loss gets ``1 − α``. ``α=1.0`` is pure distillation (the
             labels are not scored); ``α=0.0`` collapses to standard
@@ -143,7 +144,9 @@ def kd_train_step_factory(
     ``ignore_index`` (NaN for a multilabel task). A batch with nothing to
     learn from (every target masked at ``alpha=0``) takes no update and
     records ``status="empty"``. A regression task is refused before any run
-    is reserved.
+    is reserved. Without a task and at ``alpha=1`` the labels are
+    placeholders the loss never reads, so the record carries the loss alone:
+    accuracy, F1, precision and recall are left unset.
 
     Returns:
         A ``TrainStepFn`` suitable for ``NNModel.train(..., train_step_fn=...)``.
@@ -175,8 +178,8 @@ def kd_train_step_factory(
 
         student_logits = m._net_forward((X,), {})
         require_row_logits(student_logits, "distillation")
-        pin_eval(teacher.net)  # model.net.train() or a callback may have switched it to train mode
-        with torch.no_grad():
+        # model.net.train() or a callback may have switched the teacher to train mode; its modes are given back after.
+        with pinned_eval(teacher.net), torch.no_grad():
             # Teacher might live on a different device; migrate the
             # input into its frame for the forward pass. Cheap when
             # student.device == teacher.device.
@@ -204,6 +207,8 @@ def kd_train_step_factory(
         )  # before the update: a refused batch changes nothing
         loss_val = finalize_step(loss, ctx, paradigm="distillation")
 
+        if alpha == 1:  # the labels are placeholders the loss never reads: no classification fields to score
+            return NNEvaluationDataPoint(loss=loss_val)
         return _classification_edp_for_loss(
             loss_fn=m.loss_fn,
             target=Y,
@@ -341,8 +346,8 @@ def feature_kd_train_step_factory(
 
             student_logits = m._net_forward((X,), {})
             require_row_logits(student_logits, "feature distillation")
-            pin_eval(teacher.net)  # as kd_train_step_factory: eval mode at every teacher forward
-            with torch.no_grad():
+            # As kd_train_step_factory: eval mode around every teacher forward, its modes given back after.
+            with pinned_eval(teacher.net), torch.no_grad():
                 # Teacher might live on a different device; migrate the
                 # input into its frame for the forward pass.
                 teacher_logits = teacher._net_forward((X.to(teacher.device),), {}).to(m.device)
@@ -388,6 +393,8 @@ def feature_kd_train_step_factory(
         _check_scorable_target(m.loss_fn, Y, paradigm="feature distillation")
         loss_val = finalize_step(loss, ctx, paradigm="feature_distillation")
 
+        if alpha == 1:  # placeholder labels the loss never reads: no classification fields to score
+            return NNEvaluationDataPoint(loss=loss_val)
         return _classification_edp_for_loss(
             loss_fn=m.loss_fn,
             target=Y,

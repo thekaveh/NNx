@@ -1354,3 +1354,16 @@ def test_a_selection_too_deep_to_read_back_is_refused_and_the_deepest_other_relo
         state["calibration_override"]["mismatches"]["model_id"]["expected"] = _nested(levels)
         with pytest.raises(AbstentionError, match="nests more than 255 levels"):
             abstention.ThresholdSelection.from_state(state)
+
+
+def test_select_threshold_refuses_zero_tuning_rows():
+    with pytest.raises(AbstentionError, match="at least one tuning row"):
+        select_threshold(
+            np.zeros((0, 3)),
+            np.zeros(0, dtype=int),
+            kind="max_probability",
+            risk_ceiling=0.1,
+            split_id="val",
+            labels=LABELS,
+            model_id="m",
+        )

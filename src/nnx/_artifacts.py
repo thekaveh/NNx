@@ -79,7 +79,8 @@ def read_text(path: Union[str, os.PathLike[str]], what: str, error: type[Excepti
 
 def parse_json(text: str, what: str, error: type[Exception], *, max_depth: Optional[int] = None) -> Any:
     """Strict JSON: ``NaN`` / ``Infinity`` (which ``json`` would accept), a
-    number too large for a float (``1e999``) and malformed text raise
+    number too large for a float (``1e999``), an object that names a key
+    twice (``json`` would keep the last one), and malformed text raise
     ``error``; so does nesting past ``max_depth`` levels, when given, and
     past the parser's own limit, whatever it is on this Python."""
 
@@ -92,8 +93,16 @@ def parse_json(text: str, what: str, error: type[Exception], *, max_depth: Optio
             raise error(f"the {what} file holds {text}, which overflows a float")
         return value
 
+    def no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in seen:
+                raise error(f"the {what} file repeats the key {key!r}; a JSON object may name a key only once")
+            seen[key] = item
+        return seen
+
     try:
-        value = json.loads(text, parse_constant=constant, parse_float=number)
+        value = json.loads(text, parse_constant=constant, parse_float=number, object_pairs_hook=no_duplicate_keys)
     except error:
         raise  # the constant hook's own message
     except (ValueError, RecursionError) as exc:  # malformed, an over-long integer, or nesting too deep

@@ -204,9 +204,14 @@ def write_gguf(
             built with ``tie_embeddings=False`` and export that; removing
             the parametrization and re-tying the head
             (``net.lm_head.weight = net.tok_embed.weight``) keeps only one
-            of the two weights and changes the outputs.
+            of the two weights and changes the outputs. Also when the network
+            has a ``state_dict`` entry that no GGUF tensor carries (an auxiliary
+            head, a ``logit_scale``, a bias): the file would drop it, and the
+            error names every such key.
             Nothing is written, and no directory is created; the same holds
             for a tokenizer that cannot be read (its own error propagates).
+            A write that fails part-way leaves an existing file at
+            ``out_path`` untouched (the file is renamed onto it only once complete).
     """
     import torch
 
@@ -243,71 +248,82 @@ def write_gguf(
     vocab = _tokenizer_vocab(tokenizer)
 
     # Create the parent directory only now that the arguments are valid —
-    # GGUFWriter open()s the path directly, so a fresh cwd writing
-    # "out/model.gguf" otherwise dies with FileNotFoundError (the ollama
-    # exporter relies on this mkdir for its bundle directory).
+    # the writer needs it to exist, so a fresh cwd writing "out/model.gguf"
+    # would otherwise die with FileNotFoundError (the ollama exporter relies
+    # on this mkdir for its bundle directory).
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    writer = gguf.GGUFWriter(out_path, arch=architecture)
+    # The file is written beside the destination and renamed onto it only once
+    # complete and fsynced: a failed write leaves the previous file intact and
+    # never a truncated model.gguf under the final name.
+    from nnx.nn.params.nn_run import _commit_partial, _discard_partial, _reserve_partial
 
-    # try/finally: GGUFWriter opens the file lazily inside
-    # write_header_to_file, so an error in the flush sequence (or in a
-    # future gguf version that opens earlier) would otherwise leak the
-    # handle alongside the partial .gguf. close() is idempotent.
+    partial = _reserve_partial(out_path)
     try:
-        # ---------- general metadata ----------
-        # ``GGUFWriter(arch=...)`` already records ``general.architecture``;
-        # don't call ``add_architecture()`` again (it overwrites with the
-        # same value and emits a duplicate-key warning).
-        writer.add_name(model_name)
-        writer.add_file_type(_gguf_file_type_for(gguf, quantization))
+        writer = gguf.GGUFWriter(partial, arch=architecture)
 
-        # ---------- architecture metadata (llama.cpp keys) ----------
-        # These are the keys llama.cpp reads when reconstructing a model;
-        # populating them lets a patched reader rebuild the right shapes
-        # without consulting NNx-specific config.
-        writer.add_context_length(params.max_seq_len)
-        writer.add_block_count(params.n_layers)
-        writer.add_embedding_length(params.d_model)
-        writer.add_feed_forward_length(feed_forward_length)
-        writer.add_head_count(n_heads)
-        writer.add_head_count_kv(n_heads)  # NNx is MHA (not GQA) — kv heads == q heads
-        writer.add_layer_norm_rms_eps(1e-6)  # matches RMSNorm default in transformer_layers.py
-        writer.add_rope_freq_base(params.rope_base)
-        # The RoPE dimension count is the per-head dim (rotary is applied
-        # per head). llama.cpp expects this exact number.
-        writer.add_rope_dimension_count(head_dim)
+        # try/finally: GGUFWriter opens the file lazily inside
+        # write_header_to_file, so an error in the flush sequence (or in a
+        # future gguf version that opens earlier) would otherwise leak the
+        # handle alongside the partial .gguf. close() is idempotent.
+        try:
+            # ---------- general metadata ----------
+            # ``GGUFWriter(arch=...)`` already records ``general.architecture``;
+            # don't call ``add_architecture()`` again (it overwrites with the
+            # same value and emits a duplicate-key warning).
+            writer.add_name(model_name)
+            writer.add_file_type(_gguf_file_type_for(gguf, quantization))
 
-        # ---------- tokenizer ----------
-        # ``model_name`` here is the *tokenizer* model name ("llama", "gpt2",
-        # "bpe", ...). NNx ships a HF tokenizers.Tokenizer trained with the
-        # BPE model — emit it as "gpt2" so llama.cpp's BPE path picks it up.
-        writer.add_tokenizer_model("gpt2")
-        writer.add_tokenizer_pre("default")  # pre-tokenizer is Whitespace; "default" is the catch-all
-        _add_tokenizer_vocab(writer, vocab)
+            # ---------- architecture metadata (llama.cpp keys) ----------
+            # These are the keys llama.cpp reads when reconstructing a model;
+            # populating them lets a patched reader rebuild the right shapes
+            # without consulting NNx-specific config.
+            writer.add_context_length(params.max_seq_len)
+            writer.add_block_count(params.n_layers)
+            writer.add_embedding_length(params.d_model)
+            writer.add_feed_forward_length(feed_forward_length)
+            writer.add_head_count(n_heads)
+            writer.add_head_count_kv(n_heads)  # NNx is MHA (not GQA) — kv heads == q heads
+            writer.add_layer_norm_rms_eps(1e-6)  # matches RMSNorm default in transformer_layers.py
+            writer.add_rope_freq_base(params.rope_base)
+            # The RoPE dimension count is the per-head dim (rotary is applied
+            # per head). llama.cpp expects this exact number.
+            writer.add_rope_dimension_count(head_dim)
 
-        # ---------- tensors ----------
-        target_dtype = _quantization_torch_dtype(quantization)
-        for name, arr in tensors.items():
-            # The map returns numpy arrays already in F32. Cast via torch
-            # so we get a single code path for F16 / BF16 / F32 (numpy
-            # doesn't have a native bfloat16 dtype; torch + ml_dtypes is
-            # how the upstream gguf package handles it).
-            t = torch.from_numpy(arr).to(target_dtype)
-            if target_dtype == torch.bfloat16:
-                # GGUFWriter accepts bfloat16 via numpy when the user
-                # passes raw_dtype=BF16; we route through that contract
-                # because numpy proper has no bfloat16 scalar.
-                np_arr = t.view(torch.uint16).numpy()
-                writer.add_tensor(name, np_arr, raw_dtype=gguf.GGMLQuantizationType.BF16)
-            else:
-                writer.add_tensor(name, t.numpy())
+            # ---------- tokenizer ----------
+            # ``model_name`` here is the *tokenizer* model name ("llama", "gpt2",
+            # "bpe", ...). NNx ships a HF tokenizers.Tokenizer trained with the
+            # BPE model — emit it as "gpt2" so llama.cpp's BPE path picks it up.
+            writer.add_tokenizer_model("gpt2")
+            writer.add_tokenizer_pre("default")  # pre-tokenizer is Whitespace; "default" is the catch-all
+            _add_tokenizer_vocab(writer, vocab)
 
-        # ---------- flush ----------
-        writer.write_header_to_file()
-        writer.write_kv_data_to_file()
-        writer.write_tensors_to_file()
-    finally:
-        writer.close()
+            # ---------- tensors ----------
+            target_dtype = _quantization_torch_dtype(quantization)
+            for name, arr in tensors.items():
+                # The map returns numpy arrays already in F32. Cast via torch
+                # so we get a single code path for F16 / BF16 / F32 (numpy
+                # doesn't have a native bfloat16 dtype; torch + ml_dtypes is
+                # how the upstream gguf package handles it).
+                t = torch.from_numpy(arr).to(target_dtype)
+                if target_dtype == torch.bfloat16:
+                    # GGUFWriter accepts bfloat16 via numpy when the user
+                    # passes raw_dtype=BF16; we route through that contract
+                    # because numpy proper has no bfloat16 scalar.
+                    np_arr = t.view(torch.uint16).numpy()
+                    writer.add_tensor(name, np_arr, raw_dtype=gguf.GGMLQuantizationType.BF16)
+                else:
+                    writer.add_tensor(name, t.numpy())
+
+            # ---------- flush ----------
+            writer.write_header_to_file()
+            writer.write_kv_data_to_file()
+            writer.write_tensors_to_file()
+        finally:
+            writer.close()
+        _commit_partial(partial, out_path)
+    except BaseException:
+        _discard_partial(partial)
+        raise
 
     return out_path
 

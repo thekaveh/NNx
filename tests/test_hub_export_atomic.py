@@ -6,12 +6,13 @@ import os
 import stat
 
 import pytest
-import safetensors.torch
 
-from tests.test_hub_mixin import _tiny_model
+from tests.test_hub_mixin import _tiny_model  # skips this module when safetensors is absent
 
 
 def test_failed_weights_write_leaves_no_partial_or_final_file(tmp_path, monkeypatch):
+    import safetensors.torch
+
     model = _tiny_model()
 
     def interrupted_save(tensors, path):

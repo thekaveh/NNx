@@ -223,7 +223,8 @@ def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:
             prune mask or a legacy ``weight_norm`` / ``spectral_norm``
             hook, or the embeddings are tied but the ``lm_head`` no longer
             reads the embedding's weight (see
-            :func:`nnx.interop.gguf.write_gguf`).
+            :func:`nnx.interop.gguf.write_gguf`), or a ``state_dict`` entry that no
+            tensor of the map carries (it would be dropped; the error names every such key).
     """
     _refuse_adapters(net)
     # A weight that a forward pre-hook recomputes is stale in storage.
@@ -232,46 +233,79 @@ def map_tensors(net: TransformerNN) -> dict[str, np.ndarray]:
     _refuse_untied_tied_weights(net)
     out: dict[str, np.ndarray] = {}
 
+    # Every module whose weight the map reads, by path: the state_dict keys
+    # that no read module accounts for are refused below.
+    paths = {id(module): path for path, module in net.named_modules()}
+    read: set[str] = set()
+
+    def weight(module: torch.nn.Module) -> torch.Tensor:
+        read.add(paths[id(module)])
+        return _weight(module)
+
     # Token embedding — always present, always named ``token_embd.weight``.
-    out["token_embd.weight"] = _to_numpy(_weight(net.tok_embed))
+    out["token_embd.weight"] = _to_numpy(weight(net.tok_embed))
 
     d_model = net.params.d_model
 
     for i, raw_block in enumerate(net.blocks):
         block = cast(Any, raw_block)
         # Pre-attention norm (RMSNorm).
-        out[f"blk.{i}.attn_norm.weight"] = _to_numpy(_weight(block.norm1))
+        out[f"blk.{i}.attn_norm.weight"] = _to_numpy(weight(block.norm1))
 
         # Split the fused QKV projection. Layout in NNx:
         #   w_qkv.weight has shape (3 * d_model, d_model) and the
         #   forward path does w_qkv(x).chunk(3, dim=-1) on the OUTPUT,
         #   i.e. the leading dim is the concatenated [Q | K | V] block.
         # That maps cleanly to a row-wise slice of the weight tensor.
-        w_qkv = _weight(block.attn.w_qkv)  # (3*d, d)
+        w_qkv = weight(block.attn.w_qkv)  # (3*d, d)
         out[f"blk.{i}.attn_q.weight"] = _to_numpy(w_qkv[0:d_model, :])
         out[f"blk.{i}.attn_k.weight"] = _to_numpy(w_qkv[d_model : 2 * d_model, :])
         out[f"blk.{i}.attn_v.weight"] = _to_numpy(w_qkv[2 * d_model : 3 * d_model, :])
 
         # Attention output projection.
-        out[f"blk.{i}.attn_output.weight"] = _to_numpy(_weight(block.attn.w_o))
+        out[f"blk.{i}.attn_output.weight"] = _to_numpy(weight(block.attn.w_o))
 
         # Pre-FFN norm.
-        out[f"blk.{i}.ffn_norm.weight"] = _to_numpy(_weight(block.norm2))
+        out[f"blk.{i}.ffn_norm.weight"] = _to_numpy(weight(block.norm2))
 
         # SwiGLU: NNx names them w1 (gate) / w2 (down) / w3 (up);
         # llama.cpp calls the same matrices ffn_gate / ffn_down / ffn_up.
-        out[f"blk.{i}.ffn_gate.weight"] = _to_numpy(_weight(block.ffn.w1))
-        out[f"blk.{i}.ffn_down.weight"] = _to_numpy(_weight(block.ffn.w2))
-        out[f"blk.{i}.ffn_up.weight"] = _to_numpy(_weight(block.ffn.w3))
+        out[f"blk.{i}.ffn_gate.weight"] = _to_numpy(weight(block.ffn.w1))
+        out[f"blk.{i}.ffn_down.weight"] = _to_numpy(weight(block.ffn.w2))
+        out[f"blk.{i}.ffn_up.weight"] = _to_numpy(weight(block.ffn.w3))
 
     # Final output norm — llama.cpp calls this ``output_norm.weight``.
-    out["output_norm.weight"] = _to_numpy(_weight(net.norm_out))
+    out["output_norm.weight"] = _to_numpy(weight(net.norm_out))
 
     # LM head. When embeddings are tied (NNx default), llama.cpp re-uses
     # ``token_embd.weight`` and we deliberately omit ``output.weight`` so
     # the file size halves and the reader doesn't see two copies of the
-    # same matrix.
-    if not net.params.tie_embeddings:
-        out["output.weight"] = _to_numpy(_weight(net.lm_head))
+    # same matrix. The tied head's state_dict key is consumed by that
+    # token_embd (_refuse_untied_tied_weights verified it holds the same weight).
+    if net.params.tie_embeddings:
+        read.add("lm_head")
+    else:
+        out["output.weight"] = _to_numpy(weight(net.lm_head))
+
+    # A state_dict entry no read weight accounts for (an auxiliary head, a
+    # logit_scale, a bias) has no GGUF slot: refuse it, naming it, before anything is written.
+    unread = _unread_state_keys(net, read)
+    if unread:
+        raise TypeError(
+            f"GGUF export has no tensor slot for {', '.join(unread)}, so the file would silently drop "
+            f"{'it' if len(unread) == 1 else 'them'}. Remove {'it' if len(unread) == 1 else 'them'} from the "
+            "network, or export a model whose state_dict holds only the TransformerNN's own weights."
+        )
 
     return out
+
+
+def _unread_state_keys(net: torch.nn.Module, read: set[str]) -> list[str]:
+    """The ``net.state_dict()`` keys that no module in ``read`` accounts for: a
+    read module's ``weight`` key, or, when that weight is parametrized, the keys
+    of its parametrization."""
+
+    def accounted_for(key: str) -> bool:
+        return any(key == f"{path}.weight" or key.startswith(f"{path}.parametrizations.weight.") for path in read)
+
+    return [key for key in net.state_dict() if not accounted_for(key)]

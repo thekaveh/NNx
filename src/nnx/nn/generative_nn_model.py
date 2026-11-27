@@ -30,6 +30,7 @@ from ..utils import _capture_training_modes, _restore_training_modes
 from .nn_model import NNModel
 from .params.nn_model_params import NNModelParams
 from .params.nn_params import NNParams
+from .params.nn_run import _CREATED_FILE_MODE, _atomic_write_text
 from .params.nn_tokenizer_params import NNTokenizerParams
 
 
@@ -61,7 +62,14 @@ class GenerativeNNModel(NNModel):
         if self.tokenizer is None:
             return {}
         filename = "tokenizer.json"
-        self.tokenizer.tokenizer.save(str(Path(save_directory) / filename))  # type: ignore[union-attr]
+        # Written by the atomic writer, not tokenizers' save(): save() writes through a symlink at
+        # tokenizer.json, which could land outside the artifact directory. to_str(pretty=True) is the
+        # exact text save() writes.
+        _atomic_write_text(
+            str(Path(save_directory) / filename),
+            self.tokenizer.tokenizer.to_str(pretty=True),  # type: ignore[union-attr]
+            mode=_CREATED_FILE_MODE,  # the mode a plain write gave before this path was atomic
+        )
         return {"tokenizer": {"filename": filename}}
 
     @classmethod
