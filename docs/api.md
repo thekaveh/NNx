@@ -6259,6 +6259,10 @@ failed :class:`CalibrationFit` — never a calibrator with a NaN or
 boundary temperature — when the optimum lies outside the search range (a
 separable split, logits no better than uniform), the NLL does not depend
 on ``T`` (constant logits), or the search does not converge.
+
+Omitting ``test_split_id`` (or passing ``None``) is deprecated: it emits
+a ``DeprecationWarning``, and the argument will be required in the next
+minor release.
 ```
 
 
@@ -6436,7 +6440,7 @@ Write `to_json` to ``path`` atomically.
 #### `nnx.calibration.CalibratedPrediction`
 
 ```python
-class nnx.calibration.CalibratedPrediction(logits: 'np.ndarray', probabilities: 'np.ndarray', calibrated_probabilities: 'np.ndarray', decoded: 'np.ndarray', labels: 'tuple[str, ...]', sample_ids: 'np.ndarray', calibrator_id: 'str', model_id: 'str', temperature: 'float', override: 'Optional[Mapping[str, Any]]' = None) -> 'None'
+class nnx.calibration.CalibratedPrediction(logits: 'np.ndarray', probabilities: 'np.ndarray', calibrated_probabilities: 'np.ndarray', decoded: 'np.ndarray', labels: 'tuple[str, ...]', sample_ids: 'np.ndarray', calibrator_id: 'str', model_id: 'str', temperature: 'float', override: 'Optional[Mapping[str, Any]]' = None, calibration_split_id: 'Optional[str]' = None) -> 'None'
 ```
 
 Raw and calibrated views of one categorical prediction, kept apart.
@@ -6458,6 +6462,9 @@ Attributes:
     temperature: the calibrator's temperature.
     override: ``None``, or the named override and the label / model-id
         mismatches it accepted.
+    calibration_split_id: the split the calibrator was fitted on
+        (``TemperatureCalibrator.split_id``); ``nnx.abstention`` refuses to
+        tune a threshold on it. ``None`` when not known.
 ```
 
 ##### `nnx.calibration.CalibratedPrediction.decoded_labels`
@@ -7121,7 +7128,13 @@ row with ``risk <= risk_ceiling``; among them the highest coverage wins
 higher, more conservative threshold.
 Nothing feasible gives ``status="no_feasible_policy"``. A ``split_id``
 equal to ``test_split_id`` is refused: tuning on the test split would
-leak it. The ceiling is empirical — met on this split, not guaranteed.
+leak it; so is a calibrated view's own calibration split, where its
+temperature was fitted. The ceiling is empirical — met on this split, not
+guaranteed.
+
+Omitting ``test_split_id`` (or passing ``None``) is deprecated: it emits
+a ``DeprecationWarning``, and the argument will be required in the next
+minor release.
 ```
 
 
@@ -16912,7 +16925,7 @@ Walkthrough at [DPO](dpo.md).
 #### `nnx.paradigms.dpo.dpo_train_step_factory`
 
 ```python
-nnx.paradigms.dpo.dpo_train_step_factory(ref_model: 'NNModel', *, beta: 'float' = 0.1, pad_token_id: 'Optional[int]' = None) -> 'TrainStepFn'
+nnx.paradigms.dpo.dpo_train_step_factory(ref_model: 'NNModel', *, beta: 'float' = 0.1, pad_token_id: 'Optional[int]' = None, prompt_packing: 'bool' = False) -> 'TrainStepFn'
 ```
 
 Build a Direct Preference Optimization `TrainStepFn`.
@@ -16948,7 +16961,19 @@ Args:
         inside a response is dropped too (pick a dedicated pad id);
         and prompt-side padding remains visible to the model (no
         attention mask) — a pre-existing modeling bias this knob
-        doesn't address.
+        doesn't address unless ``prompt_packing`` is on.
+    prompt_packing: opt-in fix for the prompt-side padding above. The
+        default ``False`` keeps the prompt's right-padding in front of
+        the response, so the model conditions on pad tokens. ``True``
+        packs each row as its valid prompt tokens, then its valid
+        response tokens, then padding at the end only; the response
+        log-probs are read at the positions the packed row places it
+        (a causal model's logits there never see the trailing padding),
+        so they match the same row built without padding. Packing drops
+        every pad id from the prompt and the response, including one
+        inside them, as the pad mask already does for responses. A
+        prompt with no valid token is refused at the first step, since
+        its response would have no prompt position to be predicted from.
 
 Returns:
     A ``TrainStepFn`` for ``NNModel.train(..., train_step_fn=...)``.
@@ -16962,8 +16987,9 @@ Returns:
     lengths, as ``NNPreferenceDataset`` yields them.
 
 Raises:
-    ValueError: if ``beta`` is not a finite positive number, or if
-        ``pad_token_id`` is not a non-negative integer. At the first
+    ValueError: if ``beta`` is not a finite positive number, if
+        ``pad_token_id`` is not a non-negative integer, or if
+        ``prompt_packing`` is not a ``bool``. At the first
         step, before anything is frozen or run: a reference that is
         the policy's net, lies inside it or shares a parameter with it
         (freezing it would freeze the policy).

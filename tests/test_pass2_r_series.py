@@ -378,6 +378,22 @@ def test_r3_run_id_rejects_glob_metacharacters(run_id):
         _validate_run_id(run_id)
 
 
+@pytest.mark.parametrize("run_id", [".. ", "run.", "run ", " ", "..."])
+def test_t7_run_id_refuses_a_name_windows_would_normalise(run_id):
+    """Windows drops a trailing space or dot from a path component, so these ids would name another directory there."""
+    from nnx.nn.params.nn_run import _validate_run_id
+
+    with pytest.raises(ValueError, match="must not end in a space or a dot"):
+        _validate_run_id(run_id)
+
+
+@pytest.mark.parametrize("run_id", ["run-1", "a.b", "deadbeef" * 4])
+def test_t7_run_id_accepts_a_normal_id(run_id):
+    from nnx.nn.params.nn_run import _validate_run_id
+
+    assert _validate_run_id(run_id) == run_id
+
+
 @pytest.mark.parametrize("reader", ["load_training_state", "load_optimizer_state", "load_with_training_state"])
 def test_missing_state_read_does_not_reserve_run(tmp_path, reader):
     """FIX-007: probing training state for a run that does not exist must

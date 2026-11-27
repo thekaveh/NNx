@@ -27,6 +27,7 @@ from nnx import (
     random_block_mask,
 )
 from nnx.bundles import BundleCapabilityError, export_bundle, reconstruct_bundle
+from tests.test_hub_mixin import _resign
 
 PREDICTOR = "_jepa_predictor"
 PROBE = torch.randn(2, 3, 8, 8, generator=torch.Generator().manual_seed(5))
@@ -143,6 +144,7 @@ def test_hub_exclusion_stays_strict_for_every_other_key(jepa, tmp_path):
     dropped = next(key for key in state if not key.startswith(f"{PREDICTOR}."))
     del state[dropped]
     save_file(state, weights)
+    _resign(saved)  # the edit is on purpose: the test is about the strict key check, not the manifest
     with pytest.raises(RuntimeError, match="Missing key"):
         NNModel.from_pretrained(str(saved), exclude_submodules=(PREDICTOR,))
 

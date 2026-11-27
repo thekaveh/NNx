@@ -120,6 +120,8 @@ preferences = NNPreferenceDataset(
 # 5. DPO step — frozen reference + β temperature.
 # pad_token_id matches the dataset's — padded response positions are
 # excluded from the log-prob sums.
+# prompt_packing=True (opt-in; the default keeps results unchanged) also
+# removes the prompt's pads from between the prompt and the response.
 step_fn = dpo_train_step_factory(ref_model, beta=0.1, pad_token_id=1)
 
 # 6. Train. NNModel.train() machinery is unchanged — callbacks, schedulers,

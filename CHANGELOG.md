@@ -6,9 +6,36 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ## [Unreleased]
 
+### Changed
+
+- **Hub saves are staged, and loads are verified.** A refused or failed `save_pretrained` leaves the previous artifact intact. Each save writes `nnx_hub_manifest.json` (the SHA-256 and size of each file), which `from_pretrained` verifies before building anything. A directory saved before manifests existed loads with a `UserWarning`.
+- **`from_pretrained` checks declared shapes before it allocates.** A config whose shapes do not match its weights is refused on the meta device, before the network is built.
+- **GGUF export refuses state it would drop.** A `TransformerNN` state entry the tensor map does not read raises before anything is written, instead of being omitted silently.
+- **Ranking refuses gradient accumulation other than 1**, because a query split across microbatches loses its cross-batch pairs.
+- **KD at alpha 1 with no task** returns the loss only; `extra_metrics` no longer run on placeholder labels.
+- **Float16 and bfloat16 probability rows use a tighter row-sum bound**, 2 eps (1 + log2 C), measured on softmax outputs up to 152,064 classes. Float32 and float64 are unchanged.
+- **`test_split_id` is deprecated** on `select_threshold` and `fit_temperature` when omitted; it will be required in the next minor release.
+- **A calibrated prediction records its calibration split**, and `select_threshold` refuses to tune a threshold on it.
+
 ### Fixed
 
-- **Hub and Ollama exports are atomic.** `NNModel.save_pretrained` and `export_ollama_modelfile` write their files through a temporary name and a rename, so an interrupted export leaves no truncated `model.safetensors`, `config.json` or `Modelfile` under its final name. `model.gguf` is still written in place.
+- A corrupted checkpoint can no longer become a verified run bundle: `export_bundle` verifies the resume point first.
+- A training-state id that is not the writer's 32-character hex form is refused before it becomes a path.
+- Duplicate JSON keys are refused in every JSON artifact load.
+- A stale `tokenizer.json` written by an earlier NNx save is removed when a save produces none; a user-written one is left alone.
+- ONNX export warns about attached tensors the exported graph does not hold, and writes atomically.
+- `export_state_dict` writes atomically.
+- A run id that Windows would normalise (a trailing dot or space, or `..`) is refused.
+- Discarding an epoch leaves no orphan row or record in the history journal.
+- Teacher and reference networks keep the training modes they had before a distillation or DPO step.
+- Streaming metrics refuse NaN, infinite and out-of-range probability rows.
+- A policy cannot be evaluated on the split it was tuned on, and `select_threshold` refuses zero tuning rows.
+- Benchmark comparisons include sample inputs and record revisions, so changed inputs no longer compare as identical.
+- A Ctrl-C held during a body that raises is raised over that exception.
+
+### Added
+
+- `dpo_train_step_factory(..., prompt_packing=True)` (opt-in) places each response directly after its valid prompt, so response log-probabilities no longer depend on prompt padding. The default is unchanged.
 
 ## [0.5.0](https://github.com/thekaveh/NNx/compare/v0.4.4...v0.5.0) (2026-11-26)
 

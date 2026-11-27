@@ -196,6 +196,10 @@ def _validate_run_id(run_id: str) -> str:
     # basename happens to leave alone (e.g., `..` itself is its own basename).
     if "/" in run_id or "\\" in run_id or "\x00" in run_id or run_id in (".", ".."):
         raise ValueError(f"run id must not contain path separators or `..`; got {run_id!r}")
+    # Windows drops a trailing space or dot from a path component, so "run." and ".. " name "run" and ".." there:
+    # refuse them here, where the id still says what it names.
+    if run_id[-1] in " ." or not run_id.strip() or run_id.strip() == "..":
+        raise ValueError(f"run id must not end in a space or a dot, or be empty or `..` once stripped; got {run_id!r}")
     if any(character in run_id for character in "*?["):
         raise ValueError(f"run id must not contain glob metacharacters; got {run_id!r}")
     if os.path.basename(run_id) != run_id:

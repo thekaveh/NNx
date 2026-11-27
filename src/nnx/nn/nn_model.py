@@ -4,6 +4,7 @@ import contextlib
 import contextvars
 import copy
 import functools
+import hashlib
 import inspect
 import json
 import math
@@ -12,11 +13,12 @@ import re
 import shutil
 import tempfile
 import uuid
+import warnings
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Self, Union, cast
 
 import numpy as np
@@ -180,6 +182,15 @@ except ImportError:  # pragma: no cover — gated by optional dep
 # duplicated here so the no-hub stub doesn't reach into hf_hub internals.
 _HUB_MODEL_FILENAME = "model.safetensors"
 _HUB_CONFIG_FILENAME = "config.json"
+# The tokenizer an NNx save writes beside the weights (GenerativeNNModel), and the manifest that lists the
+# files of a save with their SHA-256 and size: a load refuses a listed file that changed after the save.
+_HUB_TOKENIZER_FILENAME = "tokenizer.json"
+_HUB_MANIFEST_FILENAME = "nnx_hub_manifest.json"
+_HUB_MANIFEST_FORMAT = "nnx-hub-manifest"
+_HUB_MANIFEST_VERSION = 1
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+_HUB_DIGEST_CHUNK = 1 << 20
+_HUB_MOVE_ORDER = {_HUB_CONFIG_FILENAME: 1, _HUB_MANIFEST_FILENAME: 2}  # the last two moved into place
 
 
 # Legacy callback signature retained for backwards compatibility with notebooks
@@ -1245,6 +1256,199 @@ def _refuse_unrecorded_recipe_state(net_state: Mapping[str, Any], base_state: Ma
             "transformation recipe: a raw state dict or an adapter-only export cannot rebuild the topology alone — "
             "materialize the same nnx.transforms.TransformRecipe on a fresh model, then load the weights into it"
         )
+
+
+_SAFETENSORS_MAX_HEADER_BYTES = 100 * 1024 * 1024  # the limit safetensors itself enforces on its header
+
+
+def _safetensors_shapes(path: str) -> dict[str, tuple[int, ...]]:
+    """``{name: shape}`` of a safetensors file, read from its JSON header
+    alone: no tensor's bytes are read, so an untrusted artifact's declared
+    shapes are known before any network is built from its config."""
+    with open(path, "rb") as handle:
+        prefix = handle.read(8)
+        size = int.from_bytes(prefix, "little") if len(prefix) == 8 else 0
+        if not 0 < size <= _SAFETENSORS_MAX_HEADER_BYTES:
+            raise ValueError(f"{path!r} is not a safetensors file: its header length is invalid")
+        raw = handle.read(size)
+    if len(raw) != size:
+        raise ValueError(f"{path!r} is not a safetensors file: its header is truncated")
+    try:
+        header = parse_json(raw.decode("utf-8"), "safetensors header", ValueError, max_depth=MAX_JSON_DEPTH)
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{path!r} is not a safetensors file: its header is not UTF-8") from error
+    if not isinstance(header, Mapping):
+        raise ValueError(f"{path!r} is not a safetensors file: its header is not an object")
+    shapes: dict[str, tuple[int, ...]] = {}
+    for name, entry in header.items():
+        if name == "__metadata__":
+            continue
+        shape = entry.get("shape") if isinstance(entry, Mapping) else None
+        if not isinstance(shape, list) or not all(type(dim) is int and dim >= 0 for dim in shape):
+            raise ValueError(f"{path!r} is not a safetensors file: tensor {name!r} has no valid shape")
+        shapes[name] = tuple(shape)
+    return shapes
+
+
+def _declared_module(
+    net_params: Optional[NNParams], params: NNModelParams, transforms: Sequence[Any]
+) -> Optional[torch.nn.Module]:
+    """The module a config declares, built on the meta device so no tensor is
+    allocated, with the recorded topology transforms replayed on it as a load
+    replays them. ``None`` when the constructor cannot run on meta (a
+    registered factory that touches data, say): the load then builds the
+    network and checks it after, as it always did."""
+    from ..seeding import _global_rng_kept
+
+    if isinstance(params.net, ModelSpec):
+
+        def build() -> torch.nn.Module:
+            return build_module(params.net)  # type: ignore[arg-type]
+
+    elif isinstance(params.net, Nets) and net_params is not None:
+
+        def build() -> torch.nn.Module:
+            return params.net(params=net_params)  # type: ignore[union-attr]
+
+    else:
+        return None
+    try:
+        with torch.device("meta"), _global_rng_kept():
+            module = build()
+            _replay_transforms(cast(NNModel, SimpleNamespace(net=module, _topology_transforms=())), transforms)
+    except Exception:  # the constructor cannot run on meta: the real build raises any real error
+        return None
+    return module
+
+
+def _refuse_shapes_before_build(
+    weights_path: str,
+    net_params: Optional[NNParams],
+    params: NNModelParams,
+    transforms: Sequence[Any],
+    excluded: Any,
+    strict: bool,
+    call: str,
+) -> None:
+    """Refuse a Hub artifact whose weights do not hold the tensors its config
+    declares, before the network is allocated: the module is built on meta and
+    compared with the safetensors header. The messages keep the strict load's
+    (``RuntimeError`` naming the missing, unexpected or resized keys, and the
+    ``exclude_submodules`` hint for attached ones)."""
+    module = _declared_module(net_params, params, transforms)
+    if module is None:
+        return
+    # The header's tensors as meta tensors: the strict load's own checks (the same ones, with the same messages and
+    # exception types, as the load runs after building the network) run on the declared module, and nothing is allocated.
+    state = {
+        name: torch.empty(shape, device="meta")
+        for name, shape in _without_submodules(_safetensors_shapes(weights_path), excluded).items()
+    }
+    if not transforms and strict:
+        _refuse_unrecorded_recipe_state(state, module.state_dict())
+    try:
+        if net_params is None and strict:
+            check_state_schema(module, state, what=f"Hub artifact of {params.net}")
+        module.load_state_dict(state, strict=strict)
+    except (RuntimeError, ValueError) as error:
+        explained = _attached_submodules_error(error, module, state, call, excluded) if strict else None
+        refusal = explained if explained is not None else error
+        raise type(refusal)(f"refused before the network was built: {refusal}") from error
+
+
+def _file_digest(path: str) -> tuple[str, int]:
+    """The SHA-256 hex digest and the byte size of the file at ``path``."""
+    digest = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(_HUB_DIGEST_CHUNK), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+
+def _manifest_files(raw: str, *, source: str) -> dict[str, tuple[str, int]]:
+    """``{name: (sha256, size)}`` an NNx hub manifest lists; ``ValueError`` when
+    the text is not one. Each name must be a plain file name of the artifact."""
+    manifest = parse_json(raw, _HUB_MANIFEST_FILENAME, ValueError, max_depth=MAX_JSON_DEPTH)
+    if not (
+        isinstance(manifest, Mapping)
+        and manifest.get("format") == _HUB_MANIFEST_FORMAT
+        and type(manifest.get("version")) is int
+        and manifest["version"] == _HUB_MANIFEST_VERSION
+        and isinstance(manifest.get("files"), Mapping)
+    ):
+        raise ValueError(f"{source}: {_HUB_MANIFEST_FILENAME} is not an NNx hub manifest of version 1")
+    listed: dict[str, tuple[str, int]] = {}
+    for name, entry in manifest["files"].items():
+        if Path(name).name != name or name in ("", ".", "..", _HUB_MANIFEST_FILENAME) or "\\" in name:
+            raise ValueError(f"{source}: {_HUB_MANIFEST_FILENAME} lists {name!r}, which is not a file of the artifact")
+        digest = entry.get("sha256") if isinstance(entry, Mapping) else None
+        size = entry.get("size") if isinstance(entry, Mapping) else None
+        if not isinstance(digest, str) or not _SHA256_HEX.fullmatch(digest) or type(size) is not int or size < 0:
+            raise ValueError(f"{source}: {_HUB_MANIFEST_FILENAME} has no valid sha256 and size for {name!r}")
+        listed[name] = (digest, size)
+    return listed
+
+
+def _previous_hub_files(target: Path) -> Optional[dict[str, tuple[str, int]]]:
+    """The files the artifact at ``target`` was last saved with, or ``None`` when
+    it holds no readable manifest: then nothing in it is known to be NNx's."""
+    try:
+        with open(target / _HUB_MANIFEST_FILENAME, encoding="utf-8") as handle:
+            return _manifest_files(handle.read(), source=str(target))
+    except (OSError, ValueError):
+        return None
+
+
+def _write_hub_manifest(save_dir: Path) -> None:
+    """Write the manifest that lists the files this save produced (the weights,
+    the config, and the tokenizer when one was written) with their SHA-256 and
+    size. The README is not listed: the Hub model card is edited by hand."""
+    files: dict[str, dict[str, Any]] = {}
+    for name in (_HUB_MODEL_FILENAME, _HUB_CONFIG_FILENAME, _HUB_TOKENIZER_FILENAME):
+        if (save_dir / name).is_file():
+            digest, size = _file_digest(str(save_dir / name))
+            files[name] = {"sha256": digest, "size": size}
+    manifest = {"files": files, "format": _HUB_MANIFEST_FORMAT, "version": _HUB_MANIFEST_VERSION}
+    _atomic_write_text(
+        str(save_dir / _HUB_MANIFEST_FILENAME),
+        json.dumps(manifest, sort_keys=True, indent=2),
+        mode=_CREATED_FILE_MODE,
+    )
+
+
+def _verify_hub_manifest(directory: str, model_id: str) -> Optional[dict[str, tuple[str, int]]]:
+    """Verify every file the manifest in ``directory`` lists against its digest
+    and size before anything is built from them. A missing or changed file is
+    refused. An artifact with no manifest (saved before manifests existed) loads
+    with a warning, and ``None`` is returned."""
+    manifest_path = os.path.join(directory, _HUB_MANIFEST_FILENAME)
+    if not os.path.isfile(manifest_path):
+        warnings.warn(
+            f"{model_id!r} has no {_HUB_MANIFEST_FILENAME}, so its files load without digest verification; "
+            "save it again with this NNx to add one",
+            UserWarning,
+            stacklevel=3,
+        )
+        return None
+    with open(manifest_path, encoding="utf-8") as handle:
+        listed = _manifest_files(handle.read(), source=repr(model_id))
+    for required in (_HUB_CONFIG_FILENAME, _HUB_MODEL_FILENAME):
+        if required not in listed:
+            raise ValueError(f"{model_id!r}: {_HUB_MANIFEST_FILENAME} does not list {required}; refusing to load it")
+    for name, (digest, size) in listed.items():
+        path = os.path.join(directory, name)
+        if not os.path.isfile(path):
+            raise ValueError(
+                f"{model_id!r}: {name} is listed in {_HUB_MANIFEST_FILENAME} but is missing; refusing to load it"
+            )
+        if os.path.getsize(path) != size or _file_digest(path)[0] != digest:
+            raise ValueError(
+                f"{model_id!r}: {name} does not match its digest in {_HUB_MANIFEST_FILENAME} (it changed or was "
+                "corrupted after it was saved); refusing to load it"
+            )
+    return listed
 
 
 def _looks_like_converted_qat_state(net_state: Mapping[str, Any]) -> bool:
@@ -2444,6 +2648,40 @@ def _with_attempt(
 
 def _tensor_keys(state: Mapping[str, Any]) -> set[str]:
     return {key for key, value in state.items() if isinstance(value, torch.Tensor)}
+
+
+def _unexported_state_keys(net: torch.nn.Module, exported: str) -> list[str]:
+    """The tensors of ``net``'s state that the ONNX graph at ``exported`` does
+    not carry. A state key is carried when an initializer has its name, or holds
+    its value: the exporter renames a transposed MatMul weight and shares equal
+    tensors. A key whose value cannot be shown either way (external data, a
+    dtype numpy lacks) is not reported. ``num_batches_tracked`` is left out: an
+    eval-mode graph never reads it, so its absence is the exporter's correct
+    output."""
+    import onnx
+    from onnx import TensorProto, numpy_helper
+
+    initializers = list(onnx.load(exported, load_external_data=False).graph.initializer)
+    named = {init.name for init in initializers}
+    dropped: list[str] = []
+    for key, tensor in net.state_dict().items():
+        if not torch.is_tensor(tensor) or key in named or key.endswith("num_batches_tracked"):
+            continue
+        shape = tuple(tensor.shape)
+        candidates = [init for init in initializers if tuple(init.dims) in (shape, shape[::-1])]
+        if not candidates:
+            dropped.append(key)
+            continue
+        if any(init.data_location == TensorProto.EXTERNAL for init in candidates):
+            continue  # its data is not in the file, so absence cannot be shown
+        try:
+            value = tensor.detach().cpu().numpy()
+        except TypeError:  # a dtype numpy does not hold (bfloat16): absence cannot be shown
+            continue
+        carried = [numpy_helper.to_array(init) for init in candidates]
+        if not any(np.array_equal(array, value) or np.array_equal(array, value.T) for array in carried):
+            dropped.append(key)
+    return dropped
 
 
 def _to_device(value: Any, device: torch.device) -> Any:
@@ -4153,6 +4391,16 @@ class NNModel(_HubMixinBase):
                     )
             finally:
                 _restore_training_modes(training_modes)
+            # The exporter drops an attached tensor the forward pass never reads; say so rather than leave it silent.
+            dropped = _unexported_state_keys(self.net, partial)
+            if dropped:
+                shown = ", ".join(dropped[:5]) + (", ..." if len(dropped) > 5 else "")
+                warnings.warn(
+                    f"to_onnx(): the exported graph holds no initializer for {len(dropped)} tensor(s) of the network's "
+                    f"state ({shown}); the exporter dropped them, so the ONNX model does not carry them",
+                    UserWarning,
+                    stacklevel=2,
+                )
             _commit_partial(partial, path)
         except BaseException:
             _discard_partial(partial)
@@ -4370,8 +4618,16 @@ class NNModel(_HubMixinBase):
         try:
             result = super().save_pretrained(staging, *args, **kwargs)
             target.mkdir(parents=True, exist_ok=True)
-            # config.json moves last, so an interrupted move leaves the previous config beside at most the new weights.
-            for name in sorted(os.listdir(staging), key=lambda produced: produced == _HUB_CONFIG_FILENAME):
+            produced = os.listdir(staging)
+            # A tokenizer.json an earlier NNx save wrote (the manifest there lists it) goes when this save writes none.
+            # One the manifest does not list is the user's, and stays.
+            previous = _previous_hub_files(target)
+            if previous is not None and _HUB_TOKENIZER_FILENAME in previous and _HUB_TOKENIZER_FILENAME not in produced:
+                with contextlib.suppress(FileNotFoundError):
+                    os.remove(target / _HUB_TOKENIZER_FILENAME)
+            # config.json, then the manifest, move last: an interrupted move leaves the previous manifest beside files
+            # it no longer matches, which a load refuses rather than reading a mix of two saves.
+            for name in sorted(produced, key=lambda produced_name: _HUB_MOVE_ORDER.get(produced_name, 0)):
                 if name == "README.md" and (target / name).exists():
                     continue  # huggingface_hub does not overwrite an existing model card
                 os.replace(os.path.join(staging, name), target / name)
@@ -4466,10 +4722,13 @@ class NNModel(_HubMixinBase):
           - ``model.safetensors`` — ``self.net.state_dict()`` as safetensors.
           - ``config.json`` — ``{"net_params": <state>, "params": <state>}``,
             using the same ``.state()`` form NNRun uses for hashing.
+          - ``nnx_hub_manifest.json`` — the SHA-256 and byte size of the files
+            above (and ``tokenizer.json`` when one is written), written last.
 
         :meth:`PyTorchModelHubMixin.save_pretrained` additionally writes a
         ``README.md`` model card via ``generate_model_card()``; that's
-        emitted on top of these two files by the base implementation.
+        emitted on top of these files by the base implementation, and the
+        manifest does not list it.
         """
         self._require_portable("save_pretrained")
         try:
@@ -4520,6 +4779,8 @@ class NNModel(_HubMixinBase):
             json.dumps(config, sort_keys=True, indent=2),
             mode=_CREATED_FILE_MODE,  # the mode a plain write gave before this path was atomic
         )
+        # Last: the files it lists (weights, config, tokenizer) are all written.
+        _write_hub_manifest(save_dir)
 
     def _hub_reconstruction_config(self, save_directory) -> dict[str, Any]:
         """Persist subclass-owned artifacts and return their config fragment."""
@@ -4639,6 +4900,8 @@ class NNModel(_HubMixinBase):
             config_path = os.path.join(snapshot_path, _HUB_CONFIG_FILENAME)
             weights_path = os.path.join(snapshot_path, _HUB_MODEL_FILENAME)
 
+        # Every file the manifest lists is verified before anything is read from it or built.
+        listed = _verify_hub_manifest(os.path.dirname(config_path), model_id)
         with open(config_path, encoding="utf-8") as f:
             # The strict parse: a duplicate key or NaN would otherwise load silently (last key wins).
             config = parse_json(f.read(), "config.json", ValueError, max_depth=MAX_JSON_DEPTH)
@@ -4648,6 +4911,14 @@ class NNModel(_HubMixinBase):
                 f"from_pretrained got {', '.join(overridden)} that differ from the repo's config.json: the model is "
                 "rebuilt from config.json, so they cannot be overridden here"
             )
+        if listed is not None:
+            declared = config.get("tokenizer")
+            tokenizer_name = declared.get("filename") if isinstance(declared, Mapping) else None
+            if isinstance(tokenizer_name, str) and tokenizer_name not in listed:
+                raise ValueError(
+                    f"{model_id!r}: the config declares the tokenizer {tokenizer_name!r}, which "
+                    f"{_HUB_MANIFEST_FILENAME} does not list; refusing to load it"
+                )
         # We accept either form for back-compat with any future config
         # writer: nested under {"net_params": ..., "params": ...} (what
         # _save_pretrained writes today) or flat at the top level. The
@@ -4683,15 +4954,17 @@ class NNModel(_HubMixinBase):
             params = replace(params, precision=precision, mixed_precision=False)
 
         transforms = tuple(NNCheckpointTransform.from_state(item) for item in config.get("transforms", []))
+        excluded = _excluded_names(exclude_submodules)
+        call = "NNModel.from_pretrained(model_id, exclude_submodules={names!r})"
+        # The declared shapes are checked against the weights' header before the network is allocated.
+        _refuse_shapes_before_build(weights_path, net_params, params, transforms, excluded, strict, call)
         reconstruction_kwargs = cls._hub_reconstruction_kwargs(config, os.path.dirname(config_path))
         if batch_adapter is not None:
             reconstruction_kwargs["batch_adapter"] = batch_adapter
         model = cls(net_params=net_params, params=params, **reconstruction_kwargs)
         _replay_transforms(model, transforms)
         model._topology_transforms = _canonical_transforms(transforms)
-        excluded = _excluded_names(exclude_submodules)
         state_dict = _without_submodules(load_file(weights_path, device=str(torch_load_device)), excluded)
-        call = "NNModel.from_pretrained(model_id, exclude_submodules={names!r})"
         if not transforms and strict:
             _refuse_unrecorded_recipe_state(state_dict, model.net.state_dict())
         try:
@@ -4741,7 +5014,15 @@ class NNModel(_HubMixinBase):
 
         Returns ``path`` so calls can be chained.
         """
-        torch.save(self.net.state_dict(), path)
+        # Written beside ``path`` and renamed onto it only once complete: torch.save opens its target with "wb",
+        # so a failed export would otherwise truncate an earlier export at the same path.
+        partial = _reserve_partial(path)
+        try:
+            torch.save(self.net.state_dict(), partial)
+            _commit_partial(partial, path)
+        except BaseException:
+            _discard_partial(partial)
+            raise
         return path
 
     def train(

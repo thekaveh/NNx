@@ -25,9 +25,14 @@ RUNNER = "ubuntu-26.04"
 # FEAT-043 CUDA (NNX_GPU_RUNNER), FEAT-050 Apple-silicon MPS (NNX_MPS_RUNNER).
 SELF_HOSTED = {
     ("docs.yml", "gpu-evidence"): ["self-hosted", "linux", "x64", "gpu"],
+    ("mps.yml", "gpu-check"): ["self-hosted", "macos", "arm64"],
     ("mps.yml", "mps-evidence"): ["self-hosted", "macos", "arm64"],
 }
-OPT_IN = {("docs.yml", "gpu-evidence"): "NNX_GPU_RUNNER", ("mps.yml", "mps-evidence"): "NNX_MPS_RUNNER"}
+OPT_IN = {
+    ("docs.yml", "gpu-evidence"): "NNX_GPU_RUNNER",
+    ("mps.yml", "gpu-check"): "NNX_MPS_RUNNER",
+    ("mps.yml", "mps-evidence"): "NNX_MPS_RUNNER",
+}
 APT_STEP_MINUTES = 5
 
 
@@ -88,7 +93,7 @@ def test_a_stalled_mps_queue_never_holds_the_ci_run():
     (which lets pushes finish) never waits behind it."""
     workflows = {path.name: yaml.safe_load(path.read_text(encoding="utf-8")) for path in WORKFLOWS}
     # mps-gate-without-mps runs on a hosted image, so it never waits for the self-hosted runner
-    assert set(workflows["mps.yml"]["jobs"]) == {"mps-evidence", "mps-gate-without-mps"}
+    assert set(workflows["mps.yml"]["jobs"]) == {"gpu-check", "mps-evidence", "mps-gate-without-mps"}
     assert "self-hosted" not in str(workflows["mps.yml"]["jobs"]["mps-gate-without-mps"]["runs-on"])
     assert workflows["mps.yml"]["concurrency"] == {
         "group": "mps-${{ github.workflow }}-${{ github.ref }}",
