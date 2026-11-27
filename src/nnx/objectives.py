@@ -224,6 +224,13 @@ class Objective:
         and the callbacks, before any run is reserved or parameter changes.
         Raise to refuse; the default accepts every run."""
 
+    def check_accumulation(self, accumulate_grad_batches: int) -> None:
+        """Refuse an update window this objective cannot train: called by
+        ``NNModel.train`` and ``Trainer.train`` with the run's
+        ``accumulate_grad_batches`` (microbatches per committed update),
+        before any run is reserved. Raise to refuse; the default accepts
+        every window."""
+
     def after_update(self, events: tuple[UpdateEvent, ...]) -> None:
         """Called once per committed update — after the window's step (an
         optimizer without gradients is not stepped), never for a microbatch
@@ -268,12 +275,16 @@ def _check_objective_run(
     *,
     optimizers: Mapping[str, torch.optim.Optimizer],
     callbacks: Optional[Sequence[Any]],
+    accumulate_grad_batches: int = 1,
 ) -> None:
-    """The objective's own refusals (``check_run``), before any run is
-    reserved."""
+    """The objective's own refusals (``check_run`` and ``check_accumulation``),
+    before any run is reserved."""
     check = getattr(objective, "check_run", None)
     if callable(check):
         check(model, optimizers=dict(optimizers), callbacks=list(callbacks or []))
+    check_window = getattr(objective, "check_accumulation", None)
+    if callable(check_window):
+        check_window(accumulate_grad_batches)
 
 
 def _supervised_terms(model: Any, logits: torch.Tensor, target: torch.Tensor, name: str, weight: float) -> LossTerm:
@@ -393,16 +404,22 @@ class KDObjective(Objective):
         _freeze_teacher(model.net, self.teacher)
 
     def __call__(self, ctx: ObjectiveContext) -> ObjectiveResult:
-        from ._step_helpers import pin_eval, predicted_labels, require_row_logits, softened_kl
-        from .nn.nn_model import _KD_OBJECTIVE_SCORING, _classification_edp_for_loss, _single_input_batch
+        from ._step_helpers import pinned_eval, predicted_labels, require_row_logits, softened_kl
+        from .nn.nn_model import (
+            _KD_OBJECTIVE_SCORING,
+            _check_scorable_target,
+            _classification_edp_for_loss,
+            _single_input_batch,
+        )
+        from .nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
 
         model = ctx.model
         model.net.train()
         X, Y = _single_input_batch(model, ctx.batch, who="kd_objective")
         student = ctx.full_precision(model._net_forward((X,), {}))
         require_row_logits(student, "kd_objective")
-        pin_eval(self.teacher.net)  # model.net.train() or a callback may have switched it to train mode
-        with torch.no_grad(), _own_precision(ctx, self.teacher) as teacher_precision:
+        # model.net.train() or a callback may have switched the teacher to train mode; its modes are given back after.
+        with pinned_eval(self.teacher.net), torch.no_grad(), _own_precision(ctx, self.teacher) as teacher_precision:
             teacher_logits = ctx.full_precision(
                 teacher_precision.output(self.teacher._net_forward((X.to(self.teacher.device),), {})).to(model.device)
             )
@@ -432,6 +449,10 @@ class KDObjective(Objective):
             )
         if self.alpha < 1:  # alpha=1 is pure distillation: the labels are not scored (placeholders train)
             terms = (*terms, _supervised_terms(model, student, Y, "supervised", 1.0 - self.alpha))
+        else:
+            # Placeholder labels the loss never reads: the record carries the loss alone (no classification fields).
+            _check_scorable_target(model.loss_fn, Y, scoring=_KD_OBJECTIVE_SCORING)
+            return ObjectiveResult(terms, NNEvaluationDataPoint(loss=ObjectiveResult(terms).loss()))
         record = _classification_edp_for_loss(
             loss_fn=model.loss_fn,
             target=Y,

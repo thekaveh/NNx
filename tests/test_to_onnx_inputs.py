@@ -202,3 +202,24 @@ def test_to_onnx_without_onnx_raises_an_import_error_naming_the_extra(tmp_path, 
     with pytest.raises(ImportError, match=re.escape("pip install thekaveh-nnx[onnx]")):
         model.to_onnx(str(out), example_input=torch.randn(2, 4))
     assert not out.exists() and model.net.training
+
+
+def test_a_failed_export_leaves_the_previous_onnx_file_intact(tmp_path, monkeypatch):
+    """torch's legacy writer opens its target with "wb": a failed export used to truncate an
+    existing model.onnx. The export now goes to a partial file that is renamed only when complete."""
+    pytest.importorskip("onnx")
+    path = tmp_path / "model.onnx"
+    path.write_bytes(b"previous export")
+
+    def failing_export(net, args, f, **kwargs):
+        with open(f, "wb") as handle:  # a partial write, then the failure
+            handle.write(b"trunc")
+        raise RuntimeError("export failed")
+
+    monkeypatch.setattr(torch.onnx, "export", failing_export)
+    model = _model()
+    with pytest.raises(RuntimeError, match="export failed"):
+        model.to_onnx(str(path), example_input=torch.randn(2, 4))
+
+    assert path.read_bytes() == b"previous export"
+    assert sorted(os.listdir(tmp_path)) == ["model.onnx"]

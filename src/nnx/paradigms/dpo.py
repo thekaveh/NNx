@@ -35,7 +35,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
-from .._step_helpers import finalize_step, freeze_apart, imperative_step, pin_eval
+from .._step_helpers import finalize_step, freeze_apart, imperative_step, pinned_eval
 from .._validation import require_count, require_finite_real, shown
 from ..nn.nn_model import NNModel, TrainStepContext, TrainStepFn
 from ..nn.params.nn_evaluation_data_point import NNEvaluationDataPoint
@@ -123,16 +123,19 @@ def dpo_train_step_factory(
 
     def step(ctx: TrainStepContext) -> NNEvaluationDataPoint:
         m = ctx.model
+        # Before any mode change, freeze or forward: a response with no valid
+        # token would enter the batch mean as a pair scored 0 with no gradient.
+        prompt_ids, chosen_ids, rejected_ids = _unpack_preference_batch(ctx.batch)
+        prompt_ids = prompt_ids.to(m.device)
+        chosen_ids = chosen_ids.to(m.device)
+        rejected_ids = rejected_ids.to(m.device)
+        _require_response_tokens(chosen_ids, pad_token_id, "chosen")
+        _require_response_tokens(rejected_ids, pad_token_id, "rejected")
         # Before any mode change or forward: refuse a reference that is, lies
         # in or shares parameters with the policy's net, then freeze it.
         freeze_apart(m.net, ref_model.net, role="DPO reference model", remedy=_REFERENCE_REMEDY)
         m.net.train()
         m.net.zero_grad()
-
-        prompt_ids, chosen_ids, rejected_ids = _unpack_preference_batch(ctx.batch)
-        prompt_ids = prompt_ids.to(m.device)
-        chosen_ids = chosen_ids.to(m.device)
-        rejected_ids = rejected_ids.to(m.device)
 
         # Build the (prompt + response) sequences. We compute the
         # response log-prob conditional on the prompt by summing the
@@ -147,8 +150,8 @@ def dpo_train_step_factory(
 
         # Reference log-probs — no gradient, but move tensors through
         # ref_model's device frame in case it lives elsewhere.
-        pin_eval(ref_model.net)  # m.net.train() or a callback may have switched it to train mode
-        with torch.no_grad():
+        # m.net.train() or a callback may have switched the reference to train mode; its modes are given back after.
+        with pinned_eval(ref_model.net), torch.no_grad():
             ref_chosen_logp = _response_logprob(
                 ref_model.net,
                 chosen_seq.to(ref_model.device),
@@ -222,6 +225,25 @@ def _unpack_preference_batch(batch) -> tuple[torch.Tensor, torch.Tensor, torch.T
             f"({type(p).__name__}, {type(c).__name__}, {type(r).__name__})"
         )
     return p, c, r
+
+
+def _require_response_tokens(response_ids: torch.Tensor, pad_token_id: Optional[int], name: str) -> None:
+    """Refuse a batch holding a response with no valid token: every position
+    is the pad id (or the response is empty). Its log-prob would be exactly
+    0 with no gradient, yet it would still enter the batch mean as a
+    preference pair. Without ``pad_token_id`` every position counts."""
+    if pad_token_id is None:
+        counts = response_ids.new_full((response_ids.shape[0],), response_ids.shape[1])
+    else:
+        counts = (response_ids != pad_token_id).sum(dim=-1)
+    empty = (counts == 0).nonzero(as_tuple=False)
+    if empty.numel():
+        row = int(empty[0, 0])
+        reason = "it is empty" if pad_token_id is None else f"every position is the pad id {pad_token_id}"
+        raise ValueError(
+            f"DPO {name} response of batch row {row} has no valid tokens ({reason}): its log-prob would be 0 "
+            "with no gradient yet still count as a preference pair. Drop that row from the dataset."
+        )
 
 
 def _response_logprob(

@@ -2617,6 +2617,14 @@ nnx.objectives.Objective.check_run(self, model: 'NNModel', *, optimizers: 'Mappi
 
 Refuse a run this objective cannot train — called by ``NNModel.train`` and ``Trainer.train`` with the built optimizers and the callbacks, before any run is reserved or parameter changes. Raise to refuse; the default accepts every run.
 
+##### `nnx.objectives.Objective.check_accumulation`
+
+```python
+nnx.objectives.Objective.check_accumulation(self, accumulate_grad_batches: 'int') -> 'None'
+```
+
+Refuse an update window this objective cannot train: called by ``NNModel.train`` and ``Trainer.train`` with the run's ``accumulate_grad_batches`` (microbatches per committed update), before any run is reserved. Raise to refuse; the default accepts every window.
+
 ##### `nnx.objectives.Objective.after_update`
 
 ```python
@@ -4332,7 +4340,7 @@ Args:
 #### `nnx.decisions.benchmark.BenchmarkReport`
 
 ```python
-class nnx.decisions.benchmark.BenchmarkReport(split: 'str', provider: 'Optional[str]', metric_identity: 'Mapping[str, Any]', slices: 'Mapping[str, SliceReport]', resources: 'Resources' = <factory>, extra: 'int' = 0, sample_set: 'Optional[str]' = None) -> 'None'
+class nnx.decisions.benchmark.BenchmarkReport(split: 'str', provider: 'Optional[str]', metric_identity: 'Mapping[str, Any]', slices: 'Mapping[str, SliceReport]', resources: 'Resources' = <factory>, extra: 'int' = 0, sample_set: 'Optional[str]' = None, revisions: 'tuple[str, ...]' = (), prompt_identities: 'tuple[str, ...]' = ()) -> 'None'
 ```
 
 A replayed benchmark: the split and metric identity, every slice's coverage, metrics and bins, and the declared `Resources`. ``metric_identity`` (its ``metrics`` list a tuple) and ``slices`` are read-only, so a report cannot drift from its exports and equal reports hash equal; ``state()`` gives the plain JSON.
@@ -4510,7 +4518,7 @@ Strict JSON: a non-finite bound is written as MetricValue writes it.
 nnx.decisions.benchmark.compare_reports(a: 'Union[BenchmarkReport, Mapping[str, Any]]', b: 'Union[BenchmarkReport, Mapping[str, Any]]') -> 'dict[str, dict[str, Optional[float]]]'
 ```
 
-``b - a`` per slice and metric, for two reports of the same split and metric identity and — when both record it — the same sample set (a `BenchmarkReport` or a saved report's state); anything else raises `BenchmarkError`. A metric unavailable on either side has no delta.
+``b - a`` per slice and metric, for two reports of the same split and metric identity, the same model revisions and prompt identities, and — when both record it — the same sample set (a `BenchmarkReport` or a saved report's state); anything else raises `BenchmarkError`. A metric unavailable on either side has no delta.
 
 
 #### `nnx.decisions.benchmark.permute_options`
@@ -9501,7 +9509,9 @@ lists of strings; relevance grades are integers in ``0..max_relevance``.
   skipped. ``weighting="query"`` averages each query's pairs and then the
   queries (a query weighs the same however many pairs it has);
   ``weighting="pair"`` weighs every pair equally. Pairs are formed within a
-  microbatch. Checkpointed as component ``"ranking.task"``.
+  microbatch, so a training run must use ``accumulate_grad_batches=1``
+  (a larger update window is refused). Checkpointed as component
+  ``"ranking.task"``.
 - :meth:`RankingTask.eval_step` — an ``eval_step_fn``: it buffers the whole
   validation stream (at most ``max_buffered`` candidate rows), groups it by
   query — so a query split across batches is joined, in any order — and
@@ -9636,6 +9646,14 @@ class nnx.ranking.RankingObjective(task: 'RankingTask', *, nonfinite: 'str' = 'f
 ```
 
 The pairwise logistic objective of a `RankingTask` (see the module docstring); checkpointed as component ``"ranking.task"`` with the task configuration and the run's training units — pairs (``weighting="pair"``) or queries (``"query"``) scored, from 0 for each fresh run and restored on resume (a window the engine then skips is still counted).
+
+##### `nnx.ranking.RankingObjective.check_accumulation`
+
+```python
+nnx.ranking.RankingObjective.check_accumulation(self, accumulate_grad_batches: 'int') -> 'None'
+```
+
+Refuse an update window of several microbatches, before any run is reserved: pairs are formed within one microbatch, so a query split across the microbatches of a window loses its cross-batch pairs and, under ``weighting="query"``, is counted twice in the denominator.
 
 ##### `nnx.ranking.RankingObjective.component_spec`
 
@@ -15709,9 +15727,9 @@ Args:
         its parameters. Building the step leaves it alone; each step
         checks that placement first, then freezes the teacher's
         parameters (``requires_grad=False``) and puts its net in eval
-        mode before every teacher forward (one a callback switches to
+        mode around every teacher forward (one a callback switches to
         train mode would otherwise run its dropout and BatchNorm in
-        train mode).
+        train mode), then gives each submodule's training flag back.
     alpha: weight on the distillation (soft) loss. The hard-label
         loss gets ``1 − α``. ``α=1.0`` is pure distillation (the
         labels are not scored); ``α=0.0`` collapses to standard
@@ -15734,7 +15752,9 @@ pass, and the record carries the task's ``kind`` / ``count`` /
 ``ignore_index`` (NaN for a multilabel task). A batch with nothing to
 learn from (every target masked at ``alpha=0``) takes no update and
 records ``status="empty"``. A regression task is refused before any run
-is reserved.
+is reserved. Without a task and at ``alpha=1`` the labels are
+placeholders the loss never reads, so the record carries the loss alone:
+accuracy, F1, precision and recall are left unset.
 
 Returns:
     A ``TrainStepFn`` suitable for ``NNModel.train(..., train_step_fn=...)``.
@@ -17302,9 +17322,14 @@ Raises:
         built with ``tie_embeddings=False`` and export that; removing
         the parametrization and re-tying the head
         (``net.lm_head.weight = net.tok_embed.weight``) keeps only one
-        of the two weights and changes the outputs.
+        of the two weights and changes the outputs. Also when the network
+        has a ``state_dict`` entry that no GGUF tensor carries (an auxiliary
+        head, a ``logit_scale``, a bias): the file would drop it, and the
+        error names every such key.
         Nothing is written, and no directory is created; the same holds
         for a tokenizer that cannot be read (its own error propagates).
+        A write that fails part-way leaves an existing file at
+        ``out_path`` untouched (the file is renamed onto it only once complete).
 ```
 
 
@@ -17340,7 +17365,8 @@ Raises:
         prune mask or a legacy ``weight_norm`` / ``spectral_norm``
         hook, or the embeddings are tied but the ``lm_head`` no longer
         reads the embedding's weight (see
-        :func:`nnx.interop.gguf.write_gguf`).
+        :func:`nnx.interop.gguf.write_gguf`), or a ``state_dict`` entry that no
+        tensor of the map carries (it would be dropped; the error names every such key).
 ```
 
 

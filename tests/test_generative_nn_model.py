@@ -1014,3 +1014,22 @@ def test_generate_restores_lora_wrapped_mixed_modes(tmp_path):
     before = {name: m.training for name, m in model.net.named_modules()}
     _ = model.generate(prompt="the", max_new_tokens=4, temperature=0.0)
     assert {name: m.training for name, m in model.net.named_modules()} == before
+
+
+def test_the_tokenizer_is_not_written_through_a_symlink(tmp_path):
+    """The tokenizer is written by the atomic writer, which replaces a tokenizer.json
+    symlink rather than writing through it (tokenizers' save() followed the link)."""
+    tokenizer = _make_tokenizer(tmp_path)
+    model = _make_model(tokenizer)
+    outside = tmp_path / "outside.json"
+    outside.write_text("untouched", encoding="utf-8")
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    (artifact / "tokenizer.json").symlink_to(outside)
+
+    config = model._hub_reconstruction_config(str(artifact))
+
+    assert config == {"tokenizer": {"filename": "tokenizer.json"}}
+    assert outside.read_text(encoding="utf-8") == "untouched"
+    assert not (artifact / "tokenizer.json").is_symlink()
+    assert (artifact / "tokenizer.json").read_text(encoding="utf-8") == tokenizer.tokenizer.to_str(pretty=True)
