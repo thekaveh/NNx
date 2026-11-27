@@ -27,7 +27,6 @@ from nnx import (
     random_block_mask,
 )
 from nnx.bundles import BundleCapabilityError, export_bundle, reconstruct_bundle
-from tests.test_hub_mixin import _resign
 
 PREDICTOR = "_jepa_predictor"
 PROBE = torch.randn(2, 3, 8, 8, generator=torch.Generator().manual_seed(5))
@@ -132,6 +131,8 @@ def test_a_hub_save_with_the_predictor_attached_rebuilds_its_encoder(jepa, tmp_p
 
 
 def test_hub_exclusion_stays_strict_for_every_other_key(jepa, tmp_path):
+    from tests.test_hub_mixin import _resign  # skips only this test when the hub extras are absent
+
     pytest.importorskip("huggingface_hub")
     pytest.importorskip("safetensors")
     from safetensors.torch import load_file, save_file
