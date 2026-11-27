@@ -66,8 +66,9 @@ different question.
 `ChoiceResult` and `ScoreResult` carry a `distribution`: `(id, p)` pairs in
 the question's order. It must hold 2+ unique ids, each `p` finite in
 `[0, 1]`, summing to 1 within `PROBABILITY_TOLERANCE = 1e-6`. `BooleanResult`
-carries one `p_true` (`p_false` is derived). A provider's own output stays in
-`raw` (kept out of equality) and never mixes with the normalized fields.
+carries one `p_true`. When a provider gives `{"true": p, "false": q}`, both values are kept as
+given and `p_true + q` must be 1 within `PROBABILITY_TOLERANCE`; otherwise `p_false` is `1 - p_true`. A provider's
+own output stays in `raw` (kept out of equality) and never mixes with the normalized fields.
 
 `validate_response(question, response)` is the one validator every provider
 uses. For a Choice or Score, `response` is the provider's keyed output — a

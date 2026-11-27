@@ -8,6 +8,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ### Changed
 
+- **A binary decision keeps the probabilities a provider gave.** `{"true": p, "false": q}` is stored as given, with `p_false = q`, instead of recomputing `p_false` as `1 - p_true`. A pair that does not sum to 1 within the tolerance is still refused.
 - **Hub saves are staged, and loads are verified.** A refused or failed `save_pretrained` leaves the previous artifact intact. Each save writes `nnx_hub_manifest.json` (the SHA-256 and size of each file), which `from_pretrained` verifies before building anything. A directory saved before manifests existed loads with a `UserWarning`.
 - **`from_pretrained` checks declared shapes before it allocates.** A config whose shapes do not match its weights is refused on the meta device, before the network is built.
 - **GGUF export refuses state it would drop.** A `TransformerNN` state entry the tensor map does not read raises before anything is written, instead of being omitted silently.
