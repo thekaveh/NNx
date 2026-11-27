@@ -50,6 +50,16 @@ def _tiny_model() -> NNModel:
     )
 
 
+def _resign(directory) -> None:
+    """Re-list a saved artifact's files after a test edits one on purpose, so the edit reaches the check the
+    test is about (the manifest refuses an edit it does not list)."""
+    from pathlib import Path
+
+    from nnx.nn.nn_model import _write_hub_manifest
+
+    _write_hub_manifest(Path(directory))
+
+
 def test_hub_save_pretrained_emits_safetensors_and_config(tmp_path):
     """save_pretrained writes the canonical PyTorchModelHubMixin layout —
     `model.safetensors` (weights) and `config.json` (NNParams + NNModelParams).
@@ -110,6 +120,7 @@ def test_hub_from_pretrained_map_location_overrides_serialized_device(tmp_path):
     config = json.loads(config_path.read_text(encoding="utf-8"))
     config["params"]["device"] = Devices.CUDA.value
     config_path.write_text(json.dumps(config), encoding="utf-8")
+    _resign(tmp_path)
 
     restored = NNModel.from_pretrained(str(tmp_path), map_location="cpu")
 
@@ -201,6 +212,7 @@ def test_hub_from_pretrained_strict_is_honored(tmp_path):
     dropped = sorted(sd)[0]
     del sd[dropped]
     save_file(sd, str(weights_path))
+    _resign(tmp_path)
 
     with pytest.raises(RuntimeError, match="[Mm]issing key"):
         NNModel.from_pretrained(str(tmp_path))  # default strict=True
@@ -403,10 +415,12 @@ def test_hub_load_refuses_an_unknown_recipe_operation_before_loading_tensors(tmp
     )
     for bad, pattern in cases:
         config_path.write_text(json.dumps({**config, "transforms": [config["transforms"][0], bad]}))
+        _resign(tmp_path)
         with mock.patch("safetensors.torch.load_file", side_effect=AssertionError("tensors loaded")):
             with pytest.raises(ValueError, match=pattern):
                 NNModel.from_pretrained(str(tmp_path))
     config_path.write_text(json.dumps({key: value for key, value in config.items() if key != "transforms"}))
+    _resign(tmp_path)
     with pytest.raises(ValueError, match="record no transformation recipe"):
         NNModel.from_pretrained(str(tmp_path))
 
@@ -423,6 +437,7 @@ def test_a_non_strict_hub_load_of_unrecorded_recipe_weights_still_loads_partiall
     config_path = tmp_path / "config.json"
     config = json.loads(config_path.read_text())
     config_path.write_text(json.dumps({key: value for key, value in config.items() if key != "transforms"}))
+    _resign(tmp_path)
     loaded = NNModel.from_pretrained(str(tmp_path), strict=False)
     assert loaded._topology_transforms == ()
     for name, tensor in loaded.net.state_dict().items():
@@ -494,6 +509,7 @@ def test_hub_loading_re_resolves_the_precision_policy_on_the_destination_device(
     config = _json.loads(config_path.read_text())
     config["params"]["precision"] = {"mode": "fp16"}
     config_path.write_text(_json.dumps(config))
+    _resign(tmp_path)
     with pytest.raises(PrecisionUnsupportedError, match="CUDA only"):
         NNModel.from_pretrained(str(tmp_path), map_location="cpu")
     # ... unless the caller replaces the policy.
@@ -623,7 +639,43 @@ def test_push_to_hub_still_uploads_a_portable_model(monkeypatch):
     api.upload_folder.side_effect = lambda **kwargs: uploaded.append(sorted(os.listdir(kwargs["folder_path"])))
     _tiny_model().push_to_hub("owner/repo")
     api.create_repo.assert_called_once()
-    assert uploaded == [["README.md", "config.json", "model.safetensors"]]
+    assert uploaded == [["README.md", "config.json", "model.safetensors", "nnx_hub_manifest.json"]]
+
+
+def test_push_to_hub_kwarg_uploads_the_staged_files_the_target_receives(tmp_path, monkeypatch):
+    """save_pretrained(push_to_hub=True) uploads the files it stages, and the target then holds the same bytes."""
+    api = _mocked_hf_api(monkeypatch)
+    uploaded: dict[str, bytes] = {}
+
+    def record(**kwargs):
+        folder = kwargs["folder_path"]
+        uploaded.update({name: (folder / name).read_bytes() for name in os.listdir(folder)})
+        return "https://huggingface.co/owner/repo/commit/0"
+
+    api.upload_folder.side_effect = record
+    target = tmp_path / "artifact"
+    _tiny_model().save_pretrained(str(target), push_to_hub=True, repo_id="owner/repo")
+    api.upload_folder.assert_called_once()
+    assert sorted(uploaded) == ["README.md", "config.json", "model.safetensors", "nnx_hub_manifest.json"]
+    for name in ("config.json", "model.safetensors", "nnx_hub_manifest.json"):
+        assert (target / name).read_bytes() == uploaded[name], name
+
+
+def test_push_to_hub_failure_leaves_the_target_unchanged(tmp_path, monkeypatch):
+    """The upload runs before anything moves into the target: a failed upload leaves an existing artifact as it was
+    and no staging directory behind. (Two random models, so a successful write would be visible.)"""
+    target = tmp_path / "artifact"
+    _tiny_model().save_pretrained(str(target))
+    before = {name: (target / name).read_bytes() for name in os.listdir(target)}
+
+    api = _mocked_hf_api(monkeypatch)
+    api.upload_folder.side_effect = RuntimeError("upload refused")
+    with pytest.raises(RuntimeError, match="upload refused"):
+        _tiny_model().save_pretrained(str(target), push_to_hub=True, repo_id="owner/repo")
+
+    api.upload_folder.assert_called_once()
+    assert {name: (target / name).read_bytes() for name in os.listdir(target)} == before
+    assert not [name for name in os.listdir(tmp_path) if name.startswith(".nnx-hub-")]
 
 
 def test_a_qat_converted_model_still_saves_and_round_trips(tmp_path, monkeypatch):
@@ -666,6 +718,7 @@ def test_an_unknown_transform_names_both_causes(tmp_path):
     config_path = tmp_path / "config.json"
     config = json.loads(config_path.read_text())
     config_path.write_text(json.dumps({**config, "transforms": [{"name": "my-convert", "version": 1, "options": {}}]}))
+    _resign(tmp_path)
     with pytest.raises(ValueError) as caught:
         NNModel.from_pretrained(str(tmp_path))
     message = str(caught.value)
@@ -708,6 +761,7 @@ def test_a_top_level_tensor_or_submodule_is_excluded_strictly(tmp_path, kind):
     state = load_file(str(weights))
     del state["layers.0.weight"]
     save_file(state, str(weights))
+    _resign(saved)
     with pytest.raises(RuntimeError, match=r'Missing key\(s\) in state_dict: "layers.0.weight"'):
         NNModel.from_pretrained(str(saved), exclude_submodules=(name,))
 
@@ -816,6 +870,7 @@ def test_a_duplicate_key_in_the_hub_config_is_refused(tmp_path):
     _tiny_model().save_pretrained(str(tmp_path))
     config = tmp_path / "config.json"
     config.write_text(config.read_text(encoding="utf-8").replace("{", '{"transforms": [], ', 1), encoding="utf-8")
+    _resign(tmp_path)
     with pytest.raises(ValueError, match="repeats the key 'transforms'"):
         NNModel.from_pretrained(str(tmp_path))
 
@@ -824,6 +879,7 @@ def test_a_nan_in_the_hub_config_is_refused(tmp_path):
     _tiny_model().save_pretrained(str(tmp_path))
     config = tmp_path / "config.json"
     config.write_text(config.read_text(encoding="utf-8").replace("{", '{"loss_probe": NaN, ', 1), encoding="utf-8")
+    _resign(tmp_path)
     with pytest.raises(ValueError, match="NaN is not a JSON number"):
         NNModel.from_pretrained(str(tmp_path))
 

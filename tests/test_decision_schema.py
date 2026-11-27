@@ -135,6 +135,13 @@ def test_validate_response_never_renormalizes_and_keeps_vendor_scores_apart():
         validate_response(rain, {"yes": 0.8, "no": 0.2})
 
 
+def test_a_binary_pair_summing_off_one_beyond_the_tolerance_is_refused():
+    rain = Boolean("Is it raining?")
+    assert validate_response(rain, {"true": 0.7, "false": 0.3}).p_true == 0.7  # exactly 1
+    with pytest.raises(InvalidDecisionResponse, match="never renormalized"):
+        validate_response(rain, {"true": 0.7, "false": 0.31})  # off by 0.01
+
+
 # --- identity: digests and model-facing text ---------------------------------------------------
 
 

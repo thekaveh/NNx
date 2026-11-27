@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
+import warnings
 from types import SimpleNamespace
 
 import numpy as np
@@ -452,6 +453,45 @@ def test_selection_on_a_calibrated_prediction_names_its_view():
     policy = selection.require()
     assert policy.input_field == "calibrated_probabilities" and policy.calibrator_id == calibrator.id
     assert policy.apply(calibrated).accepted.any()
+
+
+def test_a_threshold_cannot_be_tuned_on_the_calibrators_own_split():
+    from nnx.calibration import TemperatureCalibrator
+
+    calibrator = TemperatureCalibrator(temperature=0.5, labels=LABELS, model_id="m", split_id="calib")
+    calibrated = calibrator.transform(np.log(P), labels=LABELS, model_id="m")
+    assert calibrated.calibration_split_id == "calib"
+    with pytest.raises(AbstentionError, match="tuning split 'calib' is the calibration split 'calib'"):
+        select_threshold(
+            calibrated,
+            Y,
+            kind="max_probability",
+            risk_ceiling=0.1,
+            split_id="calib",
+            test_split_id="test",
+            input_field="calibrated_probabilities",
+        )
+    selection = select_threshold(
+        calibrated,
+        Y,
+        kind="max_probability",
+        risk_ceiling=0.1,
+        split_id="val",
+        test_split_id="test",
+        input_field="calibrated_probabilities",
+    )
+    assert selection.policy is not None and selection.policy.tuning_split_id == "val"
+
+
+def test_selection_without_test_split_id_warns_and_keeps_its_result():
+    kwargs = {"kind": "max_probability", "risk_ceiling": 0.1, "split_id": "val", "labels": LABELS, "model_id": "m"}
+    with pytest.warns(DeprecationWarning, match=r"select_threshold\(\) without test_split_id.*next minor release"):
+        omitted = select_threshold(P, Y, **kwargs)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        named = select_threshold(P, Y, test_split_id="test", **kwargs)
+    assert omitted.policy.threshold == named.policy.threshold == 0.6
+    assert omitted.points == named.points
 
 
 def test_selections_reload_and_stay_consistent(tmp_path):

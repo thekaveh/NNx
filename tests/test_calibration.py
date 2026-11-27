@@ -13,6 +13,7 @@ import json
 import math
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -950,6 +951,30 @@ def test_the_row_sum_check_stays_meaningful_for_many_float16_classes():
         negative_log_likelihood(np.zeros((3, 1100), dtype=np.float16), [0, 1, 2])
 
 
+def test_a_bfloat16_row_summing_to_1_0586_is_refused():
+    # 0.5 + bfloat16(0.56) = 1.0586: inside the old 4 eps (1 + log2 C) bound (0.0625), outside 2 eps (1 + log2 C) (0.03125).
+    with pytest.raises(CalibrationError, match="sum to 1"):
+        negative_log_likelihood(torch.tensor([[0.5, 0.56]], dtype=torch.bfloat16), [0])
+
+
+def test_a_float16_three_class_row_summing_to_1_0096_is_refused():
+    # Inside the old bound (0.0101), outside the float16 bound 2 eps (1 + log2 3) (0.00505).
+    with pytest.raises(CalibrationError, match="sum to 1"):
+        negative_log_likelihood(torch.tensor([[0.6, 0.4, 0.01]], dtype=torch.float16), [0])
+
+
+def test_a_float16_softmax_over_152064_classes_still_passes():
+    logits = np.random.default_rng(0).normal(scale=2.0, size=(2, 152064)).astype(np.float16)
+    shifted = torch.softmax(torch.from_numpy(logits), dim=1)
+    assert math.isfinite(negative_log_likelihood(shifted, [0, 1]))
+
+
+def test_a_float32_softmax_over_152064_classes_still_passes():
+    logits = np.random.default_rng(1).normal(scale=2.0, size=(2, 152064)).astype(np.float32)
+    shifted = torch.softmax(torch.from_numpy(logits), dim=1)
+    assert math.isfinite(negative_log_likelihood(shifted, [0, 1]))
+
+
 def test_row_sum_check_still_passes_a_float32_softmax_row():
     logits = np.random.default_rng(3).normal(scale=4.0, size=(16, 7)).astype(np.float32)
     shifted = np.exp(logits - logits.max(axis=1, keepdims=True))
@@ -963,6 +988,16 @@ def test_model_fingerprint_materializes_conjugate_views():
     same = torch.nn.Module()
     same.register_buffer("z", torch.tensor([1 - 2j]))
     assert model_fingerprint(module) == model_fingerprint(same)
+
+
+def test_fit_temperature_without_test_split_id_warns_and_fits_as_before():
+    with pytest.warns(DeprecationWarning, match=r"fit_temperature\(\) without test_split_id.*next minor release"):
+        omitted = _fit()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        named = _fit(test_split_id="test")
+    assert omitted.require().temperature == pytest.approx(T_STAR)
+    assert named.require().temperature == pytest.approx(T_STAR)
 
 
 def test_exact_bernoulli_terms_accept_zero_dimensional_inputs():

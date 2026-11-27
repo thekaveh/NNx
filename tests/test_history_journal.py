@@ -594,6 +594,63 @@ def test_readers_never_see_an_uncommitted_tail(monkeypatch):
     assert {record.epoch_idx for record in iter_history(run_id)} == {0, 1}
 
 
+def _writer_idp(epoch: int, batch: int, loss: float, *, val_loss=None) -> NNIterationDataPoint:
+    return NNIterationDataPoint(
+        lr=0.1,
+        iter_idx=epoch * 100 + batch,
+        epoch_idx=epoch,
+        batch_idx=batch,
+        train_edp=NNEvaluationDataPoint(loss=loss, error=0.0),
+        val_edp=None if val_loss is None else NNEvaluationDataPoint(loss=val_loss, error=0.0),
+    )
+
+
+@pytest.mark.parametrize("row_written", [False, True], ids=["discarded-mid-epoch", "discarded-after-its-row"])
+def test_a_discarded_epoch_leaves_no_orphan_row_or_record(tmp_path, row_written):
+    # FEAT-033 discards the epoch in progress. Its summary row is appended by end_epoch, so a discard
+    # after that append must cut the epochs file as it cuts the index; else the next row lands behind an orphan.
+    directory = str(tmp_path / "history")
+    writer = history_module._JournalWriter(directory, HistoryJournal(retention=4, chunk_size=2))
+
+    def run_epoch(epoch, losses, val_loss):
+        for batch, loss in enumerate(losses):
+            last = batch == len(losses) - 1
+            writer.append(_writer_idp(epoch, batch, loss, val_loss=val_loss if last else None))
+
+    run_epoch(0, [1.0, 0.9, 0.8], 0.7)
+    writer.end_epoch()
+    writer.publish()  # epoch 0 is committed
+    run_epoch(1, [0.6, 0.5, 0.4], 0.45)
+    if row_written:
+        writer.end_epoch(sync=False)
+    writer.discard_epoch()
+    run_epoch(1, [0.3, 0.2], 0.25)
+    writer.end_epoch()
+    writer.publish()
+
+    series = history_module._journal_epoch_series(directory, 10)
+    assert series["epochs"] == [0, 1]
+    assert series["val_loss"] == [0.7, 0.25]
+    records = list(history_module._JournalReader(directory).records(None))
+    assert [(record.epoch_idx, record.batch_idx) for record in records] == [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1)]
+
+
+def test_a_discard_refuses_an_epoch_file_shorter_than_its_committed_bytes(tmp_path):
+    directory = str(tmp_path / "history")
+    writer = history_module._JournalWriter(directory, HistoryJournal(retention=4, chunk_size=2))
+    for batch, loss in enumerate([1.0, 0.9]):
+        writer.append(_writer_idp(0, batch, loss, val_loss=0.7 if batch == 1 else None))
+    writer.end_epoch()
+    writer.publish()
+    epochs = os.path.join(directory, "epochs.jsonl")
+    shorter = os.path.getsize(epochs) - 5
+    with open(epochs, "r+b") as handle:
+        handle.truncate(shorter)
+    with pytest.raises(HistoryCorruptionError, match="shorter than its committed"):
+        writer.discard_epoch()
+    assert os.path.getsize(epochs) == shorter  # refused before anything changed, and never extended
+
+
 class _Full(Callback):
     history_access = "full"
 
