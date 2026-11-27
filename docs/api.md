@@ -3193,7 +3193,7 @@ The most probable option id (the first one on ties).
 #### `nnx.decisions.BooleanResult`
 
 ```python
-class nnx.decisions.BooleanResult(question_digest: 'str', p_true: 'float', provider: 'Optional[str]' = None, raw: 'Any' = None) -> 'None'
+class nnx.decisions.BooleanResult(question_digest: 'str', p_true: 'float', provider: 'Optional[str]' = None, raw: 'Any' = None, given_p_false: 'Optional[float]' = None) -> 'None'
 ```
 
 A validated answer to a `Boolean`: one ``p_true`` in ``[0, 1]``.
