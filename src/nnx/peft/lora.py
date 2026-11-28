@@ -44,6 +44,7 @@ from typing import Any, Union
 import torch
 from torch import nn
 
+from .._artifacts import atomic_torch_save
 from .._validation import require_count, require_finite_real, shown
 from ._mode import inherit_training_mode
 from ._ownership import owned_adapter_keys, select_owned
@@ -299,7 +300,7 @@ def save_lora_weights(module: nn.Module, path: Union[str, Path]) -> str:
         The path written (so calls can be chained).
     """
     sd = _lora_keys_only(module, module.state_dict())
-    torch.save(sd, str(path))
+    atomic_torch_save(sd, str(path))
     return str(path)
 
 

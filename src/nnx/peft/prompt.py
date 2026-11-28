@@ -41,6 +41,7 @@ from typing import Union
 import torch
 from torch import nn
 
+from .._artifacts import atomic_torch_save
 from .._validation import require_count
 from ..nn.net.transformer_nn import TransformerNN
 from ._mode import inherit_training_mode
@@ -190,7 +191,7 @@ def save_prompt_weights(tuner: PromptTuner, path: Union[str, Path]) -> str:
         The path written, so calls can be chained.
     """
     sd = tuner.prompt_state_dict()
-    torch.save(sd, str(path))
+    atomic_torch_save(sd, str(path))
     return str(path)
 
 
