@@ -133,6 +133,7 @@ def built_in_classifier() -> dict:
         labels=LABELS,
         model_id=model_fingerprint(first),
         split_id="calibration",
+        test_split_id="test",
     )
     calibrator = fit.calibrator
     assert calibrator is not None, fit.reason

@@ -33,6 +33,7 @@ from typing import Any, Union
 import torch
 from torch import nn
 
+from .._artifacts import atomic_torch_save
 from ._mode import inherit_training_mode
 from ._ownership import owned_adapter_keys, select_owned
 from ._source import _refuse_shape_mismatch, _resolve_source_to_state_dict
@@ -176,7 +177,7 @@ def save_ia3_weights(module: nn.Module, path: Union[str, Path]) -> str:
         The path written (so calls can be chained).
     """
     sd = _ia3_keys_only(module, module.state_dict())
-    torch.save(sd, str(path))
+    atomic_torch_save(sd, str(path))
     return str(path)
 
 
