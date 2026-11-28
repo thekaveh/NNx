@@ -1,4 +1,4 @@
-# Haiku readiness, part 1 (BUG, CI, DOC): key results
+# Worker readiness, part 1 (BUG, CI, DOC): key results
 
 Totals: READY 47, NEEDS-DETAIL 7, NEEDS-DECISION 14, TOO-BIG 2.
 

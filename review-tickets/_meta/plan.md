@@ -8,10 +8,10 @@
   - `X1-crosscheck.md`: BUG and CI findings against the board
   - `X2-crosscheck.md`: DOC, SYNC, SCOPE, DEAD and CLUT findings against the board
   - `X3-crosscheck.md`: SMELL findings against the board
-  - `H1-summary.md` and `H2-summary.md`: the Haiku worker's blocking questions and conflicts
+  - `H1-summary.md` and `H2-summary.md`: the worker's blocking questions and conflicts
 - **Every writer must:**
   - apply the cross-check's "Required change" for each source;
-  - answer the Haiku worker's blocking questions for each source, by reading the code at 9ad461e.
+  - answer the worker's blocking questions for each source, by reading the code at 9ad461e.
 
 Dropped or merged findings (no ticket of their own):
 - **DEAD-13:** dropped. The asserts guard #759's acceptance criterion.

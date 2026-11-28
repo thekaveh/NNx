@@ -1,4 +1,4 @@
-# Haiku readiness, part 2 (SYNC, SCOPE, DEAD, CLUT, SMELL): key results
+# Worker readiness, part 2 (SYNC, SCOPE, DEAD, CLUT, SMELL): key results
 
 Totals: READY 51, NEEDS-DETAIL 16, NEEDS-DECISION 15, TOO-BIG 9.
 Combined with part 1: READY 98, NEEDS-DETAIL 23, NEEDS-DECISION 29, TOO-BIG 11 (161).

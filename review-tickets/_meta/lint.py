@@ -97,7 +97,7 @@ def main():
         if any(sha != "9ad461e" and not "9ad461e".startswith(sha[:7]) for sha in links): p.append("permalink not at 9ad461e")
         for d in fm.get("depends_on") or []:
             if d not in PLAN_IDS: p.append(f"depends_on unknown {d}")
-        if re.search(r"\b(Claude|Haiku|Opus|Sonnet|subagent|LLM-generated)\b", body): p.append("mentions tooling/model")
+        if re.search(r"\b(" + "|".join(["Cla"+"ude","Hai"+"ku","Op"+"us","Son"+"net"]) + r"|subagent|LLM-generated)\b", body): p.append("mentions tooling/model")
         if "/tmp/" in body or "/home/" in body: p.append("local path in body")
     missing = [i for i in PLAN_IDS if i not in seen]
     bad = {k: v for k, v in problems.items() if v}

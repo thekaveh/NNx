@@ -1,4 +1,4 @@
-# Ticket style guide: thekaveh/NNx board, worker = Haiku-class agent
+# Ticket style guide: thekaveh/NNx board, worker = small worker agent
 
 ## 1. Output file
 
@@ -79,14 +79,14 @@ Sections: Summary, Context, Options, Acceptance criteria, Evidence, Scope, Depen
   - Keep each option's steps in a `**If option X, the worker does:**` numbered list in Context or Options, so the criteria stay short.
 - Status is `DECISION`.
 
-## 4. Haiku-readiness checklist (every ticket must pass all of these)
+## 4. Worker-readiness checklist (every ticket must pass all of these)
 
 - [ ] One focused PR. If it needs more, tell the coordinator; do not silently grow the ticket.
 - [ ] No unresolved choice, conditional ("if X was done"), or "optional" step in Proposal or Acceptance criteria (DEC tickets excepted, through their per-option criteria).
 - [ ] Every location is a verified permalink plus a function or class name.
 - [ ] Every new name (function, parameter, constant, test) is spelled out.
 - [ ] Every behaviour change has its CHANGELOG text.
-- [ ] Every Haiku blocking question listed for the source finding (`check/H1-summary.md` and `H2-summary.md`) is answered in the ticket.
+- [ ] Every worker blocking question listed for the source finding (`check/H1-summary.md` and `H2-summary.md`) is answered in the ticket.
 - [ ] Every cross-check "Required change" for the source (`check/X1`, `X2`, `X3`) is applied, and the related issues are linked.
 - [ ] No contradiction with a recorded board decision. If one exists, the ticket is narrowed to what is left and says so.
 - [ ] No secrets, no personal paths, no AI model names. Do not mention the review tooling. Write as the repository owner's tracker.

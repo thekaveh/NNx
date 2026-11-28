@@ -1,6 +1,6 @@
 # Review tickets: develop f486c85..9ad461e
 
-142 tickets for the thekaveh/NNx board, written to the board's own format (Summary, Context, Acceptance criteria, Evidence, Scope, Dependencies) so a Haiku-class worker can implement each one without guessing. They supersede the finding IDs in `REVIEW-develop-2026-11-27.md`; each ticket's `sources:` names the findings it covers.
+142 tickets for the thekaveh/NNx board, written to the board's own format (Summary, Context, Acceptance criteria, Evidence, Scope, Dependencies) so a small worker agent can implement each one without guessing. They supersede the finding IDs in `REVIEW-develop-2026-11-27.md`; each ticket's `sources:` names the findings it covers.
 
 | | P1 | P2 | P3 | Total |
 |---|---:|---:|---:|---:|
