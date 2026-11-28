@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import tempfile
 from collections.abc import Iterable, Mapping
 from functools import cached_property
 from typing import Any, Optional, Union, cast
@@ -175,3 +176,33 @@ def file_sha256(path: str) -> str:
         for block in iter(lambda: handle.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _created_file_mode() -> int:
+    """The mode ``open(path, "w")`` creates a file with under the current umask."""
+    umask = os.umask(0)  # read once at import: os.umask is process-wide
+    os.umask(umask)
+    return 0o666 & ~umask
+
+
+_CREATED_FILE_MODE = _created_file_mode()
+
+
+def atomic_torch_save(obj: Any, path: Union[str, os.PathLike[str]]) -> None:
+    """``torch.save(obj, path)`` written to a temporary file beside ``path``, flushed to disk, then
+    renamed onto ``path``. A failure removes the temporary file and leaves ``path`` as it was, so a
+    reader never sees a truncated file under the final name."""
+    import torch  # lazy: this module is imported by modules that do not need torch
+
+    target = os.fspath(path)
+    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(target)}.", dir=os.path.dirname(os.path.abspath(target)))
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            torch.save(obj, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, _CREATED_FILE_MODE)  # what a plain write gives, not mkstemp's 0600
+        os.replace(tmp, target)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)

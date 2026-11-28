@@ -20,6 +20,7 @@ This file intentionally keeps the standard Keep a Changelog heading format rathe
 
 ### Fixed
 
+- **PEFT adapter saves, `to_file` on the feed-forward and transformer nets, and the FAISS and safetensors fallback saves are atomic.** A failed save leaves the previous file intact instead of a truncated one under its final name.
 - A corrupted checkpoint can no longer become a verified run bundle: `export_bundle` verifies the resume point first.
 - A training-state id that is not the writer's 32-character hex form is refused before it becomes a path.
 - Duplicate JSON keys are refused in every JSON artifact load.

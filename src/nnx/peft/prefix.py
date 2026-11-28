@@ -46,6 +46,7 @@ from typing import Any, Optional, Union, cast
 import torch
 from torch import nn
 
+from .._artifacts import atomic_torch_save
 from .._validation import require_count
 from ..nn.net.transformer_layers import (
     MultiHeadCausalAttention,
@@ -278,7 +279,7 @@ def save_prefix_weights(tuner: PrefixTuner, path: Union[str, Path]) -> str:
         The path written, so calls can be chained.
     """
     sd = tuner.prefix_state_dict()
-    torch.save(sd, str(path))
+    atomic_torch_save(sd, str(path))
     return str(path)
 
 

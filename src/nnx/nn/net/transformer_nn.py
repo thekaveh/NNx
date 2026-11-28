@@ -16,6 +16,7 @@ from typing import Any, Optional
 import torch
 from torch import nn
 
+from ..._artifacts import atomic_torch_save
 from ..params.nn_transformer_params import NNTransformerParams
 from .transformer_layers import RMSNorm, TransformerBlock
 
@@ -223,7 +224,7 @@ class TransformerNN(nn.Module):
         return f"TransformerNN={self.params}"
 
     def to_file(self, path: str) -> None:
-        torch.save(self.state_dict(), path)
+        atomic_torch_save(self.state_dict(), path)
 
     @staticmethod
     def from_file(path: str, params: NNTransformerParams, map_location="cpu") -> TransformerNN:
