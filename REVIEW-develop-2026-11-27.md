@@ -1,6 +1,6 @@
 # NNx `develop` review: 2026-10-27 → 2026-11-27
 
-> **Update 2026-11-28: implement from `review-tickets/`, not from this file.** These 161 findings were cross-checked against all 196 board issues and rewritten into 142 tickets in the board's format (13 DEC, 46 FIX, 83 FEAT). In that pass:
+> **Update 2026-11-28: implement from `review-tickets/`, not from this file.** These 161 findings were cross-checked against all 196 board issues and rewritten into 143 tickets in the board's format (13 DEC, 47 FIX, 83 FEAT). They were re-checked against develop `1402b49` (#859), which added FIX-150. In that pass:
 > - a few findings were narrowed or reframed because a past issue had decided the behaviour on purpose (for example #201 DoRA, #551 bundle depth, #552 fsync, #572 import-only examples, #219 decisions package);
 > - one finding, DEAD-13, was dropped, and one (DEAD-10) was resolved by another ticket;
 > - choices were moved into DEC tickets, and oversized items were split.

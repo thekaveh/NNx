@@ -2,7 +2,7 @@
 import json, re, sys, pathlib
 
 BASE = pathlib.Path(__file__).parent
-OUT = BASE / "out"
+OUT = BASE / "out" if (BASE / "out").is_dir() else BASE.parent  # scratch layout or review-tickets/_meta
 plan = (BASE / "plan.md").read_text()
 PLAN_IDS = re.findall(r"^\| ((?:DEC|FIX|FEAT)-\d+) \|", plan, re.M)
 PLAN_TITLES = {m.group(1): m.group(2).strip() for m in re.finditer(r"^\| ((?:DEC|FIX|FEAT)-\d+) \| ([^|]+) \|", plan, re.M)}
@@ -43,7 +43,7 @@ def section(body, name):
 
 def main():
     quiet = "--quiet" in sys.argv
-    files = sorted(OUT.glob("*.md"))
+    files = sorted(f for f in OUT.glob("*.md") if re.fullmatch(r"(?:DEC|FIX|FEAT)-\d{3}", f.stem))
     seen = {}
     problems = {}
     for f in files:
@@ -94,7 +94,7 @@ def main():
         ev = section(body, "Evidence") or ""
         links = PERMALINK.findall(body)
         if status != "DROP" and not links: p.append("no permalinks")
-        if any(sha != "9ad461e" and not "9ad461e".startswith(sha[:7]) for sha in links): p.append("permalink not at 9ad461e")
+        if any(sha[:7] not in ("9ad461e", "1402b49") for sha in links): p.append("permalink not at 9ad461e")
         for d in fm.get("depends_on") or []:
             if d not in PLAN_IDS: p.append(f"depends_on unknown {d}")
         if re.search(r"\b(" + "|".join(["Cla"+"ude","Hai"+"ku","Op"+"us","Son"+"net"]) + r"|subagent|LLM-generated)\b", body): p.append("mentions tooling/model")

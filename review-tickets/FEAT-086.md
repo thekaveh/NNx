@@ -53,7 +53,7 @@ def _file_digest(path: str) -> tuple[str, int]:
 
 **Proposal.**
 
-1. In `src/nnx/_artifacts.py`, add before `file_sha256` (L170):
+1. In `src/nnx/_artifacts.py`, add before `file_sha256` (L170 at `9ad461e`, L171 at `1402b49`):
    ```python
    def file_digest(path: Union[str, os.PathLike[str]], chunk_size: int = 1 << 20) -> tuple[str, int]:
        """The SHA-256 hex digest and the byte size of the file at ``path``, read

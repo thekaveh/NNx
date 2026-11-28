@@ -8,11 +8,11 @@ related_issues: [201, 224]
 status: READY
 ---
 
-**Category:** PEFT · **Priority:** P3 · **Size:** M · **Evidence:** read at `9ad461e` (develop); not run: torch was unavailable in the review environment
+**Category:** PEFT · **Priority:** P3 · **Size:** M · **Evidence:** read at `9ad461e` (develop); the four adapter modules and `_artifacts.py` re-read at `1402b49` (#859); not run: torch was unavailable in the review environment
 
 ## Summary
 
-FEAT-125: the LoRA, IA3, prefix and prompt adapters each repeat the same save body (`torch.save` the owned subset, return the path) and the same load body (resolve the source, keep the owned keys, refuse a wrong shape, `load_state_dict(strict=False)`, count what landed). `load_prompt_weights` is the one loader that skips the shape refusal. This ticket adds `_save_owned` and `_load_owned` to `peft/_source.py`, makes the eight public functions call them, and thereby gives `load_prompt_weights` the same up-front refusal (a CHANGELOG line). Each family keeps its own ownership rule.
+FEAT-125: the LoRA, IA3, prefix and prompt adapters each repeat the same save body (`atomic_torch_save` the owned subset, return the path) and the same load body (resolve the source, keep the owned keys, refuse a wrong shape, `load_state_dict(strict=False)`, count what landed). `load_prompt_weights` is the one loader that skips the shape refusal. This ticket adds `_save_owned` and `_load_owned` to `peft/_source.py`, makes the eight public functions call them, and thereby gives `load_prompt_weights` the same up-front refusal (a CHANGELOG line). Each family keeps its own ownership rule.
 
 ## Context
 
@@ -36,7 +36,7 @@ FEAT-125: the LoRA, IA3, prefix and prompt adapters each repeat the same save bo
     result = tuner.load_state_dict(sd, strict=False)
 ```
 
-Every save is `sd = <owned subset>; torch.save(sd, str(path)); return str(path)`.
+Every save is `sd = <owned subset>; atomic_torch_save(sd, str(path)); return str(path)`: #859 (1402b49) replaced `torch.save` with `atomic_torch_save` in all four, each importing it from `.._artifacts` at module level (`lora.py` L47, `ia3.py` L36, `prefix.py` L49, `prompt.py` L44 at `1402b49`).
 
 **Why it matters.** Four copies of the load contract (owned keys only, refuse before copying, count what landed) can drift, and one already did: the prompt loader lets torch raise its own size-mismatch error instead of NNx's.
 
@@ -44,18 +44,21 @@ Every save is `sd = <owned subset>; torch.save(sd, str(path)); return str(path)`
 
 **Background for the worker.**
 - Owned keys: the `state_dict` keys an adapter family's wrappers register (`lora_A` / `lora_B`, `scaling`, `prefix_keys.<i>` / `prefix_values.<i>`, `soft_prompt`); the source is filtered by the destination's owned keys, so a full checkpoint never overwrites a frozen base tensor.
+- `atomic_torch_save(obj, path)` (`src/nnx/_artifacts.py`, #859): `torch.save` through a temporary file beside `path` that is renamed onto it only once complete, so a failed save leaves the previous file intact. `tests/test_atomic_torch_saves.py::test_a_failed_lora_save_leaves_the_previous_file_intact` pins it for `save_lora_weights`. The shared save body keeps it.
 - `_resolve_source_to_state_dict(source, fn_name)` (`src/nnx/peft/_source.py` L29): a path goes through `torch.load(weights_only=True)`, a dict passes through, anything else is a `TypeError` naming `fn_name`.
 - `_refuse_shape_mismatch(module, sd, fn_name)` (L64): raises `RuntimeError("<fn_name>: size mismatch, nothing was loaded: <key>: <source shape> vs <target shape>")` before anything is copied.
 - The prompt change: today a wrong-shaped `soft_prompt` raises torch's `RuntimeError` ("Error(s) in loading state_dict for PromptTuner: size mismatch for soft_prompt: …"); afterwards it raises `RuntimeError("load_prompt_weights: size mismatch, nothing was loaded: soft_prompt: (5, 16) vs (4, 16)")`. The type stays `RuntimeError`; with one owned tensor nothing is half-loaded either way, so only the message changes.
 
 **Proposal.**
-1. In `src/nnx/peft/_source.py`, add `from collections.abc import Mapping` and `from torch import nn` to the imports and, after `_refuse_shape_mismatch`, add:
+1. In `src/nnx/peft/_source.py`, add `from collections.abc import Mapping`, `from torch import nn` and `from .._artifacts import atomic_torch_save` to the imports and, after `_refuse_shape_mismatch`, add:
 
    ```python
    def _save_owned(owned_state: Mapping[str, Any], path: Union[str, Path]) -> str:
-       """``torch.save`` an adapter-only state dict (already restricted to the
-       keys its family owns) to ``path``; return ``str(path)`` so calls chain."""
-       torch.save(owned_state, str(path))
+       """Save an adapter-only state dict (already restricted to the keys its
+       family owns) to ``path`` atomically (:func:`nnx._artifacts.atomic_torch_save`:
+       a failed save leaves the previous file intact); return ``str(path)`` so
+       calls chain."""
+       atomic_torch_save(owned_state, str(path))
        return str(path)
 
 
@@ -73,16 +76,16 @@ Every save is `sd = <owned subset>; torch.save(sd, str(path)); return str(path)`
        return len(owned_state) - len(result.unexpected_keys)
    ```
 
-2. `src/nnx/peft/lora.py`: change the import to `from ._source import _load_owned, _resolve_source_to_state_dict, _save_owned` (`_refuse_shape_mismatch` leaves the import: no body in the file calls it any more). Then:
-   - `save_lora_weights`: keep FIX-119's DoRA warning block as the first statements; replace the last three lines (`sd = _lora_keys_only(...)` / `torch.save(...)` / `return str(path)`) with `return _save_owned(_lora_keys_only(module, module.state_dict()), path)`.
-   - `load_lora_weights`: replace the body after the docstring (L328-L335) with:
+2. `src/nnx/peft/lora.py`: change the import to `from ._source import _load_owned, _resolve_source_to_state_dict, _save_owned` (`_refuse_shape_mismatch` leaves the import: no body in the file calls it any more), and delete `from .._artifacts import atomic_torch_save` (L47 at `1402b49`), which `_save_owned` now calls. Then:
+   - `save_lora_weights`: keep FIX-119's DoRA warning block as the first statements; replace the last three lines (`sd = _lora_keys_only(...)` / `atomic_torch_save(...)` / `return str(path)`) with `return _save_owned(_lora_keys_only(module, module.state_dict()), path)`.
+   - `load_lora_weights`: replace the body after the docstring (L329-L336 at `1402b49`) with:
 
      ```python
          sd = _lora_keys_only(module, _resolve_source_to_state_dict(source, "load_lora_weights"))
          return _load_owned(module, sd, "load_lora_weights")
      ```
 
-3. `src/nnx/peft/ia3.py`: the same pattern. Import `_load_owned, _resolve_source_to_state_dict, _save_owned`. `save_ia3_weights` (L178-L180) becomes `return _save_owned(_ia3_keys_only(module, module.state_dict()), path)`. In `load_ia3_weights` (L200-L209) the import is `from ._source import _load_owned, _resolve_source_to_state_dict, _save_owned`; keep the two-line allowlist comment and write:
+3. `src/nnx/peft/ia3.py`: the same pattern. Import `_load_owned, _resolve_source_to_state_dict, _save_owned`, and delete `from .._artifacts import atomic_torch_save` (L36 at `1402b49`). `save_ia3_weights` (L179-L181 at `1402b49`) becomes `return _save_owned(_ia3_keys_only(module, module.state_dict()), path)`. In `load_ia3_weights` (L201-L210 at `1402b49`) the import is `from ._source import _load_owned, _resolve_source_to_state_dict, _save_owned`; keep the two-line allowlist comment and write:
 
    ```python
        sd = _resolve_source_to_state_dict(source, "load_ia3_weights")
@@ -91,7 +94,7 @@ Every save is `sd = <owned subset>; torch.save(sd, str(path)); return str(path)`
        return _load_owned(module, _ia3_keys_only(module, sd), "load_ia3_weights")
    ```
 
-4. `src/nnx/peft/prefix.py`: import `_load_owned, _resolve_source_to_state_dict, _save_owned`. `save_prefix_weights` (L280-L282) becomes `return _save_owned(tuner.prefix_state_dict(), path)`. `load_prefix_weights` (L298-L308) becomes:
+4. `src/nnx/peft/prefix.py`: import `_load_owned, _resolve_source_to_state_dict, _save_owned`, and delete `from .._artifacts import atomic_torch_save` (L49 at `1402b49`). `save_prefix_weights` (L281-L283 at `1402b49`) becomes `return _save_owned(tuner.prefix_state_dict(), path)`. `load_prefix_weights` (L299-L309 at `1402b49`) becomes:
 
    ```python
        sd = _resolve_source_to_state_dict(source, "load_prefix_weights")
@@ -103,7 +106,7 @@ Every save is `sd = <owned subset>; torch.save(sd, str(path)); return str(path)`
    ```
 
    In its docstring replace `(same n_prefix, n_heads, head_dim, n_layers). Otherwise` / ```load_state_dict`` will surface the mismatch.` with `(same n_prefix, n_heads, head_dim, n_layers). A wrong-shaped` / `prefix tensor raises a size-mismatch ``RuntimeError`` before` / `anything is copied.` (it already does, through `_refuse_shape_mismatch`).
-5. `src/nnx/peft/prompt.py`: change the import to `from ._source import _load_owned, _resolve_source_to_state_dict, _save_owned`. `save_prompt_weights` (L192-L194) becomes `return _save_owned(tuner.prompt_state_dict(), path)`. `load_prompt_weights` (L210-L217) becomes:
+5. `src/nnx/peft/prompt.py`: change the import to `from ._source import _load_owned, _resolve_source_to_state_dict, _save_owned`, and delete `from .._artifacts import atomic_torch_save` (L44 at `1402b49`). `save_prompt_weights` (L193-L195 at `1402b49`) becomes `return _save_owned(tuner.prompt_state_dict(), path)`. `load_prompt_weights` (L211-L218 at `1402b49`) becomes:
 
    ```python
        sd = _resolve_source_to_state_dict(source, "load_prompt_weights")
@@ -114,7 +117,7 @@ Every save is `sd = <owned subset>; torch.save(sd, str(path)); return str(path)`
    ```
 
    In its docstring replace `(same n_prompt_tokens, d_model). A shape mismatch is` / `surfaced by ``load_state_dict``.` with `(same n_prompt_tokens, d_model). A wrong-shaped soft` / `prompt raises a size-mismatch ``RuntimeError`` before anything` / `is copied.`
-6. Keep `import torch` in all four files: each still uses `torch` outside the moved lines. Run `uv run ruff check --fix src/nnx/peft/` and `uv run ruff format src/nnx/peft/`.
+6. Keep `import torch` in all four files: each still uses `torch` outside the moved lines. `_source.py` keeps its `import torch` too (`torch.load`). Run `uv run ruff check --fix src/nnx/peft/` and `uv run ruff format src/nnx/peft/`.
 7. Regenerate the API reference (the four loader docstrings are catalogued at `scripts/docs/api_reference_catalog.txt` L859-L891): `uv run python -m scripts.docs.build_api_reference`.
 8. Add to `CHANGELOG.md` under `## [Unreleased]` → `### Changed`:
 
@@ -141,8 +144,8 @@ Every save is `sd = <owned subset>; torch.save(sd, str(path)); return str(path)`
 ## Acceptance criteria
 
 - [ ] `test_load_prompt_weights_refuses_a_wrong_shape_before_loading` fails on `develop` before the change (torch's message does not match). Check: `uv run pytest tests/test_peft_prompt.py::test_load_prompt_weights_refuses_a_wrong_shape_before_loading`
-- [ ] No PEFT adapter module calls `torch.save` or `load_state_dict(sd, strict=False)` itself any more. Check: `grep -nE "torch\.save\(|load_state_dict\(sd, strict=False\)" src/nnx/peft/lora.py src/nnx/peft/ia3.py src/nnx/peft/prefix.py src/nnx/peft/prompt.py` returns 0 lines (8 today)
-- [ ] `_source.py` defines `_save_owned` and `_load_owned`. Check: `grep -n "^def _save_owned\|^def _load_owned" src/nnx/peft/_source.py` returns 2 lines
+- [ ] No PEFT adapter module saves or calls `load_state_dict(sd, strict=False)` itself any more. Check: `grep -nE "atomic_torch_save|torch\.save\(|load_state_dict\(sd, strict=False\)" src/nnx/peft/lora.py src/nnx/peft/ia3.py src/nnx/peft/prefix.py src/nnx/peft/prompt.py` returns 0 lines (12 at `1402b49`: four imports and four calls of `atomic_torch_save`, four `load_state_dict` calls)
+- [ ] `_source.py` defines `_save_owned` and `_load_owned`, and the save stays atomic. Check: `grep -n "^def _save_owned\|^def _load_owned" src/nnx/peft/_source.py` returns 2 lines, `grep -c "atomic_torch_save(owned_state" src/nnx/peft/_source.py` returns 1, and `uv run pytest tests/test_atomic_torch_saves.py`
 - [ ] Every PEFT test passes, including #201's ownership tests, FIX-119's DoRA warning tests and `tests/test_peft_lora.py` L551 ("size mismatch"). Check: `uv run pytest tests -k peft`
 - [ ] `docs/api.md` shows the new loader docstrings. Check: `grep -c "before anything is copied" docs/api.md` returns at least 2, and `uv run python -m scripts.docs.build_api_reference --check && uv run python -m scripts.docs.build_docs --check`
 - [ ] The CHANGELOG entry is under `[Unreleased]` → `### Changed`. Check: `grep -n "load_prompt_weights\` refuses a wrong-shaped soft prompt" CHANGELOG.md`
@@ -153,10 +156,11 @@ Every save is `sd = <owned subset>; torch.save(sd, str(path)); return str(path)`
 
 | Location | What it shows |
 |---|---|
-| [lora.py L279-L335](https://github.com/thekaveh/NNx/blob/9ad461e/src/nnx/peft/lora.py#L279-L335) | `save_lora_weights` / `load_lora_weights` |
-| [ia3.py L161-L209](https://github.com/thekaveh/NNx/blob/9ad461e/src/nnx/peft/ia3.py#L161-L209) | the IA3 copies |
-| [prefix.py L270-L308](https://github.com/thekaveh/NNx/blob/9ad461e/src/nnx/peft/prefix.py#L270-L308) | the prefix copies; the stale "load_state_dict will surface the mismatch" |
-| [prompt.py L182-L217](https://github.com/thekaveh/NNx/blob/9ad461e/src/nnx/peft/prompt.py#L182-L217) | the prompt copies, without `_refuse_shape_mismatch` |
+| [lora.py L280-L336](https://github.com/thekaveh/NNx/blob/1402b49/src/nnx/peft/lora.py#L280-L336) | `save_lora_weights` / `load_lora_weights` |
+| [ia3.py L162-L210](https://github.com/thekaveh/NNx/blob/1402b49/src/nnx/peft/ia3.py#L162-L210) | the IA3 copies |
+| [prefix.py L271-L309](https://github.com/thekaveh/NNx/blob/1402b49/src/nnx/peft/prefix.py#L271-L309) | the prefix copies; the stale "load_state_dict will surface the mismatch" |
+| [prompt.py L183-L218](https://github.com/thekaveh/NNx/blob/1402b49/src/nnx/peft/prompt.py#L183-L218) | the prompt copies, without `_refuse_shape_mismatch` |
+| [_artifacts.py L191-L208](https://github.com/thekaveh/NNx/blob/1402b49/src/nnx/_artifacts.py#L191-L208) | `atomic_torch_save`, which every save calls since #859 |
 | [_source.py L29-L76](https://github.com/thekaveh/NNx/blob/9ad461e/src/nnx/peft/_source.py#L29-L76) | `_resolve_source_to_state_dict`, `_refuse_shape_mismatch` |
 | [test_peft_lora.py L551](https://github.com/thekaveh/NNx/blob/9ad461e/tests/test_peft_lora.py#L551) | pins "size mismatch" |
 | #201 | ownership by registration, per family |

@@ -66,7 +66,7 @@ FEAT-063: six pieces of code do nothing: a parameter no caller passes as `False`
 2. `src/nnx/history.py` L1457: change `_read_idps_csv(csv_path, exact=True)` to `_read_idps_csv(csv_path)`.
 3. Delete `src/nnx/distributed.py` L585 (`        self.validation_ids: list[int] = []`) and `src/nnx/nn/nn_model.py` L2519 (`    ddp.validation_ids = ids`). Keep the line above L2519 that builds `ids` (it feeds the "scored every row exactly once" check).
 4. Delete `src/nnx/objectives.py` L242 (`ObjectiveFn = ...`) and the blank line pair around it, leaving two blank lines between the neighbouring definitions.
-5. `src/nnx/peft/prefix.py`: delete L201 (`self._original_attn_forwards: list = []`) and L205 (`self._original_attn_forwards.append(mha.forward)`), and replace the comment L196–L200 with the single line `        # Monkey-patch each targeted block's MHA forward to inject the learned prefix.`.
+5. `src/nnx/peft/prefix.py` (line numbers at `9ad461e`; one higher at `1402b49`, where #859 added an import): delete L201 (`self._original_attn_forwards: list = []`) and L205 (`self._original_attn_forwards.append(mha.forward)`), and replace the comment L196–L200 with the single line `        # Monkey-patch each targeted block's MHA forward to inject the learned prefix.`.
 6. `src/nnx/peft/_targets.py` (`select_linear_slots`): delete L158 (`    selected = matched`) and change `selected` to `matched` at L161 (`for slot in matched:`) and L175 (`return [(slots[slot][0], slot[1]) for slot in matched]`).
 7. `src/nnx/decisions/benchmark.py`: add `import torch` as a third-party import block between `from typing import Any, Optional, Union` (L62) and `from .._json_depth import ...` (L64), and replace L614–L620 with:
    ```python

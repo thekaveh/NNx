@@ -8,11 +8,11 @@ related_issues: [552, 260, 522]
 status: READY
 ---
 
-**Category:** Persistence · **Priority:** P2 · **Size:** M · **Evidence:** read at `9ad461e` (develop); not run: torch was unavailable in the review environment
+**Category:** Persistence · **Priority:** P2 · **Size:** M · **Evidence:** read at `9ad461e` (develop); `_artifacts.py` re-read at `1402b49` (#859); not run: torch was unavailable in the review environment
 
 ## Summary
 
-FEAT-073: after FEAT-072, seven modules outside the run core still import the atomic writer from `nnx.nn.params.nn_run` (most of them inside a function, because `nn_run` is heavy and cyclic), and four writers spell the partial-file protocol out by hand. Part 3 points all of them at `nnx._atomic_io`, imported at module top, and replaces the hand-written `reserve / commit / discard` blocks with `with _atomic_io.partial_file(path) as partial:`. Files, modes and flushes stay identical.
+FEAT-073: after FEAT-072, seven modules outside the run core still import the atomic writer from `nnx.nn.params.nn_run` (most of them inside a function, because `nn_run` is heavy and cyclic), and five writers spell the partial-file protocol out by hand (the fifth is #859's `_artifacts.atomic_torch_save`, as FIX-150 rewrote it). Part 3 points all of them at `nnx._atomic_io`, imported at module top, and replaces the hand-written `reserve / commit / discard` blocks with `with _atomic_io.partial_file(path) as partial:`. Files, modes and flushes stay identical.
 
 ## Context
 
@@ -45,33 +45,42 @@ and `export_state_dict` writes the partial-file protocol by hand:
             raise
 ```
 
+After FIX-150, `_artifacts.atomic_torch_save` (#859; L191–L208 at `1402b49` before FIX-150) is the same `_reserve_partial` / `torch.save` / `_commit_partial` / `_discard_partial` block, with a function-local `from .nn.params.nn_run import _commit_partial, _discard_partial, _reserve_partial`.
+
 `_artifacts.py`'s docstring admits the inverted dependency: "the atomic writer is imported from ``nnx.nn.params.nn_run`` when saving".
 
 **Why it matters.** Function-local imports of a heavy module for a stdlib helper, and four copies of the commit-or-discard dance.
 
-**History.** #552 made every durable write raise its flush errors; #260 made the atomic text writer clean up its temporary; #522 kept `NNRun.all()` robust to interrupted saves. FIX-116 gave the plain-mode writers (`config.json`, the Hub manifest, the tokenizer, the Modelfile) `plain_mode=True`; this ticket keeps every call's mode exactly as FIX-116 left it.
+**History.** #552 made every durable write raise its flush errors; #260 made the atomic text writer clean up its temporary; #522 kept `NNRun.all()` robust to interrupted saves. FIX-116 gave the plain-mode writers (`config.json`, the Hub manifest, the tokenizer, the Modelfile) `plain_mode=True`, and FIX-115 gave every standalone artifact `full_flush=True`; this ticket keeps every call's mode and flush exactly as they left them.
 
 **Background for the worker.**
-- *`nnx._atomic_io`*: the standard-library-only module from FEAT-071; `atomic_write_text(path, content, *, plain_mode=False)` accepts `str` or `os.PathLike`; `partial_file(path)` yields a reserved partial path, commits it onto `path` when the block ends normally and discards it when the block raises.
+- *`nnx._atomic_io`*: the standard-library-only module from FEAT-071; `atomic_write_text(path, content, *, plain_mode=False, full_flush=False)` accepts `str` or `os.PathLike`, and `full_flush=True` flushes with `F_FULLFSYNC` on macOS (FIX-115 passes it at every standalone artifact); `partial_file(path)` yields a reserved partial path, commits it onto `path` when the block ends normally and discards it when the block raises.
+- *`_artifacts.atomic_torch_save(obj, path)`*: the atomic `torch.save` #859 added for the PEFT adapter savers, `FeedFwdNN.to_file`, `TransformerNN.to_file` and the FAISS fallback. It imports torch inside the function, because `_artifacts.py` is imported by modules that do not need torch, so it stays in `_artifacts.py` and does not merge with `nn_checkpoint._atomic_torch_save` (FEAT-071 step 2).
 - *Plain mode*: the permission bits a plain `open(path, "w")` gives under the current umask (FIX-116); the default (`plain_mode=False`) is 0600.
 - *Staging directory*: `NNModel.save_pretrained` writes the whole Hub save into a fresh hidden directory (`tempfile.mkdtemp`) and moves the files into the target only after it succeeds, so `_save_pretrained` writes into an empty directory.
 
 **Proposal.** In every file below, import the module at module top as `from <dots> import _atomic_io` (relative depth: `.` in `src/nnx/*.py`, `..` in `src/nnx/nn/*.py` and `src/nnx/interop/*.py`, `...` in `src/nnx/nn/params/*.py` and `src/nnx/interop/gguf/*.py`), and call it through the module attribute.
 
 1. `src/nnx/_artifacts.py`:
-   - change the module docstring's first sentence ending (L2–L3) from `atomic files, all derived from ``state()``. Internal; standard library only` + newline + `(the atomic writer is imported from ``nnx.nn.params.nn_run`` when saving).` to `atomic files, all derived from ``state()``. Internal; standard library only` + newline + `(atomic files go through ``nnx._atomic_io``).`;
-   - replace `atomic_write` (L64–L67) with a forwarding function (it stays importable for `comparison`, `decisions/benchmark` and `paradigms/offline_distillation`):
+   - change the module docstring's first sentence ending (L2–L3) from `atomic files, all derived from ``state()``. Internal; standard library only` + newline + `(the atomic writer is imported from ``nnx.nn.params.nn_run`` when saving).` to `atomic files, all derived from ``state()``. Internal; standard library only` + newline + `(atomic files go through ``nnx._atomic_io``; ``atomic_torch_save`` imports torch` + newline + `when it is called).`;
+   - replace `atomic_write` (L64–L67 at `9ad461e`, L65–L68 at `1402b49`) with a forwarding function (it stays importable for `comparison`, `decisions/benchmark` and `paradigms/offline_distillation`):
      ```python
      def atomic_write(path: Union[str, os.PathLike[str]], text: str) -> None:
-         """:func:`nnx._atomic_io.atomic_write_text`: 0600, flushed, renamed into place."""
-         _atomic_io.atomic_write_text(path, text)
+         """:func:`nnx._atomic_io.atomic_write_text`: 0600, flushed with ``full_fsync``, renamed into place."""
+         _atomic_io.atomic_write_text(path, text, full_flush=True)
      ```
-2. `src/nnx/provenance.py` `_write_json` (L563–L567): delete the local import and call `_atomic_io.atomic_write_text(path, canonical_bytes(value).decode("utf-8") + "\n")`. Keep the function (`tests/test_compile_execution.py` patches `provenance._write_json`). Leave `provenance.py`'s other local `nn_run` imports (run-layout helpers) alone.
-3. `src/nnx/data_splits.py` `SplitManifest.save` (L321–L325) and `src/nnx/preprocessing.py` `Standardizer.save` (L467–L471): delete the local import and call `_atomic_io.atomic_write_text(path, self.to_json())`.
-4. `src/nnx/nn/generative_nn_model.py`: delete the `from .params.nn_run import ...` line (L33) and change the call in `_hub_reconstruction_config` (L68–L72) to `_atomic_io.atomic_write_text(` with the same arguments and `plain_mode=True`.
-5. `src/nnx/interop/ollama.py`: delete the local import (L171, with its "lazy: the run module is heavy" comment) and change the call (L173–L177) to `_atomic_io.atomic_write_text(` with the same arguments and `plain_mode=True`.
+   - in `atomic_torch_save`, keep the docstring and the `import torch  # lazy: ...` line, and replace everything after them (FIX-150's comment, its `from .nn.params.nn_run import _commit_partial, _discard_partial, _reserve_partial`, `target = os.fspath(path)` and the `try` block) with:
+     ```python
+         with _atomic_io.partial_file(path) as partial:
+             torch.save(obj, partial)
+     ```
+     `partial_file` accepts a `str` or `os.PathLike` path, so the `os.fspath` call goes too.
+2. `src/nnx/provenance.py` `_write_json` (L563–L567): delete the local import and call `_atomic_io.atomic_write_text(path, canonical_bytes(value).decode("utf-8") + "\n", full_flush=True)`. Keep the function (`tests/test_compile_execution.py` patches `provenance._write_json`). Leave `provenance.py`'s other local `nn_run` imports (run-layout helpers) alone.
+3. `src/nnx/data_splits.py` `SplitManifest.save` (L321–L325) and `src/nnx/preprocessing.py` `Standardizer.save` (L467–L471): delete the local import and call `_atomic_io.atomic_write_text(path, self.to_json(), full_flush=True)`.
+4. `src/nnx/nn/generative_nn_model.py`: delete the `from .params.nn_run import ...` line (L33) and change the call in `_hub_reconstruction_config` (L68–L72) to `_atomic_io.atomic_write_text(` with the same arguments, `plain_mode=True` and `full_flush=True`.
+5. `src/nnx/interop/ollama.py`: delete the local import (L171, with its "lazy: the run module is heavy" comment) and change the call (L173–L177) to `_atomic_io.atomic_write_text(` with the same arguments, `plain_mode=True` and `full_flush=True`.
 6. `src/nnx/nn/nn_model.py`:
-   - `_write_hub_manifest` (L1414) and `_save_pretrained`'s config write (L4777): `_atomic_write_text(` → `_atomic_io.atomic_write_text(`, keeping `plain_mode=True`;
+   - `_write_hub_manifest` (L1414) and `_save_pretrained`'s config write (L4777): `_atomic_write_text(` → `_atomic_io.atomic_write_text(`, keeping `plain_mode=True` and `full_flush=True`;
    - `_save_pretrained`'s weights (L4752–L4762): replace the `partial_path` block with
      ```python
              weights_path = save_dir / _HUB_MODEL_FILENAME
@@ -120,8 +129,9 @@ No test patches any of the edited call sites by an old name (`grep -rn "setattr(
 - [ ] The new test `tests/test_atomic_io.py::test_no_module_imports_the_atomic_writer_from_nn_run_any_more` fails before the change and passes after it. Check: `uv run pytest tests/test_atomic_io.py`
 - [ ] No module outside `nn_run.py` and `_atomic_io.py` imports an atomic helper inside a function. Check: `grep -rn "^\s\+from .*nn_run import .*\(_atomic_write_text\|_quietly\|_reserve_partial\|_commit_partial\|_discard_partial\)" src/nnx` prints nothing
 - [ ] The hand-written partial-file blocks are gone except in `to_onnx`. Check: `grep -rn "_reserve_partial(" src/nnx` lists only `nn_run.py` (the forwarding function) and `nn_model.py` inside `to_onnx`
-- [ ] Hub, export, GGUF, tokenizer, provenance, split and preprocessing files are written as before. Check: `uv run pytest tests/test_hub_export_atomic.py tests/test_hub_mixin.py tests/test_hub_manifest.py tests/test_atomic_write_text.py tests/test_interop_gguf_writer.py tests/test_tokenizer_params.py tests/test_provenance.py tests/test_attempt_provenance.py tests/test_data_splits.py tests/test_preprocessing.py tests/test_generative_nn_model.py tests/test_finetune_loading.py tests/test_model_recipes.py tests/test_compile_execution.py`
+- [ ] Hub, export, GGUF, tokenizer, provenance, split and preprocessing files are written as before. Check: `uv run pytest tests/test_hub_export_atomic.py tests/test_hub_mixin.py tests/test_hub_manifest.py tests/test_atomic_write_text.py tests/test_atomic_torch_saves.py tests/test_peft_lora.py tests/test_nets.py tests/test_interop_gguf_writer.py tests/test_tokenizer_params.py tests/test_provenance.py tests/test_attempt_provenance.py tests/test_data_splits.py tests/test_preprocessing.py tests/test_generative_nn_model.py tests/test_finetune_loading.py tests/test_model_recipes.py tests/test_compile_execution.py`
 - [ ] The plain-mode writers keep FIX-116's mode tests green. Check: `uv run pytest tests/test_atomic_write_text.py -k mode`
+- [ ] Every standalone artifact keeps FIX-115's flush. Check: `grep -rn "full_flush=True" src/nnx` prints 10 lines: FIX-115's nine (`_artifacts.py`, `history.py`, `data_splits.py`, `preprocessing.py`, `provenance.py`, `nn_model.py` twice, `generative_nn_model.py`, `ollama.py`) and `nn_checkpoint._write_manifest` (FEAT-072); and `uv run pytest tests/test_atomic_write_text.py -k "full_fsync or full_flush"`
 - [ ] `uv run ruff check src/ tests/ examples/ scripts/` and `uv run ruff format --check src/ tests/ examples/ scripts/` pass. Check: both commands exit 0
 - [ ] `uv run pyright --warnings` passes. Check: the command exits 0
 
@@ -130,6 +140,7 @@ No test patches any of the edited call sites by an old name (`grep -rn "setattr(
 | Location | What it shows |
 |---|---|
 | [_artifacts.py L1-L3](https://github.com/thekaveh/NNx/blob/9ad461e/src/nnx/_artifacts.py#L1-L3), [L64-L67](https://github.com/thekaveh/NNx/blob/9ad461e/src/nnx/_artifacts.py#L64-L67) | The inverted dependency and `atomic_write` |
+| [_artifacts.py L191-L208](https://github.com/thekaveh/NNx/blob/1402b49/src/nnx/_artifacts.py#L191-L208) | #859's `atomic_torch_save`, which FIX-150 puts on the partial-file protocol |
 | [provenance.py L563-L567](https://github.com/thekaveh/NNx/blob/9ad461e/src/nnx/provenance.py#L563-L567) | `_write_json` |
 | [data_splits.py L321-L325](https://github.com/thekaveh/NNx/blob/9ad461e/src/nnx/data_splits.py#L321-L325), [preprocessing.py L467-L471](https://github.com/thekaveh/NNx/blob/9ad461e/src/nnx/preprocessing.py#L467-L471) | `save` methods with local imports |
 | [generative_nn_model.py L33](https://github.com/thekaveh/NNx/blob/9ad461e/src/nnx/nn/generative_nn_model.py#L33), [L68-L72](https://github.com/thekaveh/NNx/blob/9ad461e/src/nnx/nn/generative_nn_model.py#L68-L72) | The tokenizer write |
@@ -142,7 +153,7 @@ No test patches any of the edited call sites by an old name (`grep -rn "setattr(
 
 ## Scope
 
-**In:** the writers in `_artifacts`, `provenance`, `data_splits`, `preprocessing`, `generative_nn_model`, `interop/ollama`, `nn_model` (Hub save, Hub manifest, `export_state_dict`), the GGUF writer and `NNTokenizerParams.of`; one test.
+**In:** the writers in `_artifacts` (`atomic_write`, `atomic_torch_save`), `provenance`, `data_splits`, `preprocessing`, `generative_nn_model`, `interop/ollama`, `nn_model` (Hub save, Hub manifest, `export_state_dict`), the GGUF writer and `NNTokenizerParams.of`; one test.
 
 **Out:**
 - `to_onnx`: FIX-108 rewrites how it stages its output, and FEAT-107 builds its export arguments in one place.

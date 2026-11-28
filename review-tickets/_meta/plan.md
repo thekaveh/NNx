@@ -108,12 +108,13 @@ Labels for all DEC tickets: `question` plus the listed areas.
 | FIX-141 | Deduplicate release-please's changelog list when nothing is curated | bug, area: packaging | P3 | M | DOC-25 | — | Leftover of #418. Related #535. |
 | FIX-142 | Say what the embeddings extra installs and why | documentation, area: documentation | P3 | S | DOC-28 (step 1) | — | Dropping the dependency is Scope: Out. |
 | FIX-143 | Correct stale code comments and docstrings | documentation, area: documentation | P3 | S | DOC-30 (option a), DOC-31 (comment bullets: qat, `_targets`, ollama memo, gguf writer comments), DOC-32, DOC-33 (revised wording) | — | Related #472, #570, #759. |
-| FIX-144 | Call fit_temperature with test_split_id in run_bundle.py and fail example tests on the deprecation | bug, area: evaluation | P2 | S | SYNC-01, SYNC-02 | — | Related #571. |
+| FIX-144 | Fail the example tests when an example calls a deprecated split API | bug, area: evaluation | P2 | S | SYNC-01, SYNC-02 | — | Related #571. |
 | FIX-145 | Pass test_split_id in the tests that still omit it | bug, area: evaluation | P2 | M | SYNC-03 | FIX-144 | |
 | FIX-146 | List the import-only examples and add the OpenMP guard to example 13 | documentation, area: documentation | P3 | S | SYNC-04 (revised), SYNC-05 | — | #572's policy stays; running these examples in CI is Scope: Out. |
 | FIX-147 | Stop skipping tests for packages they do not use | bug, area: packaging | P3 | S | SYNC-06, SYNC-07 | — | Related #571. |
 | FIX-148 | Say in the README that GGUF and Ollama exports need a custom runtime | documentation, area: interoperability | P3 | S | SCOPE-04 | — | First check whether README already says this; if it does, set status DROP. Related #255. |
 | FIX-149 | Match pruning layer patterns on every registration path and validate sparsity | bug, area: model-transforms | P3 | M | SMELL-57 (steps 2–3) | — | Keep the `layer_pattern` keyword. Related #224, #554. |
+| FIX-150 | Route _artifacts.atomic_torch_save through the shared flush and file-mode helpers | bug, area: persistence | P2 | S | (new: #859, after the review) | FIX-115, FIX-116 | #859 added `_artifacts.atomic_torch_save` with a second import-time `umask(0)` copy (`_created_file_mode`), plain `os.fsync` (not `_full_fsync`), and an unconditional chmod that widens an existing file's mode. Its callers are the PEFT savers, the `FeedFwdNN` / `TransformerNN` `to_file`, and the FAISS fallback. Related #552, #443, #260, #859. |
 
 ## FEAT tickets
 

@@ -8,7 +8,7 @@ related_issues: [532, 545, 544]
 status: READY
 ---
 
-**Category:** Numerics · **Priority:** P3 · **Size:** S · **Evidence:** read at `9ad461e` (develop); not run: torch was unavailable in the review environment
+**Category:** Numerics · **Priority:** P3 · **Size:** S · **Evidence:** read at `9ad461e` (develop); `feed_fwd_nn.py` and `transformer_nn.py` re-read at `1402b49` (#859); not run: torch was unavailable in the review environment
 
 ## Summary
 
@@ -25,7 +25,7 @@ FEAT-104: Three small duplicates. `_probability.py` spells bfloat16's epsilon ex
    ```
 
    (the second reads `value` instead of `logits`).
-2. `nn/net/feed_fwd_nn.py` L52–L55, and the same method in `conv_nn.py` L91–L95 and `feed_fwd_moe_nn.py` L88–L91:
+2. `nn/net/feed_fwd_nn.py` L52–L55 (L53–L56 at `1402b49`, where #859 added an import above it), and the same method in `conv_nn.py` L91–L95 and `feed_fwd_moe_nn.py` L88–L91:
 
    ```python
        def __setstate__(self, state: dict[str, Any]) -> None:
@@ -86,7 +86,7 @@ FEAT-104: Three small duplicates. `_probability.py` spells bfloat16's epsilon ex
        __setstate__ = restore_params_property
    ```
 
-   (use each file's own comment text). Then `Any` is unused in all three files: change `from typing import Any, Optional` to `from typing import Optional` in `feed_fwd_nn.py` (L5) and `conv_nn.py` (L19), and delete `from typing import Any` in `feed_fwd_moe_nn.py` (L23). `transformer_nn.py` keeps its own `__setstate__`, which does something else.
+   (use each file's own comment text). Then `Any` is unused in all three files: change `from typing import Any, Optional` to `from typing import Optional` in `feed_fwd_nn.py` (L5) and `conv_nn.py` (L19), and delete `from typing import Any` in `feed_fwd_moe_nn.py` (L23). `transformer_nn.py` keeps its own `__setstate__`, which does something else. #859's `from ..._artifacts import atomic_torch_save` in `feed_fwd_nn.py` (L11 at `1402b49`) stays: `to_file` uses it.
 3. In `src/nnx/nn/enum/devices.py`, change the body of `torch_device` (L25) to `return self()`.
 4. In `src/nnx/nn/params/nn_evaluation_data_point.py`, rename `_is_count` (L44) to `_csv_count`, update its one call (L119, `if not _csv_count(count):`), and below the function add `_is_count = _csv_count  # the old name, kept importable`. `_update_engine._is_count` keeps its name.
 5. No test monkeypatches these names (`grep -rn "_is_count\|_source_eps\|torch_device\|__setstate__" tests | grep "setattr\|patch"` returns nothing), and nothing changes behaviour, so there is no CHANGELOG entry.

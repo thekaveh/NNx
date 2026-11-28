@@ -50,7 +50,7 @@ and `history.py` imports the helpers inside six functions (L327, L345, L561, L58
 **History.** #552 made history and bundles raise flush errors and keeps `bundles._fsync_directory` as the bundle export's directory-flush seam (`tests/test_bundle_validation.py:595` patches it); it stays a function. #443 added `F_FULLFSYNC` to the resume-point writes, `_write_manifest` included. #260 made the atomic text writer clean its temporary on every failure.
 
 **Background for the worker.**
-- *`nnx._atomic_io`*: the standard-library-only module FEAT-071 created: `full_fsync`, `fsync_directory`, `fsync_path`, `fsync_file`, `atomic_write_text(path, content, *, plain_mode=False)`, `atomic_write_bytes(path, data, *, durable=True)`, `reserve_partial`, `commit_partial`, `discard_partial`, `partial_file`, `quietly`.
+- *`nnx._atomic_io`*: the standard-library-only module FEAT-071 created: `full_fsync`, `fsync_directory`, `fsync_path`, `fsync_file`, `atomic_write_text(path, content, *, plain_mode=False, full_flush=False)` (`full_flush=True` flushes with `full_fsync`, FIX-115), `atomic_write_bytes(path, data, *, durable=True)`, `reserve_partial`, `commit_partial`, `discard_partial`, `partial_file`, `quietly`.
 - *Calling through the module attribute*: write `_atomic_io.atomic_write_text(...)`, never `from .._atomic_io import atomic_write_text`; a test that patches `nnx._atomic_io.atomic_write_text` then intercepts this call.
 - *Resume-point manifest*: `<checkpoint>.manifest.json` (and `.manifest.staged.json`), written 0600 and flushed before the checkpoint is published; its text is `json.dumps(manifest, sort_keys=True, indent=1)`.
 - *History chunk*: a write-once file of journal records, flushed later together with the epoch's other files.
@@ -61,9 +61,9 @@ and `history.py` imports the helpers inside six functions (L327, L345, L561, L58
    - replace the body of `_write_manifest` (L361–L371) with:
      ```python
          path = _staged_manifest_path(checkpoint_path) if staged else _manifest_path(checkpoint_path)
-         _atomic_io.atomic_write_text(path, json.dumps(manifest, sort_keys=True, indent=1))
+         _atomic_io.atomic_write_text(path, json.dumps(manifest, sort_keys=True, indent=1), full_flush=True)
      ```
-     Same text, same 0600 mode (`plain_mode` stays `False`), same flush, same temporary-name prefix; the function keeps its name because `tests/test_exact_resume.py` L395 patches it.
+     Same text, same 0600 mode (`plain_mode` stays `False`), same flush (`full_flush=True` keeps today's `_full_fsync`, which #443 requires for resume points; the default would be plain `os.fsync`), same temporary-name prefix; the function keeps its name because `tests/test_exact_resume.py` L395 patches it.
    - change the remaining direct calls to the module attribute: L315 and L678 `_full_fsync(handle.fileno())` → `_atomic_io.full_fsync(handle.fileno())`; L423 and L759 `_fsync_directory(...)` → `_atomic_io.fsync_directory(...)`.
    - delete `import tempfile` only if ruff reports it unused (the `save()` reservations and `_atomic_torch_save` still use it).
 2. `src/nnx/nn/params/nn_run.py`: change every call of a compatibility name to the module attribute: `_quietly(` → `_atomic_io.quietly(` (L353, L355, L1149); `_atomic_write_text(` → `_atomic_io.atomic_write_text(` (L540, L1142, L1214, L1229, L1234); `_fsync_directory(` → `_atomic_io.fsync_directory(` (L1146). Remove `_fsync_directory` from the `from ..params.nn_checkpoint import (...)` list (nothing imports it from `nn_run`). The forwarding functions FEAT-071 left stay.
@@ -80,7 +80,7 @@ and `history.py` imports the helpers inside six functions (L327, L345, L561, L58
        _atomic_io.fsync_directory(path)
    ```
    `_publish` stays as it is: its temporary is created like the payloads (plain mode), which `atomic_write_bytes` (0600) would change.
-5. Retarget the tests that patch `nn_run._atomic_write_text`, capture and patch together, and give each replacement function a `**kwargs` it forwards (`plain_mode=` reaches `atomic_write_text` from some callers):
+5. Retarget the tests that patch `nn_run._atomic_write_text`, capture and patch together, and give each replacement function a `**kwargs` it forwards (`plain_mode=` and `full_flush=` reach `atomic_write_text` from some callers):
 
    | Test (line at `9ad461e`) | Today | New target |
    |---|---|---|
@@ -144,7 +144,7 @@ No behaviour changes, so no CHANGELOG entry.
 
 **Out:**
 - `nn_checkpoint._to_safetensors_file`: it writes 0600 today and `partial_file` uses the plain mode, so moving it waits for DEC-021.
-- `nn_checkpoint._atomic_torch_save` and the name reservations in `NNCheckpoint.save()`: hashed writes whose temporary names belong to the resume-point publish sequence.
+- `nn_checkpoint._atomic_torch_save` and the name reservations in `NNCheckpoint.save()`: hashed writes whose temporary names belong to the resume-point publish sequence. `_atomic_torch_save` does not merge with #859's `_artifacts.atomic_torch_save` (FEAT-071 step 2 says why); FEAT-073 moves that one onto `_atomic_io.partial_file`.
 - `bundles._publish` and `bundles._write` (plain-mode files created like the payloads).
 - `history.py`'s other local imports of `nn_run` (run-layout helpers, a real cycle).
 - The remaining writers in other modules: FEAT-073.
