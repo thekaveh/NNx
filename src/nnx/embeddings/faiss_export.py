@@ -26,6 +26,7 @@ from typing import Any, Optional, Union
 
 import torch
 
+from .._artifacts import atomic_torch_save
 from .contrastive_trainer import embed_texts
 
 
@@ -197,7 +198,7 @@ def export_to_safetensors(backbone: Any, out_path: Union[str, Path]) -> str:
     except ImportError:
         # No safetensors — plain torch.save fallback. Pickle blob,
         # so reload with torch.load(weights_only=True) on trusted files.
-        torch.save(sd, out_path)
+        atomic_torch_save(sd, out_path)
         return out_path
 
     # safetensors rejects tensors that share storage (e.g. tied

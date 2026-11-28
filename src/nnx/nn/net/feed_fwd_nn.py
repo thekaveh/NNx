@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from ..._artifacts import atomic_torch_save
 from ..params.nn_params import NNParams
 from ._pickling import restore_params_property
 
@@ -109,7 +110,7 @@ class FeedFwdNN(nn.Module):
         return f"FeedFwdNN={self.params}"
 
     def to_file(self, path: str) -> None:
-        torch.save(self.state_dict(), path)
+        atomic_torch_save(self.state_dict(), path)
 
     @staticmethod
     def from_file(path: str, params: NNParams, map_location="cpu") -> FeedFwdNN:

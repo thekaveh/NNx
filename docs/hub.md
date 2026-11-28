@@ -158,7 +158,7 @@ This writes these files into `./my-model/`:
 - `nnx_hub_manifest.json` — the SHA-256 and size of each file above, written last. `from_pretrained` verifies it before it builds anything.
 - `README.md` — auto-generated model card from the mixin.
 
-A save is staged in a temporary directory beside the target, and each file moves into place only after the whole save succeeds, so a refused or failed save leaves the previous artifact intact. An existing `README.md` is kept. A `tokenizer.json` that this save does not produce is removed only if an earlier NNx save wrote it (the previous manifest lists it).
+A save is staged in a temporary directory beside the target, and each file moves into place only after the whole save succeeds, so a refused or failed save leaves the previous artifact intact. An existing `README.md` is kept. A `tokenizer.json` that this save does not produce is removed only if an earlier NNx save wrote it (the previous manifest lists it). The files move in a fixed order, with `config.json` and then the manifest last. If the process stops during the move, the directory can hold new files beside the previous manifest. Load refuses that mix, because the manifest's digests no longer match, so it is detected rather than read silently. Run `save_pretrained` again to repair the directory.
 
 ### 2.3. Load from a local directory
 

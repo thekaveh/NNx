@@ -139,6 +139,8 @@ policy.train(
 )
 ```
 
+**Prompt padding (`prompt_packing`).** Prompts are right-padded to a fixed length, and the model has no attention mask. With the default (`prompt_packing=False`), each response is therefore scored after prompt pad tokens that generation never produces. `prompt_packing=True` places each response directly after its valid prompt tokens and puts all padding at the end, where causal attention cannot change the response scores. The default is unchanged, so existing results do not move. Use it for new runs. In this mode, a prompt with no valid token is refused.
+
 ## 4. The `beta` knob
 
 `beta` controls the strength of the reference-policy constraint. NNx defaults
